@@ -53,7 +53,7 @@ pub(crate) fn probe_trigger(
     what: &str,
     view: ViewId,
     args: &Value,
-    _services: &Services,
+    services: &Services,
     provided: &Rc<Provided>,
     then: Then<IpcValue>,
 ) -> bool {
@@ -142,7 +142,7 @@ pub(crate) fn probe_trigger(
             .map_or(IpcValue::Null, untitled_json))),
         // docsRecoveryEditor.writeCopiesNow()
         "write-copies-now" => {
-            editor.write_copies_now(Box::new(move || then(Ok(IpcValue::Undefined))))
+            editor.write_copies_now(Box::new(move |result| then(result.map(|()| IpcValue::Undefined).map_err(|error| crate::kit::error(error.0)))))
         }
         // docsRecoveryEditor.openFileWithDecision(contents, { filePath, decision })
         "open-file-with-decision" => {
@@ -151,10 +151,20 @@ pub(crate) fn probe_trigger(
             } else {
                 RecoveryOpenDecision::Original
             };
+            let owner = services.hosts.get::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+                .and_then(|_| services.views.renderer_generation(view))
+                .and_then(|generation| services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>()
+                    .and_then(|effects| effects.capture_owner(view, &generation).ok()));
+            let Some(owner) = owner else {
+                then(Err(crate::kit::error("the synthetic Docs owner is unavailable")));
+                return true;
+            };
             editor.open_file_with_decision(
                 view,
                 args[0]["filePath"].as_str().unwrap_or_default().into(),
                 decision,
+                owner,
+                shell_contract::runtime::CancelToken::default(),
             );
             then(Ok(IpcValue::Undefined))
         }
@@ -215,6 +225,7 @@ mod tests {
         });
         rt.register(super::super::entries).unwrap();
         let a = rt.view(1, Surface::Docs);
+        rt.provided().all::<DocsEditors>().pop().unwrap().register_view(a.view);
         (rt, a)
     }
 

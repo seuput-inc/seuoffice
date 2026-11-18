@@ -102,6 +102,7 @@ export const MINDMAP_CHANNELS = {
   // ---- a new tab that starts with given content (T17) ----
   /** invoke → `MindmapSeed | null`: take the content left for this view, once. T17 */
   seedTake: 'mindmap:seed-take',
+  recoveryInitialized: 'mindmap:recovery-initialized',
 
   // ---- "make another document from this one" (T18) ----
   /** renderer → main: the toolbar button; the shell opens its make window with this map */
@@ -177,10 +178,11 @@ export type MindmapOpenStatus = 'ok' | 'legacy-format' | 'encrypted' | 'unreadab
  * reads its bytes into a new map named `title`; the `.mm` is never written,
  * and the first save asks where to put the `.xmind` (offering its folder).
  */
-export type OpenFileResult =
+export type OpenFileResult = (
   | { status: 'ok'; bytes: Uint8Array; restored?: 'file' | 'untitled' }
   | { status: 'import'; importer: 'freemind'; bytes: Uint8Array; title: string }
   | { status: Exclude<MindmapOpenStatus, 'ok'> }
+) & { recoveryToken?: string }
 
 // ---- save ----
 
@@ -190,6 +192,7 @@ export interface SaveMindmapRequest {
   /** the whole `.xmind` file, as the engine produced it */
   bytes: Uint8Array
   mode: SaveMode
+  ownedSaveRequestId?: string
   /** file name (no extension) offered by the save dialog of an untitled map */
   defaultName?: string
   /**
@@ -208,7 +211,7 @@ export interface SaveMindmapRequest {
 export type SaveMindmapResult =
   | { ok: true; path: string }
   | { ok: true; canceled: true }
-  | { ok: true; export: { format: ExportFormat; path: string } }
+  | { ok: true; export: { format: ExportFormat; path: string; ownedSaveRequestId?: string } }
   | { ok: false; error: string }
 
 /**
@@ -264,6 +267,7 @@ export interface ExportPngRequest {
   suggestedName: string
   /** the path Save As picked for this export: written without a dialog (`SaveMindmapResult`) */
   path?: string
+  ownedSaveRequestId?: string
 }
 
 export interface ExportSvgRequest {
@@ -271,6 +275,7 @@ export interface ExportSvgRequest {
   svg: string
   suggestedName: string
   path?: string
+  ownedSaveRequestId?: string
 }
 
 export interface ExportPdfRequest {
@@ -278,6 +283,7 @@ export interface ExportPdfRequest {
   html: string
   suggestedName: string
   path?: string
+  ownedSaveRequestId?: string
 }
 
 export interface ExportMarkdownRequest {
@@ -285,6 +291,7 @@ export interface ExportMarkdownRequest {
   text: string
   suggestedName: string
   path?: string
+  ownedSaveRequestId?: string
 }
 
 export type ExportResult =
@@ -403,6 +410,7 @@ export interface MindmapOutlineSeed {
 /** A byte copy of a map file (a skill's template, spec 5.7), opened as a new, unsaved map */
 export interface MindmapCopySeed {
   bytes: Uint8Array
+  recoveryToken?: string
 }
 
 export type MindmapSeed = MindmapOutlineSeed | MindmapCopySeed
@@ -415,6 +423,7 @@ export interface MindmapCoreApi {
   consumePending(): Promise<string | null>
   /** Read a granted file and learn how it opens. Only an `ok` file comes with bytes */
   openFile(path: string): Promise<OpenFileResult>
+  recoveryInitialized(token: string, ok: boolean, error?: string): Promise<void>
   /**
    * Write the map. With a granted path the write is atomic (tmp + rename);
    * untitled maps and mode 'saveAs' go through a main-process save dialog first.
@@ -425,9 +434,9 @@ export interface MindmapCoreApi {
   /** Mirror unsaved-changes state to the main process; drives the save prompt before closing */
   setDirty(dirty: boolean): void
   /** Shell menu Save / Save As → the renderer produces the bytes and calls save() */
-  onSaveRequest(handler: (mode: SaveMode) => void): () => void
+  onSaveRequest(handler: (mode: SaveMode, requestId?: string) => void): () => void
   /** Resolves a menu-save waiter when the save ended without ever invoking save() */
-  sendSaveRequestAck(ok: boolean): void
+  sendSaveRequestAck(ok: boolean, requestId?: string, error?: string): void
   /** "Save" in the close prompt → the renderer saves and replies via sendCloseSaveResult */
   onCloseSaveRequest(handler: () => void): () => void
   sendCloseSaveResult(ok: boolean): void
@@ -544,8 +553,8 @@ export type RecoveryCopyResult = 'written' | 'superseded' | 'skipped'
 export interface MindmapRecoveryApi {
   writeRecoveryCopy(request: RecoveryCopyRequest): Promise<RecoveryCopyResult>
   /** the OS is ending the session: write a copy now, then call `sendRecoveryCopyNowDone` */
-  onRecoveryCopyNow(handler: () => void): () => void
-  sendRecoveryCopyNowDone(): void
+  onRecoveryCopyNow(handler: (generation: number) => void): () => void
+  sendRecoveryCopyNowDone(generation: number, error: string | null): void
   /** the last copy was dropped and the tab stayed open: the next tick copies the map again */
   onRecoveryReset(handler: () => void): () => void
 }

@@ -41,6 +41,12 @@ Electron 판처럼 업데이트는 바뀐 블록만 내려받는다(`src/host/up
 
 블록이 판마다 같은 바이트로 남으려면 파일마다 따로 압축해야 한다. Tauri 기본(LZMA 통압축)은 파일 하나만 바뀌어도 그 뒤 바이트가 모두 바뀐다. 그래서 `windows.conf.json`은 압축을 끄고(`"compression": "none"`, 템플릿 머리의 `SetCompressor /SOLID`를 건너뛴다) `hooks.nsh`가 `SetCompress auto`로 파일마다 zlib 압축을 되살린다. 2026-11-14 이 Mac에서 `makensis` 3.13으로 잼: 큰 파일 하나는 그대로, 모듈 하나를 바꾸고 파일 하나를 더한 두 설치 프로그램 사이에 받을 몫이 파일마다 zlib은 13.6%(5.95 MB 중 0.81 MB), LZMA 통압축은 99.3%였다. 대신 설치 프로그램이 커진다(같은 시험에서 4.49 MB → 5.95 MB).
 
+## Linux NSS 서명 리소스
+
+Linux 릴리스 빌드는 `SEUOFFICE_NSS_BUNDLE_DIR`에 실제 생성된 NSS helper, 고정 런타임, 무결성 파일과 `manifest.json`, 라이선스 고지를 요구한다. `tools/nss-helper/contract.json`이 소스와 파일 디스크립터 계약을 정의하며 `tools/nss-helper/produce.py`가 산출물을 만든다. 빌드 스크립트는 파일 해시, 출처, ELF 의존성과 고지를 검사한 뒤 매니페스트를 바이너리에 내장한다. 실행 시 설치 리소스 `usr/lib/SeuOffice/nss`의 파일을 해시 검증 후 봉인된 메모리 파일로 옮겨 실행한다. 사용자 NSS 설정의 외부 PKCS#11 모듈은 별도 시스템 신뢰 경계다.
+
+Linux 패키지 조립과 해당 소스 배포, 합성 레거시 DB·외부 토큰·FIPS 및 변조/누락 리소스의 hosted 검증은 아직 완료되지 않았다. 이 계약만으로 빌드나 라이선스 준수를 입증하지 않는다.
+
 ## 아직 안 된 것
 
 - macOS의 종류별 문서 아이콘(Electron 판의 `icon: 'docx'` 들). Tauri 3의 파일 연결에는 아이콘 칸이 없다.

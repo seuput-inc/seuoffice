@@ -237,7 +237,6 @@ export async function loadDiagram(cx: LoadContext): Promise<void> {
         : (this.printContents() as unknown as FakeContents)
     }
     private printContents(): unknown {
-      const self = this
       return {
         id: 900,
         setWindowOpenHandler() {},
@@ -246,7 +245,7 @@ export async function loadDiagram(cx: LoadContext): Promise<void> {
         getURL: () => '',
         executeJavaScript: async () => undefined,
         printToPDF: async () => {
-          e.log.push(['diagram.renderPdf', self.html])
+          e.log.push(['diagram.renderPdf', this.html])
           const hex = box.d1.pdf
           return typeof hex === 'string' ? Buffer.from(hex, 'hex') : Buffer.from('%PDF-fake')
         },
@@ -392,6 +391,12 @@ export const diagramTriggers: NonNullable<Group['triggers']> = {
     box.mcp!.diagramApplyOps(cx.contents(view) as never, args[0] as unknown[]),
   'd1/diagram:writeDiagramCopiesNow': (_cx, _view, args) =>
     box.main!.writeDiagramCopiesNow(typeof args[0] === 'number' ? args[0] : 5000),
+  'd1/diagram:render-process-gone': async (cx, view) => {
+    await cx.contents(view).emit('render-process-gone', {}, { reason: 'crashed' })
+  },
+  'd1/diagram:destroyed': async (cx, view) => {
+    await cx.contents(view).emit('destroyed')
+  },
   // the "Don't Save" hold ends, and the tab that stayed open is asked for a copy again
   'd1/diagram:discardDiagramRecovery': async (cx, view) => {
     box.main!.discardDiagramRecovery(cx.contents(view) as never)

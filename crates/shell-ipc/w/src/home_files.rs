@@ -9,17 +9,22 @@
 //! [`FileSearch`] (the file index) and [`FolderWatch`] (the recursive watcher
 //! of the tree's roots).
 
+mod saved_metadata;
+pub use saved_metadata::{PreparedRecent,PreparedMovedMetadata,Failure as SavedMetadataFailure};
+
+use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use jscompat::node_path::host::{basename, dirname, join, resolve};
 use jscompat::{JsObject, JsTypeError, JsonValue, json_parse, number_to_string, slice_utf16, trim};
 use main_core::docs::starred_files::{
     StarredItem, assign_starred_group, drop_starred_items, read_starred_items, rename_starred_item,
-    starred_group_map, starred_group_names, toggle_starred_item, write_starred_items,
+    starred_group_map, starred_group_names, toggle_starred_item,
 };
 use main_core::node_fs::NodeError;
 use main_core::packages::electron_utils::atomic_write::write_json_atomic;
@@ -64,15 +69,19 @@ use crate::shared_dialog::with_shared_memory;
 
 // ---- hosts -----------------------------------------------------------------
 
+pub type OwnedHomeRefresh = Box<dyn FnOnce(Box<dyn FnOnce(Result<(),String>)>) + Send>;
+
 /// What the other areas hold or do about a file path
 pub trait HomeFiles: Send + Sync {
     /// `Date.now()`
     fn now_ms(&self) -> f64;
     /// `app.getLocale()`
     fn system_locale(&self) -> String;
-    /// `openDocumentPath(path)`: the File > Open pipeline; `false` when
-    /// nothing opened
-    fn open_document_path(&self, path: &str) -> bool;
+    /// Opens only under the captured renderer request and reports actual completion.
+    fn open_document_path_owned(
+        &self,path:String,origin:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,
+        done:Box<dyn FnOnce(Result<Option<shell_contract::ViewId>,String>)+Send>,
+    );
     /// `handleDroppedFiles(paths, droppedFilesDeps())`
     fn open_dropped_files(&self, paths: Vec<String>);
     /// `[...tabManager.openFilePaths(), ...detachedFilePaths()]`
@@ -85,13 +94,50 @@ pub trait HomeFiles: Send + Sync {
     fn document_link_paths(&self) -> Vec<String>;
     /// `projectFileRenamed(old, new)`
     fn project_file_renamed(&self, old_path: &str, new_path: &str);
-    /// The rest of `afterFileMoved` after the project store and the template
-    /// selection hook: `documentLinkFileMoved`, the slides recent list of a
-    /// .pptx, and the open tabs and detached windows of the file with the
-    /// editors that show them told (`*FileRenamed`)
+    /// Update document links and the slides recent list before template selection.
+    fn file_moved_before_template(&self, old_path: &str, new_path: &str);
+    /// Update open tabs and notify their editors after template selection.
     fn file_moved(&self, old_path: &str, new_path: &str);
     /// `buildDocsMenu()`: File > Open Recent follows recent.json
     fn recents_changed(&self);
+    fn prepare_recents_changed_owned(
+        &self, origin:&shell_contract::ipc::NativeRequestOwner, destination:&shell_contract::ipc::NativeRequestOwner,
+        cancel:&shell_contract::runtime::CancelToken, pending:&shell_contract::runtime::CancelToken,
+        effects:&shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>,String>;
+    fn prepare_recents_changed_many_owned(
+        &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
+        participants:&[shell_contract::ipc::NativeRequestOwner],
+        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
+        effects:&shell_contract::hosts::OwnedEffectsHost,
+    )->Result<Option<OwnedHomeRefresh>,String>;
+    fn prepare_recents_changed_many_owned_extra(
+        &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
+        participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,
+        pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
+        effects:&shell_contract::hosts::OwnedEffectsHost,
+    )->Result<Option<OwnedHomeRefresh>,String>;
+    fn prepare_recents_changed_recovery(
+        &self,receipt:&shell_contract::ipc::RecoverySeedReceipt,receiver:&shell_contract::ipc::NativeRequestOwner,
+        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
+        effects:&shell_contract::hosts::OwnedEffectsHost,
+    )->Result<Option<OwnedHomeRefresh>,String>;
+    fn prepare_recents_changed_native(
+        &self, operation: &shell_contract::ipc::NativeInvocationOperation,
+        expected: &shell_contract::ipc::NativeEditorCommand,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>, String>;
+    fn prepare_recents_changed_existing_document(
+        &self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],
+        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
+        effects:&shell_contract::hosts::OwnedEffectsHost,
+    )->Result<Option<OwnedHomeRefresh>,String>;
+    fn prepare_recents_changed_saved_document(
+        &self, document: &shell_contract::ipc::NativeSavedDocument,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<Option<OwnedHomeRefresh>, String>;
     /// `spawn('explorer.exe', ['shell:RecycleBin'])`, Windows only
     fn open_recycle_bin(&self);
 }
@@ -121,20 +167,19 @@ pub struct IndexProgress {
 /// `fileIndexStore` and `fileIndexer` of index.ts (the file index is not in
 /// `main-core` yet)
 pub trait FileSearch: Send + Sync {
-    /// `ensureFileIndexer() !== null`: creates the store and the indexer on
-    /// the first call; `false` when the store cannot open
-    fn available(&self) -> bool;
+    /// `ensureFileIndexer() !== null`; initialization failures are errors.
+    fn available(&self) -> Result<bool, String>;
     /// `fileIndexer.refreshIfStale(maxAgeMs)`
     fn refresh_if_stale(&self, max_age_ms: f64);
     /// `fileIndexer?.refresh()`: nothing when the indexer was never created
     fn refresh(&self);
     /// `fileIndexStore.search(q, { exts, offset, limit })`
-    fn search(&self, q: &str, exts: Option<&[String]>, offset: f64, limit: f64) -> SearchResult;
+    fn search(&self, q: &str, exts: Option<&[String]>, offset: f64, limit: f64) -> Result<SearchResult, String>;
     /// `fileIndexer.progress()`
-    fn progress(&self) -> IndexProgress;
+    fn progress(&self) -> Result<IndexProgress, String>;
     /// `searchReranker.rerank(q, fileIndexStore.pathsIndexedAsOnDisk(paths), settings)`
     /// with the saved file search settings; blocks (the network)
-    fn rerank(&self, q: &str, paths: &[String]) -> Option<IpcValue>;
+    fn rerank(&self, q: &str, paths: &[String]) -> Result<Option<IpcValue>, String>;
 }
 
 pub type FileSearchHost = Arc<dyn FileSearch>;
@@ -555,34 +600,139 @@ fn read_recent(path: &str) -> Vec<String> {
     }
 }
 
-fn write_recent(path: &str, list: Vec<String>) -> Result<(), NodeError> {
-    write_json_atomic(
-        path,
-        &JsonValue::Array(list.into_iter().map(JsonValue::String).collect()),
-    )
-}
 
 // ---- the module's state -----------------------------------------------------
 
 /// What every handler of this module shares; lives on the core thread
-struct Home {
+pub struct Home {
     settings_path: String,
     recent_path: String,
     starred_path: String,
     paths: Arc<dyn AppPaths>,
     events: Arc<dyn EventSink>,
     workers: Arc<dyn shell_contract::runtime::Workers>,
+    core: Arc<dyn shell_contract::runtime::Thread>,
     host: HomeFilesHost,
     search: FileSearchHost,
     watch: FolderWatchHost,
     dialogs: DialogsHost,
     os: OsShellHost,
     main_window: MainWindowHost,
-    provided: Rc<Provided>,
+    provided: Weak<Provided>,
     save_dir: crate::SharedSaveDirState,
     save_dir_noticed: Cell<bool>,
     dialog_memory: crate::SharedDialogMemory,
     error_dialog: RefCell<ErrorDialog>,
+}
+
+type CoreContinuation = Box<dyn FnOnce(Box<dyn Any + Send>)>;
+thread_local! {
+    static HOME_CONTINUATIONS: RefCell<HashMap<u64, CoreContinuation>> = RefCell::new(HashMap::new());
+}
+static NEXT_HOME_CONTINUATION: AtomicU64 = AtomicU64::new(1);
+
+/// Keep core-only state on the core thread while the worker owns its result.
+pub fn back_to_core<T: Send + 'static>(
+    core: Arc<dyn shell_contract::runtime::Thread>,
+    callback: impl FnOnce(T) + 'static,
+) -> Box<dyn FnOnce(T) + Send> {
+    let id = NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed);
+    HOME_CONTINUATIONS.with(|pending| {
+        pending.borrow_mut().insert(id, Box::new(move |value| {
+            if let Ok(value) = value.downcast::<T>() { callback(*value); }
+        }));
+    });
+    Box::new(move |value| core.post(Box::new(move || {
+        let callback = HOME_CONTINUATIONS.with(|pending| pending.borrow_mut().remove(&id));
+        if let Some(callback) = callback { callback(Box::new(value)); }
+    })))
+}
+
+fn submit_folder_work<T: Send + 'static>(
+    settings_path: &str,
+    core: Arc<dyn shell_contract::runtime::Thread>,
+    release_before_callback: bool,
+    work: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
+    done: impl FnOnce(Result<T, IpcError>) + 'static,
+) {
+    submit_folder_work_guarded(settings_path, core, work, move |result, completion| {
+        if release_before_callback {
+            drop(completion);
+            done(result);
+        } else {
+            let _completion = completion;
+            done(result);
+        }
+    });
+}
+
+fn submit_folder_work_guarded<T: Send + 'static>(
+    settings_path: &str,
+    core: Arc<dyn shell_contract::runtime::Thread>,
+    work: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
+    done: impl FnOnce(Result<T, IpcError>, main_core::shell::app_settings::queue::Completion) + 'static,
+) {
+    let done = back_to_core(core, move |(result, completion)| done(result, completion));
+    main_core::shell::app_settings::queue::for_path(settings_path).submit(move |completion| {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+            .unwrap_or_else(|_| Err(error("folder watcher operation failed")));
+        done((result, completion));
+    });
+}
+
+#[derive(Clone)]
+struct FolderWork {
+    settings_path: String,
+    paths: Arc<dyn AppPaths>,
+    save_dir: crate::SharedSaveDirState,
+    host: HomeFilesHost,
+    watch: FolderWatchHost,
+    events: Arc<dyn EventSink>,
+    search: FileSearchHost,
+}
+
+impl FolderWork {
+    fn lang(&self) -> Lang {
+        if let Ok(env) = std::env::var("SEUOFFICE_LANG") { return normalize_lang(Some(&env)); }
+        let settings = read_app_settings(&self.settings_path);
+        install_lang(settings.get("language"), Some(&self.host.system_locale()))
+    }
+    fn default_dir(&self) -> Result<String, IpcError> {
+        configured_default_save_dir(&Paths(self.paths.as_ref()), &mut self.save_dir.lock().unwrap(), self.host.now_ms())
+            .map_err(|e| error(e.0))
+    }
+    fn extras(&self) -> Result<Vec<String>, IpcError> {
+        let default = self.default_dir()?;
+        Ok(read_extra_roots(&read_app_settings(&self.settings_path), &default))
+    }
+    fn watch(&self) -> Result<(), IpcError> {
+        let mut roots = vec![self.default_dir()?];
+        roots.extend(self.extras()?);
+        roots.retain(|root| exists_sync(root));
+        let events = self.events.clone();
+        let search = self.search.clone();
+        self.watch.watch(&roots, Arc::new(move |dirs| {
+            search.refresh();
+            events.emit(Target::All, "home:folder-changed", vec![strings(&dirs)]);
+        }));
+        Ok(())
+    }
+    fn add(&self, path: &str) -> Result<Option<FolderRoot>, IpcError> {
+        let extras = self.extras()?;
+        let default = self.default_dir()?;
+        let Some(extras) = with_extra_root(&extras, &default, path) else { return Ok(None) };
+        write_app_setting(&self.settings_path, FOLDER_ROOTS_KEY, Some(JsonValue::Array(extras.into_iter().map(JsonValue::String).collect()))).map_err(node_error)?;
+        self.watch()?;
+        self.search.refresh();
+        Ok(Some(describe_extra_root(path)))
+    }
+    fn remove(&self, path: &str) -> Result<(), IpcError> {
+        let extras = without_extra_root(&self.extras()?, path);
+        write_app_setting(&self.settings_path, FOLDER_ROOTS_KEY, Some(JsonValue::Array(extras.into_iter().map(JsonValue::String).collect()))).map_err(node_error)?;
+        self.watch()?;
+        self.search.refresh();
+        Ok(())
+    }
 }
 
 /// `app.getPath` for `default-save-dir.ts`
@@ -791,67 +941,34 @@ impl Home {
             .collect()
     }
 
-    fn write_starred(&self, items: Option<Vec<StarredItem>>) -> Result<(), IpcError> {
-        match items {
-            Some(items) => write_starred_items(&self.starred_path, &items).map_err(node_error),
-            None => Ok(()),
-        }
-    }
 
     /// `removeRecentFiles(paths)`
     fn remove_recent_files(&self, paths: &[String]) -> Result<(), IpcError> {
-        let recent = read_recent(&self.recent_path);
-        write_recent(
-            &self.recent_path,
-            recent.into_iter().filter(|p| !paths.contains(p)).collect(),
-        )
-        .map_err(node_error)?;
+        saved_metadata::recent_sync(&self.recent_path, saved_metadata::RecentEdit::Remove(paths.to_vec())).map_err(node_error)?;
         self.host.recents_changed();
         Ok(())
     }
 
     /// `removeStarredFiles(paths)`
     fn remove_starred_files(&self, paths: &[String]) -> Result<(), IpcError> {
-        let next = drop_starred_items(&read_starred_items(&self.starred_path), paths);
-        self.write_starred(next)
+        saved_metadata::starred_sync(&self.starred_path, saved_metadata::StarredEdit::Remove(paths.to_vec())).map_err(node_error).map(|_| ())
     }
 
     /// `replaceRecentFile(old, new)`
     fn replace_recent_file(&self, old_path: &str, new_path: &str) -> Result<(), IpcError> {
-        let recent = read_recent(&self.recent_path);
-        write_recent(
-            &self.recent_path,
-            recent
-                .into_iter()
-                .map(|p| {
-                    if p == old_path {
-                        new_path.to_owned()
-                    } else {
-                        p
-                    }
-                })
-                .collect(),
-        )
-        .map_err(node_error)?;
-        let renamed =
-            rename_starred_item(&read_starred_items(&self.starred_path), old_path, new_path);
-        self.write_starred(renamed)?;
+        saved_metadata::recent_sync(&self.recent_path, saved_metadata::RecentEdit::Replace(old_path.to_owned(),new_path.to_owned())).map_err(node_error)?;
+        saved_metadata::starred_sync(&self.starred_path, saved_metadata::StarredEdit::Rename(old_path.to_owned(),new_path.to_owned())).map_err(node_error)?;
         self.host.recents_changed();
         Ok(())
     }
 
     /// `pushRecent(path)` of docs-main: the head of the recent list
-    fn record_recent_file(&self, path: &str) {
-        let recent = read_recent(&self.recent_path);
-        if recent.first().map(String::as_str) == Some(path) {
-            return;
+    pub fn record_recent_file(&self, path: &str) {
+        match saved_metadata::recent_sync(&self.recent_path, saved_metadata::RecentEdit::Record(path.to_owned())) {
+            Ok(false) => {}
+            // The saved document survives a metadata write failure, as before.
+            Ok(true) | Err(_) => self.host.recents_changed(),
         }
-        let mut next = vec![path.to_owned()];
-        next.extend(recent.into_iter().filter(|p| p != path));
-        next.truncate(RECENT_LIMIT);
-        // the document itself is saved: a lost recents entry only warns
-        let _ = write_recent(&self.recent_path, next);
-        self.host.recents_changed();
     }
 
     /// The paths other areas track, in the order `fileTargetSources` lists them
@@ -879,11 +996,12 @@ impl Home {
     }
 
     /// `afterFileMoved(old, new)`
-    fn after_file_moved(&self, old_path: &str, new_path: &str) -> Result<(), IpcError> {
+    pub fn after_file_moved(&self, old_path: &str, new_path: &str) -> Result<(), IpcError> {
         self.replace_recent_file(old_path, new_path)?;
         self.host.project_file_renamed(old_path, new_path);
+        self.host.file_moved_before_template(old_path, new_path);
         if new_path.to_ascii_lowercase().ends_with(".pptx") {
-            for hooks in self.provided.all::<dyn SlidesTemplateSelectionHooks>() {
+            for hooks in self.provided.upgrade().expect("home services are unavailable").all::<dyn SlidesTemplateSelectionHooks>() {
                 hooks.moved(old_path, new_path);
             }
         }
@@ -904,37 +1022,50 @@ impl Home {
         Ok(())
     }
 
-    /// `ensureFolderWatchers()`
-    fn ensure_folder_watchers(&self) -> Result<(), IpcError> {
-        let wanted: Vec<String> = self
-            .folder_root_paths()?
-            .into_iter()
-            .filter(|root| exists_sync(root))
-            .collect();
-        let events = self.events.clone();
-        let search = self.search.clone();
-        self.watch.watch(
-            &wanted,
-            Arc::new(move |dirs| {
-                search.refresh();
-                events.emit(Target::All, "home:folder-changed", vec![strings(&dirs)]);
-            }),
-        );
-        Ok(())
+    fn folder_work(&self) -> FolderWork {
+        FolderWork {
+            settings_path: self.settings_path.clone(), paths: self.paths.clone(),
+            save_dir: self.save_dir.clone(), host: self.host.clone(), watch: self.watch.clone(),
+            events: self.events.clone(), search: self.search.clone(),
+        }
+    }
+
+    fn run_folder_work<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(FolderWork) -> Result<T, IpcError> + Send + 'static,
+        done: impl FnOnce(Result<T, IpcError>) + 'static,
+    ) {
+        let folder = self.folder_work();
+        submit_folder_work(&self.settings_path, self.core.clone(), false, move || work(folder), done);
+    }
+
+    fn run_folder_work_guarded<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(FolderWork) -> Result<T, IpcError> + Send + 'static,
+        done: impl FnOnce(Result<T, IpcError>, main_core::shell::app_settings::queue::Completion) + 'static,
+    ) {
+        let folder = self.folder_work();
+        submit_folder_work_guarded(&self.settings_path, self.core.clone(), move || work(folder), done);
+    }
+
+    /// Refresh watchers in settings order; completion runs on the core thread
+    /// only after native watcher installation has finished.
+    pub fn ensure_folder_watchers(&self, done: Box<dyn FnOnce(Result<(), IpcError>) + Send>) {
+        self.run_folder_work(|work| work.watch(), done);
     }
 
     /// `noticeSaveDirFallback()`: once per run
-    fn notice_save_dir_fallback(&self) {
+    fn notice_save_dir_fallback(&self, lang: Lang, completion: &mut Option<main_core::shell::app_settings::queue::Completion>) {
         let Some(fallback) = default_save_dir_fallback(&self.save_dir.lock().unwrap()) else {
             return;
         };
         if self.save_dir_noticed.replace(true) {
             return;
         }
-        let lang = self.lang();
         let detail = tm(lang, Msg::SaveDirFallbackDetail)
             .replace("{blocked}", &fallback.blocked)
             .replace("{using}", &fallback.using);
+        drop(completion.take());
         self.dialogs.message(
             self.parent_of_main(),
             &MessageBoxOptions {
@@ -1004,25 +1135,6 @@ impl Home {
         (canceled, files)
     }
 
-    /// `addFolderRoot(path)`
-    fn add_folder_root(&self, path: &str) -> Result<Option<FolderRoot>, IpcError> {
-        let extras = self.extra_folder_roots()?;
-        let default_dir = self.default_save_dir()?;
-        let Some(extras) = with_extra_root(&extras, &default_dir, path) else {
-            return Ok(None);
-        };
-        write_app_setting(
-            &self.settings_path,
-            FOLDER_ROOTS_KEY,
-            Some(JsonValue::Array(
-                extras.into_iter().map(JsonValue::String).collect(),
-            )),
-        )
-        .map_err(node_error)?;
-        self.ensure_folder_watchers()?;
-        self.search.refresh();
-        Ok(Some(describe_extra_root(path)))
-    }
 }
 
 // ---- search ----------------------------------------------------------------
@@ -1034,10 +1146,10 @@ fn js_finite(value: Option<&IpcValue>) -> Option<f64> {
     }
 }
 
-fn search_files(home: &Home, raw: Option<&IpcValue>) -> IpcValue {
+fn search_files(home: &Home, raw: Option<&IpcValue>) -> Result<IpcValue, IpcError> {
     let query = if is_object(raw) { raw } else { None };
-    if !home.search.available() {
-        return object(vec![
+    if !home.search.available().map_err(error)? {
+        return Ok(object(vec![
             ("hits", IpcValue::Array(Vec::new())),
             ("total", IpcValue::Number(0.0)),
             (
@@ -1048,7 +1160,7 @@ fn search_files(home: &Home, raw: Option<&IpcValue>) -> IpcValue {
                     ("scanning", IpcValue::Bool(false)),
                 ]),
             ),
-        ]);
+        ]));
     }
     // an open search box is the moment a stale index shows; rescan at most once a minute
     home.search.refresh_if_stale(60_000.0);
@@ -1079,7 +1191,7 @@ fn search_files(home: &Home, raw: Option<&IpcValue>) -> IpcValue {
             total: 0.0,
         }
     } else {
-        home.search.search(&q, exts.as_deref(), offset, limit)
+        home.search.search(&q, exts.as_deref(), offset, limit).map_err(error)?
     };
     let hits = result
         .hits
@@ -1097,8 +1209,8 @@ fn search_files(home: &Home, raw: Option<&IpcValue>) -> IpcValue {
             IpcValue::Object(fields)
         })
         .collect();
-    let progress = home.search.progress();
-    object(vec![
+    let progress = home.search.progress().map_err(error)?;
+    Ok(object(vec![
         ("hits", IpcValue::Array(hits)),
         ("total", IpcValue::Number(result.total)),
         (
@@ -1109,7 +1221,7 @@ fn search_files(home: &Home, raw: Option<&IpcValue>) -> IpcValue {
                 ("scanning", IpcValue::Bool(progress.scanning)),
             ]),
         ),
-    ])
+    ]))
 }
 
 // ---- registration ------------------------------------------------------------
@@ -1133,6 +1245,18 @@ fn handle_on_worker(
 ) -> Result<(), RegisterError> {
     registry.register(Batch::W, channel, ChannelKind::Invoke, Rc::new(OnWorker(f)))
 }
+fn open_selected_paths(
+    host:HomeFilesHost,mut paths:std::vec::IntoIter<String>,origin:shell_contract::ipc::NativeRequestOwner,
+    cancel:shell_contract::runtime::CancelToken,reply:Responder,
+) {
+    let Some(path)=paths.next() else { return reply.reply(Ok(IpcValue::Undefined)); };
+    let next=host.clone(); let next_origin=origin.clone(); let next_cancel=cancel.clone();
+    host.open_document_path_owned(path,origin,cancel,Box::new(move |result| match result {
+        Ok(_)=>open_selected_paths(next,paths,next_origin,next_cancel,reply),
+        Err(message)=>reply.reply(Err(error(message))),
+    }));
+}
+
 
 pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), RegisterError> {
     let user_data = services.paths.path(PathName::UserData);
@@ -1144,18 +1268,20 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
         paths: services.paths.clone(),
         events: services.events.clone(),
         workers: services.workers.clone(),
+        core: services.core.clone(),
         host: services.hosts.need(Batch::W)?,
         search: services.hosts.need(Batch::W)?,
         watch: services.hosts.need(Batch::W)?,
         dialogs: services.hosts.need(Batch::W)?,
         os: services.hosts.need(Batch::W)?,
         main_window: services.hosts.need(Batch::W)?,
-        provided: registry.provided(),
+        provided: Rc::downgrade(&registry.provided()),
         save_dir: services.hosts.need(Batch::W)?,
         save_dir_noticed: Cell::new(false),
         dialog_memory: services.hosts.need(Batch::W)?,
         error_dialog: RefCell::default(),
     });
+    registry.provided().add::<Home>(home.clone());
     let invoke = ChannelKind::Invoke;
 
     // ---- recents and starred ----
@@ -1257,8 +1383,7 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
         move |_, args| {
             let paths = string_paths(args.first());
             let group = as_str(args.get(1)).filter(|g| !g.is_empty());
-            let next = assign_starred_group(&read_starred_items(&h.starred_path), &paths, group);
-            h.write_starred(next)?;
+            saved_metadata::starred_sync(&h.starred_path, saved_metadata::StarredEdit::Assign(paths,group.map(str::to_owned))).map_err(node_error)?;
             Ok(IpcValue::Undefined)
         },
     )?;
@@ -1278,8 +1403,7 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     let h = home.clone();
     handle(registry, "home:toggle-star", invoke, move |_, args| {
         if let Some(path) = as_str(args.first()) {
-            let next = toggle_starred_item(&read_starred_items(&h.starred_path), path);
-            write_starred_items(&h.starred_path, &next).map_err(node_error)?;
+            saved_metadata::starred_sync(&h.starred_path, saved_metadata::StarredEdit::Toggle(path.to_owned())).map_err(node_error)?;
         }
         Ok(IpcValue::Undefined)
     })?;
@@ -1304,7 +1428,7 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
 
     let h = home.clone();
     handle(registry, "home:search-files", invoke, move |_, args| {
-        Ok(search_files(&h, args.first()))
+        search_files(&h, args.first())
     })?;
 
     let h = home.clone();
@@ -1333,32 +1457,36 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
                 .collect(),
             _ => Vec::new(),
         };
-        if q.is_empty() || paths.len() < 2 || !h.search.available() {
-            return reply.reply(Ok(IpcValue::Null));
+        if q.is_empty() || paths.len() < 2 { return reply.reply(Ok(IpcValue::Null)); }
+        match h.search.available() {
+            Ok(true) => {}
+            Ok(false) => return reply.reply(Ok(IpcValue::Null)),
+            Err(message) => return reply.reply(Err(error(message))),
         }
         let search = h.search.clone();
         // the excerpts go to a decision model: the network, off the core thread
         h.workers.spawn(Box::new(move || {
-            reply.reply(Ok(search.rerank(&q, &paths).unwrap_or(IpcValue::Null)))
+            reply.reply(search.rerank(&q, &paths).map(|value| value.unwrap_or(IpcValue::Null)).map_err(error))
         }));
     })?;
 
     // ---- open, reveal, trash ----
 
     let h = home.clone();
-    handle(registry, "home:open-path", invoke, move |_, args| {
-        let Some(path) =
-            as_str(args.first()).filter(|p| !p.is_empty() && p.encode_utf16().count() <= 4096)
-        else {
-            return Ok(IpcValue::Undefined);
+    handle_on_worker(registry, "home:open-path", move |cx, args, reply| {
+        let Some(path)=as_str(args.first()).filter(|p| !p.is_empty() && p.encode_utf16().count()<=4096) else {
+            return reply.reply(Ok(IpcValue::Undefined));
         };
-        h.host.open_document_path(path);
-        h.search.refresh();
-        Ok(IpcValue::Undefined)
+        let Some(context)=cx.native.clone() else { return reply.reply(Err(error("Authenticated home request owner is unavailable"))); };
+        let origin=shell_contract::ipc::NativeRequestOwner { view:cx.sender.view,context };
+        let search=h.search.clone();
+        h.host.open_document_path_owned(path.to_owned(),origin,cx.cancel.clone(),Box::new(move |result| {
+            match result { Ok(_)=>{ search.refresh(); reply.reply(Ok(IpcValue::Undefined)); },Err(message)=>reply.reply(Err(error(message))) }
+        }));
     })?;
 
     let h = home.clone();
-    handle(registry, "home:browse", invoke, move |cx, _| {
+    handle_on_worker(registry, "home:browse", move |cx, _, reply| {
         let lang = h.lang();
         let filter = |name: Msg, extensions: &[&str]| {
             let mut f = JsObject::new();
@@ -1410,12 +1538,10 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
             ]),
         );
         let (canceled, files) = h.open_dialog(Some(cx.sender.window), &options);
-        if !canceled {
-            for path in &files {
-                h.host.open_document_path(path);
-            }
-        }
-        Ok(IpcValue::Undefined)
+        if canceled { return reply.reply(Ok(IpcValue::Undefined)); }
+        let Some(context)=cx.native.clone() else { return reply.reply(Err(error("Authenticated home request owner is unavailable"))); };
+        let origin=shell_contract::ipc::NativeRequestOwner { view:cx.sender.view,context };
+        open_selected_paths(h.host.clone(),files.into_iter(),origin,cx.cancel.clone(),reply);
     })?;
 
     let h = home.clone();
@@ -1534,87 +1660,93 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
     // ---- roots ----
 
     let h = home.clone();
-    handle(registry, "home:folder-roots", invoke, move |_, _| {
-        // describeRoot creates a missing save folder, so its watcher has something to attach to
-        let mut roots = vec![describe_root(&h.default_save_dir()?)];
-        roots.extend(
-            h.extra_folder_roots()?
-                .iter()
-                .map(|p| describe_extra_root(p)),
+    handle_on_worker(registry, "home:folder-roots", move |_, _, reply| {
+        let home = h.clone();
+        h.run_folder_work_guarded(
+            |work| -> Result<(Vec<FolderRoot>, Lang), IpcError> {
+                let mut roots = vec![describe_root(&work.default_dir()?)];
+                roots.extend(work.extras()?.iter().map(|p| describe_extra_root(p)));
+                work.watch()?;
+                Ok((roots, work.lang()))
+            },
+            move |result, completion| match result {
+                Ok((roots, lang)) => {
+                    let mut completion = Some(completion);
+                    home.notice_save_dir_fallback(lang, &mut completion);
+                    reply.reply(Ok(IpcValue::Array(roots.iter().map(root_to_ipc).collect())));
+                }
+                Err(error) => { let _completion = completion; reply.reply(Err(error)); }
+            },
         );
-        h.ensure_folder_watchers()?;
-        h.notice_save_dir_fallback();
-        Ok(IpcValue::Array(roots.iter().map(root_to_ipc).collect()))
     })?;
 
     let h = home.clone();
-    handle(registry, "home:folder-root-add", invoke, move |_, _| {
-        let mut options = JsObject::new();
-        options.set(
-            "title",
-            JsonValue::String(h.tm(Msg::DlgAddFolderRoot).into()),
-        );
-        options.set(
-            "properties",
-            JsonValue::Array(vec![JsonValue::String("openDirectory".into())]),
-        );
-        let (canceled, files) = h.open_dialog(h.parent_of_main(), &options);
-        let Some(picked) = files.first().filter(|p| !p.is_empty()) else {
-            return Ok(IpcValue::Null);
-        };
-        if canceled {
-            return Ok(IpcValue::Null);
-        }
-        if !describe_extra_root(picked).readable {
-            h.show_error_dialog(h.tm(Msg::FolderRootUnusable), picked);
-            return Ok(IpcValue::Null);
-        }
-        Ok(h.add_folder_root(picked)?
-            .map_or(IpcValue::Null, |r| root_to_ipc(&r)))
-    })?;
-
-    let h = home.clone();
-    handle(registry, "home:folder-root-drop", invoke, move |_, args| {
-        let mut added = Vec::new();
-        let mut files = Vec::new();
-        for path in string_paths(args.first()) {
-            if !describe_extra_root(&path).readable {
-                files.push(path);
-                continue;
-            }
-            if let Some(root) = h.add_folder_root(&path)? {
-                added.push(root_to_ipc(&root));
-            }
-        }
-        if !files.is_empty() {
-            h.host.open_dropped_files(files);
-        }
-        Ok(IpcValue::Array(added))
-    })?;
-
-    let h = home.clone();
-    handle(
-        registry,
-        "home:folder-root-remove",
-        invoke,
-        move |_, args| {
-            let Some(path) = as_str(args.first()) else {
-                return Ok(IpcValue::Undefined);
+    handle_on_worker(registry, "home:folder-root-add", move |_, _, reply| {
+        let home = h.clone();
+        let folder = h.folder_work();
+        submit_folder_work(&h.settings_path, h.core.clone(), true, move || Ok(folder.lang()), move |result| {
+            let lang = match result { Ok(lang) => lang, Err(error) => return reply.reply(Err(error)) };
+            let mut options = JsObject::new();
+            options.set("title", JsonValue::String(tm(lang, Msg::DlgAddFolderRoot).into()));
+            options.set("properties", JsonValue::Array(vec![JsonValue::String("openDirectory".into())]));
+            let (canceled, files) = home.open_dialog(home.parent_of_main(), &options);
+            let Some(picked) = files.into_iter().next().filter(|p| !p.is_empty() && !canceled) else {
+                return reply.reply(Ok(IpcValue::Null));
             };
-            let extras = without_extra_root(&h.extra_folder_roots()?, path);
-            write_app_setting(
-                &h.settings_path,
-                FOLDER_ROOTS_KEY,
-                Some(JsonValue::Array(
-                    extras.into_iter().map(JsonValue::String).collect(),
-                )),
-            )
-            .map_err(node_error)?;
-            h.ensure_folder_watchers()?;
-            h.search.refresh();
-            Ok(IpcValue::Undefined)
-        },
-    )?;
+            let displayed = picked.clone();
+            let next_home = home.clone();
+            home.run_folder_work_guarded(
+                move |work| -> Result<Option<Option<FolderRoot>>, IpcError> {
+                    if !describe_extra_root(&picked).readable { return Ok(None); }
+                    work.add(&picked).map(Some)
+                },
+                move |result, completion| match result {
+                    Ok(None) => {
+                        drop(completion);
+                        next_home.show_error_dialog(tm(lang, Msg::FolderRootUnusable), &displayed);
+                        reply.reply(Ok(IpcValue::Null));
+                    }
+                    Ok(Some(root)) => { let _completion = completion; reply.reply(Ok(root.map_or(IpcValue::Null, |r| root_to_ipc(&r)))); }
+                    Err(error) => { let _completion = completion; reply.reply(Err(error)); }
+                },
+            );
+        });
+    })?;
+
+    let h = home.clone();
+    handle_on_worker(registry, "home:folder-root-drop", move |_, args, reply| {
+        let paths = string_paths(args.first());
+        let host = h.host.clone();
+        h.run_folder_work(
+            move |work| -> Result<(Vec<FolderRoot>, Vec<String>), IpcError> {
+                let mut added = Vec::new();
+                let mut files = Vec::new();
+                for path in paths {
+                    if !describe_extra_root(&path).readable { files.push(path); continue; }
+                    if let Some(root) = work.add(&path)? { added.push(root); }
+                }
+                Ok((added, files))
+            },
+            move |result| match result {
+                Ok((added, files)) => {
+                    if !files.is_empty() { host.open_dropped_files(files); }
+                    reply.reply(Ok(IpcValue::Array(added.iter().map(root_to_ipc).collect())));
+                }
+                Err(error) => reply.reply(Err(error)),
+            },
+        );
+    })?;
+
+    let h = home.clone();
+    handle_on_worker(registry, "home:folder-root-remove", move |_, args, reply| {
+        let Some(path) = as_str(args.first()).map(str::to_owned) else {
+            return reply.reply(Ok(IpcValue::Undefined));
+        };
+        h.run_folder_work(
+            move |work| work.remove(&path),
+            move |result| reply.reply(result.map(|()| IpcValue::Undefined)),
+        );
+    })?;
 
     // ---- the tree ----
 
@@ -1865,9 +1997,10 @@ mod fakes {
         fn system_locale(&self) -> String {
             self.case["locale"].as_str().unwrap_or("ko").to_owned()
         }
-        fn open_document_path(&self, _: &str) -> bool {
-            false
-        }
+        fn open_document_path_owned(
+            &self,_:String,_:shell_contract::ipc::NativeRequestOwner,_:shell_contract::runtime::CancelToken,
+            done:Box<dyn FnOnce(Result<Option<shell_contract::ViewId>,String>)+Send>,
+        ) { done(Ok(None)); }
         fn open_dropped_files(&self, _: Vec<String>) {}
         fn open_file_paths(&self) -> Vec<String> {
             Vec::new()
@@ -1894,8 +2027,75 @@ mod fakes {
                 json!(["projectStore.fileRenamed", old_path, new_path]),
             );
         }
+        fn file_moved_before_template(&self, _: &str, _: &str) {}
         fn file_moved(&self, _: &str, _: &str) {}
         fn recents_changed(&self) {}
+        fn prepare_recents_changed_owned(
+            &self, origin:&shell_contract::ipc::NativeRequestOwner, destination:&shell_contract::ipc::NativeRequestOwner,
+            cancel:&shell_contract::runtime::CancelToken, pending:&shell_contract::runtime::CancelToken,
+            effects:&shell_contract::hosts::OwnedEffectsHost,
+        )->Result<Option<OwnedHomeRefresh>,String> {
+            effects.with_owned_effect(origin,destination,cancel,pending,&mut || Ok(()))?;
+            // This source probe has no installed shell/Docs menu.
+            Ok(None)
+        }
+        fn prepare_recents_changed_many_owned(
+            &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
+            participants:&[shell_contract::ipc::NativeRequestOwner],
+            cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
+            effects:&shell_contract::hosts::OwnedEffectsHost,
+        )->Result<Option<OwnedHomeRefresh>,String> {
+            let mut targets = participants.to_vec();
+            targets.push(destination.clone());
+            effects.with_owned_transition_many(origin,&targets,cancel,pending,&mut |_| Ok(()))?;
+            Ok(None)
+        }
+        fn prepare_recents_changed_many_owned_extra(
+            &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
+            participants:&[shell_contract::ipc::NativeRequestOwner],cancel:&shell_contract::runtime::CancelToken,
+            pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
+            effects:&shell_contract::hosts::OwnedEffectsHost,
+        )->Result<Option<OwnedHomeRefresh>,String> {
+            let mut targets=participants.to_vec(); targets.push(destination.clone());
+            let extra:Vec<_>=additional.iter().collect();
+            effects.with_owned_effect_many_extra(origin,&targets,cancel,pending,&extra,&mut ||Ok(()))?;
+            Ok(None)
+        }
+        fn prepare_recents_changed_recovery(
+            &self,receipt:&shell_contract::ipc::RecoverySeedReceipt,receiver:&shell_contract::ipc::NativeRequestOwner,
+            cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
+            effects:&shell_contract::hosts::OwnedEffectsHost,
+        )->Result<Option<OwnedHomeRefresh>,String> {
+            effects.with_recovery_open_effect_many(receipt,receiver,&[],cancel,pending,&mut ||Ok(()))?;
+            Ok(None)
+        }
+        fn prepare_recents_changed_native(
+            &self, operation: &shell_contract::ipc::NativeInvocationOperation,
+            expected: &shell_contract::ipc::NativeEditorCommand,
+            effects: &shell_contract::hosts::OwnedEffectsHost,
+        ) -> Result<Option<OwnedHomeRefresh>, String> {
+            effects.with_native_command_preparation_effect(operation, expected, &[], operation.cancel(), operation.shutdown(), &mut || Ok(()))?;
+            Ok(None)
+        }
+        fn prepare_recents_changed_existing_document(
+            &self,binding:&shell_contract::ipc::NativeExistingDocumentBinding,participants:&[shell_contract::ipc::NativeRequestOwner],
+            cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,additional:&[shell_contract::runtime::CancelToken],
+            effects:&shell_contract::hosts::OwnedEffectsHost,
+        )->Result<Option<OwnedHomeRefresh>,String> {
+            let additional:Vec<_>=additional.iter().collect();
+            effects.with_existing_document_save_effect_extra(binding,participants,cancel,pending,&additional,&mut || Ok(()))?;
+            Ok(None)
+        }
+        fn prepare_recents_changed_saved_document(
+            &self, document: &shell_contract::ipc::NativeSavedDocument,
+            participants: &[shell_contract::ipc::NativeRequestOwner],
+            cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+            additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+        ) -> Result<Option<OwnedHomeRefresh>, String> {
+            let additional: Vec<_> = additional.iter().collect();
+            effects.with_native_saved_document_input(document, participants, cancel, pending, &additional, &mut |_| Ok(()))?;
+            Ok(None)
+        }
         fn open_recycle_bin(&self) {}
     }
 
@@ -1908,12 +2108,12 @@ mod fakes {
     }
 
     impl FileSearch for FakeFileSearch {
-        fn available(&self) -> bool {
+        fn available(&self) -> Result<bool, String> {
             if self.case["unavailable"].as_bool() == Some(true) {
-                return false;
+                return Ok(false);
             }
             self.created.store(true, Ordering::Relaxed);
-            true
+            Ok(true)
         }
         fn refresh_if_stale(&self, max_age_ms: f64) {
             push(&self.log, json!(["fileIndexer.refreshIfStale", max_age_ms]));
@@ -1929,7 +2129,7 @@ mod fakes {
             exts: Option<&[String]>,
             offset: f64,
             limit: f64,
-        ) -> SearchResult {
+        ) -> Result<SearchResult, String> {
             let mut options = serde_json::Map::new();
             if let Some(exts) = exts {
                 options.insert("exts".into(), json!(exts));
@@ -1949,27 +2149,27 @@ mod fakes {
                         .collect()
                 })
                 .unwrap_or_default();
-            SearchResult {
+            Ok(SearchResult {
                 hits,
                 total: result["total"].as_f64().unwrap_or(0.0),
-            }
+            })
         }
-        fn progress(&self) -> IndexProgress {
+        fn progress(&self) -> Result<IndexProgress, String> {
             let p = &self.case["progress"];
-            IndexProgress {
+            Ok(IndexProgress {
                 indexed: p["indexed"].as_f64().unwrap_or(0.0),
                 pending: p["pending"].as_f64().unwrap_or(0.0),
                 scanning: p["scanning"].as_bool().unwrap_or(false),
-            }
+            })
         }
-        fn rerank(&self, q: &str, paths: &[String]) -> Option<IpcValue> {
+        fn rerank(&self, q: &str, paths: &[String]) -> Result<Option<IpcValue>, String> {
             let indexed = string_list(&self.case["indexedAsOnDisk"]);
             let on_disk: Vec<&String> = paths.iter().filter(|p| indexed.contains(p)).collect();
             push(&self.log, json!(["searchReranker.rerank", q, on_disk]));
-            match &self.case["rerank"] {
+            Ok(match &self.case["rerank"] {
                 Value::Null => None,
                 v => Some(ipc_of(v)),
-            }
+            })
         }
     }
 
@@ -2065,3 +2265,82 @@ mod fakes {
 
 #[cfg(feature = "probe")]
 pub use fakes::probe_hosts;
+
+#[cfg(test)]
+mod watcher_order_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Core(mpsc::Sender<Box<dyn FnOnce() + Send>>);
+    impl shell_contract::runtime::Thread for Core {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) { self.0.send(job).unwrap(); }
+        fn is_current(&self) -> bool { true }
+    }
+
+    #[test]
+    fn watcher_work_is_ordered_off_core_and_replies_after_installation() {
+        let (post, run) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let core: Arc<dyn shell_contract::runtime::Thread> = Arc::new(Core(post));
+        let (entered, entered_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let (second, second_rx) = mpsc::channel();
+        let answers = Rc::new(RefCell::new(Vec::new()));
+        let out = answers.clone();
+        let core_id = std::thread::current().id();
+        let path = format!("/synthetic/watch-test-{}", NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed));
+        submit_folder_work(&path, core.clone(), false, move || {
+            entered.send(std::thread::current().id()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(1)
+        }, move |result| out.borrow_mut().push(result.unwrap()));
+        assert_ne!(entered_rx.recv_timeout(Duration::from_secs(2)).unwrap(), core_id);
+        let out = answers.clone();
+        submit_folder_work(&path, core, false, move || {
+            second.send(()).unwrap();
+            Ok(2)
+        }, move |result| out.borrow_mut().push(result.unwrap()));
+        assert!(second_rx.try_recv().is_err());
+        assert!(answers.borrow().is_empty());
+        release.send(()).unwrap();
+        run.recv_timeout(Duration::from_secs(2)).unwrap()();
+        second_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        run.recv_timeout(Duration::from_secs(2)).unwrap()();
+        assert_eq!(&*answers.borrow(), &[1, 2]);
+    }
+
+    #[test]
+    fn modal_path_releases_queue_before_waiting_for_user() {
+        let (post, run) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let core: Arc<dyn shell_contract::runtime::Thread> = Arc::new(Core(post));
+        let path = format!("/syntynthetic/watch-modal-{}", NEXT_HOME_CONTINUATION.fetch_add(1, Ordering::Relaxed));
+        let (entered, entered_rx) = mpsc::channel();
+        let finished = Rc::new(Cell::new(false));
+        let result = finished.clone();
+        submit_folder_work_guarded(&path, core, || Ok(()), move |outcome, completion| {
+            outcome.unwrap();
+            drop(completion);
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            result.set(true);
+        });
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            entered.send(()).unwrap();
+            drop(completion);
+        });
+        run.recv_timeout(Duration::from_secs(2)).unwrap()();
+        assert!(finished.get());
+    }
+
+    #[test]
+    fn watcher_worker_panic_completes_with_error() {
+        let (post, run) = mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let core: Arc<dyn shell_contract::runtime::Thread> = Arc::new(Core(post));
+        let answer = Rc::new(RefCell::new(None));
+        let out = answer.clone();
+        submit_folder_work("/synthetic/watch-panic", core, false, || -> Result<(), IpcError> {
+            panic!("synthetic worker failure")
+        }, move |result| *out.borrow_mut() = Some(result));
+        run.recv_timeout(Duration::from_secs(2)).unwrap()();
+        assert!(answer.borrow().as_ref().unwrap().is_err());
+    }
+}

@@ -39,6 +39,21 @@ pub struct OpenFilesHolder {
     source: Option<OpenFilesSource>,
 }
 
+/// A data-only source answer. Path canonicalization is deferred until the
+/// worker reaches the original unsaved-check boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpenFilesSnapshot {
+    NoSource,
+    Unknown,
+    Documents(Vec<OpenFileState>),
+}
+
+impl OpenFilesSnapshot {
+    pub fn file_has_unsaved_changes(&self, file_path: &str) -> bool {
+        file_has_unsaved_keys(snapshot_unsaved_keys(self), file_path)
+    }
+}
+
 impl OpenFilesHolder {
     pub fn new() -> Self {
         Self::default()
@@ -47,6 +62,16 @@ impl OpenFilesHolder {
     /// the host's list of open documents; `None` removes it
     pub fn set_open_files_source(&mut self, source: Option<OpenFilesSource>) {
         self.source = source;
+    }
+
+    pub fn capture_snapshot(&self) -> OpenFilesSnapshot {
+        match &self.source {
+            None => OpenFilesSnapshot::NoSource,
+            Some(source) => match source() {
+                Ok(documents) => OpenFilesSnapshot::Documents(documents),
+                Err(_) => OpenFilesSnapshot::Unknown,
+            },
+        }
     }
 }
 
@@ -78,11 +103,14 @@ enum Unsaved {
 }
 
 fn unsaved_keys(holder: &OpenFilesHolder) -> Unsaved {
-    let Some(source) = &holder.source else {
-        return Unsaved::NoSource;
-    };
-    let Ok(docs) = source() else {
-        return Unsaved::Unknown;
+    snapshot_unsaved_keys(&holder.capture_snapshot())
+}
+
+fn snapshot_unsaved_keys(snapshot: &OpenFilesSnapshot) -> Unsaved {
+    let docs = match snapshot {
+        OpenFilesSnapshot::NoSource => return Unsaved::NoSource,
+        OpenFilesSnapshot::Unknown => return Unsaved::Unknown,
+        OpenFilesSnapshot::Documents(documents) => documents,
     };
     let mut keys = HashSet::new();
     for doc in docs {
@@ -96,7 +124,11 @@ fn unsaved_keys(holder: &OpenFilesHolder) -> Unsaved {
 }
 
 pub fn file_has_unsaved_changes(holder: &OpenFilesHolder, file_path: &str) -> bool {
-    match unsaved_keys(holder) {
+    file_has_unsaved_keys(unsaved_keys(holder), file_path)
+}
+
+fn file_has_unsaved_keys(keys: Unsaved, file_path: &str) -> bool {
+    match keys {
         Unsaved::NoSource => false,
         Unsaved::Unknown => true,
         Unsaved::Keys(keys) => keys.contains(&path_key(file_path)),
@@ -126,5 +158,25 @@ pub fn without_unsaved_files<T: Clone>(
             .filter(|item| !keys.contains(&path_key(&path_of(item))))
             .cloned()
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod owned_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn data_only_snapshot_is_send_and_distinguishes_unknown_from_no_source() {
+        fn send<T: Send>() {}
+        send::<OpenFilesSnapshot>();
+        let mut holder = OpenFilesHolder::new();
+        assert_eq!(holder.capture_snapshot(), OpenFilesSnapshot::NoSource);
+        assert!(!holder.capture_snapshot().file_has_unsaved_changes("/fixture.md"));
+        holder.set_open_files_source(Some(Box::new(|| Err(OpenFilesSourceFailed))));
+        assert_eq!(holder.capture_snapshot(), OpenFilesSnapshot::Unknown);
+        assert!(holder.capture_snapshot().file_has_unsaved_changes("/fixture.md"));
+        holder.set_open_files_source(Some(Box::new(|| Ok(Vec::new()))));
+        assert_eq!(holder.capture_snapshot(), OpenFilesSnapshot::Documents(Vec::new()));
+        assert!(!holder.capture_snapshot().file_has_unsaved_changes("/fixture.md"));
     }
 }

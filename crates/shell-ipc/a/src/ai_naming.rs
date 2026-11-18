@@ -387,6 +387,7 @@ mod tests {
             },
             request: None,
             cancel: CancelToken::default(),
+            native: None,
         }
     }
 

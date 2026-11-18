@@ -63,8 +63,8 @@ fn byte_of_unit(source: &str) -> Vec<usize> {
 }
 
 /// `sourceElements(source)`, through the host.
-fn source_elements(source: &str) -> Result<Vec<SourceElement>, String> {
-    let answer = seu_host::call("fileparse.htmlSourceElements", &json!({ "source": source }))
+fn source_elements(source: &str, host: &crate::parse::HostCall<'_>) -> Result<Vec<SourceElement>, String> {
+    let answer = host("fileparse.htmlSourceElements", &json!({ "source": source }))
         .map_err(|error| error.message)?;
     let elements: Vec<HostElement> = serde_json::from_value(answer)
         .map_err(|error| format!("fileparse.htmlSourceElements answered {error}"))?;
@@ -156,11 +156,11 @@ fn string_literal_at(src: &str, from: usize) -> Option<[usize; 2]> {
 }
 
 /// every withheld region of the page, in the coordinates of the source
-fn collect_withheld(source: &str) -> Result<Vec<Span>, String> {
+fn collect_withheld(source: &str, host: &crate::parse::HostCall<'_>) -> Result<Vec<Span>, String> {
     let mut out = Vec::new();
     let mut script_inner: Vec<[usize; 2]> = Vec::new();
 
-    for e in source_elements(source)? {
+    for e in source_elements(source, host)? {
         let start_tag = &source[e.start_tag[0]..e.start_tag[1]];
         if e.tag_name == "script" {
             script_inner.push(e.inner);
@@ -290,12 +290,16 @@ fn placeholder_source(label: &str) -> String {
 /// replaced by its `{{label}}` marker. `Err` is the message of the
 /// `RedactionMarkError` the TypeScript throws, or of the host's step.
 pub fn redact_html_source(source: &str) -> Result<String, String> {
+    redact_html_source_with_host(source, &seu_host::call)
+}
+
+pub fn redact_html_source_with_host(source: &str, host: &crate::parse::HostCall<'_>) -> Result<String, String> {
     if !js_regex!(r"data-gx-redact|gx:redact:", "i").test(source) {
         return Ok(source.to_owned());
     }
     let mut parts = String::with_capacity(source.len());
     let mut cursor = 0;
-    for s in collect_withheld(source)? {
+    for s in collect_withheld(source, host)? {
         // two regions can overlap without one holding the other; the words between
         // the cursor and this one are already gone, so nothing is sliced backwards
         parts.push_str(&source[cursor..cursor.max(s.raw_from)]);

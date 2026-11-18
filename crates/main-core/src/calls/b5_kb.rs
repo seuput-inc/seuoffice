@@ -544,13 +544,9 @@ fn search_call(kind: Search, args: &[Value], cx: &mut Context) -> Answer {
             };
             let indexed: Vec<String> = string_list(cfg.get("indexed")).unwrap_or_default();
             let indexed_logs = Rc::clone(&logs);
-            let mut indexed_as_on_disk = |paths: &[String]| -> Vec<String> {
+            let mut indexed_as_on_disk = |paths: &[String]| -> Result<Vec<String>, Thrown> {
                 log(&indexed_logs, vec![Value::from("indexed"), json!(paths)]);
-                paths
-                    .iter()
-                    .filter(|path| indexed.contains(path))
-                    .cloned()
-                    .collect()
+                Ok(paths.iter().filter(|path| indexed.contains(path)).cloned().collect())
             };
             search_saved_knowledge_with_project(
                 &holder,

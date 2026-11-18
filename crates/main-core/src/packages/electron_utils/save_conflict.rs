@@ -50,16 +50,19 @@ fn read(path: &str) -> Option<Vec<u8>> {
     fs::read(namespaced(path)).ok()
 }
 
+/// Record a retained object's metadata and the bytes actually observed.
+/// The observation does not guarantee the object stayed unchanged while read.
+pub fn record_observation(metadata: &fs::Metadata, bytes: &[u8]) -> SaveDiskState {
+    let info = StatInfo::of(metadata);
+    SaveDiskState { mtime_ms: info.mtime_ms, size: info.size as f64, hash: sha256_hex(bytes) }
+}
+
 /// `recordDiskState(path)`: stat and content hash of the file, or `None` when
 /// it is not a readable file.
 pub fn record_disk_state(path: &str) -> Option<SaveDiskState> {
-    let (mtime_ms, size) = stat(path)?;
+    let metadata = fs::metadata(namespaced(path)).ok()?;
     let bytes = read(path)?;
-    Some(SaveDiskState {
-        mtime_ms,
-        size,
-        hash: sha256_hex(&bytes),
-    })
+    Some(record_observation(&metadata, &bytes))
 }
 
 /// `isModifiedSince(recorded, path)`: the file on disk no longer matches the

@@ -17,9 +17,10 @@ use super::limits::{
     LONG_MATERIAL_NOTICE_CHARS, MAX_IMAGE_MATERIAL_BYTES, MAX_MATERIAL_BYTES, MAX_MATERIALS,
     USAGE_NOTICE_CHARS,
 };
-use crate::packages::electron_utils::unsaved_files::{OpenFilesHolder, file_has_unsaved_changes};
+use crate::packages::electron_utils::unsaved_files::{OpenFilesHolder, OpenFilesSnapshot, file_has_unsaved_changes};
 use crate::packages::file_parse::attachable::{attachable_exts, attachable_max_bytes};
 use crate::shell::renderer_disposal::Failure;
+use std::sync::{Arc, Mutex};
 
 /// `ParsedFile` of `@seuoffice/file-parse`, the parts this module reads
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -151,9 +152,9 @@ pub trait InspectHost {
 
 /// Text lengths by path + size + mtime, so reopening the status does not
 /// parse every file again. Holds numbers only, never text.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MaterialLengthCache {
-    entries: Vec<(String, f64)>,
+    entries: Arc<Mutex<Vec<(String, f64)>>>,
 }
 
 const LENGTH_CACHE_MAX: usize = 64;
@@ -164,16 +165,38 @@ impl MaterialLengthCache {
     }
 
     fn get(&self, key: &str) -> Option<f64> {
-        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+        self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter().find(|(k, _)| k == key).map(|(_, v)| *v)
     }
 
     /// `rememberLength`: the key is deleted and set again, so it is the newest
     fn remember(&mut self, key: &str, length: f64) {
-        self.entries.retain(|(k, _)| k != key);
-        self.entries.push((key.to_owned(), length));
-        if self.entries.len() > LENGTH_CACHE_MAX {
-            self.entries.remove(0);
+        let mut entries = self.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        entries.retain(|(k, _)| k != key);
+        entries.push((key.to_owned(), length));
+        if entries.len() > LENGTH_CACHE_MAX {
+            entries.remove(0);
         }
+    }
+}
+
+/// Send this owned job to a worker. Only numeric cache access is locked;
+/// filesystem and renderer calls never run under that lock.
+#[derive(Debug)]
+pub struct MaterialInspectJob {
+    pub path: String,
+    open_files: OpenFilesSnapshot,
+    cache: MaterialLengthCache,
+}
+
+impl MaterialInspectJob {
+    pub fn new(path: String, open_files: OpenFilesSnapshot, cache: MaterialLengthCache) -> Self {
+        Self { path, open_files, cache }
+    }
+
+    pub fn execute(self, host: &mut dyn InspectHost) -> Result<MaterialStatus, Failure> {
+        let Self { path, open_files, mut cache } = self;
+        inspect_material_state(host, &mut cache, || open_files.file_has_unsaved_changes(&path), &path)
     }
 }
 
@@ -220,6 +243,15 @@ pub fn inspect_material(
     open_files: &OpenFilesHolder,
     path: &str,
 ) -> Result<MaterialStatus, Failure> {
+    inspect_material_state(host, cache, || file_has_unsaved_changes(open_files, path), path)
+}
+
+fn inspect_material_state(
+    host: &mut dyn InspectHost,
+    cache: &mut MaterialLengthCache,
+    has_unsaved_changes: impl FnOnce() -> bool,
+    path: &str,
+) -> Result<MaterialStatus, Failure> {
     let ext = ext_of(path);
     let base_name = basename(path, None);
     let base = MaterialStatus {
@@ -260,7 +292,7 @@ pub fn inspect_material(
     }
 
     // before any read: a file with unsaved changes is not read until saved
-    if file_has_unsaved_changes(open_files, path) {
+    if has_unsaved_changes() {
         sized.unsaved = true;
         return Ok(sized);
     }
@@ -385,5 +417,85 @@ pub fn summarize_materials(statuses: &[MaterialStatus], kind: AiTargetKind) -> M
         notices: generate_notices(kind, total_text_length),
         too_many,
         can_make,
+    }
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::*;
+
+    struct Reads {
+        cache: MaterialLengthCache,
+        calls: Vec<&'static str>,
+    }
+
+    impl InspectHost for Reads {
+        fn stat(&mut self, _: &str) -> Result<FileStat, Failure> {
+            self.calls.push("stat");
+            Ok(FileStat { is_file: true, size: 4.0, mtime_ms: Some(1.0) })
+        }
+
+        fn parse(&mut self, _: &str) -> Result<ParsedFile, Failure> {
+            assert!(self.cache.entries.try_lock().is_ok(), "parser cannot run under the numeric cache lock");
+            self.calls.push("parse");
+            Ok(ParsedFile { ok: true, kind: Some("text".into()), text: Some("a𝄞".into()), error: None })
+        }
+
+        fn injected_parse(&self) -> bool { false }
+    }
+
+    #[test]
+    fn owned_jobs_are_send_and_cache_without_holding_locks_over_parser_calls() {
+        fn send<T: Send>() {}
+        send::<MaterialInspectJob>();
+        let cache = MaterialLengthCache::new();
+        let mut host = Reads { cache: cache.clone(), calls: Vec::new() };
+        let first = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache.clone()).execute(&mut host).unwrap();
+        assert_eq!(first.text_length, 3.0);
+        let second = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache).execute(&mut host).unwrap();
+        assert_eq!(second.text_length, 3.0);
+        assert_eq!(host.calls, ["stat", "parse", "stat"]);
+    }
+
+    #[test]
+    fn unknown_open_files_block_reading_but_absent_source_does_not() {
+        let cache = MaterialLengthCache::new();
+        let mut host = Reads { cache: cache.clone(), calls: Vec::new() };
+        let unknown = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::Unknown, cache.clone()).execute(&mut host).unwrap();
+        assert!(unknown.unsaved);
+        assert_eq!(host.calls, ["stat"]);
+        let absent = MaterialInspectJob::new("/fixture.md".into(), OpenFilesSnapshot::NoSource, cache).execute(&mut host).unwrap();
+        assert!(!absent.unsaved);
+        assert_eq!(host.calls, ["stat", "stat", "parse"]);
+    }
+
+    #[test]
+    fn direct_source_api_keeps_stat_before_source_before_parse() {
+        struct Ordered(Arc<Mutex<Vec<&'static str>>>);
+        impl InspectHost for Ordered {
+            fn stat(&mut self, _: &str) -> Result<FileStat, Failure> {
+                self.0.lock().unwrap().push("stat");
+                Ok(FileStat { is_file: true, size: 1.0, mtime_ms: None })
+            }
+            fn parse(&mut self, _: &str) -> Result<ParsedFile, Failure> {
+                self.0.lock().unwrap().push("parse");
+                Ok(ParsedFile { ok: true, kind: Some("text".into()), text: Some("x".into()), error: None })
+            }
+            fn injected_parse(&self) -> bool { false }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let source_calls = calls.clone();
+        let mut holder = OpenFilesHolder::new();
+        holder.set_open_files_source(Some(Box::new(move || {
+            source_calls.lock().unwrap().push("source");
+            Ok(Vec::new())
+        })));
+        let mut host = Ordered(calls.clone());
+        let mut cache = MaterialLengthCache::new();
+        inspect_material(&mut host, &mut cache, &holder, "/fixture.md").unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["stat", "source", "parse"]);
+        calls.lock().unwrap().clear();
+        inspect_material(&mut host, &mut cache, &holder, "/unsupported.exe").unwrap();
+        assert!(calls.lock().unwrap().is_empty());
     }
 }

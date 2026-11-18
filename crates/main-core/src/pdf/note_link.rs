@@ -501,10 +501,62 @@ pub fn note_link_key(pdf_path: &str, platform: Platform) -> String {
     }
 }
 
+pub enum PreparedNote {
+    Ready { path: String, text: Option<String> },
+    Finished(NoteResult),
+}
+
+pub struct PendingNote {
+    busy: std::rc::Rc<RefCell<Vec<f64>>>,
+    owner: f64,
+}
+
+impl Drop for PendingNote {
+    fn drop(&mut self) {
+        let mut busy = self.busy.borrow_mut();
+        if let Some(index) = busy.iter().position(|&owner|
+            owner == self.owner || (owner.is_nan() && self.owner.is_nan())) {
+            busy.remove(index);
+        }
+    }
+}
+
+impl PendingNote {
+    pub fn finish(self, result: Result<bool, Thrown>) -> NoteResult {
+        match result {
+            Ok(true) => NoteResult::Ok,
+            Ok(false) => NoteResult::refused("failed"),
+            Err(Thrown(message)) => NoteResult::Refused { reason: "failed", message: Some(message) },
+        }
+    }
+}
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    #[test]
+    fn pending_note_holds_busy_until_completion_or_drop() {
+        let service = NoteLinkService::new(Platform::Other);
+        service.busy.borrow_mut().push(7.0);
+        let pending = PendingNote { busy: service.busy.clone(), owner: 7.0 };
+        assert!(service.is_busy(7.0));
+        assert_eq!(pending.finish(Ok(true)), NoteResult::Ok);
+        assert!(!service.is_busy(7.0));
+        service.busy.borrow_mut().push(7.0);
+        drop(PendingNote { busy: service.busy.clone(), owner: 7.0 });
+        assert!(!service.is_busy(7.0));
+        service.busy.borrow_mut().push(7.0);
+        let failed = PendingNote { busy: service.busy.clone(), owner: 7.0 }
+            .finish(Err(Thrown("tab creation failed".into())));
+        assert_eq!(failed, NoteResult::Refused { reason: "failed", message: Some("tab creation failed".into()) });
+        assert!(!service.is_busy(7.0));
+    }
+}
+
 pub struct NoteLinkService {
     platform: Platform,
     /// views with a note request in flight (one save dialog per view)
-    busy: RefCell<Vec<f64>>,
+    busy: std::rc::Rc<RefCell<Vec<f64>>>,
 }
 
 enum Resolved {
@@ -516,7 +568,7 @@ impl NoteLinkService {
     pub fn new(platform: Platform) -> Self {
         NoteLinkService {
             platform,
-            busy: RefCell::new(Vec::new()),
+            busy: std::rc::Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -525,6 +577,37 @@ impl NoteLinkService {
             .borrow()
             .iter()
             .any(|&o| o == owner || (o.is_nan() && owner.is_nan()))
+    }
+
+    pub fn prepare_async(
+        &self, deps: &dyn NoteLinkDeps, owner: f64, pdf_path: Option<&str>,
+        title: Option<&str>, request: Option<&NoteInsertRequest>,
+    ) -> Result<(PreparedNote, Option<PendingNote>), Thrown> {
+        let Some(path) = pdf_path.filter(|path| !path.is_empty()) else {
+            return Ok((PreparedNote::Finished(NoteResult::refused("unsaved")), None));
+        };
+        if deps.is_untitled(path)? {
+            return Ok((PreparedNote::Finished(NoteResult::refused("unsaved")), None));
+        }
+        let host = deps.host()?;
+        if !host.has_open_note() || !host.has_insert_into_note() {
+            return Ok((PreparedNote::Finished(NoteResult::refused("unavailable")), None));
+        }
+        if self.is_busy(owner) {
+            return Ok((PreparedNote::Finished(NoteResult::refused("busy")), None));
+        }
+        self.busy.borrow_mut().push(owner);
+        let pending = PendingNote { busy: self.busy.clone(), owner };
+        match self.resolve_note(deps, owner, path, title) {
+            Ok(Resolved::Note(note)) => {
+                let text = request.map(|request| note_insert_text(&note, path, request, self.platform));
+                Ok((PreparedNote::Ready { path: note, text }, Some(pending)))
+            }
+            Ok(Resolved::Result(result)) => Ok((PreparedNote::Finished(result), None)),
+            Err(Thrown(message)) => Ok((PreparedNote::Finished(NoteResult::Refused {
+                reason: "failed", message: Some(message),
+            }), None)),
+        }
     }
 
     /// the linked note, or the one the person picks now; a refusal otherwise

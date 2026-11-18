@@ -1,0 +1,24 @@
+# Private pinned Chromium source patch. Native compile and process fixtures remain unverified.
+diff --git a/content/browser/renderer_host/render_process_host_impl.h b/content/browser/renderer_host/render_process_host_impl.h
+--- a/content/browser/renderer_host/render_process_host_impl.h
++++ b/content/browser/renderer_host/render_process_host_impl.h
+@@ -471,2 +471,5 @@
+   int keep_alive_ref_count() const { return keep_alive_ref_count_; }
+   int worker_ref_count() const { return worker_ref_count_; }
++
++  // Browser-UI-only veto for process owners not represented by document RFHs.
++  bool HasUnrepresentedOwnersForCef() const;
+diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3069,2 +3069,10 @@
++bool RenderProcessHostImpl::HasUnrepresentedOwnersForCef() const {
++  DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  return keep_alive_ref_count_ != 0 || worker_ref_count_ != 0 ||
++      shutdown_delay_ref_count_ != 0 || pending_reuse_ref_count_ != 0 ||
++      pending_views_ != 0 || navigation_state_keepalive_count_ != 0 ||
++      are_ref_counts_disabled_;
++}
++
+ int RenderProcessHostImpl::GetRenderFrameHostCount() const {
+   return render_frame_host_id_set_.size();

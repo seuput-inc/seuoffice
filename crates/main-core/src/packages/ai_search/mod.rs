@@ -5,6 +5,7 @@
 //! the caller implements.
 
 pub mod index;
+pub mod headless_ledger;
 pub mod media_call_abort;
 pub mod media_tools;
 pub mod search_tools;

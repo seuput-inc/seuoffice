@@ -140,7 +140,10 @@ fn folder_key(folder: &str, platform: &str) -> String {
 }
 
 fn approvals_of(settings_path: &str) -> JsObject<String> {
-    let settings = read_app_settings(settings_path);
+    approvals_from_settings(&read_app_settings(settings_path))
+}
+
+fn approvals_from_settings(settings: &crate::shell::app_settings::Settings) -> JsObject<String> {
     let mut out: JsObject<String> = JsObject::new();
     let Some(JsonValue::Object(raw)) = settings.get(PROJECT_SKILLS_KEY) else {
         return out;
@@ -161,6 +164,15 @@ pub fn approved_fingerprint(settings_path: &str, folder: &str, platform: &str) -
     approvals_of(settings_path)
         .get(&folder_key(folder, platform))
         .cloned()
+}
+
+/// Look up approval in a settings snapshot without reading the filesystem.
+pub fn approved_fingerprint_from_settings(
+    settings: &crate::shell::app_settings::Settings,
+    folder: &str,
+    platform: &str,
+) -> Option<String> {
+    approvals_from_settings(settings).get(&folder_key(folder, platform)).cloned()
 }
 
 pub fn write_project_skills_approval(

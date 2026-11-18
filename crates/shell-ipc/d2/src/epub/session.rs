@@ -253,18 +253,18 @@ pub(super) struct ChapterState {
 
 /// `state(path)` before it is kept: the chapter read from the book. Runs on
 /// a worker.
-pub(super) fn load_chapter(engine: &dyn EpubEngine, bytes: Bytes, path: String) -> ChapterState {
+pub(super) fn load_chapter(engine: &dyn EpubEngine, bytes: Bytes, path: String) -> Result<ChapterState, String> {
     let decoded = engine.read_text(bytes, &path);
     let (stored, valid) = decoded.map_or((String::new(), false), |d| (d.text, d.valid));
-    ChapterState {
-        map: engine.open_chapter(&stored),
+    Ok(ChapterState {
+        map: engine.open_chapter(&stored)?,
         seen: HashSet::from([digest(&stored)]),
         path,
         stored,
         replacements: Vec::new(),
         valid,
         version: 0,
-    }
+    })
 }
 
 /// One spine item as the session reads it from the summary
@@ -537,25 +537,25 @@ impl Session {
         index: f64,
         version: f64,
         replacements: Vec<Replacement>,
-    ) -> IpcValue {
+    ) -> Result<IpcValue, String> {
         if let Some(refusal) = self.read_only_refusal(i) {
-            return refusal;
+            return Ok(refusal);
         }
         let state = &self.chapters[i];
         if version != state.version as f64 {
-            return failure(
+            return Ok(failure(
                 "stale",
                 Some(&format!("the chapter is at version {}", state.version)),
-            );
+            ));
         }
         let source = &state.map.source;
         if let Some(problem) = engine.validate_replacements(&replacements, len16(source)) {
-            return failure("invalid-request", Some(&problem));
+            return Ok(failure("invalid-request", Some(&problem)));
         }
-        let text = engine.apply_replacements(source, &replacements);
+        let text = engine.apply_replacements(source, &replacements)?;
         if text == *source {
             let map = state.map.clone();
-            return self.commit_edit(engine, i, index, map, Vec::new(), Vec::new());
+            return Ok(self.commit_edit(engine, i, index, map, Vec::new(), Vec::new()));
         }
         // The page edits text inside blocks only; anything else must be a way
         // back (undo, redo, rollback) to a text this chapter has had.
@@ -567,12 +567,12 @@ impl Session {
                 .any(|b| b.inner.0 <= r.start && r.end <= b.inner.1)
         });
         if !inside && !state.seen.contains(&digest(&text)) {
-            return failure(
+            return Ok(failure(
                 "invalid-request",
                 Some("the replacements reach outside the blocks"),
-            );
+            ));
         }
-        let next = engine.remap_chapter(&state.map, &text, &replacements);
+        let next = engine.remap_chapter(&state.map, &text, &replacements)?;
         if next.broken {
             let refusal = object(vec![
                 ("code", "not-well-formed".into_ipc()),
@@ -585,12 +585,12 @@ impl Session {
                     .into_ipc(),
                 ),
             ]);
-            return object(vec![
+            return Ok(object(vec![
                 ("ok", false.into_ipc()),
                 ("error", "refused".into_ipc()),
                 ("refusal", refusal),
                 ("message", "the edit would break the chapter".into_ipc()),
-            ]);
+            ]));
         }
         let before: HashSet<&str> = state.map.blocks.iter().map(|b| b.id.as_str()).collect();
         let created = next
@@ -599,7 +599,7 @@ impl Session {
             .filter(|b| !before.contains(b.id.as_str()))
             .map(|b| b.id.clone())
             .collect();
-        self.commit_edit(engine, i, index, next, replacements, created)
+        Ok(self.commit_edit(engine, i, index, next, replacements, created))
     }
 
     /// `isDirty()`: a chapter differs from its stored text

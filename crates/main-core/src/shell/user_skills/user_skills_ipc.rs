@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use jscompat::{JsMap, JsObject, JsonValue, slice_utf16};
 
 use super::user_skills_service::{
-    Failure, SkillLibrary, Svc, UserSkillCardSaveInput, UserSkillSaveInput, UserSkillStatePatch,
+    Failure, InstallDone, SkillLibrary, Svc, UserSkillCardSaveInput, UserSkillSaveInput, UserSkillStatePatch,
     UserSkillsFail, UserSkillsHost, UserSkillsService, import_preview_of,
 };
 use crate::packages::ai_provider::user_skills_folder::skill_bundle_file_name;
@@ -102,6 +102,16 @@ impl Run {
 struct UpdateEntry {
     id: String,
     check: ChangedCheck,
+}
+
+/// A reserved preview; the source remains alive until the worker completes.
+pub struct InstallWork {
+    pub token: String,
+    pub owner: f64,
+    pub imported: SkillImport,
+    pub selected: Vec<String>,
+    pub on_collision: Vec<(String, String)>,
+    cancelled: Arc<AtomicBool>,
 }
 
 fn text(value: &str) -> JsonValue {
@@ -191,6 +201,7 @@ pub struct UserSkillsIpc<H: UserSkillsHost, L: SkillLibrary> {
     pub service: UserSkillsService<H, L>,
     imports: JsMap<Pending<SkillImport>>,
     updates: JsMap<Pending<UpdateEntry>>,
+    installing: JsMap<Pending<Arc<AtomicBool>>>,
     /// the GitHub import or update check running for a window
     running: Vec<(f64, Arc<AtomicBool>)>,
     watched: Vec<f64>,
@@ -202,6 +213,7 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
         UserSkillsIpc {
             service,
             imports: JsMap::new(),
+            installing: JsMap::new(),
             updates: JsMap::new(),
             running: Vec::new(),
             watched: Vec::new(),
@@ -252,6 +264,11 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
 
     /// the `once('destroyed')` listener of `watch`: drop everything a window left waiting
     pub fn sender_destroyed(&mut self, owner: f64) {
+        for (_, entry) in self.installing.iter() {
+            if entry.owner == owner {
+                entry.value.store(true, Ordering::SeqCst);
+            }
+        }
         self.watched.retain(|id| *id != owner);
         if let Some(signal) = self.running_of(owner) {
             signal.store(true, Ordering::SeqCst);
@@ -818,6 +835,9 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
         let Some(JsonValue::String(token)) = token else {
             return invalid();
         };
+        if let Some(entry) = self.installing.get(token).filter(|entry| entry.owner == sender_id) {
+            entry.value.store(true, Ordering::SeqCst);
+        }
         if self
             .imports
             .get(token)
@@ -827,6 +847,67 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
             self.service.dispose(&entry.value);
         }
         ok_with(Vec::new())
+    }
+
+    /// Reserve an import on core before its filesystem work is queued.
+    pub fn install_begin<X: UserSkillsIpcHost>(
+        &mut self, host: &mut X, sender_id: f64, raw: Option<&JsonValue>,
+    ) -> Result<InstallWork, JsonValue> {
+        if let Some(refused) = Self::managed(host, sender_id, "skills:install") {
+            return Err(refused);
+        }
+        let Some(JsonValue::Object(request)) = install_request_of(raw) else {
+            return Err(invalid());
+        };
+        let Some(JsonValue::String(token)) = request.get("token") else {
+            return Err(invalid());
+        };
+        let selected = match request.get("selected") {
+            Some(JsonValue::Array(items)) => items.iter().filter_map(|item| match item {
+                JsonValue::String(key) => Some(key.clone()),
+                _ => None,
+            }).collect(),
+            _ => Vec::new(),
+        };
+        let mut on_collision = Vec::new();
+        if let Some(JsonValue::Object(choices)) = request.get("onCollision") {
+            for (key, choice) in choices.entries() {
+                if let JsonValue::String(choice) = choice {
+                    on_collision.push((key.to_owned(), choice.clone()));
+                }
+            }
+        }
+        if !self.imports.get(token).is_some_and(|entry| entry.owner == sender_id) {
+            return Err(fail_json("not-found"));
+        }
+        let entry = self.imports.delete(token).expect("the import was just found");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.installing.set(token, Pending { value: cancelled.clone(), owner: sender_id });
+        Ok(InstallWork { token: token.clone(), owner: sender_id, imported: entry.value, selected, on_collision, cancelled })
+    }
+
+    /// Commit preview state; cleanup stays on the worker before the reply.
+    pub fn install_finish(&mut self, work: InstallWork, done: Svc<InstallDone>) -> (JsonValue, Option<SkillImport>, bool) {
+        self.installing.delete(&work.token);
+        let needs_choice = matches!(&done, Err(failure) if failure.as_fail().reason == "needs-choice");
+        let succeeded = done.is_ok();
+        let dispose = if needs_choice && !work.cancelled.load(Ordering::SeqCst) {
+            self.imports.set(&work.token, Pending { value: work.imported, owner: work.owner });
+            None
+        } else {
+            Some(work.imported)
+        };
+        let answer = settled(done, |done| {
+            let installed = done.installed.iter().map(|(key, id)| {
+                let mut entry = JsObject::new();
+                entry.set("key", text(key));
+                entry.set("id", text(id));
+                JsonValue::Object(entry)
+            }).collect();
+            let skipped = done.skipped.iter().map(|key| text(key)).collect();
+            ok_with(vec![("installed", JsonValue::Array(installed)), ("skipped", JsonValue::Array(skipped))])
+        });
+        (answer, dispose, succeeded)
     }
 
     /// `C.install`
@@ -1001,35 +1082,41 @@ impl<H: UserSkillsHost, L: SkillLibrary> UserSkillsIpc<H, L> {
     }
 
     /// `C.applyUpdate`
+    pub fn apply_update_begin<X: UserSkillsIpcHost>(
+        &mut self,
+        host: &mut X,
+        sender_id: f64,
+        token: Option<&JsonValue>,
+    ) -> Result<(String, ChangedCheck), JsonValue> {
+        if let Some(refused) = Self::managed(host, sender_id, "skills:apply-update") {
+            return Err(refused);
+        }
+        let Some(JsonValue::String(token)) = token else {
+            return Err(invalid());
+        };
+        if !self.updates.get(token).is_some_and(|entry| entry.owner == sender_id) {
+            return Err(fail_json("not-found"));
+        }
+        let entry = self.updates.delete(token).expect("the update was just found");
+        Ok((entry.value.id, entry.value.check))
+    }
+
+    pub fn apply_update_finish<X: UserSkillsIpcHost>(host: &mut X, result: Svc<String>) -> JsonValue {
+        Self::changing(host, result, |id| ok_with(vec![("id", JsonValue::String(id))]))
+    }
+
     pub fn apply_update<X: UserSkillsIpcHost>(
         &mut self,
         host: &mut X,
         sender_id: f64,
         token: Option<&JsonValue>,
     ) -> JsonValue {
-        if let Some(refused) = Self::managed(host, sender_id, "skills:apply-update") {
-            return refused;
-        }
-        let Some(JsonValue::String(token)) = token else {
-            return invalid();
+        let (id, check) = match self.apply_update_begin(host, sender_id, token) {
+            Ok(value) => value,
+            Err(refused) => return refused,
         };
-        if !self
-            .updates
-            .get(token)
-            .is_some_and(|entry| entry.owner == sender_id)
-        {
-            return fail_json("not-found");
-        }
-        let entry = self
-            .updates
-            .delete(token)
-            .expect("the update was just found");
-        let result = self
-            .service
-            .apply_update(&entry.value.id, &entry.value.check);
-        Self::changing(host, result, |id| {
-            ok_with(vec![("id", JsonValue::String(id))])
-        })
+        let result = self.service.apply_update(&id, &check);
+        Self::apply_update_finish(host, result)
     }
 
     /// `C.cancelUpdate`

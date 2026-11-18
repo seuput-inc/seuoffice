@@ -62,7 +62,7 @@ const INDEX_STALE_MS: u64 = 60_000;
 // ---- what the shell entry reaches outside main-core ----
 
 /// A project's "visible to the AI" test on absolute paths (`tools.visibleTest`)
-pub type VisibleTest = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+pub type VisibleTest = Arc<dyn Fn(&str) -> Result<bool, Thrown> + Send + Sync>;
 
 /// `NewDocumentPlacement`: where a window's new documents go
 #[derive(Clone, Debug, PartialEq)]
@@ -77,12 +77,12 @@ pub struct Placement {
 /// may block; the others run on the core thread.
 pub trait KbServices {
     /// `fileIndexStore !== null`
-    fn has_file_index(&self) -> bool;
+    fn has_file_index(&self) -> Result<bool, Thrown>;
     /// `ensureFileIndexer()?.refreshIfStale(60_000)`
     fn refresh_file_index_if_stale(&self, max_age_ms: u64);
     /// `store.pathsIndexedAsOnDisk(paths)`: the paths the index holds as they
     /// are on disk now, in their order
-    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Vec<String>;
+    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Result<Vec<String>, Thrown>;
     /// `store.search(q, { limit, within }).hits`, worker thread, each hit with
     /// its excerpt already joined (`snippet.map(part => part.text).join('')`).
     /// `within` narrows the query itself, so starred and project files rank
@@ -99,10 +99,10 @@ pub trait KbServices {
     /// `parseFileToText(path)` of `@seuoffice/file-parse`, worker thread
     fn parse_file_to_text(&self, path: &str) -> Result<ParsedFile, Failure>;
     /// `projectFolderServices().tools.isAvailable(projectId)`, worker thread
-    fn project_available(&self, project_id: &str) -> bool;
+    fn project_available(&self, project_id: &str) -> Result<bool, Thrown>;
     /// `projectFolderServices().tools.visibleTest(projectId)`, worker thread;
     /// `None` when the project is not available (`null`)
-    fn project_visible_test(&self, project_id: &str) -> Option<VisibleTest>;
+    fn project_visible_test(&self, project_id: &str) -> Result<Option<VisibleTest>, Thrown>;
     /// `projectFolderServices().tools.readPath(owner, projectId, path, offset)`,
     /// worker thread
     fn project_read(
@@ -111,7 +111,7 @@ pub trait KbServices {
         project_id: &str,
         path: &str,
         offset: f64,
-    ) -> ProjectReadResult;
+    ) -> Result<ProjectReadResult, Thrown>;
     /// `newDocuments.placementFor(owner)`: where the window's new documents
     /// go, `None` when its panel has no project. Worker thread
     fn new_document_placement(&self, owner: ViewId) -> Result<Option<Placement>, String>;
@@ -300,7 +300,7 @@ fn search_saved(
 ) -> Result<Vec<KbSearchHit>, Thrown> {
     let open_files = open_files_holder(host);
     let mut visible =
-        within.map(|test| move |path: &str| -> Result<bool, Thrown> { Ok(test(path)) });
+        within.map(|test| move |path: &str| -> Result<bool, Thrown> { test(path) });
     search_saved_knowledge_with_project(
         &open_files,
         &mut |q, pool, within| host.index_search(q, pool, within),
@@ -494,8 +494,10 @@ impl KnowledgeBase for KnowledgeBasePort {
         self.workers.spawn(Box::new(move || {
             let available = host.project_available(&project_id);
             core.post(Box::new(move || {
-                if !available {
-                    return reply.reply(Err(error(PROJECT_UNAVAILABLE)));
+                match available {
+                    Ok(true) => {}
+                    Ok(false) => return reply.reply(Err(error(PROJECT_UNAVAILABLE))),
+                    Err(failure) => return reply.reply(Err(thrown(failure))),
                 }
                 // a missing or null group is every starred file; a group that
                 // is not a name is refused as a group nobody starred
@@ -551,13 +553,19 @@ impl KnowledgeBase for KnowledgeBasePort {
         } else {
             KB_SEARCH_LIMIT_DEFAULT
         };
-        if trim(&q).is_empty() || !self.host.has_file_index() {
-            return reply.reply(Ok(IpcValue::Array(Vec::new())));
+        if trim(&q).is_empty() { return reply.reply(Ok(IpcValue::Array(Vec::new()))); }
+        match self.host.has_file_index() {
+            Ok(true) => {}
+            Ok(false) => return reply.reply(Ok(IpcValue::Array(Vec::new()))),
+            Err(failure) => return reply.reply(Err(thrown(failure))),
         }
         self.host.refresh_file_index_if_stale(INDEX_STALE_MS);
         // a file saved since its last scan is still indexed as it was before
         // the save, so only the files the index holds as they are on disk are quoted
-        let starred = self.host.paths_indexed_as_on_disk(&self.starred_files());
+        let starred = match self.host.paths_indexed_as_on_disk(&self.starred_files()) {
+            Ok(paths) => paths,
+            Err(failure) => return reply.reply(Err(thrown(failure))),
+        };
         let owner = i64::from(cx.sender.view.0);
         let raw = call_arg(&args);
         let scoped = {
@@ -572,7 +580,7 @@ impl KnowledgeBase for KnowledgeBasePort {
         };
         let host = self.host.clone();
         self.answer_from_worker(reply, move || {
-            let within = project_id.and_then(|id| host.project_visible_test(&id));
+            let within = match project_id { Some(id) => host.project_visible_test(&id)?, None => None };
             let hits = search_saved(&host, &q, &in_scope, limit.min(KB_SEARCH_LIMIT_MAX), within)?;
             Ok(IpcValue::Array(hits.iter().map(hit_ipc).collect()))
         });
@@ -620,7 +628,7 @@ impl KnowledgeBase for KnowledgeBasePort {
             let mut read_project = project_id.as_deref().map(|project_id| {
                 let host = &host;
                 move |target: &str, at: f64| -> Result<ProjectReadResult, Thrown> {
-                    Ok(host.project_read(view, project_id, target, at))
+                    host.project_read(view, project_id, target, at)
                 }
             });
             let page = read_knowledge_or_project_page(
@@ -824,6 +832,8 @@ mod tests {
     #[derive(Default)]
     struct State {
         no_index: bool,
+        index_error: Option<String>,
+        indexed_error: Option<String>,
         refreshes: u32,
         hits: Vec<IndexedHit>,
         on_disk: HashSet<String>,
@@ -835,6 +845,7 @@ mod tests {
         visible: HashSet<String>,
         no_visible_test: bool,
         project_reads: HashMap<String, ProjectReadResult>,
+        project_read_error: Option<String>,
         read_by: Vec<(ViewId, String, String, f64)>,
         placement: Option<Placement>,
         project_writes: Vec<(String, String, Vec<u8>)>,
@@ -854,20 +865,19 @@ mod tests {
     }
 
     impl KbServices for Fake {
-        fn has_file_index(&self) -> bool {
-            !self.state().no_index
+        fn has_file_index(&self) -> Result<bool, Thrown> {
+            let state = self.state();
+            if let Some(error) = &state.index_error { return Err(Thrown(error.clone())); }
+            Ok(!state.no_index)
         }
         fn refresh_file_index_if_stale(&self, max_age_ms: u64) {
             assert_eq!(max_age_ms, 60_000);
             self.state().refreshes += 1;
         }
-        fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Vec<String> {
+        fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Result<Vec<String>, Thrown> {
             let state = self.state();
-            paths
-                .iter()
-                .filter(|p| state.on_disk.contains(*p))
-                .cloned()
-                .collect()
+            if let Some(error) = &state.indexed_error { return Err(Thrown(error.clone())); }
+            Ok(paths.iter().filter(|p| state.on_disk.contains(*p)).cloned().collect())
         }
         fn index_search(
             &self,
@@ -911,15 +921,15 @@ mod tests {
                 error: None,
             })
         }
-        fn project_available(&self, _project_id: &str) -> bool {
-            self.state().available
+        fn project_available(&self, _project_id: &str) -> Result<bool, Thrown> {
+            Ok(self.state().available)
         }
-        fn project_visible_test(&self, _project_id: &str) -> Option<VisibleTest> {
+        fn project_visible_test(&self, _project_id: &str) -> Result<Option<VisibleTest>, Thrown> {
             if self.state().no_visible_test {
-                return None;
+                return Ok(None);
             }
             let visible = self.state().visible.clone();
-            Some(Arc::new(move |path| visible.contains(path)))
+            Ok(Some(Arc::new(move |path| Ok(visible.contains(path)))))
         }
         fn project_read(
             &self,
@@ -927,18 +937,21 @@ mod tests {
             project_id: &str,
             path: &str,
             offset: f64,
-        ) -> ProjectReadResult {
+        ) -> Result<ProjectReadResult, Thrown> {
             let mut state = self.state();
             state
                 .read_by
                 .push((owner, project_id.to_owned(), path.to_owned(), offset));
-            state
+            if let Some(error) = &state.project_read_error {
+                return Err(Thrown(error.clone()));
+            }
+            Ok(state
                 .project_reads
                 .get(path)
                 .cloned()
                 .unwrap_or(ProjectReadResult::Refused {
                     reason: ProjectReadRefusal::NotFound,
-                })
+                }))
         }
         fn new_document_placement(&self, _owner: ViewId) -> Result<Option<Placement>, String> {
             Ok(self.state().placement.clone())
@@ -1030,6 +1043,7 @@ mod tests {
             },
             request: None,
             cancel: CancelToken::default(),
+            native: None,
         }
     }
 
@@ -1279,6 +1293,16 @@ mod tests {
         r.host.state().no_index = true;
         assert_eq!(search(&r, query("a")), Ok(IpcValue::Array(vec![])));
         assert_eq!(r.host.state().refreshes, 0);
+    }
+
+    #[test]
+    fn search_propagates_index_failures_instead_of_returning_no_hits() {
+        let r = rig("search-index-error");
+        r.host.state().index_error = Some("index initialization failed".into());
+        assert_eq!(search(&r, query("a")).unwrap_err().message, "index initialization failed");
+        r.host.state().index_error = None;
+        r.host.state().indexed_error = Some("index lookup failed".into());
+        assert_eq!(search(&r, query("a")).unwrap_err().message, "index lookup failed");
     }
 
     #[test]
@@ -1555,6 +1579,22 @@ mod tests {
         assert_eq!(refused(own("cloud")), KB_DOWNLOAD_DECLINED);
         assert_eq!(refused(own("unsaved")), UNSAVED_CHANGES_MESSAGE);
         assert_eq!(refused(own("nothing-said")), KB_NOT_IN_BASE);
+    }
+
+    #[test]
+    fn project_read_propagates_the_host_error() {
+        let r = rig("read-project-error");
+        r.host.state().available = true;
+        r.host.state().project_read_error = Some("project read failed".into());
+        let id = scope_of(open_scope(&r, obj(&[("projectId", s("p1"))])));
+        let result = call(|cx, reply| {
+            r.port.kb_read(
+                cx,
+                vec![obj(&[("path", s("/proj/a.md")), ("scope", s(&id))])],
+                reply,
+            )
+        });
+        assert_eq!(refused(result), "project read failed");
     }
 
     // ---- create ----

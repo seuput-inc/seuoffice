@@ -201,7 +201,7 @@ impl QuickLookEngines for Engines {
 
     /// The zip gate and JSZip are the shell's; the comparison's files hold no
     /// zip thumbnail
-    fn open_zip(&self, _bytes: &[u8]) -> Option<Box<dyn ZipArchive>> {
+    fn open_zip(&self, _bytes: Vec<u8>) -> Option<Box<dyn ZipArchive>> {
         None
     }
 }

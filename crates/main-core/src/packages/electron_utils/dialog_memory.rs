@@ -49,7 +49,7 @@ pub enum FallbackDir<'a> {
 }
 
 /// `withRememberedDirectory(dialog, options, fallbackDir)`
-fn with_remembered_directory(
+pub fn prepare_dialog_options(
     memory: &DialogMemory,
     options: &JsObject<JsonValue>,
     fallback_dir: Option<&FallbackDir<'_>>,
@@ -130,18 +130,19 @@ pub fn show_open_dialog_with_memory<D: Dialog>(
     fallback_dir: Option<&str>,
 ) -> JsonValue {
     let fallback = fallback_dir.map(FallbackDir::Dir);
-    let with_dir = with_remembered_directory(memory, options, fallback.as_ref());
+    let with_dir = prepare_dialog_options(memory, options, fallback.as_ref());
     let result = dialog.show_open_dialog(parent, &with_dir);
     if let Some(picked) = first_file_path(&result).filter(|p| !p.is_empty())
         && !canceled(&result)
     {
-        memory.last_used = Some(if picks_directory(options) {
-            picked.to_owned()
-        } else {
-            dirname(picked)
-        });
+        remember_open_path(memory, picked, picks_directory(options));
     }
     result
+}
+
+/// Record a successful open selection after its native operation acknowledges it.
+pub fn remember_open_path(memory: &mut DialogMemory, path: &str, directory: bool) {
+    if !path.is_empty() { memory.last_used = Some(if directory { path.to_owned() } else { dirname(path) }); }
 }
 
 /// `saveAsSuggestion(sourcePath, defaultName)`
@@ -160,13 +161,18 @@ pub fn show_save_dialog_with_memory<D: Dialog>(
     options: &JsObject<JsonValue>,
     fallback_dir: Option<&FallbackDir<'_>>,
 ) -> JsonValue {
-    let with_dir = with_remembered_directory(memory, options, fallback_dir);
+    let with_dir = prepare_dialog_options(memory, options, fallback_dir);
     let result = dialog.show_save_dialog(parent, &with_dir);
     if !canceled(&result)
         && let Some(JsonValue::String(file_path)) = field(&result, "filePath")
         && !file_path.is_empty()
     {
-        memory.last_used = Some(dirname(file_path));
+        remember_save_path(memory, file_path);
     }
     result
+}
+
+/// Record only a confirmed save selection, after the native dialog completes.
+pub fn remember_save_path(memory: &mut DialogMemory, file_path: &str) {
+    if !file_path.is_empty() { memory.last_used = Some(dirname(file_path)); }
 }

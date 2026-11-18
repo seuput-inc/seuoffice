@@ -12,6 +12,7 @@ pub mod font_scan;
 pub mod font_store;
 pub mod generated_page_temp;
 pub mod jpeg_orientation;
+pub mod legacy_presentation;
 pub mod media_mime;
 pub mod metafile_fonts;
 pub mod mp4_audio_sniff;

@@ -1,0 +1,54 @@
+use super::*;
+use shell_contract::hosts::OwnedEffectsHost;
+use crate::tabs::owned_saved::SavedAuthority;
+
+pub enum DocsExportCloseOutcome { Closed, Retained }
+
+impl TabsState {
+    pub fn prepare_html_docx_export_owned(&self,path:&std::path::Path,origin:NativeRequestOwner,destination:NativeRequestOwner,cancel:CancelToken,pending:CancelToken,effects:OwnedEffectsHost,done:Box<dyn FnOnce(Result<bool,String>)>) {
+        use main_core::shell::tab_manager::TabKind;
+        use shell_contract::runtime::Views;
+        let authority = SavedAuthority::new(origin,destination,Vec::new(),cancel,pending,effects);
+        if let Err(error) = authority.check() { return done(Err(error)); }
+        let path = path.to_string_lossy().into_owned();
+        let selection = self.with_manager(|manager,_| {
+            let stale = manager.find_tab_of_kind_by_path(TabKind::Docs,Some(&path))?;
+            let view = manager.web_contents_for_tab(&stale)?;
+            let active = manager.list().into_iter().find(|tab| tab.active && tab.id != stale)
+                .and_then(|tab| manager.web_contents_for_tab(&tab.id).map(|view| (tab.id,view)));
+            Some((stale,view,active))
+        }).flatten();
+        let Some((stale,view,active)) = selection else { return done(Ok(true)); };
+        let capture = |view| {
+            let epoch = self.services.views.renderer_generation(view).ok_or("The captured export tab is unavailable")?;
+            authority.effects.capture_owner(view,&epoch)
+        };
+        let native = match capture(view) { Ok(native)=>native,Err(error)=>return done(Err(error)) };
+        let target = match shell_contract::editors::editor_for(&self.provided,view)
+            .ok_or_else(|| "The stale Docs editor is unavailable".to_owned())
+            .and_then(|editor| editor.capture_document_owner(view,native).map_err(|error| error.to_string())) {
+            Ok(target)=>target,Err(error)=>return done(Err(error)),
+        };
+        let active = match active.map(|(id,view)| capture(view).map(|owner|(id,owner))).transpose() {
+            Ok(active)=>active,Err(error)=>return done(Err(error)),
+        };
+        let state = self.this.clone();
+        let retained = authority.clone();
+        self.close_docs_owned_many(&stale,authority.origin,authority.destination,target,authority.cancel,authority.pending,authority.effects,Box::new(move |result| {
+            if let Err(error) = result { return done(Err(error)); }
+            let Some(state) = state.upgrade() else { return done(Ok(true)); };
+            let finish_state = state.this.clone();
+            let finish = Box::new(move |result:Result<(),String>| {
+                if let Err(error) = result { return done(Err(error)); }
+                let ready = finish_state.upgrade().and_then(|state| state.with_manager(|manager,_| {
+                    manager.find_tab_of_kind_by_path(TabKind::Docs,Some(&path)).is_none()
+                })).unwrap_or(true);
+                done(Ok(ready));
+            });
+            match active {
+                Some((id,active)) if state.shell_window().is_some() => state.activate_loaded_owned_many(&id,retained.origin,active,vec![retained.destination],retained.cancel,retained.pending,finish),
+                _ => finish(Ok(())),
+            }
+        }));
+    }
+}

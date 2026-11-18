@@ -167,7 +167,8 @@ const saveWaiters = new Map<number, (ok: boolean) => void>()
 /** Every live map view, for the copies the OS session end asks for */
 const contentsByWc = new Map<number, WebContents>()
 /** Copies asked for at the OS session end, resolved when the renderer reports it wrote one */
-const copyNowWaiters = new Map<number, () => void>()
+const copyNowWaiters = new Map<number, { generation: number; finish: (error: string | null) => void }>()
+let nextCopyNowGeneration = 0
 /** How long the OS session end waits for one view's copy */
 const COPY_NOW_TIMEOUT_MS = 5000
 
@@ -394,32 +395,42 @@ export function mindmapRecoveryIdentity(webContentsId: number): RecoveryIdentity
 
 /**
  * The OS is ending the session: every map view with unsaved changes writes a
- * copy now, without any question. Resolves when each has answered or its
- * time ran out; never throws.
+ * copy now. Rejects if a view closes, times out, or cannot write its copy.
  */
 export async function writeMindmapCopiesNow(timeoutMs = COPY_NOW_TIMEOUT_MS): Promise<void> {
   const waits: Promise<void>[] = []
   for (const [wcId, contents] of contentsByWc) {
-    if (contents.isDestroyed() || !dirtyByWc.has(wcId) || !mayWrite(wcId)) continue
-    waits.push(
-      new Promise<void>((resolve) => {
-        const finish = (): void => {
-          clearTimeout(timer)
-          if (copyNowWaiters.get(wcId) === finish) copyNowWaiters.delete(wcId)
-          resolve()
-        }
-        const timer = setTimeout(finish, timeoutMs)
-        copyNowWaiters.get(wcId)?.()
-        copyNowWaiters.set(wcId, finish)
-        try {
-          contents.send(MINDMAP_CHANNELS.recoveryCopyNow)
-        } catch {
-          finish()
-        }
-      }),
-    )
+    if (!dirtyByWc.has(wcId) || !mayWrite(wcId)) continue
+    if (contents.isDestroyed()) {
+      waits.push(Promise.reject(new Error('The mindmap view was closed')))
+      continue
+    }
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+    const generation = ++nextCopyNowGeneration
+    let settled = false
+    const finish = (error: string | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (copyNowWaiters.get(wcId)?.generation === generation) copyNowWaiters.delete(wcId)
+      if (error === null) resolve()
+      else reject(new Error(error))
+    }
+    const timer = setTimeout(() => finish('Timed out writing the mindmap recovery copy'), timeoutMs)
+    copyNowWaiters.get(wcId)?.finish('Mindmap recovery request was replaced')
+    copyNowWaiters.set(wcId, { generation, finish })
+    try {
+      contents.send(MINDMAP_CHANNELS.recoveryCopyNow, generation)
+    } catch (error: unknown) {
+      finish(error instanceof Error ? error.message : String(error))
+    }
+    waits.push(promise)
   }
-  await Promise.all(waits)
+  const results = await Promise.allSettled(waits)
+  const failed = results.find((result) => result.status === 'rejected')
+  if (failed?.status === 'rejected') throw failed.reason
 }
 
 /**
@@ -801,7 +812,10 @@ function registerMindmapIpc(): void {
     },
   )
 
-  ipcMain.on(MINDMAP_CHANNELS.recoveryCopyNowDone, (e) => copyNowWaiters.get(e.sender.id)?.())
+  ipcMain.on(MINDMAP_CHANNELS.recoveryCopyNowDone, (e, generation: unknown, error: unknown) => {
+    const waiter = copyNowWaiters.get(e.sender.id)
+    if (waiter && generation === waiter.generation && (error === null || typeof error === 'string')) waiter.finish(error)
+  })
 
   // the AI panel's attachments and the provisional name of an untitled map (T12)
   registerMindmapAiIpc({ hasFile: (wcId) => savePathByWc.has(wcId) })
@@ -865,11 +879,14 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
     if (url !== wc.getURL()) event.preventDefault()
   })
   // a crashed view's recovery copies outlive it: the shell reopens the map from them
-  wc.on('render-process-gone', () => viewCrashed(wcId))
+  wc.on('render-process-gone', () => {
+    viewCrashed(wcId)
+    copyNowWaiters.get(wcId)?.finish('The mindmap renderer crashed')
+  })
   wc.once('destroyed', () => {
     viewGone(wcId, dirtyByWc.has(wcId))
     contentsByWc.delete(wcId)
-    copyNowWaiters.get(wcId)?.()
+    copyNowWaiters.get(wcId)?.finish('The mindmap view was closed')
     openPathByWc.delete(wcId)
     allowedByWc.delete(wcId)
     savePathByWc.delete(wcId)

@@ -68,6 +68,8 @@ function pathsOf(raw: unknown, items: readonly DocListItem[] | null): string[] {
 
 export function createDocPicker(deps: DocPickerDeps) {
   let win: BrowserWindow | null = null
+  let generation = 0
+  let shownGeneration = 0
   let settle: ((result: DocAttachResult) => void) | null = null
   /** the items of the list the window last read; ids are validated against it */
   let lastItems: DocListItem[] | null = null
@@ -85,8 +87,14 @@ export function createDocPicker(deps: DocPickerDeps) {
   }
 
   ipcMain.handle(DOC_PICKER_CHANNELS.getInit, (event): DocPickerInit | null =>
-    fromWindow(event) ? { lang: deps.lang(), theme: deps.theme() } : null,
+    fromWindow(event) ? { lang: deps.lang(), theme: deps.theme(), readyToken: String(generation) } : null,
   )
+  ipcMain.handle(DOC_PICKER_CHANNELS.ready, (event, token: unknown) => {
+    if (fromWindow(event) && token === String(generation) && shownGeneration !== generation) {
+      shownGeneration = generation
+      win?.show()
+    }
+  })
   ipcMain.handle(DOC_PICKER_CHANNELS.list, async (event): Promise<DocListResult> => {
     if (!fromWindow(event)) return { ok: false, kind: 'unavailable' }
     const result = await deps.list(asker)
@@ -166,6 +174,7 @@ export function createDocPicker(deps: DocPickerDeps) {
         sandbox: true,
       },
     })
+    generation++
     win = next
     lastItems = null
     asker = from
@@ -176,7 +185,6 @@ export function createDocPicker(deps: DocPickerDeps) {
       return { action: 'deny' }
     })
     const result = new Promise<DocAttachResult>((resolve) => (settle = resolve))
-    next.once('ready-to-show', () => next.show())
     next.on('closed', () => {
       if (win === next) win = null
       lastItems = null

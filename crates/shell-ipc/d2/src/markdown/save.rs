@@ -3,8 +3,10 @@
 //! `takeSaveAsExportTarget`, `readRemoteImage`, the settings file of the
 //! image host) and `apps/markdown/src/shared/export-image-mime.ts`.
 //!
-//! The plain save runs inline as in the HTML editor; prints, conversions and
-//! the network run on workers.
+//! Request-owned saves and exports stage filesystem work off core and retain
+//! separate initiating-request and destination-document authority through completion.
+
+mod owned;
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -234,10 +236,13 @@ struct Md {
     shell: MarkdownShellHost,
     services: Services,
     save_as: ViewMap<Approved>,
+    owned_approvals:ViewMap<owned::Approved>,
+    owned_images:Rc<RefCell<std::collections::HashMap<String,owned::Image>>>,
     images: Rc<RefCell<ImageExportSessions>>,
     /// `conversionSessionPromise`: made once per run; a failure stays, as the rejected promise did
     conversion: RefCell<Option<Result<String, String>>>,
 }
+enum ResolvedTarget { DefaultDirectory, Picked(Option<String>), Dialog(JsObject<JsonValue>) }
 
 impl Md {
     fn lang(&self) -> String {
@@ -348,11 +353,12 @@ impl Md {
         suggested: Option<&str>,
         offer_exports: bool,
         default_name: Option<&str>,
-    ) -> Result<Option<String>, shell_contract::IpcError> {
+        owned: Option<&crate::html::text_doc::OwnedSave>,
+    ) -> Result<ResolvedTarget, shell_contract::IpcError> {
         let docs = &self.e.docs;
         let current = docs.save_path(view);
         if !save_as && let Some(current) = &current {
-            return Ok(Some(current.clone()));
+            return Ok(ResolvedTarget::Picked(Some(current.clone())));
         }
         // AI auto-naming: silent first save of an untitled document
         if !save_as
@@ -361,14 +367,14 @@ impl Md {
         {
             let base = file_name_base(suggested);
             if !base.is_empty() {
-                let dir = docs.default_save_dir()?;
+                let dir=match owned{Some(owner)=>match owner.default_directory(){Some(path)=>path.to_owned(),None=>return Ok(ResolvedTarget::DefaultDirectory)},None=>docs.default_save_dir()?};
                 let mut target = join(&[&dir, &format!("{base}.md")]);
                 let mut n = 1;
                 while Path::new(&target).exists() {
                     target = join(&[&dir, &format!("{base}-{n}.md")]);
                     n += 1;
                 }
-                return Ok(Some(target));
+                return Ok(ResolvedTarget::Picked(Some(target)));
             }
         }
         let lang = self.lang();
@@ -382,7 +388,7 @@ impl Md {
             (None, Some(recovered)) => dirname(recovered),
             (None, None) => match self.shell.new_document_dir(view) {
                 Some(dir) => dir.to_string_lossy().into_owned(),
-                None => docs.default_save_dir()?,
+                None => match owned{Some(owner)=>match owner.default_directory(){Some(path)=>path.to_owned(),None=>return Ok(ResolvedTarget::DefaultDirectory)},None=>docs.default_save_dir()?},
             },
         };
         let proposed = default_name.map(file_name_base).unwrap_or_default();
@@ -418,29 +424,28 @@ impl Md {
                 vec!["png"],
             ));
         }
-        let picked = docs.save_dialog(
-            view,
-            dialog_options(
-                Some(tr(&lang, "Save Markdown Document", "Markdown 문서 저장")),
-                Some(suggested_path),
-                &filters,
-                &[],
-            ),
-            None,
+        let options=dialog_options(
+            Some(tr(&lang, "Save Markdown Document", "Markdown 문서 저장")),
+            Some(suggested_path),
+            &filters,
+            &[],
         );
+        if owned.is_some() {return Ok(ResolvedTarget::Dialog(options))}
+        let picked=docs.save_dialog(view,options,None);
         // a dialog that does not add the chosen type's extension leaves a
         // bare name: the default type is Markdown
-        Ok(picked.map(|p| {
+        Ok(ResolvedTarget::Picked(picked.map(|p| {
             if extname(&p).is_empty() {
                 format!("{p}.md")
             } else {
                 p
             }
-        }))
+        })))
     }
 
     /// `markdown:save`
-    fn save(self: &Rc<Self>, view: ViewId, request: &IpcValue, done: Exported) {
+    fn save(self: &Rc<Self>, view: ViewId, request: &IpcValue, mut owned: Option<crate::html::text_doc::OwnedSave>, resolved: Option<(String,bool)>, project_checked: bool, conflict_checked:bool, done: Exported) {
+        if let Some(owner)=&owned {if let Err(error)=owner.check_document(&self.e.docs,view){return done(failure(error))}}
         let docs = &self.e.docs;
         let IpcValue::String(text) = field(request, "text") else {
             return done(failure("markdown: bad save request"));
@@ -453,7 +458,8 @@ impl Md {
                 .collect(),
             _ => return done(failure("markdown: bad image references")),
         };
-        let save_as = kit::as_str(field(request, "mode")) == Some("saveAs");
+        let forced=owned.as_ref().and_then(|owner|owner.target()).map(|p|p.to_string_lossy().into_owned());
+        let save_as=forced.is_none()&&owned.as_ref().map_or_else(||kit::as_str(field(request,"mode"))==Some("saveAs"),crate::html::text_doc::OwnedSave::is_save_as);
         let auto = matches!(field(request, "auto"), IpcValue::Bool(true));
         // Save As › PDF (rendered documents only): the print HTML of the screen
         let pdf_html = match field(request, "pdfHtml") {
@@ -463,7 +469,16 @@ impl Md {
         let holds_hidden = matches!(field(request, "holdsHiddenContent"), IpcValue::Bool(true));
         let path_at_request = docs.save_path(view);
         let recovery_at_request = docs.recovery().identity_of(view);
-        if !save_as
+        if !conflict_checked && !save_as {
+            if let (Some(owner),Some(path))=(&owned,&path_at_request){
+                let me=Rc::clone(self);let input=request.clone();
+                return docs.conflict_stops_save_owned(view,path.clone(),auto,owner.clone(),move|stops|match stops{
+                    Err(error)=>done(failure(error)),Ok(true)=>done(failure("external-modified")),
+                    Ok(false)=>me.save(view,&input,owned,resolved,project_checked,true,done),
+                });
+            }
+        }
+        if owned.is_none() && !save_as
             && let Some(path) = &path_at_request
             && docs.conflict_stops_save(view, path, auto)
         {
@@ -474,37 +489,66 @@ impl Md {
             .map(pending_owned_assets_for_document)
             .unwrap_or_default();
         let suggested = kit::as_str(field(request, "suggestedName")).map(str::to_owned);
+        if !project_checked && resolved.is_none() && forced.is_none() && path_at_request.is_none() && !save_as {
+            if let (Some(owner),Some(suggested))=(&owned,&suggested){
+                let base=file_name_base(suggested);
+                if !base.is_empty(){
+                    let shell=self.shell.clone();let owner=owner.clone();let file_name=format!("{base}.md");let bytes=text.as_bytes().to_vec();
+                    let me=Rc::clone(self);let input=request.clone();
+                    let admission=owner.publication_admission(&self.services);
+                    return kit::on_worker(&self.services,move||shell.write_new_document_owned(owner.origin(),owner.destination(),&owner.cancel(),&owner.pending(),owner.effects(),admission,&file_name,&bytes),move|placed|match placed{
+                        Err(error)=>done(failure(error)),Ok(path)=>me.save(view,&input,owned,path.map(|p|(p.to_string_lossy().into_owned(),true)),true,true,done),
+                    });
+                }
+            }
+        }
         let placed = match (&suggested, &path_at_request) {
+            _ if resolved.is_some() || forced.is_some() || owned.is_some()=>None,
             (Some(suggested), None) if !save_as => {
                 let base = file_name_base(suggested);
                 if base.is_empty() {
                     None
                 } else {
-                    self.shell
-                        .write_new_document(view, &format!("{base}.md"), text.as_bytes())
-                        .map(|p| p.to_string_lossy().into_owned())
+                    match self.shell.write_new_document(view, &format!("{base}.md"), text.as_bytes()) {
+                        Ok(path) => path.map(|p| p.to_string_lossy().into_owned()),
+                        Err(error) => return done(failure(error)),
+                    }
                 }
             }
             _ => None,
         };
         let default_name = kit::as_str(field(request, "defaultName")).map(str::to_owned);
-        let target = match &placed {
-            Some(placed) => placed.clone(),
-            None => {
+        let target = match (&resolved,&forced,&placed) {
+            (Some((path,_)),_,_)=>path.clone(),
+            (_,Some(path),_)=>path.clone(),
+            (_,_,Some(placed))=>placed.clone(),
+            _ => {
                 let resolved = self.resolve_save_target(
                     view,
                     save_as,
                     suggested.as_deref(),
                     pdf_html.is_some(),
                     default_name.as_deref(),
+                    owned.as_ref(),
                 );
                 match resolved {
                     Err(error) => return done(failure(error.message)),
-                    Ok(None) => return done(canceled()),
-                    Ok(Some(p)) if p.is_empty() => {
+                    Ok(ResolvedTarget::Picked(None)) => return done(canceled()),
+                    Ok(ResolvedTarget::DefaultDirectory)=>{
+                        let owner=owned.clone().expect("owned default directory");let me=Rc::clone(self);let input=request.clone();
+                        return docs.prepare_default_directory_owned(owner,move|prepared|match prepared{Err(error)=>done(failure(error)),Ok(())=>me.save(view,&input,owned,None,project_checked,conflict_checked,done)});
+                    }
+                    Ok(ResolvedTarget::Dialog(options))=>{
+                        let me=Rc::clone(self);let input=request.clone();let owner=owned.clone().expect("owned save dialog");
+                        return docs.save_dialog_owned(view,options,owner,move|picked|match picked{
+                            Err(error)=>done(failure(error)),Ok(None)=>done(canceled()),
+                            Ok(Some(path))=>{let path=if extname(&path).is_empty(){format!("{path}.md")}else{path};me.save(view,&input,owned,Some((path,false)),true,true,done)}
+                        });
+                    }
+                    Ok(ResolvedTarget::Picked(Some(p))) if p.is_empty() => {
                         return done(failure("markdown: no save target"));
                     }
-                    Ok(Some(p)) => p,
+                    Ok(ResolvedTarget::Picked(Some(p))) => p,
                 }
             }
         };
@@ -513,6 +557,9 @@ impl Md {
             // a document holding content hidden from AI is not printed here: a
             // PDF cannot keep the mark, so the renderer asks first, as for Word and ODT
             if ext == ".pdf" && !holds_hidden {
+                if let Some(owner)=owned.take(){
+                    return self.write_pdf_owned(view,html,target,owner,Box::new(move|written|done(if saved_ok(&written){obj([("ok",true.into_ipc()),("path",field(&written,"path").clone()),("exported","pdf".into_ipc())])}else{written})));
+                }
                 // Save As › PDF: a rendered copy of the screen; the document
                 // keeps its path, unsaved edits and assets
                 return self.write_pdf(
@@ -543,13 +590,12 @@ impl Md {
                 // Save As › Word, ODT, page images or the PDF of a marked
                 // document: the renderer builds the copy and writes it to this
                 // approved path
-                self.save_as.insert(
-                    view,
-                    Approved {
-                        format,
-                        path: target.clone(),
-                    },
-                );
+                if let Some(owner)=owned.take(){
+                    let approved=owned::Approved{format,path:Some(target.clone()),owner:owner.clone()};
+                    if let Err(error)=owner.effect(docs,||{self.owned_approvals.insert(view,approved);Ok(())}){return done(failure(error))}
+                }else{
+                    self.save_as.insert(view,Approved{format,path:target.clone()});
+                }
                 return done(obj([
                     ("ok", true.into_ipc()),
                     ("path", target.into_ipc()),
@@ -557,17 +603,41 @@ impl Md {
                 ]));
             }
         }
-        done(self.write_save(
+        if let Some(owner)=owned.take(){
+            let input=crate::html::text_doc::owned_write::Input{html:false,view,text:text.clone(),image_sources,current:path_at_request.clone(),target:target.clone(),placed:resolved.as_ref().is_some_and(|(_,placed)|*placed)||placed.is_some(),save_as,pending:pending_at_request};
+            let shell=self.shell.clone();let changed=path_at_request.as_deref()!=Some(target.as_str());let finish=owner.clone();
+            let acknowledged=Rc::clone(docs);
+            return docs.write_owned(input,recovery_at_request,owner,move|result|{
+                let result=match result{Ok(result)=>result,Err(error)=>return done(failure(error))};
+                if changed{
+                    let authority=finish.authority().clone();let selected=match finish.native_destination(){Ok(selected)=>selected,Err(error)=>return done(failure(error))};
+                    let participants=finish.captured_participants();let additional=finish.callback_cancels();let cancel=finish.cancel();let pending=finish.pending();let effects=finish.effects().clone();let destination=finish.destination().clone();
+                    let callback=Box::new(move|saved|match saved{
+                        Err(error)=>done(failure(error)),
+                        Ok(saved)=>acknowledged.finish_saved_owned(view,saved,&finish,move|published|match published{
+                            Err(error)=>done(failure(error)),Ok(path)=>{let mut result=result;if let IpcValue::Object(entries)=&mut result{if let Some((_,value))=entries.iter_mut().find(|(key,_)|key=="path"){*value=path.to_string_lossy().into_owned().into_ipc();}}done(result)}
+                        }),
+                    });
+                    return match authority{
+                        crate::html::text_doc::SaveAuthority::Renderer(origin)=>shell.file_saved_owned(origin,destination,participants,cancel,pending,additional,effects,target.into(),callback),
+                        crate::html::text_doc::SaveAuthority::Native(_)=>match selected{Some(selected)=>shell.file_saved_native(selected,participants,cancel,pending,additional,effects,callback),None=>callback(Err("native save destination was not selected".into()))},
+                    };
+                }
+                done(result)
+            });
+        }
+        let result=self.write_save(
             view,
             text,
             image_sources,
             &path_at_request,
             &target,
-            placed.is_some(),
+            resolved.as_ref().is_some_and(|(_,placed)|*placed) || placed.is_some(),
             save_as,
             &pending_at_request,
             recovery_at_request.as_ref(),
-        ))
+        );
+        done(result)
     }
 
     #[allow(
@@ -586,6 +656,7 @@ impl Md {
         pending_at_request: &[String],
         recovery_before: Option<&RecoveryIdentity>,
     ) -> IpcValue {
+        let docs=&self.e.docs;
         let references = match extract_markdown_image_sources(text) {
             Ok(r) => r,
             Err(e) => return failure(e.message),
@@ -597,7 +668,7 @@ impl Md {
         }
         let prepared = match current {
             Some(current) if resolve(&[&dirname(current)]) != resolve(&[&dirname(target)]) => {
-                match prepare_assets_for_save_as(current, target, text, &image_sources) {
+                match prepare_assets_for_save_as(current,target,text,&image_sources) {
                     Ok(p) => Some(p),
                     Err(e) => return failure(e.message),
                 }
@@ -609,15 +680,11 @@ impl Md {
             .as_ref()
             .map_or_else(|| image_sources.clone(), |p| p.image_sources.clone());
         // a note placed in the project was written by the project's write guard
-        if !placed && let Err(error) = atomic_write_file(target, text_to_write.as_bytes()) {
-            if let Some(p) = &prepared {
-                let _ = rollback_prepared_save_as_assets(p);
-            }
+        if !placed && let Err(error)=atomic_write_file(target,text_to_write.as_bytes()) {
+            if let Some(plan)=&prepared {let _=rollback_prepared_save_as_assets(plan);}
             return failure(error.message);
         }
-        self.e
-            .docs
-            .saved_to(view, current.as_deref(), target, recovery_before);
+        docs.saved_to(view,current.as_deref(),target,recovery_before);
         let pending_names: Vec<String> = match (&prepared, current) {
             (Some(p), _) => p.created.iter().map(|r| r.name.clone()).collect(),
             (None, Some(current)) if resolve(&[current]) == resolve(&[target]) => {
@@ -625,7 +692,7 @@ impl Md {
             }
             _ => Vec::new(),
         };
-        let reconciled = reconcile_owned_assets(target, &saved_sources, Some(&pending_names));
+        let reconciled=reconcile_owned_assets(target,&saved_sources,Some(&pending_names));
         if !reconciled.errors.is_empty() {
             eprintln!(
                 "[markdown] asset reconciliation incomplete: {:?}",
@@ -636,7 +703,7 @@ impl Md {
             && let Some(current) = current
             && resolve(&[current]) != resolve(&[target])
         {
-            let resolved = resolve_source_pending_after_save_as(current, pending_at_request);
+            let resolved=resolve_source_pending_after_save_as(current,pending_at_request);
             if !resolved.errors.is_empty() {
                 eprintln!(
                     "[markdown] source asset reconciliation incomplete: {:?}",
@@ -696,7 +763,7 @@ impl Md {
     }
 
     /// `askMarkedExport(format, show)`: `format` is `odt`, `pdf` or `png`
-    fn ask_marked_export(&self, view: ViewId, format: &str) -> MarkedOdtChoice {
+    fn marked_export_options(&self, format:&str)->shell_contract::hosts::MessageBox{
         let lang = self.lang();
         let file_detail = || {
             tr(
@@ -762,7 +829,11 @@ impl Md {
             clear_marks,
             cancel: tr(&lang, "Cancel", "취소"),
         });
-        marked_odt_choice(self.e.docs.message(view, &marked_box(&b)) as f64, true)
+        marked_box(&b)
+    }
+
+    fn ask_marked_export(&self,view:ViewId,format:&str)->MarkedOdtChoice{
+        marked_odt_choice(self.e.docs.message(view,&self.marked_export_options(format)) as f64,true)
     }
 
     /// the save dialog of an export, with the default save folder as fallback
@@ -819,11 +890,15 @@ pub(super) fn entries(
         shell,
         services: services.clone(),
         save_as: ViewMap::new(services),
+        owned_approvals:ViewMap::new(services),
+        owned_images:Rc::default(),
         images: Rc::default(),
         conversion: RefCell::default(),
     });
     {
         let images = Rc::clone(&md.images);
+        let owned_images=md.owned_images.clone();let cleanup_services=services.clone();
+        editors.docs.on_destroyed(move|view|owned::dispose_images(&cleanup_services,&owned_images,view));
         editors.docs.on_destroyed(move |view| {
             if let Err(error) = images.borrow_mut().dispose(f64::from(view.0)) {
                 eprintln!("[markdown] image export cleanup: {}", error.message);
@@ -837,14 +912,19 @@ pub(super) fn entries(
         "markdown:save",
         move |cx, args, responder| {
             let view = cx.sender.view;
-            let waiter = m.e.docs.take_save_waiter(view);
+            let owned=match m.e.docs.take_owned_save_from_call(cx){Ok(owner)=>owner,Err(error)=>return responder.reply(Ok(failure(error)))};
+            let is_owned=owned.is_some();
+            let waiter=if is_owned{None}else{m.e.docs.take_save_waiter(view)};
+            let completing=Rc::clone(&m);
             let done: Exported = Box::new(move |result| {
-                if let Some(waiter) = waiter {
-                    waiter(saved_ok(&result))
-                }
+                if is_owned {
+                    if !matches!(field(&result,"exportAs"),IpcValue::String(_)){
+                        completing.finish_owned(view,result.clone());
+                    }
+                }else if let Some(waiter)=waiter{waiter(saved_ok(&result));}
                 responder.reply(Ok(result))
             });
-            m.save(view, args.get(0), done)
+            m.save(view, args.get(0), owned, None, false, false, done)
         },
     ));
 
@@ -991,6 +1071,9 @@ pub(super) fn entries(
             let title = tr(&m.lang(), "Save Image", "이미지 저장");
             let parent = m.e.docs.window_of(cx.sender.view).map(Parent);
             let engine = m.engine.clone();
+            let view = cx.sender.view;
+            let cancel = cx.cancel.clone();
+            let fetch_cancel = cancel.clone();
             let fetched = src.clone();
             let m = Rc::clone(&m);
             // the fetch runs on a worker; the dialog and the write run on the
@@ -999,10 +1082,13 @@ pub(super) fn entries(
             kit::on_worker(
                 &m.services.clone(),
                 move || {
-                    let mut fetch = |url: &str| engine.net_fetch(url);
+                    let mut fetch = |url: &str| engine.net_fetch(view, url, &fetch_cancel);
                     fetch_image_for_save(&fetched, &mut fetch)
                 },
                 move |image| {
+                    if cancel.is_cancelled() {
+                        return responder.reply(Ok(obj([("ok", false.into_ipc())])));
+                    }
                     let saved = match image {
                         Ok(image) => {
                             let memory = m.e.docs.memory();
@@ -1064,6 +1150,7 @@ pub(super) fn entries(
         move |cx, args, responder| {
             let view = cx.sender.view;
             let request = args.get(0);
+            if m.owned_approvals.get(view).is_some(){return m.export_owned_followup(cx,"docx",request,responder)}
             let base64 = match field(request, "base64") {
                 IpcValue::String(s) if !s.is_empty() => s.clone(),
                 _ => return responder.reply(Ok(failure("markdown: bad export request"))),
@@ -1136,6 +1223,7 @@ pub(super) fn entries(
         move |cx, args, responder| {
             let view = cx.sender.view;
             let request = args.get(0);
+            if m.owned_approvals.get(view).is_some(){return m.export_owned_followup(cx,"odt",request,responder)}
             let base64 = match field(request, "base64") {
                 IpcValue::String(s) if !s.is_empty() => s.clone(),
                 _ => return responder.reply(Ok(failure("markdown: bad export request"))),
@@ -1193,23 +1281,24 @@ pub(super) fn entries(
     // a document with content hidden from AI is not written as ODT, PDF or page
     // images: one box with the two ways out; the renderer carries the answer out
     let m = Rc::clone(&md);
-    out.push(kit::invoke(
+    out.push(kit::invoke_later(
         "markdown:confirm-marked-export",
-        move |cx, args| {
-            // a headless export has no one to ask: nothing is written
-            if m.e.docs.is_headless() {
-                return Ok("cancel".into_ipc());
-            }
+        move |cx, args, responder| {
             let format = match kit::as_str(args.get(0)) {
                 Some(f @ ("odt" | "pdf" | "png")) => f,
-                _ => return Ok("cancel".into_ipc()),
+                _ => return responder.reply(Ok("cancel".into_ipc())),
             };
-            Ok(match m.ask_marked_export(cx.sender.view, format) {
+            if m.owned_approvals.get(cx.sender.view).is_some(){return m.confirm_owned(cx,format,responder)}
+            // a headless export has no one to ask: nothing is written
+            if m.e.docs.is_headless() {
+                return responder.reply(Ok("cancel".into_ipc()));
+            }
+            responder.reply(Ok(match m.ask_marked_export(cx.sender.view, format) {
                 MarkedOdtChoice::Docx => "docx",
                 MarkedOdtChoice::Clear => "clear",
                 MarkedOdtChoice::Cancel => "cancel",
             }
-            .into_ipc())
+            .into_ipc()))
         },
     ));
 
@@ -1219,6 +1308,7 @@ pub(super) fn entries(
         move |cx, args, responder| {
             let view = cx.sender.view;
             let request = args.get(0);
+            if m.owned_approvals.get(view).is_some(){return m.export_owned_followup(cx,"pdf",request,responder)}
             let html = match field(request, "html") {
                 IpcValue::String(h) if !h.is_empty() => h.clone(),
                 _ => return responder.reply(Ok(failure("markdown: bad export request"))),
@@ -1259,7 +1349,11 @@ pub(super) fn entries(
                     }
                 }
             };
-            m.write_pdf(html, target, reply_with(responder))
+            match m.e.docs.capture_headless_publication(cx,&target,"pdf") {
+                Err(error)=>responder.reply(Err(error)),
+                Ok(Some(publication))=>m.write_pdf_invocation(html,target,publication,reply_with(responder)),
+                Ok(None)=>m.write_pdf(html,target,reply_with(responder)),
+            }
         },
     ));
 
@@ -1270,6 +1364,7 @@ pub(super) fn entries(
             let view = cx.sender.view;
             let owner = f64::from(view.0);
             let request = args.get(0);
+            if m.owned_approvals.get(view).is_some(){return m.prepare_images_owned(cx,request,responder)}
             let html = match field(request, "html") {
                 IpcValue::String(h) if !h.is_empty() => h.clone(),
                 _ => return responder.reply(Ok(failure("Empty document"))),
@@ -1352,9 +1447,11 @@ pub(super) fn entries(
     ));
 
     let m = Rc::clone(&md);
-    out.push(kit::invoke(
+    out.push(kit::invoke_later(
         "markdown:write-export-image",
-        move |cx, args| {
+        move |cx, args, responder| {
+            let id=args.str(0).unwrap_or_default();
+            if m.owns_image(id){return m.write_image_owned(cx,id,args.num(1).unwrap_or(f64::NAN),args.str(2),responder)}
             let owner = f64::from(cx.sender.view.0);
             let written = m.images.borrow_mut().write(
                 owner,
@@ -1362,17 +1459,19 @@ pub(super) fn entries(
                 args.num(1).unwrap_or(f64::NAN),
                 args.str(2),
             );
-            Ok(match written {
+            responder.reply(Ok(match written {
                 Ok(()) => obj([("ok", true.into_ipc())]),
                 Err(error) => failure(error.message),
-            })
+            }))
         },
     ));
 
     let m = Rc::clone(&md);
-    out.push(kit::invoke(
+    out.push(kit::invoke_later(
         "markdown:finish-image-export",
-        move |cx, args| {
+        move |cx, args, responder| {
+            let id=args.str(0).unwrap_or_default();
+            if m.owns_image(id){return m.finish_image_owned(cx,id,args.bool(1)==Some(true),responder)}
             let owner = f64::from(cx.sender.view.0);
             let success = args.bool(1) == Some(true);
             let finished = m.images.borrow_mut().finish_export(
@@ -1380,14 +1479,14 @@ pub(super) fn entries(
                 args.str(0).unwrap_or_default(),
                 success,
             );
-            Ok(match finished {
+            responder.reply(Ok(match finished {
                 Ok(None) => canceled(),
                 Ok(Some(done)) => {
                     m.os.show_item_in_folder(Path::new(&done.first));
                     saved_at(&done.dir)
                 }
                 Err(error) => failure(error.message),
-            })
+            }))
         },
     ));
     Ok(out)
@@ -1396,7 +1495,7 @@ pub(super) fn entries(
 /// `readRemoteImage(url)`: downloaded here, behind the SSRF guard
 fn read_remote_image(engine: &MarkdownEngineHost, temp: &str, url: &str) -> IpcValue {
     let (mut resolver, mut fetcher) = (engine.resolver(), engine.fetcher());
-    let Some(mut resp) = fetch_remote_image(resolver.as_mut(), fetcher.as_mut(), temp, url, None)
+    let Some(mut resp) = fetch_remote_image(resolver.as_mut(), fetcher.as_mut(), temp, url, None, None)
     else {
         return IpcValue::Null;
     };

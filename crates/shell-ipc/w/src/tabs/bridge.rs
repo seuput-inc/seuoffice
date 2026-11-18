@@ -35,7 +35,7 @@ pub(super) enum Effect {
     /// `onSplitChanged`
     SplitChanged(Option<SplitViewState>),
     /// `dockHost.dock(tab)`
-    Dock(DetachedTab<ViewId>),
+    Dock(DetachedTab<ViewId, super::host::RetainedSpareBinding>),
 }
 
 pub(super) struct Bridge {
@@ -115,7 +115,7 @@ impl EditorCalls<ViewId> for Bridge {
     fn sheets_pending_edit_count(&mut self, wc_id: i64) -> f64 {
         self.hooks.sheets_pending_edit_count(wc_id)
     }
-    fn family_is_dirty(&mut self, kind: TabKind, wc_id: i64) -> bool {
+    fn family_is_dirty(&mut self, kind: TabKind, wc_id: i64) -> TabResult<bool> {
         self.hooks.family_is_dirty(kind, wc_id)
     }
     fn hwp_memo_modal_open(&mut self, wc_id: i64) -> bool {
@@ -142,7 +142,7 @@ impl EditorCalls<ViewId> for Bridge {
     }
 }
 
-impl TabHost<ViewId> for Bridge {
+impl TabHost<ViewId, super::host::RetainedSpareBinding> for Bridge {
     fn window_destroyed(&mut self) -> bool {
         self.shell_state().is_none_or(|s| s.destroyed)
     }
@@ -246,7 +246,7 @@ impl TabHost<ViewId> for Bridge {
     fn mark_docs_new_blank(&mut self, wc_id: i64) {
         self.hooks.mark_docs_new_blank(wc_id)
     }
-    fn queue_docs_ai_content(&mut self, wc_id: i64, content: &Value) {
+    fn queue_docs_ai_content(&mut self, wc_id: i64, content: &Value) -> TabResult<()> {
         self.hooks.queue_docs_ai_content(wc_id, content)
     }
     fn queue_docs_copy(&mut self, wc_id: i64, path: &str, name: &str) {
@@ -307,56 +307,56 @@ impl TabHost<ViewId> for Bridge {
 /// the readies of a page load are numbered above every opener's
 pub(super) const PAGE_READY_BASE: u64 = 1 << 32;
 
-impl DetachedHost<ViewId, WindowId> for Bridge {
-    fn create_window(&mut self, options: &WindowOptions) -> WindowId {
+impl DetachedHost<ViewId, super::window_snapshot::WindowReservation, super::host::RetainedSpareBinding> for Bridge {
+    fn create_window(&mut self, options: &WindowOptions) -> super::window_snapshot::WindowReservation {
         let window = self.windows.create_window(options);
-        self.created = Some(window);
+        self.created = Some(window.window());
         window
     }
-    fn win_destroyed(&mut self, win: &WindowId) -> bool {
-        self.windows.window_state(*win).destroyed
+    fn win_destroyed(&mut self, win: &super::window_snapshot::WindowReservation) -> bool {
+        self.windows.window_state(win.window()).destroyed
     }
-    fn win_minimized(&mut self, win: &WindowId) -> bool {
-        self.windows.window_state(*win).minimized
+    fn win_minimized(&mut self, win: &super::window_snapshot::WindowReservation) -> bool {
+        self.windows.window_state(win.window()).minimized
     }
-    fn win_focused(&mut self, win: &WindowId) -> bool {
-        self.windows.window_state(*win).focused
+    fn win_focused(&mut self, win: &super::window_snapshot::WindowReservation) -> bool {
+        self.windows.window_state(win.window()).focused
     }
-    fn win_restore(&mut self, win: &WindowId) {
-        self.windows.window_restore(*win)
+    fn win_restore(&mut self, win: &super::window_snapshot::WindowReservation) {
+        self.windows.window_restore(win.window())
     }
-    fn win_show(&mut self, win: &WindowId) {
-        self.windows.window_show(*win)
+    fn win_show(&mut self, win: &super::window_snapshot::WindowReservation) {
+        self.windows.window_show(win.window())
     }
-    fn win_show_inactive(&mut self, win: &WindowId) {
-        self.windows.window_show_inactive(*win)
+    fn win_show_inactive(&mut self, win: &super::window_snapshot::WindowReservation) {
+        self.windows.window_show_inactive(win.window())
     }
-    fn win_focus(&mut self, win: &WindowId) {
-        self.windows.window_focus(*win)
+    fn win_focus(&mut self, win: &super::window_snapshot::WindowReservation) {
+        self.windows.window_focus(win.window())
     }
-    fn win_destroy(&mut self, win: &WindowId) {
-        self.windows.window_destroy(*win)
+    fn win_destroy(&mut self, win: &super::window_snapshot::WindowReservation) {
+        self.windows.window_destroy(win.window())
     }
-    fn win_title(&mut self, win: &WindowId) -> String {
-        self.windows.window_state(*win).title
+    fn win_title(&mut self, win: &super::window_snapshot::WindowReservation) -> String {
+        self.windows.window_state(win.window()).title
     }
-    fn win_set_title(&mut self, win: &WindowId, title: &str) {
-        self.windows.window_set_title(*win, title)
+    fn win_set_title(&mut self, win: &super::window_snapshot::WindowReservation, title: &str) {
+        self.windows.window_set_title(win, title)
     }
-    fn win_content_bounds(&mut self, win: &WindowId) -> Rect {
-        self.windows.window_state(*win).content_bounds
+    fn win_content_bounds(&mut self, win: &super::window_snapshot::WindowReservation) -> Rect {
+        self.windows.window_state(win.window()).content_bounds
     }
-    fn win_position(&mut self, win: &WindowId) -> (f64, f64) {
-        self.windows.window_state(*win).position
+    fn win_position(&mut self, win: &super::window_snapshot::WindowReservation) -> (f64, f64) {
+        self.windows.window_state(win.window()).position
     }
-    fn win_set_position(&mut self, win: &WindowId, x: f64, y: f64) {
-        self.windows.window_set_position(*win, x, y)
+    fn win_set_position(&mut self, win: &super::window_snapshot::WindowReservation, x: f64, y: f64) {
+        self.windows.window_set_position(win.window(), x, y)
     }
-    fn content_add_child_view(&mut self, win: &WindowId, view: &ViewId) {
-        self.windows.add_child_view(*win, *view)
+    fn content_add_child_view(&mut self, win: &super::window_snapshot::WindowReservation, view: &ViewId) {
+        self.windows.add_child_view(win.window(), *view)
     }
-    fn content_remove_child_view(&mut self, win: &WindowId, view: &ViewId) {
-        self.windows.remove_child_view(*win, *view)
+    fn content_remove_child_view(&mut self, win: &super::window_snapshot::WindowReservation, view: &ViewId) {
+        self.windows.remove_child_view(win.window(), *view)
     }
     fn display_work_area(&mut self, at: (f64, f64)) -> Rect {
         self.windows.display_work_area(at)
@@ -380,7 +380,7 @@ impl DetachedHost<ViewId, WindowId> for Bridge {
         };
         self.send_to_shell("tabs:dock-preview", vec![value]);
     }
-    fn dock(&mut self, tab: DetachedTab<ViewId>) {
+    fn dock(&mut self, tab: DetachedTab<ViewId, super::host::RetainedSpareBinding>) {
         self.effects.push_back(Effect::Dock(tab));
     }
     fn on_detached_changed(&mut self) {

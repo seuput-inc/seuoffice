@@ -38,7 +38,7 @@ const common = {
   platform: 'browser',
   target: 'chrome140',
   alias: { electron: join(bridge, 'electron-entry.ts') },
-  inject: [join(bridge, 'process-shim.ts')],
+  inject: [join(bridge, 'process-shim.ts'), join(bridge, 'bootstrap.ts')],
   // `customConditions` of tsconfig.base.json: workspace packages by their source
   conditions: ['seuoffice-source'],
   define: { 'process.env.NODE_ENV': '"production"' },

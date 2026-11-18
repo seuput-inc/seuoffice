@@ -1,0 +1,487 @@
+# Private pinned CEF source patch. Native execution and final stack application remain unverified.
+diff --git a/libcef/renderer/native_v8_bridge.h b/libcef/renderer/native_v8_bridge.h
+--- a/libcef/renderer/native_v8_bridge.h
++++ b/libcef/renderer/native_v8_bridge.h
+@@ -28,6 +28,9 @@
+   bool Deliver(uint32_t callback, bool raw, const std::vector<uint8_t>& body);
+   bool DeliverChannel(uint32_t callback, uint64_t index, bool raw,
+                       const std::vector<uint8_t>& body, bool end);
++  bool Rebind(v8::Isolate* isolate, v8::Local<v8::Context> context,
++              CefRefPtr<CefNativeContextSender> sender, Mode mode);
++  bool RestoreReady();
+   void Release();
+   bool IsReleased() const;
+ 
+diff --git a/libcef/renderer/native_v8_bridge.cc b/libcef/renderer/native_v8_bridge.cc
+--- a/libcef/renderer/native_v8_bridge.cc
++++ b/libcef/renderer/native_v8_bridge.cc
+@@ -14,7 +14,7 @@
+ 
+ class CefNativeV8Bridge::State : public std::enable_shared_from_this<State> {
+  public:
+-  enum class Phase { kInitializing, kConsumed, kReady, kRetired };
++  enum class Phase { kInitializing, kConsumed, kReady, kRebinding, kRestoring, kRetired };
+   enum class Operation { kBootstrap, kInvoke, kListen, kSync };
+   struct Action { std::weak_ptr<State> owner; Operation operation; };
+ 
+@@ -103,12 +103,43 @@
+     phase_ = Phase::kReady;
+     return true;
+   }
++  bool Rebind(v8::Isolate* isolate, v8::Local<v8::Context> context,
++              CefRefPtr<CefNativeContextSender> sender, Mode mode) {
++    if (!Live() || phase_ != Phase::kReady || isolate != isolate_ ||
++        context.IsEmpty() || context_.IsEmpty() || context_.Get(isolate_) != context ||
++        mode != mode_ || resume_.IsEmpty() || !sender ||
++        sender.get() == sender_.get() || !sender->IsAdmitted()) return false;
++    v8::HandleScope handles(isolate_);
++    v8::Context::Scope entered(context);
++    v8::MicrotasksScope microtasks(isolate_, context->GetMicrotaskQueue(),
++                                   v8::MicrotasksScope::kDoNotRunMicrotasks);
++    phase_ = Phase::kRebinding;
++    sender_ = std::move(sender);
++    if (!ExactEntry() || !sender_->Listen()) { Release(); return false; }
++    v8::TryCatch caught(isolate_);
++    auto resume = resume_.Get(isolate_);
++    const auto result = resume->Call(context, v8::Undefined(isolate_), 0, nullptr);
++    if (!Live()) return false;
++    v8::Local<v8::Value> accepted;
++    if (!result.ToLocal(&accepted) || !accepted->IsTrue() || !ExactEntry()) {
++      Release(); return false;
++    }
++    phase_ = Phase::kRestoring;
++    return true;
++  }
++  bool RestoreReady() {
++    if (!Live() || phase_ != Phase::kRestoring || !sender_ || !sender_->IsAdmitted())
++      return false;
++    phase_ = Phase::kReady;
++    return true;
++  }
+   void Release() {
+     if (!Live()) return;
+     phase_ = Phase::kRetired;
+     for (const auto id : actions_) Actions().erase(id);
+     actions_.clear();
+     listener_.Reset();
++    resume_.Reset();
+     context_.Reset();
+     sender_ = nullptr;
+   }
+@@ -217,14 +248,18 @@
+       args.GetReturnValue().Set(object);
+       return;
+     }
+-    if (phase_ != Phase::kConsumed && phase_ != Phase::kReady) {
++    if (phase_ != Phase::kConsumed && phase_ != Phase::kReady &&
++        phase_ != Phase::kRebinding && phase_ != Phase::kRestoring) {
+       Fail(isolate_, "Native bridge is not initialized"); return;
+     }
+     if (operation == Operation::kListen) {
+-      if (args.Length() != 1 || !args[0]->IsFunction() || !listener_.IsEmpty()) {
++      if (phase_ != Phase::kConsumed || args.Length() != 2 ||
++          !args[0]->IsFunction() || !args[1]->IsFunction() ||
++          !listener_.IsEmpty() || !resume_.IsEmpty()) {
+         Fail(isolate_, "Invalid native stream listener"); return;
+       }
+       listener_.Reset(isolate_, args[0].As<v8::Function>());
++      resume_.Reset(isolate_, args[1].As<v8::Function>());
+       const auto sender = sender_;
+       if (!sender->Listen()) { Release(); Fail(isolate_, "Native stream refused"); }
+       return;
+@@ -235,6 +270,9 @@
+           !args[2]->IsUint32() || !String(args, 3, type) || !String(args, 4, key) ||
+           (type != "application/json" && type != "application/octet-stream")) {
+         Fail(isolate_, "Invalid native Tauri request"); return;
++      }
++      if (phase_ == Phase::kRebinding && cmd != "ipc_listen") {
++        Fail(isolate_, "Only the captured output stream may resume before thaw"); return;
+       }
+       std::string headers = "[]";
+       if (args.Length() == 7 && !String(args, 6, headers)) {
+@@ -249,8 +287,9 @@
+         Fail(isolate_, "Native Tauri request refused");
+       return;
+     }
+     std::string channel;
+-    if (mode_ != Mode::kPreload || args.Length() != 2 || !String(args, 0, channel)) {
++    if (phase_ == Phase::kRebinding || mode_ != Mode::kPreload ||
++        args.Length() != 2 || !String(args, 0, channel)) {
+       Fail(isolate_, "Invalid native synchronous request"); return;
+     }
+     CefRefPtr<CefBinaryValue> body;
+@@ -271,6 +310,7 @@
+   v8::Isolate* const isolate_;
+   v8::Global<v8::Context> context_;
+   v8::Global<v8::Function> listener_;
++  v8::Global<v8::Function> resume_;
+   CefRefPtr<CefNativeContextSender> sender_;
+   const Mode mode_;
+   Phase phase_ = Phase::kInitializing;
+@@ -294,5 +334,10 @@
+     const std::vector<uint8_t>& body, bool end) {
+   auto state = state_; return state->Deliver(callback, raw, body, index, end);
+ }
++bool CefNativeV8Bridge::Rebind(v8::Isolate* isolate, v8::Local<v8::Context> context,
++    CefRefPtr<CefNativeContextSender> sender, Mode mode) {
++  auto state = state_; return state->Rebind(isolate, context, std::move(sender), mode);
++}
++bool CefNativeV8Bridge::RestoreReady() { auto state = state_; return state->RestoreReady(); }
+ void CefNativeV8Bridge::Release() { auto state = state_; state->Release(); }
+ bool CefNativeV8Bridge::IsReleased() const { return !state_->Live(); }
+diff --git a/libcef/renderer/native_v8_bridge_test.h b/libcef/renderer/native_v8_bridge_test.h
+--- a/libcef/renderer/native_v8_bridge_test.h
++++ b/libcef/renderer/native_v8_bridge_test.h
+@@ -13,4 +13,13 @@
+ std::string CefRunNativeV8BridgeLifecycleTest(v8::Isolate* isolate,
+     v8::Local<v8::Context> context, CefRefPtr<CefNativeContextSender> sender,
+     CefNativeV8BridgeTestCase test_case);
++enum class CefNativeV8BridgeRestoreTestCase {
++  kAccepted, kDuplicateRebind, kWrongContext, kMissingResumeAck, kReentrantResumeRelease
++};
++// The native traffic fixture owns the retained initialized bridge and supplies
++// a real newly browser-admitted sender for this exact approved restore.
++std::string CefRunNativeV8BridgeRestoreTest(v8::Isolate* isolate,
++    v8::Local<v8::Context> context, std::shared_ptr<CefNativeV8Bridge> bridge,
++    CefRefPtr<CefNativeContextSender> sender, CefNativeV8Bridge::Mode mode,
++    CefNativeV8BridgeRestoreTestCase test_case);
+ #endif  // CEF_LIBCEF_RENDERER_NATIVE_V8_BRIDGE_TEST_H_
+diff --git a/libcef/renderer/native_v8_bridge_test.cc b/libcef/renderer/native_v8_bridge_test.cc
+--- a/libcef/renderer/native_v8_bridge_test.cc
++++ b/libcef/renderer/native_v8_bridge_test.cc
+@@ -75,10 +75,10 @@
+       !context->Global()->DefineOwnProperty(context, Text(isolate, "__releaseBridgeTest"), release).FromMaybe(false))
+     return "release hook installation failed";
+   const char* initialize = test_case == CefNativeV8BridgeTestCase::kDuplicateBootstrap
+-      ? "{const b=globalThis.__seuofficeNativeBridgeBootstrap;const n=b();delete globalThis.__seuofficeNativeBridgeBootstrap;let denied=false;try{b()}catch{denied=true}globalThis.__duplicateDenied=denied;n.listenTauri(()=>{}); }"
+-      : "{const n=globalThis.__seuofficeNativeBridgeBootstrap();globalThis.__testNative=n;delete globalThis.__seuofficeNativeBridgeBootstrap;n.listenTauri((id,raw,body)=>{if(id!==7||!raw||!(body instanceof ArrayBuffer)||body.byteLength!==0)throw new Error('invalid empty Raw');globalThis.__releaseBridgeTest()}); }";
++      ? "{const b=globalThis.__seuofficeNativeBridgeBootstrap;const n=b();delete globalThis.__seuofficeNativeBridgeBootstrap;let denied=false;try{b()}catch{denied=true}globalThis.__duplicateDenied=denied;n.listenTauri(()=>{},()=>true); }"
++      : "{const n=globalThis.__seuofficeNativeBridgeBootstrap();globalThis.__testNative=n;delete globalThis.__seuofficeNativeBridgeBootstrap;n.listenTauri((id,raw,body)=>{if(id!==7||!raw||!(body instanceof ArrayBuffer)||body.byteLength!==0)throw new Error('invalid empty Raw');globalThis.__releaseBridgeTest()},()=>true); }";
+   if (test_case == CefNativeV8BridgeTestCase::kMalformedBody)
+-    initialize = "{const n=globalThis.__seuofficeNativeBridgeBootstrap();delete globalThis.__seuofficeNativeBridgeBootstrap;let count=0;try{n.invokeTauri('ipc_send',1,2,'application/octet-stream','invalid',{})}catch{count++}try{n.sendSync('webframe:get-zoom-factor',null)}catch{count++}globalThis.__malformedDenied=count;n.listenTauri(()=>{}); }";
++    initialize = "{const n=globalThis.__seuofficeNativeBridgeBootstrap();delete globalThis.__seuofficeNativeBridgeBootstrap;let count=0;try{n.invokeTauri('ipc_send',1,2,'application/octet-stream','invalid',{})}catch{count++}try{n.sendSync('webframe:get-zoom-factor',null)}catch{count++}globalThis.__malformedDenied=count;n.listenTauri(()=>{},()=>true); }";
+   if (!bridge->ExecuteTrustedScripts({{initialize, true}}, true) || !bridge->FinishInitialization())
+     return "trusted initialization failed";
+   if (test_case == CefNativeV8BridgeTestCase::kBorrowedMethod) {
+@@ -111,4 +111,34 @@
+   bridge->Release();
+   bridge->Release();
+   return {};
+ }
++std::string CefRunNativeV8BridgeRestoreTest(v8::Isolate* isolate,
++    v8::Local<v8::Context> context, std::shared_ptr<CefNativeV8Bridge> bridge,
++    CefRefPtr<CefNativeContextSender> sender, CefNativeV8Bridge::Mode mode,
++    CefNativeV8BridgeRestoreTestCase test_case) {
++  if (!bridge || bridge->IsReleased() || !sender || !sender->IsAdmitted())
++    return "restore fixture lacks retained bridge or actual fresh native admission";
++  v8::HandleScope handles(isolate);
++  v8::Context::Scope entered(context);
++  if (test_case == CefNativeV8BridgeRestoreTestCase::kWrongContext) {
++    auto other = v8::Context::New(isolate);
++    if (bridge->Rebind(isolate, other, sender, mode))
++      return "a different V8 context rebound the retained bridge";
++    return {};
++  }
++  const bool restored = bridge->Rebind(isolate, context, sender, mode);
++  if (test_case == CefNativeV8BridgeRestoreTestCase::kMissingResumeAck ||
++      test_case == CefNativeV8BridgeRestoreTestCase::kReentrantResumeRelease) {
++    if (restored || !bridge->IsReleased())
++      return "refused or reentrantly released resume retained authority";
++    return {};
++  }
++  if (!restored) return "actual fresh native sender could not rebind the exact retained context";
++  if (bridge->Deliver(7, true, {})) return "native replies were delivered before post-thaw readiness";
++  if (test_case == CefNativeV8BridgeRestoreTestCase::kDuplicateRebind &&
++      bridge->Rebind(isolate, context, sender, mode))
++    return "one native restore admission rebound twice";
++  if (!bridge->RestoreReady()) return "post-thaw readiness was refused";
++  if (bridge->RestoreReady()) return "post-thaw readiness was acknowledged twice";
++  return {};
++}
+diff --git a/libcef/renderer/render_frame_observer.h b/libcef/renderer/render_frame_observer.h
+--- a/libcef/renderer/render_frame_observer.h
++++ b/libcef/renderer/render_frame_observer.h
+@@ -7,6 +7,9 @@
+ 
+ #include <memory>
+ #include <map>
++#include <optional>
++
++#include "base/memory/weak_ptr.h"
+ #include <string>
+ #include <utility>
+ 
+@@ -30,6 +33,8 @@
+ 
+   // RenderFrameObserver methods:
+   void WasShown() override;
++  bool WillRestoreFromBackForwardCache() override;
++  void DidSetPageLifecycleState(blink::BFCacheStateChange change) override;
+   void DidCommitProvisionalLoad(ui::PageTransition transition) override;
+   void DidFailProvisionalLoad() override;
+   void DidFinishLoad() override;
+@@ -47,6 +52,9 @@
+   void OnLoadStart();
+   void OnLoadError();
+   void DidMeaningfulLayout(blink::WebMeaningfulLayout layout_type) override;
++  CefRefPtr<CefNativeContextSenderImpl> CreateNativeSender(
++      const std::string& document, const std::string& context, int world);
++  bool AbortNativeRestore(const std::string& context, bool separate_renderer);
+ 
+   CefFrameImpl* frame_ = nullptr;
+   std::map<std::string, std::pair<std::string, int>> native_contexts_;
+@@ -54,6 +62,8 @@
+   std::map<std::string, std::unique_ptr<CefNativeContextEvaluatorMojo>>
+       native_context_evaluators_;
+   std::map<std::string, std::shared_ptr<CefNativeV8Bridge>> native_bridges_;
++  std::optional<std::string> restored_context_;
++  base::WeakPtrFactory<CefRenderFrameObserver> weak_factory_{this};
+ };
+ 
+ #endif  // LIBCEF_RENDERER_RENDER_FRAME_OBSERVER_H_
+diff --git a/libcef/renderer/render_frame_observer.cc b/libcef/renderer/render_frame_observer.cc
+--- a/libcef/renderer/render_frame_observer.cc
++++ b/libcef/renderer/render_frame_observer.cc
+@@ -33,6 +33,8 @@
+ #include "third_party/blink/public/web/web_document.h"
+ #include "third_party/blink/public/web/web_element.h"
+ #include "third_party/blink/public/web/web_local_frame.h"
++#include "third_party/blink/public/web/web_local_frame_client.h"
++#include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
+ #include "third_party/blink/public/web/web_node.h"
+ #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+ 
+@@ -41,6 +43,7 @@
+     : content::RenderFrameObserver(render_frame) {}
+ 
+ CefRenderFrameObserver::~CefRenderFrameObserver() {
++  weak_factory_.InvalidateWeakPtrs();
+   for (auto& [token, bridge] : native_bridges_) bridge->Release();
+   native_bridges_.clear();
+   for (auto& [token, sender] : native_context_senders_) sender->Release();
+@@ -172,18 +175,7 @@
+         const auto context_token = state->ToString();
+         if (native_contexts_.emplace(
+                 context_token, std::make_pair(document_token, world_id)).second) {
+-          CefRefPtr<CefNativeContextSenderImpl> sender = new CefNativeContextSenderImpl(
+-              document_token, context_token, world_id,
+-              base::BindRepeating(
+-                  [](CefRenderFrameObserver* observer, const std::string& token,
+-                     uint32_t callback, bool raw, const std::vector<uint8_t>& bytes,
+-                     bool indexed, uint64_t index, bool end) {
+-                    auto it = observer->native_bridges_.find(token);
+-                    if (it == observer->native_bridges_.end()) return false;
+-                    auto bridge = it->second;
+-                    return indexed ? bridge->DeliverChannel(callback, index, raw, bytes, end)
+-                                   : bridge->Deliver(callback, raw, bytes);
+-                  }, base::Unretained(this), context_token));
++          auto sender = CreateNativeSender(document_token, context_token, world_id);
+           auto evaluator = std::make_unique<CefNativeContextEvaluatorMojo>(
+               isolate, context);
+           auto evaluation_remote = evaluator->BindNewPipeAndPassRemote();
+@@ -207,6 +199,7 @@
+             native_bridges_.emplace(context_token, bridge);
+             std::vector<std::pair<std::string, bool>> scripts;
+             bool valid = separate_renderer &&
++                browserPtr->native_context_mode() == sender->trusted_mode() &&
+                 (sender->trusted_mode() == 1 || sender->trusted_mode() == 2);
+             auto initialization = base::JSONReader::Read(
+                 sender->initialization(), base::JSON_PARSE_RFC);
+@@ -320,6 +313,132 @@
+   CefV8ReleaseContext(context);
+ }
+ 
++CefRefPtr<CefNativeContextSenderImpl> CefRenderFrameObserver::CreateNativeSender(
++    const std::string& document, const std::string& context, int world) {
++  return new CefNativeContextSenderImpl(document, context, world,
++      base::BindRepeating(
++          [](CefRenderFrameObserver* observer, const std::string& token,
++             uint32_t callback, bool raw, const std::vector<uint8_t>& bytes,
++             bool indexed, uint64_t index, bool end) {
++            const auto it = observer->native_bridges_.find(token);
++            if (it == observer->native_bridges_.end()) return false;
++            auto bridge = it->second;
++            return indexed ? bridge->DeliverChannel(callback, index, raw, bytes, end)
++                           : bridge->Deliver(callback, raw, bytes);
++          }, base::Unretained(this), context));
++}
++
++bool CefRenderFrameObserver::AbortNativeRestore(
++    const std::string& context, bool separate_renderer) {
++  restored_context_.reset();
++  if (const auto it = native_bridges_.find(context); it != native_bridges_.end())
++    it->second->Release();
++  if (const auto it = native_context_senders_.find(context); it != native_context_senders_.end())
++    it->second->Release();
++  if (const auto it = native_context_evaluators_.find(context); it != native_context_evaluators_.end())
++    it->second->Release();
++  if (separate_renderer) base::Process::TerminateCurrentProcessImmediately(1);
++  return false;
++}
++
++bool CefRenderFrameObserver::WillRestoreFromBackForwardCache() {
++  if (!frame_ || !render_frame()) return false;
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame) return false;
++  auto browser = CefBrowserImpl::GetBrowserForMainFrame(frame->Top());
++  if (!browser) return false;
++  const int creation_mode = browser->native_context_mode();
++  // Only the actual browser-constructor's explicit unprotected role may skip
++  // native re-admission. Failed registration never downgrades a protected role.
++  if (creation_mode == 0) return native_bridges_.empty();
++  if (creation_mode != 1 && creation_mode != 2) return false;
++  auto* scheduler = frame->GetAgentGroupScheduler();
++  if (!scheduler) return false;
++  auto* isolate = scheduler->Isolate();
++  if (!isolate) return false;
++  v8::Isolate::Scope isolated(isolate);
++  v8::HandleScope handles(isolate);
++  auto context = frame->MainWorldScriptContext();
++  const auto document = frame->GetDocument();
++  if (context.IsEmpty() || document.IsNull() ||
++      blink::WebLocalFrame::FrameForContext(context) != frame) return false;
++  const auto token = blink::WebLocalFrame::ContextToken(context);
++  if (!token) return false;
++  const auto key = token->ToString();
++  const auto identity = native_contexts_.find(key);
++  auto old_sender = native_context_senders_.find(key);
++  auto old_evaluator = native_context_evaluators_.find(key);
++  auto retained = native_bridges_.find(key);
++  if (identity == native_contexts_.end() || identity->second.second != 0 ||
++      identity->second.first != document.Token().ToString() ||
++      old_sender == native_context_senders_.end() ||
++      old_evaluator == native_context_evaluators_.end() ||
++      retained == native_bridges_.end() || retained->second->IsReleased())
++    return AbortNativeRestore(key, false);
++  auto bridge = retained->second;
++  const uint32_t old_browser_pid = old_sender->second->browser_pid();
++  const bool separate_renderer = old_browser_pid != 0 &&
++      old_browser_pid != static_cast<uint32_t>(base::GetCurrentProcId()) &&
++      content::RenderThread::Get() &&
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          switches::kProcessType) == switches::kRendererProcess;
++  if (!separate_renderer || restored_context_)
++    return AbortNativeRestore(key, separate_renderer);
++  old_sender->second->Release();
++  old_evaluator->second->Release();
++  auto sender = CreateNativeSender(identity->second.first, key, 0);
++  auto evaluator = std::make_unique<CefNativeContextEvaluatorMojo>(isolate, context);
++  auto remote = evaluator->BindNewPipeAndPassRemote();
++  native_context_senders_[key] = sender;
++  native_context_evaluators_[key] = std::move(evaluator);
++  render_frame()->GetBrowserInterfaceBroker().GetInterface(sender->BindHost());
++  // Register redeems the browser's exact newly approved restore lineage. It
++  // does not reuse the old sender, admission token, evaluator pipe or intent.
++  if (!sender->Register(document.Token(), *token, std::move(remote)) ||
++      sender->trusted_mode() != creation_mode || sender->browser_pid() != old_browser_pid)
++    return AbortNativeRestore(key, separate_renderer);
++  const auto mode = creation_mode == 1 ? CefNativeV8Bridge::Mode::kInvoke
++                                      : CefNativeV8Bridge::Mode::kPreload;
++  auto alive = weak_factory_.GetWeakPtr();
++  const bool rebound = bridge->Rebind(isolate, context, sender, mode);
++  if (!alive) {
++    sender->Release();
++    bridge->Release();
++    base::Process::TerminateCurrentProcessImmediately(1);
++    return false;
++  }
++  if (!rebound || !frame_) return AbortNativeRestore(key, separate_renderer);
++  restored_context_ = key;
++  return true;
++}
++
++void CefRenderFrameObserver::DidSetPageLifecycleState(blink::BFCacheStateChange change) {
++  if (change != blink::BFCacheStateChange::kRestoredFromBFCache || !restored_context_) return;
++  const auto token = std::move(*restored_context_);
++  restored_context_.reset();
++  const auto sending = native_context_senders_.find(token);
++  const auto retained = native_bridges_.find(token);
++  if (sending == native_context_senders_.end() || retained == native_bridges_.end()) {
++    AbortNativeRestore(token, false);
++    return;
++  }
++  auto sender = sending->second;
++  auto bridge = retained->second;
++  const uint32_t browser_pid = sender->browser_pid();
++  const bool separate_renderer = browser_pid != 0 &&
++      browser_pid != static_cast<uint32_t>(base::GetCurrentProcId()) &&
++      content::RenderThread::Get() &&
++      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++          switches::kProcessType) == switches::kRendererProcess;
++  if (!bridge->RestoreReady() || !sender->SetReady()) {
++    // SetReady may run JavaScript that destroys this observer. Retained native
++    // locals are the only objects consulted after it starts delivering replies.
++    sender->Release();
++    bridge->Release();
++    if (separate_renderer) base::Process::TerminateCurrentProcessImmediately(1);
++  }
++}
++
+ void CefRenderFrameObserver::DidMeaningfulLayout(blink::WebMeaningfulLayout type) {
+   if (type != blink::WebMeaningfulLayout::kVisuallyNonEmpty || !frame_) return;
+   auto* frame = render_frame()->GetWebFrame();
+diff --git a/libcef/renderer/browser_impl.h b/libcef/renderer/browser_impl.h
+--- a/libcef/renderer/browser_impl.h
++++ b/libcef/renderer/browser_impl.h
+@@ -67,7 +67,8 @@
+   CefBrowserImpl(blink::WebView* web_view,
+                  int browser_id,
+                  bool is_popup,
+-                 const cef::BrowserConfig& config);
++                 const cef::BrowserConfig& config,
++                 int native_context_mode);
+ 
+   CefBrowserImpl(const CefBrowserImpl&) = delete;
+   CefBrowserImpl& operator=(const CefBrowserImpl&) = delete;
+@@ -80,6 +81,7 @@
+ 
+   int browser_id() const { return browser_id_; }
+   bool is_popup() const { return is_popup_; }
++  int native_context_mode() const { return native_context_mode_; }
+   const cef::BrowserConfig& config() const { return config_; }
+ 
+   // blink::WebViewObserver methods.
+@@ -96,6 +98,7 @@
+   const int browser_id_;
+   const bool is_popup_;
+   const cef::BrowserConfig config_;
++  const int native_context_mode_;
+ 
+   // Map of unique frame tokens to CefFrameImpl references.
+   using FrameMap = std::map<blink::LocalFrameToken, CefRefPtr<CefFrameImpl>>;
+diff --git a/libcef/renderer/browser_impl.cc b/libcef/renderer/browser_impl.cc
+--- a/libcef/renderer/browser_impl.cc
++++ b/libcef/renderer/browser_impl.cc
+@@ -275,11 +275,13 @@
+ CefBrowserImpl::CefBrowserImpl(blink::WebView* web_view,
+                                int browser_id,
+                                bool is_popup,
+-                               const cef::BrowserConfig& config)
++                               const cef::BrowserConfig& config,
++                               int native_context_mode)
+     : blink::WebViewObserver(web_view),
+       browser_id_(browser_id),
+       is_popup_(is_popup),
+-      config_(config) {}
++      config_(config),
++      native_context_mode_(native_context_mode) {}
+ 
+ CefBrowserImpl::~CefBrowserImpl() = default;
+ 
+diff --git a/libcef/renderer/render_manager.cc b/libcef/renderer/render_manager.cc
+--- a/libcef/renderer/render_manager.cc
++++ b/libcef/renderer/render_manager.cc
+@@ -319,8 +319,12 @@
+   }
+ 
+   CHECK(params->config);
++  const auto mode = params->extra_info
++      ? params->extra_info->FindInt("seuoffice.trusted-mode") : std::nullopt;
++  const int native_context_mode = mode && *mode >= 0 && *mode <= 2 ? *mode : -1;
+   CefRefPtr<CefBrowserImpl> browser = new CefBrowserImpl(
+-      web_view, params->browser_id, params->config->is_popup, *config);
++      web_view, params->browser_id, params->config->is_popup, *config,
++      native_context_mode);
+   browsers_.insert(std::make_pair(web_view, browser));
+ 
+   // Notify the render process handler.

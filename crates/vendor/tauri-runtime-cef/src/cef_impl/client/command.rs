@@ -242,6 +242,7 @@ wrap_with_args! {
         }
         let _ = self.context.sender.send(Message::ToggleFullscreen {
           webview_id: self.webview_id,
+          browser: self.frame_navigation_state.clone(),
         });
         self.context.wake_event_loop();
         return 1;

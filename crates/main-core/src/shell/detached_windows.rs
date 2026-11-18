@@ -137,8 +137,9 @@ pub struct WindowOptions {
 
 /// `createDetachedEditorWindow`'s options (`applyMenuFor` is the host's)
 #[derive(Debug, Clone, PartialEq)]
-pub struct DetachedWindowOptions<V> {
+pub struct DetachedWindowOptions<V, B> {
     pub view: V,
+    pub binding: B,
     pub kind: TabKind,
     pub title: String,
     pub file_path: Option<String>,
@@ -151,9 +152,41 @@ pub struct DetachedWindowOptions<V> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecId(pub usize);
 
-struct DetachedRecord<V, W> {
+/// Core-owned identity and metadata captured before native window observation.
+#[derive(Clone)]
+pub struct DetachedSnapshotEntry<V, W> {
+    pub rec: RecId,
+    pub view: V,
+    pub window: W,
+    wc_id: i64,
+    kind: TabKind,
+    file_path: Option<String>,
+}
+
+pub struct DetachedSnapshotPlan<V, W> {
+    revision: std::rc::Rc<()>,
+    entries: Vec<DetachedSnapshotEntry<V, W>>,
+}
+
+impl<V, W> DetachedSnapshotPlan<V, W> {
+    pub fn entries(&self) -> &[DetachedSnapshotEntry<V, W>] { &self.entries }
+}
+
+pub struct DetachedWindowObservation {
+    pub rec: RecId,
+    pub destroyed: bool,
+    pub title: String,
+}
+
+pub struct DetachedSessionSnapshot {
+    pub tabs: Vec<SessionDetachedTab>,
+    pub paths: Vec<String>,
+}
+
+struct DetachedRecord<V, W, B> {
     window: W,
     view: V,
+    binding: B,
     /// `view.webContents.id` when the window was made: the registry key
     wc_id: i64,
     kind: TabKind,
@@ -270,7 +303,7 @@ pub struct FocusedDetached<V, W> {
 
 /// What the detached windows call: a `BrowserWindow` `W`, the screen, the
 /// shell's `DockHost`, the listeners and the editor modules.
-pub trait DetachedHost<V, W>: EditorCalls<V> {
+pub trait DetachedHost<V, W, B>: EditorCalls<V> {
     // ---- a window ----
     /// `new BrowserWindow(options)`
     fn create_window(&mut self, options: &WindowOptions) -> W;
@@ -317,7 +350,7 @@ pub trait DetachedHost<V, W>: EditorCalls<V> {
     /// `dockHost.preview(x)`: show (window-CSS x) or clear (`None`) the indicator
     fn dock_preview(&mut self, x: Option<f64>);
     /// `dockHost.dock(tab)`
-    fn dock(&mut self, tab: DetachedTab<V>);
+    fn dock(&mut self, tab: DetachedTab<V, B>);
 
     // ---- listeners and timers ----
     /// `onChanged()` of `setDetachedChangedListener`
@@ -343,8 +376,9 @@ pub trait DetachedHost<V, W>: EditorCalls<V> {
 }
 
 /// The module-level state of `detached-windows.ts`, owned by the caller.
-pub struct DetachedWindows<V, W> {
-    records: Vec<Option<DetachedRecord<V, W>>>,
+pub struct DetachedWindows<V, W, B> {
+    records: Vec<Option<DetachedRecord<V, W, B>>>,
+    snapshot_revision: std::rc::Rc<()>,
     /// keyed by the view's webContents id, in the order the windows opened
     detached: JsMap<usize>,
     /// `dockHost !== null`
@@ -353,10 +387,11 @@ pub struct DetachedWindows<V, W> {
     torn: Option<Torn>,
 }
 
-impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
-    pub fn new() -> DetachedWindows<V, W> {
+impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> DetachedWindows<V, W, B> {
+    pub fn new() -> DetachedWindows<V, W, B> {
         DetachedWindows {
             records: Vec::new(),
+            snapshot_revision: std::rc::Rc::new(()),
             detached: JsMap::new(),
             dock_host: false,
             torn: None,
@@ -368,11 +403,11 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
         self.dock_host = present;
     }
 
-    fn rec(&self, id: RecId) -> Option<&DetachedRecord<V, W>> {
+    fn rec(&self, id: RecId) -> Option<&DetachedRecord<V, W, B>> {
         self.records.get(id.0).and_then(|r| r.as_ref())
     }
 
-    fn rec_mut(&mut self, id: RecId) -> Option<&mut DetachedRecord<V, W>> {
+    fn rec_mut(&mut self, id: RecId) -> Option<&mut DetachedRecord<V, W, B>> {
         self.records.get_mut(id.0).and_then(|r| r.as_mut())
     }
 
@@ -385,9 +420,41 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
         self.detached.values().map(|i| RecId(*i)).collect()
     }
 
+    fn invalidate_snapshot(&mut self) {
+        self.snapshot_revision = std::rc::Rc::new(());
+    }
+
+    /// Captures only core state. Native window observations are collected afterwards.
+    pub fn prepare_session_snapshot(&self) -> DetachedSnapshotPlan<V, W> {
+        let entries = self.live_ids().into_iter().filter_map(|rec| self.rec(rec).map(|entry| DetachedSnapshotEntry {
+            rec, view: entry.view.clone(), window: entry.window.clone(), wc_id: entry.wc_id,
+            kind: entry.kind, file_path: entry.file_path.clone(),
+        })).collect();
+        DetachedSnapshotPlan { revision: self.snapshot_revision.clone(), entries }
+    }
+
+    /// Called under the caller's native reservation admission; performs no host I/O.
+    pub fn commit_session_snapshot(&self, plan: &DetachedSnapshotPlan<V, W>, observations: &[DetachedWindowObservation]) -> Result<DetachedSessionSnapshot, String> {
+        if !std::rc::Rc::ptr_eq(&self.snapshot_revision, &plan.revision) || observations.len() != plan.entries.len() {
+            return Err("The detached window set changed during snapshot capture".into());
+        }
+        let mut tabs = Vec::new(); let mut paths = Vec::new();
+        for (entry, observation) in plan.entries.iter().zip(observations) {
+            if entry.rec != observation.rec { return Err("A detached window observation does not match its entry".into()); }
+            if observation.destroyed { continue; }
+            if let Some(path) = entry.file_path.as_ref().filter(|path| !path.is_empty()) { paths.push(path.clone()); }
+            if entry.kind == TabKind::Home || entry.kind == TabKind::Help { continue; }
+            tabs.push(SessionDetachedTab {
+                id: format!("{ID_PREFIX}{}", entry.wc_id), kind: entry.kind, title: observation.title.clone(),
+                file_path: entry.file_path.clone().filter(|path| !path.is_empty()),
+            });
+        }
+        Ok(DetachedSessionSnapshot { tabs, paths })
+    }
+
     /// `recordById`: the record of a `detached:<webContents id>` id whose
     /// window is alive
-    fn record_by_id(&self, host: &mut dyn DetachedHost<V, W>, id: &str) -> Option<RecId> {
+    fn record_by_id(&self, host: &mut dyn DetachedHost<V, W, B>, id: &str) -> Option<RecId> {
         let rest = id.strip_prefix(ID_PREFIX)?;
         let key = number_to_string(to_number(rest));
         let rec = RecId(*self.detached.get(&key)?);
@@ -400,7 +467,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `bringToFront`
-    fn bring_to_front(host: &mut dyn DetachedHost<V, W>, win: &W) {
+    fn bring_to_front(host: &mut dyn DetachedHost<V, W, B>, win: &W) {
         if host.win_minimized(win) {
             host.win_restore(win);
         }
@@ -416,7 +483,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `focusDetachedByPath`: focus the detached window editing this file
-    pub fn focus_detached_by_path(&self, host: &mut dyn DetachedHost<V, W>, path: &str) -> bool {
+    pub fn focus_detached_by_path(&self, host: &mut dyn DetachedHost<V, W, B>, path: &str) -> bool {
         let wanted = canonical_path(Some(path));
         for id in self.live_ids() {
             let Some(rec) = self.rec(id) else {
@@ -438,7 +505,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `detached:` id
     pub fn find_detached_tab_by_path(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         path: &str,
     ) -> Option<DetachedLookup<V>> {
         let wanted = canonical_path(Some(path));
@@ -462,7 +529,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `detachedWindowForWebContents`
     pub fn detached_window_for_web_contents(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         wc_id: i64,
     ) -> Option<W> {
         let rec = self.rec(RecId(*self.detached.get(&wc_id.to_string())?))?;
@@ -477,7 +544,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `detachedDocumentFor`: the document a detached window shows
     pub fn detached_document_for(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         wc_id: i64,
     ) -> Option<DetachedDocument> {
         let rec = self.rec(RecId(*self.detached.get(&wc_id.to_string())?))?;
@@ -494,14 +561,14 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `focusedDetachedKind`
-    pub fn focused_detached_kind(&self, host: &mut dyn DetachedHost<V, W>) -> Option<TabKind> {
+    pub fn focused_detached_kind(&self, host: &mut dyn DetachedHost<V, W, B>) -> Option<TabKind> {
         self.focused_detached_tab(host).map(|t| t.kind)
     }
 
     /// `focusedDetachedTab`: the focused detached window's document
     pub fn focused_detached_tab(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
     ) -> Option<FocusedDetached<V, W>> {
         for id in self.live_ids() {
             let rec = self.rec(id)?;
@@ -520,13 +587,13 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `isDetachedTabId`
-    pub fn is_detached_tab_id(&self, host: &mut dyn DetachedHost<V, W>, id: &str) -> bool {
+    pub fn is_detached_tab_id(&self, host: &mut dyn DetachedHost<V, W, B>, id: &str) -> bool {
         self.record_by_id(host, id).is_some()
     }
 
     /// `activateDetached`: bring a detached editor forward; false when the id
     /// is not a detached window
-    pub fn activate_detached(&self, host: &mut dyn DetachedHost<V, W>, id: &str) -> bool {
+    pub fn activate_detached(&self, host: &mut dyn DetachedHost<V, W, B>, id: &str) -> bool {
         let Some(rec) = self.record_by_id(host, id) else {
             return false;
         };
@@ -540,7 +607,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `detachedWebContentsFor`
     pub fn detached_web_contents_for(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         id: &str,
     ) -> Option<V> {
         let rec = self.record_by_id(host, id)?;
@@ -550,7 +617,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `closeDetachedWithoutPrompt`
     pub fn close_detached_without_prompt(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         id: &str,
     ) -> bool {
         let Some(rec) = self.record_by_id(host, id) else {
@@ -574,7 +641,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     /// `detachedIsDirty`: unsaved-changes state of one detached document, as
     /// far as it can be known without waiting
-    fn detached_dirty_ask(&self, host: &mut dyn DetachedHost<V, W>, rec: RecId) -> DirtyAsk<V> {
+    fn detached_dirty_ask(&self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) -> DirtyAsk<V> {
         let Some(r) = self.rec(rec) else {
             return DirtyAsk::Known(false);
         };
@@ -586,7 +653,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// save/don't-save/cancel prompt when the document is dirty
     fn confirm_begin(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         rec: RecId,
     ) -> DetachedCloseStep<V, W> {
         let Some(r) = self.rec(rec) else {
@@ -605,6 +672,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
             match self.detached_dirty_ask(host, rec) {
                 DirtyAsk::Known(false) => return self.close_outcome(host, rec, Ok(true)),
                 DirtyAsk::Known(true) => {}
+                DirtyAsk::Rejected(error) => return self.close_outcome(host, rec, Err(error)),
                 DirtyAsk::QueryDocs(view) => {
                     if let Some(r) = self.rec_mut(rec) {
                         r.close_phase = Some(ClosePhase::Query);
@@ -619,7 +687,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// the family's `requestXClose` of `confirmDetachedClose`
     fn confirm_ask(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         rec: RecId,
     ) -> DetachedCloseStep<V, W> {
         let Some(r) = self.rec(rec) else {
@@ -641,7 +709,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `finally` after it
     fn close_outcome(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         rec: RecId,
         result: Result<bool, String>,
     ) -> DetachedCloseStep<V, W> {
@@ -684,7 +752,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// rejected with. A window with no open step answers `Idle`.
     pub fn resume_close(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         rec: RecId,
         answer: Result<bool, String>,
     ) -> DetachedCloseStep<V, W> {
@@ -706,7 +774,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// resumed with [`DetachedWindows::resume_detached_open_documents`]).
     pub fn detached_open_documents(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
     ) -> OpenDocumentsStep<V, DetachedOpenDocumentsRun> {
         let run = DetachedOpenDocumentsRun {
             remaining: self.live_ids(),
@@ -719,7 +787,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// [`DetachedWindows::detached_open_documents`]
     pub fn resume_detached_open_documents(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         mut run: DetachedOpenDocumentsRun,
         answer: Result<bool, String>,
     ) -> OpenDocumentsStep<V, DetachedOpenDocumentsRun> {
@@ -735,7 +803,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     fn detached_open_documents_advance(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         mut run: DetachedOpenDocumentsRun,
     ) -> OpenDocumentsStep<V, DetachedOpenDocumentsRun> {
         while let Some(id) = run.remaining.first().copied() {
@@ -756,6 +824,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
                 DirtyAsk::QueryDocs(view) => {
                     return OpenDocumentsStep::QueryDocsDirty { view, next: run };
                 }
+                DirtyAsk::Rejected(error) => return OpenDocumentsStep::Rejected(error),
             }
         }
         OpenDocumentsStep::Done(run.out)
@@ -764,7 +833,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// the entry of one window once its dirty state is known
     fn detached_open_documents_push(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         id: RecId,
         dirty: bool,
         out: &mut Vec<OpenDocumentTab>,
@@ -790,48 +859,59 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `detachedSetFileFor`: Save As landed on a new path
     pub fn detached_set_file_for(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         wc_id: i64,
         file_path: &str,
     ) {
-        let Some(id) = self.detached.get(&wc_id.to_string()).map(|i| RecId(*i)) else {
-            return;
-        };
-        let Some(rec) = self.rec_mut(id) else {
-            return;
-        };
-        rec.file_path = Some(file_path.to_owned());
-        let window = rec.window.clone();
+        let Some(window) = self.detached_set_file_record(wc_id, file_path) else { return; };
         if !host.win_destroyed(&window) {
             host.win_set_title(&window, &basename(file_path, None));
         }
         host.on_detached_changed();
     }
 
+    /// State-only save acknowledgement. The caller owns title/change delivery.
+    pub fn detached_set_file_record(&mut self, wc_id: i64, file_path: &str) -> Option<W> {
+        let id = RecId(*self.detached.get(&wc_id.to_string())?);
+        let record = self.rec_mut(id)?;
+        let changed = record.file_path.as_deref() != Some(file_path);
+        if changed { record.file_path = Some(file_path.to_owned()); }
+        let window = record.window.clone();
+        if changed { self.invalidate_snapshot(); }
+        Some(window)
+    }
+
     /// `detachedSetTitleFor`: an untitled document named itself before its first save
     pub fn detached_set_title_for(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         wc_id: i64,
         title: &str,
     ) {
-        let Some(id) = self.detached.get(&wc_id.to_string()).map(|i| RecId(*i)) else {
-            return;
-        };
-        let Some(rec) = self.rec(id) else {
-            return;
-        };
-        let window = rec.window.clone();
-        if truthy(rec.file_path.as_deref()).is_some() || host.win_destroyed(&window) {
+        let Some(window) = self.detached_untitled_window(wc_id) else { return; };
+        if host.win_destroyed(&window) {
             return;
         }
         host.win_set_title(&window, title);
     }
 
+    pub fn detached_untitled_window(&self,wc_id:i64)->Option<W> {
+        let id = RecId(*self.detached.get(&wc_id.to_string())?);
+        let record = self.rec(id)?;
+        if truthy(record.file_path.as_deref()).is_some() { return None; }
+        Some(record.window.clone())
+    }
+
+    /// Captures the exact detached window for an entry without native I/O.
+    pub fn detached_window_record(&self, wc_id: i64) -> Option<W> {
+        let id = RecId(*self.detached.get(&wc_id.to_string())?);
+        Some(self.rec(id)?.window.clone())
+    }
+
     /// `detachedRenameFile`: a rename on disk; returns the affected view
     pub fn detached_rename_file(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         old_path: &str,
         new_path: &str,
     ) -> Option<(TabKind, V)> {
@@ -845,8 +925,10 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
             {
                 let window = rec.window.clone();
                 let result = (rec.kind, rec.view.clone());
-                if let Some(rec) = self.rec_mut(id) {
-                    rec.file_path = Some(new_path.to_owned());
+                let changed = rec.file_path.as_deref() != Some(new_path);
+                if changed {
+                    if let Some(rec) = self.rec_mut(id) { rec.file_path = Some(new_path.to_owned()); }
+                    self.invalidate_snapshot();
                 }
                 if !host.win_destroyed(&window) {
                     host.win_set_title(&window, &basename(new_path, None));
@@ -861,7 +943,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `detachedSessionTabs`: the detached documents for the session record
     pub fn detached_session_tabs(
         &self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
     ) -> Vec<SessionDetachedTab> {
         let mut out = Vec::new();
         for id in self.live_ids() {
@@ -884,7 +966,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `detachedFilePaths`: every detached window's open file
-    pub fn detached_file_paths(&self, host: &mut dyn DetachedHost<V, W>) -> Vec<String> {
+    pub fn detached_file_paths(&self, host: &mut dyn DetachedHost<V, W, B>) -> Vec<String> {
         let mut paths = Vec::new();
         for id in self.live_ids() {
             let Some(rec) = self.rec(id) else {
@@ -898,7 +980,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
         paths
     }
 
-    fn clear_dock_timer(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    fn clear_dock_timer(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let Some(r) = self.rec_mut(rec) else {
             return;
         };
@@ -908,7 +990,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
         r.dock_timer = false;
     }
 
-    fn clear_dock_hover(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    fn clear_dock_hover(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         self.clear_dock_timer(host, rec);
         let dock_host = self.dock_host;
         let Some(r) = self.rec_mut(rec) else {
@@ -928,11 +1010,11 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// (no close prompt). The caller re-homes the view.
     fn release_detached(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         rec: RecId,
-    ) -> DetachedTab<V> {
+    ) -> DetachedTab<V, B> {
         self.clear_dock_hover(host, rec);
-        let (window, view, kind, file_path, wc_id) = {
+        let (window, view, binding, kind, file_path, wc_id) = {
             let Some(r) = self.rec_mut(rec) else {
                 panic!("a released record is in the arena until its window closed");
             };
@@ -940,6 +1022,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
             (
                 r.window.clone(),
                 r.view.clone(),
+                r.binding.clone(),
                 r.kind,
                 r.file_path.clone(),
                 r.wc_id,
@@ -957,6 +1040,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
             host.win_title(&window)
         };
         self.detached.delete(&wc_id.to_string());
+        self.invalidate_snapshot();
         if !host.win_destroyed(&window) {
             host.content_remove_child_view(&window, &view);
             host.win_destroy(&window);
@@ -964,6 +1048,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
         host.on_detached_changed();
         DetachedTab {
             view,
+            binding,
             kind,
             title,
             file_path,
@@ -971,7 +1056,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `dockDetachedWindow`
-    fn dock_detached_window(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    fn dock_detached_window(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let Some(r) = self.rec(rec) else {
             return;
         };
@@ -985,7 +1070,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     /// `trackDockHover`: sample the cursor against the shell strip's dock
     /// band. Inside: indicator and dwell timer; outside: clear both.
-    fn track_dock_hover(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    fn track_dock_hover(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let Some(r) = self.rec(rec) else {
             return;
         };
@@ -1011,7 +1096,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     /// the callback of the dwell timer: docks once the cursor has rested over
     /// the strip
-    pub fn dock_timer_fired(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn dock_timer_fired(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         if let Some(r) = self.rec_mut(rec) {
             r.dock_timer = false;
         }
@@ -1029,7 +1114,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `layout` of one window: fit its view to the window's content
-    fn layout_window(&self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    fn layout_window(&self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let Some(r) = self.rec(rec) else {
             return;
         };
@@ -1054,25 +1139,25 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// the window's `resize`: a layout now and one on the next tick
-    pub fn on_resize(&self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn on_resize(&self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         self.layout_window(host, rec);
         host.defer_layout(rec);
     }
 
     /// the window's `restore`: the same as `resize`
-    pub fn on_restore(&self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn on_restore(&self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         self.layout_window(host, rec);
         host.defer_layout(rec);
     }
 
     /// the `setImmediate` callback of `on_resize` and `on_restore`
-    pub fn run_deferred_layout(&self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn run_deferred_layout(&self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         self.layout_window(host, rec);
     }
 
     /// the window's `focus`: it claims the process-global menu and
     /// active-editor targets
-    pub fn on_focus(&self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn on_focus(&self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let Some(r) = self.rec(rec) else {
             return;
         };
@@ -1091,7 +1176,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     /// the window's `move`: dragging the title bar over the shell's tab strip
     /// docks the document back; a torn-off window is steered by the pointer
-    pub fn on_move(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn on_move(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         if self.torn_is(rec) {
             return;
         }
@@ -1101,7 +1186,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// the window's `moved`, registered only on Windows (it reports the end
     /// of a native drag there): commit right away instead of waiting out the
     /// dwell
-    pub fn on_moved(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn on_moved(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let hovering = self.rec(rec).is_some_and(|r| r.hovering);
         if self.torn_is(rec) || !hovering {
             return;
@@ -1116,7 +1201,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// are steps: see [`DetachedCloseStep`].
     pub fn on_close(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
+        host: &mut dyn DetachedHost<V, W, B>,
         rec: RecId,
     ) -> DetachedCloseEvent<V, W> {
         let Some(r) = self.rec_mut(rec) else {
@@ -1148,7 +1233,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// the window's `closed`
-    pub fn on_closed(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn on_closed(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let Some((wc_id, closed)) = self.rec(rec).map(|r| (r.wc_id, r.closed)) else {
             return;
         };
@@ -1160,6 +1245,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
             self.torn = None;
         }
         self.detached.delete(&wc_id.to_string());
+        self.invalidate_snapshot();
         host.on_detached_changed();
         self.close_record(rec);
     }
@@ -1179,7 +1265,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// `tearDown` (the record's `closeWithoutPrompt`): detach the view before
     /// destroying the window so the docs teardown path stays in control of
     /// the renderer's lifetime
-    pub fn tear_down(&mut self, host: &mut dyn DetachedHost<V, W>, rec: RecId) {
+    pub fn tear_down(&mut self, host: &mut dyn DetachedHost<V, W, B>, rec: RecId) {
         let Some(r) = self.rec(rec) else {
             return;
         };
@@ -1196,6 +1282,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
         }
         host.content_remove_child_view(&window, &view);
         self.detached.delete(&wc_id.to_string());
+        self.invalidate_snapshot();
         if kind == TabKind::Docs {
             host.teardown_docs_renderer(&view);
             host.release_closed_renderer(&view);
@@ -1210,11 +1297,12 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     /// window's events to the `on_*` methods with the returned id
     pub fn create(
         &mut self,
-        host: &mut dyn DetachedHost<V, W>,
-        options: DetachedWindowOptions<V>,
+        host: &mut dyn DetachedHost<V, W, B>,
+        options: DetachedWindowOptions<V, B>,
     ) -> RecId {
         let DetachedWindowOptions {
             view,
+            binding,
             kind,
             title,
             file_path,
@@ -1240,6 +1328,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
         self.records.push(Some(DetachedRecord {
             window: window.clone(),
             view: view.clone(),
+            binding,
             wc_id,
             kind,
             file_path,
@@ -1252,6 +1341,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
             closed: false,
         }));
         self.detached.set(wc_id.to_string(), rec.0);
+        self.invalidate_snapshot();
         host.on_detached_changed();
 
         host.content_add_child_view(&window, &view);
@@ -1273,7 +1363,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     /// `dragTornWindow`: steer the torn-off window after the held pointer
     /// (screen coordinates)
-    pub fn drag_torn_window(&self, host: &mut dyn DetachedHost<V, W>, x: f64, y: f64) {
+    pub fn drag_torn_window(&self, host: &mut dyn DetachedHost<V, W, B>, x: f64, y: f64) {
         let Some(torn) = &self.torn else {
             return;
         };
@@ -1289,7 +1379,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     /// `endTornDrag`: the pointer was released; the torn-off window is an
     /// ordinary detached window now
-    pub fn end_torn_drag(&mut self, host: &mut dyn DetachedHost<V, W>) {
+    pub fn end_torn_drag(&mut self, host: &mut dyn DetachedHost<V, W, B>) {
         let rec = self.torn.take().map(|t| t.rec);
         let Some(rec) = rec else {
             return;
@@ -1307,7 +1397,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
 
     /// `takeTornTab`: the held pointer came back over the strip; take the
     /// document out of the torn-off window (destroying it)
-    pub fn take_torn_tab(&mut self, host: &mut dyn DetachedHost<V, W>) -> Option<DetachedTab<V>> {
+    pub fn take_torn_tab(&mut self, host: &mut dyn DetachedHost<V, W, B>) -> Option<DetachedTab<V, B>> {
         let rec = self.torn.take().map(|t| t.rec)?;
         let r = self.rec(rec)?;
         let window = r.window.clone();
@@ -1318,7 +1408,7 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 
     /// `isTearingOff`: a torn-off window is following the shell's held pointer
-    pub fn is_tearing_off(&self, host: &mut dyn DetachedHost<V, W>) -> bool {
+    pub fn is_tearing_off(&self, host: &mut dyn DetachedHost<V, W, B>) -> bool {
         let Some(torn) = &self.torn else {
             return false;
         };
@@ -1330,8 +1420,57 @@ impl<V: Clone + PartialEq, W: Clone + PartialEq> DetachedWindows<V, W> {
     }
 }
 
-impl<V: Clone + PartialEq, W: Clone + PartialEq> Default for DetachedWindows<V, W> {
+impl<V: Clone + PartialEq, W: Clone + PartialEq, B: Clone> Default for DetachedWindows<V, W, B> {
     fn default() -> Self {
         DetachedWindows::new()
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    fn one_detached() -> DetachedWindows<u32, u32, ()> {
+        let mut windows = DetachedWindows::new();
+        windows.records.push(Some(DetachedRecord {
+            window: 7, view: 4, binding: (), wc_id: 4, kind: TabKind::Slides, file_path: Some("/old.pptx".into()),
+            released: false, hovering: false, dock_timer: false, close_confirmed: false,
+            prompt_in_flight: false, close_phase: None, closed: false,
+        }));
+        windows.detached.set("4".into(), 0);
+        windows
+    }
+
+    #[test]
+    fn snapshot_is_pure_and_rejects_path_aba() {
+        let mut windows = one_detached();
+        let plan = windows.prepare_session_snapshot();
+        let observation = [DetachedWindowObservation { rec: RecId(0), destroyed: false, title: "Deck".into() }];
+        let snapshot = windows.commit_session_snapshot(&plan, &observation).unwrap();
+        assert_eq!(snapshot.paths, vec!["/old.pptx"]);
+        assert_eq!(snapshot.tabs[0].title, "Deck");
+        windows.detached_set_file_record(4, "/old.pptx");
+        assert!(windows.commit_session_snapshot(&plan, &observation).is_ok());
+        windows.detached_set_file_record(4, "/new.pptx");
+        windows.detached_set_file_record(4, "/old.pptx");
+        assert!(windows.commit_session_snapshot(&plan, &observation).is_err());
+    }
+
+    #[test]
+    fn snapshot_rejects_observation_for_another_entry() {
+        let windows = one_detached();
+        let plan = windows.prepare_session_snapshot();
+        let observation = [DetachedWindowObservation { rec: RecId(1), destroyed: false, title: "wrong".into() }];
+        assert!(windows.commit_session_snapshot(&plan, &observation).is_err());
+    }
+
+    #[test]
+    fn saved_detached_window_is_available_only_to_unrestricted_title_selector() {
+        let mut windows = one_detached();
+        assert_eq!(windows.detached_window_record(4), Some(7));
+        assert_eq!(windows.detached_untitled_window(4), None);
+        windows.detached_set_file_record(4, "");
+        assert_eq!(windows.detached_window_record(4), Some(7));
+        assert_eq!(windows.detached_untitled_window(4), Some(7));
     }
 }

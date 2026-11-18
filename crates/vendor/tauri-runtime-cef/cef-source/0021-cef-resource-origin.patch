@@ -1,0 +1,543 @@
+# Private pinned CEF source patch. ABI generation, compilation and runtime remain unverified.
+diff --git a/include/cef_request.h b/include/cef_request.h
+--- a/include/cef_request.h
++++ b/include/cef_request.h
+@@ -46,6 +46,28 @@
+ class CefPostData;
+ class CefPostDataElement;
+ 
++#if CEF_API_ADDED(15401)
++///
++/// One original browser resource delivery. Methods are bounded atomic operations
++/// callable on any thread. They never invoke CEF, JavaScript or application code.
++///
++/*--cef(source=library,added=15401,no_debugct_check)--*/
++class CefNativeResourceDelivery : public virtual CefBaseRefCounted {
++ public:
++  ///
++  /// Accept once unless the original resource was already detached or cancelled.
++  /// Document/asset authorization is independent and must surround this call.
++  ///
++  /*--cef()--*/
++  virtual bool TryAccept() = 0;
++  ///
++  /// Whether the original resource has synchronously detached or cancelled.
++  ///
++  /*--cef()--*/
++  virtual bool IsCancelled() = 0;
++};
++#endif
++
+ ///
+ /// Class used to represent a web request. The methods of this class may be
+ /// called on any thread.
+@@ -219,6 +241,20 @@
+   ///
+   /*--cef()--*/
+   virtual uint64_t GetIdentifier() = 0;
++#if CEF_API_ADDED(15401)
++  ///
++  /// Returns immutable original-factory metadata only while that exact browser
++  /// registration remains live. Request setters and headers cannot populate it.
++  ///
++  /*--cef(added=15401)--*/
++  virtual bool GetNativeResourceOrigin(CefNativeResourceOrigin& origin) = 0;
++  ///
++  /// Returns the original resource cancellation/acceptance gate, or null for
++  /// requests not produced by the browser resource loader.
++  ///
++  /*--cef(added=15401)--*/
++  virtual CefRefPtr<CefNativeResourceDelivery> GetNativeResourceDelivery() = 0;
++#endif
+ };
+ 
+ ///
+diff --git a/include/internal/cef_types.h b/include/internal/cef_types.h
+--- a/include/internal/cef_types.h
++++ b/include/internal/cef_types.h
+@@ -2485,6 +2485,25 @@
+   XML_NODE_COMMENT,
+   XML_NODE_NUM_VALUES,
+ } cef_xml_node_type_t;
++
++#if CEF_API_ADDED(15401)
++///
++/// Browser-native identity of the document that created a resource factory.
++/// This metadata is not an issuing JavaScript-context capability.
++///
++typedef struct _cef_native_resource_origin_t {
++  size_t size;
++  int browser_id;
++  int renderer_child_id;
++  int render_frame_routing_id;
++  int world_id;
++  uint64_t registration;
++  uint64_t document_high;
++  uint64_t document_low;
++  uint64_t context_high;
++  uint64_t context_low;
++} cef_native_resource_origin_t;
++#endif
+ 
+ ///
+ /// Popup window features.
+diff --git a/include/internal/cef_types_wrappers.h b/include/internal/cef_types_wrappers.h
+--- a/include/internal/cef_types_wrappers.h
++++ b/include/internal/cef_types_wrappers.h
+@@ -380,6 +380,13 @@
+   CefTouchEvent(const cef_touch_event_t& r) : cef_touch_event_t(r) {}
+ };
+ 
++#if CEF_API_ADDED(15401)
++///
++/// Browser-issued original resource document metadata.
++///
++using CefNativeResourceOrigin = CefStructBaseSimple<cef_native_resource_origin_t>;
++#endif
++
+ ///
+ /// Class representing popup window features.
+ ///
+diff --git a/libcef/browser/native_resource_registry.h b/libcef/browser/native_resource_registry.h
+--- /dev/null
++++ b/libcef/browser/native_resource_registry.h
+@@ -0,0 +1,46 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_BROWSER_NATIVE_RESOURCE_REGISTRY_H_
++#define CEF_LIBCEF_BROWSER_NATIVE_RESOURCE_REGISTRY_H_
++
++#include <map>
++#include <memory>
++#include <optional>
++#include <string>
++#include <tuple>
++#include "base/no_destructor.h"
++#include "base/synchronization/lock.h"
++#include "cef/libcef/common/native_resource.h"
++#include "content/public/browser/global_routing_id.h"
++#include "third_party/blink/public/common/tokens/tokens.h"
++
++// The factory key is captured on UI inside the native Chromium factory scope.
++// No request headers, initiator URL or MaybeChangeMainFrame lookup participates.
++class CefNativeResourceRegistry {
++ public:
++  using Key = std::tuple<content::GlobalRenderFrameHostId, std::string, uint64_t>;
++  static CefNativeResourceRegistry& Get() {
++    static base::NoDestructor<CefNativeResourceRegistry> registry;
++    return *registry;
++  }
++  bool Publish(const Key& key, std::shared_ptr<const CefNativeResourceOriginState> state) {
++    base::AutoLock lock(lock_);
++    return state && state->IsLive() && entries_.emplace(key, std::move(state)).second;
++  }
++  void Remove(const Key& key, const std::shared_ptr<const CefNativeResourceOriginState>& state) {
++    base::AutoLock lock(lock_);
++    const auto found = entries_.find(key);
++    if (found != entries_.end() && found->second == state) entries_.erase(found);
++  }
++  std::shared_ptr<const CefNativeResourceOriginState> Capture(const Key& key) {
++    base::AutoLock lock(lock_);
++    const auto found = entries_.find(key);
++    if (found == entries_.end() || !found->second->IsLive()) return nullptr;
++    return found->second;
++  }
++ private:
++  base::Lock lock_;
++  std::map<Key, std::shared_ptr<const CefNativeResourceOriginState>> entries_;
++};
++
++#endif  // CEF_LIBCEF_BROWSER_NATIVE_RESOURCE_REGISTRY_H_
+diff --git a/libcef/browser/net_service/resource_handler_wrapper.cc b/libcef/browser/net_service/resource_handler_wrapper.cc
+--- a/libcef/browser/net_service/resource_handler_wrapper.cc
++++ b/libcef/browser/net_service/resource_handler_wrapper.cc
+@@ -99,8 +99,9 @@
+ // Helper for accessing a CefResourceHandler without creating reference loops.
+ class HandlerProvider : public base::RefCountedThreadSafe<HandlerProvider> {
+  public:
+-  explicit HandlerProvider(CefRefPtr<CefResourceHandler> handler)
+-      : handler_(handler) {
++  HandlerProvider(CefRefPtr<CefResourceHandler> handler,
++                  CefRefPtr<CefNativeResourceDeliveryImpl> delivery)
++      : handler_(handler), delivery_(std::move(delivery)) {
+     DCHECK(handler_);
+   }
+   virtual ~HandlerProvider() {
+@@ -115,6 +116,7 @@
+ 
+   void Detach() {
+     base::AutoLock lock_scope(lock_);
++    if (delivery_) delivery_->Cancel();
+     if (!handler_) {
+       return;
+     }
+@@ -129,6 +131,7 @@
+  private:
+   mutable base::Lock lock_;
+   CefRefPtr<CefResourceHandler> handler_;
++  const CefRefPtr<CefNativeResourceDeliveryImpl> delivery_;
+ };
+ 
+ class ReadResponseCallbackWrapper : public CefCallback {
+@@ -388,9 +391,12 @@
+ class ResourceResponseWrapper : public ResourceResponse {
+  public:
+   ResourceResponseWrapper(const int32_t request_id,
+-                          CefRefPtr<CefResourceHandler> handler)
++                          CefRefPtr<CefResourceHandler> handler,
++                          CefRefPtr<CefRequestImpl> original_request)
+       : request_id_(request_id),
+-        handler_provider_(new HandlerProvider(handler)) {}
++        original_request_(std::move(original_request)),
++        handler_provider_(new HandlerProvider(
++            handler, original_request_->native_resource_delivery())) {}
+ 
+   ResourceResponseWrapper(const ResourceResponseWrapper&) = delete;
+   ResourceResponseWrapper& operator=(const ResourceResponseWrapper&) = delete;
+@@ -415,6 +421,8 @@
+     // May be recreated on redirect.
+     request_ = new CefRequestImpl();
+     request_->Set(&request, request_id);
++    request_->SetNativeResource(original_request_->native_resource_origin(),
++                                original_request_->native_resource_delivery());
+     request_->SetReadOnly(true);
+ 
+     CefRefPtr<OpenCallbackWrapper> callbackWrapper = new OpenCallbackWrapper(
+@@ -510,6 +518,7 @@
+ 
+  private:
+   const int32_t request_id_;
++  const CefRefPtr<CefRequestImpl> original_request_;
+ 
+   CefRefPtr<CefRequestImpl> request_;
+   scoped_refptr<HandlerProvider> handler_provider_;
+@@ -519,8 +528,10 @@
+ 
+ std::unique_ptr<ResourceResponse> CreateResourceResponse(
+     int32_t request_id,
+-    CefRefPtr<CefResourceHandler> handler) {
+-  return std::make_unique<ResourceResponseWrapper>(request_id, handler);
++    CefRefPtr<CefResourceHandler> handler,
++    CefRefPtr<CefRequest> original_request) {
++  return std::make_unique<ResourceResponseWrapper>(
++      request_id, handler, static_cast<CefRequestImpl*>(original_request.get()));
+ }
+ 
+ }  // namespace net_service
+diff --git a/libcef/browser/net_service/resource_handler_wrapper.h b/libcef/browser/net_service/resource_handler_wrapper.h
+--- a/libcef/browser/net_service/resource_handler_wrapper.h
++++ b/libcef/browser/net_service/resource_handler_wrapper.h
+@@ -17,7 +17,8 @@
+ // InterceptedRequestHandler::ShouldInterceptRequestResultCallback.
+ std::unique_ptr<ResourceResponse> CreateResourceResponse(
+     int32_t request_id,
+-    CefRefPtr<CefResourceHandler> handler);
++    CefRefPtr<CefResourceHandler> handler,
++    CefRefPtr<CefRequest> original_request);
+ 
+ }  // namespace net_service
+ 
+diff --git a/libcef/browser/net_service/resource_request_handler_wrapper.cc b/libcef/browser/net_service/resource_request_handler_wrapper.cc
+--- a/libcef/browser/net_service/resource_request_handler_wrapper.cc
++++ b/libcef/browser/net_service/resource_request_handler_wrapper.cc
+@@ -22,6 +22,8 @@
+ #include "cef/libcef/common/net_service/net_service_util.h"
+ #include "cef/libcef/common/request_impl.h"
+ #include "cef/libcef/common/response_impl.h"
++#include "cef/libcef/browser/native_resource_registry.h"
++#include "cef/libcef/browser/approved_navigation.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "components/language/core/browser/pref_names.h"
+ #include "components/prefs/pref_service.h"
+@@ -95,6 +96,10 @@
+  public:
+   struct RequestState {
+     RequestState() = default;
++    ~RequestState() { delivery_->Cancel(); }
++    CefRefPtr<CefNativeResourceDeliveryImpl> delivery_ = new CefNativeResourceDeliveryImpl();
++    bool origin_captured_ = false;
++    std::shared_ptr<const CefNativeResourceOriginState> origin_;
+ 
+     void Reset(CefRefPtr<CefResourceRequestHandler> handler,
+                CefRefPtr<CefSchemeHandlerFactory> scheme_factory,
+@@ -294,6 +299,19 @@
+       DCHECK(!user_agent_.empty());
+     }
+ 
++    void CaptureNativeFactory(content::RenderFrameHost* host) {
++      CEF_REQUIRE_UIT();
++      if (!host) return;
++      auto* rfh = static_cast<content::RenderFrameHostImpl*>(host);
++      const auto document = rfh->GetScopedURLLoaderFactoryDocumentForCef();
++      auto* contents = content::WebContents::FromRenderFrameHost(rfh);
++      auto* approval = contents ? CefApprovedNavigation::Get(contents) : nullptr;
++      auto issuance = document && approval
++          ? approval->FactoryIssuance(rfh, *document) : std::nullopt;
++      if (issuance) native_factory_ = CefNativeResourceRegistry::Key(
++          rfh->GetGlobalId(), document->ToString(), *issuance);
++    }
++
+     void DeleteDestructionObserver() {
+       DCHECK(destruction_observer_);
+       CEF_POST_TASK(
+@@ -321,6 +335,7 @@
+     scoped_refptr<CefIOThreadState> iothread_state_;
+     CefBrowserContext::CookieableSchemes cookieable_schemes_;
+     content::GlobalRenderFrameHostId global_id_;
++    std::optional<CefNativeResourceRegistry::Key> native_factory_;
+     bool is_navigation_ = true;
+     bool is_download_ = false;
+     CefString request_initiator_;
+@@ -843,7 +858,8 @@
+ 
+     std::unique_ptr<ResourceResponse> resource_response;
+     if (resource_handler) {
+-      resource_response = CreateResourceResponse(request_id, resource_handler);
++      resource_response = CreateResourceResponse(
++          request_id, resource_handler, state->pending_request_);
+       DCHECK(resource_response);
+       state->was_custom_handled_ = true;
+     } else if (state->accept_language_added_) {
+@@ -1209,7 +1225,7 @@
+       int32_t request_id,
+       network::ResourceRequest* request,
+       bool* intercept_only,
+-      CefRefPtr<CefRequestImpl>& requestPtr) const {
++      CefRefPtr<CefRequestImpl>& requestPtr) {
+     CefRefPtr<CefResourceRequestHandler> handler;
+ 
+     if (init_state_->browser_) {
+@@ -1342,12 +1358,20 @@
+     }
+   }
+ 
+-  static CefRefPtr<CefRequestImpl> MakeRequest(
++  CefRefPtr<CefRequestImpl> MakeRequest(
+       const network::ResourceRequest* request,
+       int64_t request_id,
+       bool read_only) {
++    auto* state = GetOrCreateState(request_id);
++    if (!state->origin_captured_) {
++      state->origin_captured_ = true;
++      if (init_state_->native_factory_)
++        state->origin_ = CefNativeResourceRegistry::Get().Capture(*init_state_->native_factory_);
++      state->delivery_->BindOrigin(state->origin_);
++    }
+     CefRefPtr<CefRequestImpl> requestPtr = new CefRequestImpl();
+     requestPtr->Set(request, request_id);
++    requestPtr->SetNativeResource(state->origin_, state->delivery_);
+     if (read_only) {
+       requestPtr->SetReadOnly(true);
+     } else {
+@@ -1413,6 +1437,7 @@
+   init_state->Initialize(browser_context, browserPtr, framePtr, global_id,
+                          is_navigation, is_download, request_initiator,
+                          base::RepeatingClosure());
++  init_state->CaptureNativeFactory(frame);
+ 
+   auto wrapper = std::make_unique<InterceptedRequestHandlerWrapper>();
+   wrapper->init_helper()->MaybeSetInitialized(std::move(init_state));
+diff --git a/libcef/common/native_resource.h b/libcef/common/native_resource.h
+--- /dev/null
++++ b/libcef/common/native_resource.h
+@@ -0,0 +1,52 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_COMMON_NATIVE_RESOURCE_H_
++#define CEF_LIBCEF_COMMON_NATIVE_RESOURCE_H_
++
++#include <atomic>
++#include <memory>
++#include "base/synchronization/lock.h"
++#include "cef/include/cef_request.h"
++
++struct CefNativeResourceOriginState {
++  CefNativeResourceOrigin origin;
++  mutable base::Lock admission;
++  mutable std::atomic<bool> live{true};
++  bool IsLive() const { return live.load(std::memory_order_acquire); }
++  void Revoke() const {
++    base::AutoLock lock(admission);
++    live.store(false, std::memory_order_release);
++  }
++};
++
++class CefNativeResourceDeliveryImpl final : public CefNativeResourceDelivery {
++ public:
++  void BindOrigin(std::shared_ptr<const CefNativeResourceOriginState> origin) {
++    origin_ = std::move(origin);
++  }
++  bool TryAccept() override {
++    if (origin_) {
++      base::AutoLock lock(origin_->admission);
++      if (!origin_->IsLive()) return false;
++      return Claim();
++    }
++    return Claim();
++  }
++  bool IsCancelled() override {
++    return phase_.load(std::memory_order_acquire) == Phase::kCancelled;
++  }
++  void Cancel() { phase_.store(Phase::kCancelled, std::memory_order_release); }
++ private:
++  enum class Phase { kOpen, kAccepted, kCancelled };
++  bool Claim() {
++    auto expected = Phase::kOpen;
++    return phase_.compare_exchange_strong(expected, Phase::kAccepted,
++        std::memory_order_acq_rel, std::memory_order_acquire);
++  }
++  std::shared_ptr<const CefNativeResourceOriginState> origin_;
++  std::atomic<Phase> phase_{Phase::kOpen};
++  IMPLEMENT_REFCOUNTING(CefNativeResourceDeliveryImpl);
++};
++
++
++#endif  // CEF_LIBCEF_COMMON_NATIVE_RESOURCE_H_
+diff --git a/libcef/common/request_impl.cc b/libcef/common/request_impl.cc
+--- a/libcef/common/request_impl.cc
++++ b/libcef/common/request_impl.cc
+@@ -389,6 +389,36 @@
+   return identifier_;
+ }
+ 
++bool CefRequestImpl::GetNativeResourceOrigin(CefNativeResourceOrigin& origin) {
++  base::AutoLock lock_scope(lock_);
++  if (!native_resource_origin_ || !native_resource_origin_->IsLive()) return false;
++  origin = native_resource_origin_->origin;
++  return true;
++}
++
++CefRefPtr<CefNativeResourceDelivery> CefRequestImpl::GetNativeResourceDelivery() {
++  base::AutoLock lock_scope(lock_);
++  return native_resource_delivery_;
++}
++
++void CefRequestImpl::SetNativeResource(
++    std::shared_ptr<const CefNativeResourceOriginState> origin,
++    CefRefPtr<CefNativeResourceDeliveryImpl> delivery) {
++  base::AutoLock lock_scope(lock_);
++  native_resource_origin_ = std::move(origin);
++  native_resource_delivery_ = std::move(delivery);
++}
++
++CefRefPtr<CefNativeResourceDeliveryImpl> CefRequestImpl::native_resource_delivery() const {
++  base::AutoLock lock_scope(lock_);
++  return native_resource_delivery_;
++}
++
++std::shared_ptr<const CefNativeResourceOriginState> CefRequestImpl::native_resource_origin() const {
++  base::AutoLock lock_scope(lock_);
++  return native_resource_origin_;
++}
++
+ void CefRequestImpl::Set(const network::ResourceRequest* request,
+                          uint64_t identifier) {
+   base::AutoLock lock_scope(lock_);
+@@ -878,6 +908,8 @@
+   identifier_ = 0U;
+   flags_ = UR_FLAG_NONE;
+   site_for_cookies_ = net::SiteForCookies();
++  native_resource_origin_.reset();
++  native_resource_delivery_ = nullptr;
+ 
+   changes_ = kChangedNone;
+ }
+diff --git a/libcef/common/request_impl.h b/libcef/common/request_impl.h
+--- a/libcef/common/request_impl.h
++++ b/libcef/common/request_impl.h
+@@ -13,6 +13,7 @@
+ #include "base/synchronization/lock.h"
+ #include "cef/include/cef_request.h"
+ #include "cef/libcef/common/mojom/cef.mojom.h"
++#include "cef/libcef/common/native_resource.h"
+ #include "net/cookies/site_for_cookies.h"
+ #include "services/network/public/mojom/referrer_policy.mojom-shared.h"
+ #include "url/gurl.h"
+@@ -80,6 +81,12 @@
+   ResourceType GetResourceType() override;
+   TransitionType GetTransitionType() override;
+   uint64_t GetIdentifier() override;
++  bool GetNativeResourceOrigin(CefNativeResourceOrigin& origin) override;
++  CefRefPtr<CefNativeResourceDelivery> GetNativeResourceDelivery() override;
++  void SetNativeResource(std::shared_ptr<const CefNativeResourceOriginState> origin,
++                         CefRefPtr<CefNativeResourceDeliveryImpl> delivery);
++  CefRefPtr<CefNativeResourceDeliveryImpl> native_resource_delivery() const;
++  std::shared_ptr<const CefNativeResourceOriginState> native_resource_origin() const;
+ 
+   // Populate this object from the ResourceRequest object.
+   void Set(const network::ResourceRequest* request, uint64_t identifier);
+@@ -178,6 +185,9 @@
+   // Bitmask of |Changes| values which indicate which fields have changed.
+   uint8_t changes_ = kChangedNone;
+ 
++  std::shared_ptr<const CefNativeResourceOriginState> native_resource_origin_;
++  CefRefPtr<CefNativeResourceDeliveryImpl> native_resource_delivery_;
++
+   mutable base::Lock lock_;
+ 
+   IMPLEMENT_REFCOUNTING(CefRequestImpl);
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -14,2 +14,3 @@
+ #include "cef/libcef/browser/native_context_traffic.h"
++#include "cef/libcef/browser/native_resource_registry.h"
+ #include "mojo/public/cpp/bindings/callback_helpers.h"
+@@ -92,5 +93,17 @@
+         PopupRegistrations().emplace(key, weak_.GetWeakPtr()).second;
+     if (!inserted) return false;
+     popup_registration_ = key;
+-    return true;
++    auto origin = std::make_shared<CefNativeResourceOriginState>();
++    origin->origin.browser_id = browser_->GetIdentifier();
++    origin->origin.renderer_child_id = child_id_;
++    origin->origin.render_frame_routing_id = key.frame_routing_id;
++    origin->origin.world_id = world_;
++    origin->origin.registration = registration_;
++    origin->origin.document_high = document_identity_->value().GetHighForSerialization();
++    origin->origin.document_low = document_identity_->value().GetLowForSerialization();
++    origin->origin.context_high = context_identity_->value().GetHighForSerialization();
++    origin->origin.context_low = context_identity_->value().GetLowForSerialization();
++    resource_key_ = CefNativeResourceRegistry::Key(key, document_identity_->ToString(), registration_);
++    resource_origin_ = std::move(origin);
++    return CefNativeResourceRegistry::Get().Publish(*resource_key_, resource_origin_);
+   }
+@@ -100,2 +118,8 @@
+     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    if (resource_origin_) {
++      resource_origin_->Revoke();
++      CefNativeResourceRegistry::Get().Remove(*resource_key_, resource_origin_);
++      resource_origin_.reset();
++      resource_key_.reset();
++    }
+     if (!popup_registration_) return;
+@@ -220,2 +239,3 @@
+     world_ = world_id;
++    registration_ = intent->first;
+     registered_ = true;
+@@ -390,2 +410,5 @@
+   int world_ = 0;
++  uint64_t registration_ = 0;
++  std::optional<CefNativeResourceRegistry::Key> resource_key_;
++  std::shared_ptr<const CefNativeResourceOriginState> resource_origin_;
+   std::string frame_id_;
+diff --git a/libcef/browser/approved_navigation.h b/libcef/browser/approved_navigation.h
+--- a/libcef/browser/approved_navigation.h
++++ b/libcef/browser/approved_navigation.h
+@@ -116,3 +116,16 @@
+     return std::make_pair(state_->last_issued, state_->intent);
+   }
++
++  // Capture approved issuance at this exact browser-owned factory callback.
++  // An old factory retains this value and cannot redeem a successor's slot.
++  std::optional<uint64_t> FactoryIssuance(
++      content::RenderFrameHostImpl* host, const blink::DocumentToken& document) const {
++    CEF_REQUIRE_UIT_RETURN(std::nullopt);
++    if (!host || !state_->navigation_id || state_->intent.empty() ||
++        state_->reserved_issued != state_->last_issued ||
++        !host->frame_tree_node() ||
++        !host->frame_tree_node()->IsLatestNavigationForCef(*state_->navigation_id) ||
++        !host->MatchesLatestDocumentForCef(document)) return std::nullopt;
++    return state_->last_issued;
++  }
+ 

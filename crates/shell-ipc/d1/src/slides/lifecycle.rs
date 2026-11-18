@@ -1,27 +1,20 @@
 //! Document lifecycle channels of `slides-main.ts`: open, open-path,
-//! consume-pending-open, new-blank, recent, save, save-as, save-into-project,
-//! is-dirty, close guard, autosave pref, undo/redo and history batches.
+//! consume-pending-open, new-blank, recent, is-dirty, close guard,
+//! autosave pref, undo/redo and history batches.
 
 use jscompat::JsonValue;
 use jscompat::node_path::host::{basename, join};
-use main_core::packages::electron_utils::dialog_memory::save_as_suggestion;
 use main_core::packages::electron_utils::recovery_store::RecoveryDeleteReason;
-use main_core::packages::electron_utils::save_conflict::{
-    SaveConflictAnswer, SaveConflictOptions, confirm_overwrite_if_conflicted, is_modified_since,
-    record_disk_state, should_defer_auto_save,
-};
-use main_core::slides::save_as_formats::{
-    resolve_slides_save_as_pick, slides_save_as_filters, slides_save_as_suggestion,
-};
+use main_core::packages::electron_utils::save_conflict::record_disk_state;
 use shell_contract::editors::Then;
 use shell_contract::hosts::MessageBox;
 use shell_contract::ipc::{CallContext, Responder};
 use shell_contract::{IpcError, IpcValue, ViewId, WindowId};
 
-use super::dialog::{Parent, filter, filter_of, jstr, jstrs, options};
+use super::dialog::{filter, jstr, jstrs, options};
 use super::engine::PreparedOpen;
 use super::session::{null, number};
-use super::state::{App, DeckHandle, SlideSession};
+use super::state::{App, DeckHandle, SlideSession, StagedBinding};
 use crate::host::path_string;
 use crate::value::{Args, as_bool, as_num, field, num, obj, or_null, string, thrown};
 
@@ -29,7 +22,7 @@ type Reply = Result<IpcValue, IpcError>;
 
 pub const AI_REVIEW_SAVE_REASON: &str = "ai-review";
 /// how long `requestRendererSave` waits for the renderer's answer
-const CLOSE_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub(super) const CLOSE_SAVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const AI_RUN_OPEN: &str = "An AI request is editing this deck; saving waits for your review";
 
 /// `'Error: ' + message`: `String(err)` of a thrown `Error`
@@ -164,17 +157,25 @@ impl App {
     /// `openAndBuild(wc, path, fitWidthPx, unlocked)`
     pub fn open_and_build(
         &self,
-        view: ViewId,
+        owner: &super::engine::RenderOwner,
         path: &str,
         fit_width_px: f64,
         unlocked: Option<(Vec<u8>, String)>,
     ) -> Reply {
+        let cancel = owner.loss_token().ok_or_else(|| thrown("The native presentation owner lifetime is unavailable"))?;
+        let authority = super::open_authority::OpenAuthority::capture(self, owner, cancel)?;
+        self.open_and_build_owned(owner, path, fit_width_px, unlocked, &authority)
+    }
+
+    fn open_and_build_owned(&self, owner: &super::engine::RenderOwner, path: &str, fit_width_px: f64, unlocked: Option<(Vec<u8>, String)>, authority: &super::open_authority::OpenAuthority) -> Reply {
+        let view = owner.view;
         // Same file already open in another window: attach to that session
         let wanted = std::path::absolute(path).unwrap_or_else(|_| path.into());
         {
             let mut state = self.state.borrow_mut();
             let mut found = None;
-            for slot in state.live_slots() {
+            // A preselected recovery decision must open its own bytes.
+            for slot in state.live_slots().into_iter().filter(|_| !state.recovery_open_decisions.contains_key(&view)) {
                 let Some(existing) = state.slot(slot) else {
                     continue;
                 };
@@ -192,12 +193,14 @@ impl App {
                 }
             }
             if let Some(slot) = found {
-                state.attach_view(view, slot);
-                let existing = state.slot_mut(slot).expect("attached slot");
-                existing.core.schedule_history_notify();
-                let result = self.open_result(existing, self.render_all(existing));
+                let existing = state.slot(slot).expect("existing slot");
+                let staged = StagedBinding::new(self.engine.clone(), existing.deck(), owner)
+                    .map_err(|error| thrown(error.0))?;
+                let result = self.open_result(existing, self.render_all(existing, owner)?)?;
                 let existing_path = existing.path().to_owned();
                 drop(state);
+                authority.commit(self, owner, Some(slot), None, staged)?;
+                if let Some(session) = self.state.borrow_mut().slot_mut(slot) { session.core.schedule_history_notify(); }
                 self.push_recent(path);
                 self.shell.opened(view, &existing_path);
                 return Ok(result);
@@ -215,46 +218,42 @@ impl App {
         } else {
             raw
         };
-        let recovered = self.recovered_open_bytes(path, original, password.as_deref());
+        let recovered = self.recovered_open_bytes(view, path, original, password.as_deref())?;
         let deck = self.engine.open(&recovered.bytes).map_err(|e| {
             if recovered.recovered {
                 self.set_copy_later(path);
             }
             thrown(e.0)
         })?;
-        self.engine.adopt_embedded_fonts(deck);
-        let mut session = SlideSession::new(
-            path,
-            DeckHandle::new(deck, self.engine.clone()),
-            fit_width_px,
-        );
+        let handle = DeckHandle::new(deck, self.engine.clone());
+        let mut session = SlideSession::new(path, handle, fit_width_px);
+        let staged = StagedBinding::new(self.engine.clone(), deck, owner)
+            .map_err(|error| thrown(error.0))?;
+        self.engine.adopt_embedded_fonts(deck, owner).map_err(|error| thrown(error.0))?;
         if recovered.recovered {
             session.core.meta_dirty = true;
         }
         session.disk_state = disk_state;
         session.password = password;
         session.core.schedule_history_notify();
-        let (result, payload) = {
-            let mut state = self.state.borrow_mut();
-            state.set_session(view, session);
-            let session = state.session(view).expect("just set");
-            let slides = self.render_all(session);
-            let payload = recovered.recovered.then(|| {
-                obj([
-                    ("slides", slides.clone()),
-                    ("size", self.size_value(self.engine.size(deck))),
-                ])
-            });
-            (self.open_result(session, slides), payload)
-        };
+        let slides = self.render_all(&session, owner)?;
+        let payload = if recovered.recovered {
+            Some(obj([
+                ("slides", slides.clone()),
+                ("size", self.size_value(self.engine.size(deck).map_err(|error| thrown(error.0))?)),
+            ]))
+        } else { None };
+        let result = self.open_result(&session, slides)?;
+        let owner = authority.commit(self, owner, None, Some(session), staged)?;
         self.push_recent(path);
         self.shell.opened(view, path);
         if let Some(payload) = payload {
             // An open shows the deck as clean; the deck-changed message right
             // after it makes the renderer ask the session, which answers "unsaved"
+            let owner = owner.clone();
             self.post(move |app| {
-                if app.services.views.sender_of(view).is_some() {
-                    app.emit(view, "slides:deck-changed", vec![payload]);
+                if let Err(error) = app.services.events.emit_to_owner_checked(&owner, "slides:deck-changed", vec![payload]) {
+                    eprintln!("[slides] scoped open notification failed: {error}");
                 }
             });
         }
@@ -271,28 +270,25 @@ impl App {
 
     /// Prepares `path` for open (conversions, password), then runs `then` on
     /// the core thread
-    fn prepare_then(&self, path: String, then: impl FnOnce(&App, PreparedOpen) + Send + 'static) {
+    fn prepare_then(&self, authority: super::open_authority::OpenAuthority, path: String, then: impl FnOnce(&App, Result<(PreparedOpen, super::open_authority::OpenAuthority), IpcError>) + Send + 'static) {
         let parent = self.shell.dialog_parent();
         let index = self.registry_index;
         let services = self.services.clone();
-        self.shell.prepare_for_open(
-            parent,
-            &path,
+        self.shell.prepare_for_open_owned(parent, &path, authority.source.clone(), authority.source.clone(), authority.cancel.clone(), authority.cancel.clone(),
             Box::new(move |prepared| {
-                super::post_to(&services, index, move |app| then(app, prepared))
-            }),
-        );
+                super::post_to(&services, index, move |app| then(app, prepared.map(|prepared| (prepared, authority)).map_err(thrown)));
+            }));
     }
 
-    fn open_prepared(&self, view: ViewId, fit: f64, prepared: PreparedOpen) -> Reply {
+    fn open_prepared(&self, owner: &super::engine::RenderOwner, fit: f64, prepared: PreparedOpen, authority: &super::open_authority::OpenAuthority) -> Reply {
         match prepared {
             PreparedOpen::Rejected => null(),
-            PreparedOpen::Plain(path) => self.open_and_build(view, &path, fit, None),
+            PreparedOpen::Plain(path) => self.open_and_build_owned(owner, &path, fit, None, authority),
             PreparedOpen::Unlocked {
                 path,
                 bytes,
                 password,
-            } => self.open_and_build(view, &path, fit, Some((bytes, password))),
+            } => self.open_and_build_owned(owner, &path, fit, Some((bytes, password)), authority),
         }
     }
 }
@@ -303,26 +299,44 @@ fn answer(responder: Responder, reply: Reply, app: &App) {
 }
 
 pub fn open(app: &App, cx: &CallContext, args: Args, responder: Responder) {
-    let view = cx.sender.view;
+    let owner = match super::session::render_owner(cx) { Ok(owner) => owner, Err(error) => return responder.reply(Err(error)) };
+    let authority = match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) { Ok(authority) => authority, Err(error) => return responder.reply(Err(error)) };
     let fit = number(args.get(0));
-    let picked = app.pick_open_first(&options([
+    let options = options([
         ("properties", jstrs(&["openFile"])),
         (
             "filters",
             JsonValue::Array(vec![filter("PowerPoint", &["pptx", "ppt", "odp", "otp"])]),
         ),
-    ]));
-    let Some(path) = picked else {
-        return responder.reply(null());
+    ]);
+    let options = match app.shared.dialog_memory.lock() {
+        Ok(memory) => crate::host::file_dialog(&main_core::packages::electron_utils::dialog_memory::prepare_dialog_options(&memory, &options, None)),
+        Err(_) => return responder.reply(Err(thrown("The dialog memory is unavailable"))),
     };
-    app.prepare_then(path, move |app, prepared| {
-        let reply = app.open_prepared(view, fit, prepared);
-        answer(responder, reply, app);
-    });
+    let effects = match app.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned() {
+        Some(effects) => effects, None => return responder.reply(Err(thrown("The native dialog effect host is unavailable"))),
+    };
+    let services = app.services.clone(); let index = app.registry_index;
+    app.dialogs.open_owned(app.shell.dialog_parent(), options, authority.source.clone(), authority.source.clone(), authority.cancel.clone(), authority.cancel.clone(), Box::new(move |picked| {
+        super::post_to(&services, index, move |app| {
+            let paths = match picked { Ok(paths) => paths, Err(error) => return responder.reply(Err(thrown(error))) };
+            let Some(path) = paths.and_then(|paths| paths.into_iter().next()).map(path_string).filter(|path| !path.is_empty()) else { return responder.reply(null()); };
+            let remembered = effects.with_owned_effect(&authority.source, &authority.source, &authority.cancel, &authority.cancel, &mut || {
+                let mut memory = app.shared.dialog_memory.lock().map_err(|_| "The dialog memory is unavailable".to_owned())?;
+                main_core::packages::electron_utils::dialog_memory::remember_open_path(&mut memory, &path, false); Ok(())
+            });
+            if let Err(error) = remembered { return responder.reply(Err(thrown(error))); }
+            app.prepare_then(authority, path, move |app, prepared| {
+                let reply = prepared.and_then(|(prepared, authority)| app.open_prepared(&owner, fit, prepared, &authority));
+                answer(responder, reply, app);
+            });
+        });
+    }));
 }
 
 pub fn open_path(app: &App, cx: &CallContext, args: Args, responder: Responder) {
-    let view = cx.sender.view;
+    let owner = match super::session::render_owner(cx) { Ok(owner) => owner, Err(error) => return responder.reply(Err(error)) };
+    let authority = match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) { Ok(authority) => authority, Err(error) => return responder.reply(Err(error)) };
     let fit = number(args.get(1));
     let Some(path) = args
         .str(0)
@@ -330,15 +344,37 @@ pub fn open_path(app: &App, cx: &CallContext, args: Args, responder: Responder) 
     else {
         return responder.reply(null());
     };
-    app.prepare_then(path.to_owned(), move |app, prepared| {
-        let reply = app.open_prepared(view, fit, prepared);
+    app.prepare_then(authority, path.to_owned(), move |app, prepared| {
+        let reply = prepared.and_then(|(prepared, authority)| app.open_prepared(&owner, fit, prepared, &authority));
         answer(responder, reply, app);
     });
 }
 
 pub fn consume_pending_open(app: &App, cx: &CallContext, args: Args, responder: Responder) {
     let view = cx.sender.view;
+    let owner = match super::session::render_owner(cx) { Ok(owner) => owner, Err(error) => return responder.reply(Err(error)) };
     let fit = number(args.get(0));
+    if app.state.borrow().saved_loads.contains_key(&view) {
+        return super::saved_load::consume(app, cx, fit, responder);
+    }
+    let mut response = Some(responder);
+    let recovered = super::recovery::consume_prepared(app, cx, fit, &mut response);
+    let Some(responder) = response else { return; };
+    match recovered {
+        Ok(Some(value)) => return answer(responder, Ok(value), app),
+        Err(error) => return answer(responder, Err(error), app),
+        Ok(None) => {}
+    }
+    if app.state.borrow().owned_seeds.contains_key(&view) {
+        let result = app.open_owned_seed(cx, fit).and_then(|value| value.ok_or_else(|| thrown("The presentation seed was released")));
+        return answer(responder, result, app);
+    }
+    let authority = match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) { Ok(authority) => authority, Err(error) => return responder.reply(Err(error)) };
+    consume_pending_ready(app, owner, authority, fit, responder);
+}
+
+pub(super) fn consume_pending_ready(app: &App, owner: super::engine::RenderOwner, authority: super::open_authority::OpenAuthority, fit: f64, responder: Responder) {
+    let view = owner.view;
     let queued = {
         let state = app.state.borrow();
         state
@@ -358,28 +394,28 @@ pub fn consume_pending_open(app: &App, cx: &CallContext, args: Args, responder: 
             }
         }
         let queued_for_then = queued.clone();
-        app.prepare_then(queued, move |app, prepared| {
+        app.prepare_then(authority, queued, move |app, prepared| {
             // clear the queue only after a successful open: keep it on a
             // parse failure, so a remount can retry
-            let reply = match prepared {
+            let reply = prepared.and_then(|(prepared, authority)| match prepared {
                 PreparedOpen::Rejected => {
                     drop_queued(app, view, &queued_for_then);
                     null()
                 }
                 other => {
-                    let r = app.open_prepared(view, fit, other);
+                    let r = app.open_prepared(&owner, fit, other, &authority);
                     if r.is_ok() {
                         drop_queued(app, view, &queued_for_then);
                     }
                     r
                 }
-            };
+            });
             answer(responder, reply, app);
         });
         return;
     }
     // A new tab that starts with a given deck: taken once, unsaved
-    let reply = app.open_seed(view, fit).and_then(|seeded| match seeded {
+    let reply = app.open_seed(&owner, fit, &authority).and_then(|seeded| match seeded {
         Some(result) => Ok(result),
         None => {
             // No queued path but the main process already has a session
@@ -388,8 +424,8 @@ pub fn consume_pending_open(app: &App, cx: &CallContext, args: Args, responder: 
             match state.session_mut(view) {
                 Some(session) => {
                     session.fit_width_px = fit;
-                    let slides = app.render_all(session);
-                    Ok(app.open_result(session, slides))
+                    let slides = app.render_all(session, &owner)?;
+                    app.open_result(session, slides)
                 }
                 None => null(),
             }
@@ -400,7 +436,8 @@ pub fn consume_pending_open(app: &App, cx: &CallContext, args: Args, responder: 
 
 impl App {
     /// `openSlidesSeed(wc, fitWidthPx, defaultFontOf)`
-    fn open_seed(&self, view: ViewId, fit: f64) -> Result<Option<IpcValue>, IpcError> {
+    fn open_seed(&self, owner: &super::engine::RenderOwner, fit: f64, authority: &super::open_authority::OpenAuthority) -> Result<Option<IpcValue>, IpcError> {
+        let view = owner.view;
         let entry = self
             .state
             .borrow_mut()
@@ -411,6 +448,8 @@ impl App {
         };
         let deck = self.engine.open(&entry.deck).map_err(|e| thrown(e.0))?;
         let mut session = SlideSession::new("", DeckHandle::new(deck, self.engine.clone()), fit);
+        let staged = StagedBinding::new(self.engine.clone(), deck, owner)
+            .map_err(|error| thrown(error.0))?;
         if entry.options.ask_path_on_first_save == Some(true) {
             session.ask_path_on_first_save = true;
             session.first_save_name = entry.options.suggested_name.clone();
@@ -420,22 +459,18 @@ impl App {
         // never saved: the deck holds what the disk does not
         session.core.mark_meta_dirty();
         session.core.schedule_history_notify();
-        let (result, payload) = {
-            let mut state = self.state.borrow_mut();
-            state.set_session(view, session);
-            let session = state.session(view).expect("just set");
-            let slides = self.render_all(session);
-            let payload = obj([
-                ("slides", slides.clone()),
-                ("size", self.size_value(self.engine.size(deck))),
-            ]);
-            (self.open_result(session, slides), payload)
-        };
+        let slides = self.render_all(&session, owner)?;
+        let payload = obj([
+            ("slides", slides.clone()),
+            ("size", self.size_value(self.engine.size(deck).map_err(|error| thrown(error.0))?)),
+        ]);
+        let result = self.open_result(&session, slides)?;
+        let owner = authority.commit(self, owner, None, Some(session), staged)?;
         // An open shows the deck as clean; the deck-changed message right
         // after it makes the renderer ask the session, which answers "unsaved"
         self.post(move |app| {
-            if app.services.views.sender_of(view).is_some() {
-                app.emit(view, "slides:deck-changed", vec![payload]);
+            if let Err(error) = app.services.events.emit_to_owner_checked(&owner, "slides:deck-changed", vec![payload]) {
+                eprintln!("[slides] scoped seed notification failed: {error}");
             }
         });
         Ok(Some(result))
@@ -443,24 +478,26 @@ impl App {
 }
 
 pub fn new_blank(app: &App, cx: &CallContext, args: Args) -> Reply {
-    let view = cx.sender.view;
+    let owner = super::session::render_owner(cx)?;
+    let authority = super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone())?;
     let fit = number(args.get(0));
     let bytes = app.engine.create_blank_pptx().map_err(|e| thrown(e.0))?;
     let deck = app.engine.open(&bytes).map_err(|e| thrown(e.0))?;
+    let mut session = SlideSession::new("", DeckHandle::new(deck, app.engine.clone()), fit);
+    let staged = StagedBinding::new(app.engine.clone(), deck, &owner)
+        .map_err(|error| thrown(error.0))?;
     let side = |v: &IpcValue| -> Option<f64> {
         as_num(v).filter(|x| x.fract() == 0.0 && (914_400.0..=51_206_400.0).contains(x))
     };
     let size = args.get(1);
     if let (Some(cx_), Some(cy)) = (side(field(size, "cx")), side(field(size, "cy"))) {
-        app.engine.set_slide_size(deck, cx_, cy);
+        app.engine.set_slide_size(deck, cx_, cy).map_err(|error| thrown(error.0))?;
     }
-    let mut session = SlideSession::new("", DeckHandle::new(deck, app.engine.clone()), fit);
     session.core.schedule_history_notify();
-    let mut state = app.state.borrow_mut();
-    state.set_session(view, session);
-    let session = state.session(view).expect("just set");
-    let slides = app.render_all(session);
-    Ok(app.open_result(session, slides))
+    let slides = app.render_all(&session, &owner)?;
+    let result = app.open_result(&session, slides)?;
+    authority.commit(app, &owner, None, Some(session), staged)?;
+    Ok(result)
 }
 
 pub fn recent(app: &App, _cx: &CallContext, _args: Args) -> Reply {
@@ -480,6 +517,9 @@ pub fn autosave_pref(app: &App, cx: &CallContext, args: Args) -> Result<(), IpcE
 }
 
 pub fn close_save_result(app: &App, cx: &CallContext, args: Args) -> Result<(), IpcError> {
+    if let Some(id) = args.str(1) {
+        return app.owned_save_answered(cx, id, as_bool(args.get(0)) == Some(true));
+    }
     let waiter = {
         let mut state = app.state.borrow_mut();
         let view = cx.sender.view;
@@ -493,21 +533,16 @@ pub fn close_save_result(app: &App, cx: &CallContext, args: Args) -> Result<(), 
 }
 
 pub fn is_dirty(app: &App, cx: &CallContext, _args: Args) -> Reply {
-    let state = app.state.borrow();
-    Ok(IpcValue::Bool(
-        state
-            .session(cx.sender.view)
-            .is_some_and(|s| app.session_dirty(s)),
-    ))
+    Ok(IpcValue::Bool(app.is_view_dirty(cx.sender.view)?))
 }
 
 impl App {
     /// `slidesIsDirty(webContentsId)`
-    pub fn is_view_dirty(&self, view: ViewId) -> bool {
-        self.state
-            .borrow()
-            .session(view)
-            .is_some_and(|s| self.session_dirty(s))
+    pub fn is_view_dirty(&self, view: ViewId) -> Result<bool, IpcError> {
+        match self.state.borrow().session(view) {
+            Some(session) => self.session_dirty(session).map_err(|error| thrown(error.0)),
+            None => Ok(false),
+        }
     }
 
     /// `requestRendererSave(contents)`: asks the renderer to run the full
@@ -598,7 +633,12 @@ impl App {
 
     /// `requestSlidesClose(contents, parent)`
     pub fn request_close(&self, view: ViewId, parent: Option<WindowId>, then: Then<bool>) {
-        if !self.is_view_dirty(view) || self.services.views.sender_of(view).is_none() {
+        match self.is_view_dirty(view) {
+            Err(error) => return then(Err(error)),
+            Ok(false) => return then(Ok(true)),
+            Ok(true) => {}
+        }
+        if self.services.views.sender_of(view).is_none() {
             return then(Ok(true));
         }
         // A shared session stays alive in another EDITOR window
@@ -694,7 +734,7 @@ impl App {
         s.disk_state = record_disk_state(file_path);
         self.push_recent(file_path);
         self.sync_attached_paths(slot, file_path, &ids);
-        self.engine.commit_saved(s.deck());
+        self.engine.commit_saved(s.deck()).map_err(|error| thrown(error.0))?;
         if s.core.meta_rev.unwrap_or(0) == meta_rev_at_save {
             s.core.meta_dirty = false;
         }
@@ -719,278 +759,6 @@ fn thrown_text(text: String) -> IpcError {
     thrown(message)
 }
 
-// ---- save ----
-
-fn fail(error: String) -> Reply {
-    Ok(obj([
-        ("ok", IpcValue::Bool(false)),
-        ("error", string(error)),
-    ]))
-}
-
-fn reason(reason: &str) -> Reply {
-    Ok(obj([
-        ("ok", IpcValue::Bool(false)),
-        ("reason", string(reason)),
-    ]))
-}
-
-pub fn save(app: &App, cx: &CallContext, args: Args) -> Reply {
-    let view = cx.sender.view;
-    let auto = as_bool(args.get(0)) == Some(true);
-    let mut state = app.state.borrow_mut();
-    let Some(slot) = state.slot_of(view) else {
-        return fail("no file open".into());
-    };
-    let ids = state.attached_ids(slot);
-    let Some(s) = state.slot_mut(slot) else {
-        return fail("no file open".into());
-    };
-    // an AI run's edits wait for review: nothing is written, and no dialog asks where
-    if s.core.ai_run {
-        return reason(AI_REVIEW_SAVE_REASON);
-    }
-    let previous_path = s.path().to_owned();
-    // An untitled deck asks where its first save goes
-    if s.path().is_empty() {
-        if auto {
-            return reason("external-modified");
-        }
-        let first_name = s
-            .first_save_name
-            .clone()
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| format!("{}.pptx", app.tm("untitledDeck", &[])));
-        // a deck whose panel has a project is offered in that folder
-        let project_dir = app.shell.new_document_dir(view).filter(|d| !d.is_empty());
-        let default_path = match project_dir {
-            Some(dir) if !std::path::Path::new(&first_name).is_absolute() => {
-                join(&[&dir, &first_name])
-            }
-            _ => first_name,
-        };
-        let picked = app.pick_save(&options([
-            ("defaultPath", jstr(default_path)),
-            (
-                "filters",
-                JsonValue::Array(vec![filter("PowerPoint", &["pptx"])]),
-            ),
-        ]))?;
-        // nothing written: the deck stays unsaved and no failure is shown
-        let Some(picked) = picked else {
-            return reason("external-modified");
-        };
-        s.core.path = picked.clone();
-        s.ask_path_on_first_save = false;
-        app.follow_template(s, "", &picked);
-        app.push_recent(&picked);
-        app.shell.opened(view, &picked);
-    }
-    // Split-view copy pair: when the disk moved past what this copy read, a
-    // save the user asked for asks before overwriting; the AutoSave pass
-    // defers silently
-    let probe = |p: &str| Ok(app.shell.is_path_open_elsewhere(p));
-    let path = s.path().to_owned();
-    if auto {
-        if should_defer_auto_save(Some(&probe), &path, s.disk_state.as_ref()) {
-            return reason("external-modified");
-        }
-    } else if app.shell.is_path_open_elsewhere(&path)
-        && is_modified_since(s.disk_state.as_ref(), &path)
-    {
-        let lang = app.lang();
-        let parent = app.shell.dialog_parent().map(Parent);
-        let verdict = confirm_overwrite_if_conflicted(&SaveConflictOptions {
-            probe: Some(&probe),
-            dialog: &super::dialog::BoxOver(&*app.dialogs),
-            parent: parent.as_ref(),
-            path: &path,
-            recorded: s.disk_state.as_ref(),
-            lang: lang.as_str(),
-        });
-        if verdict == SaveConflictAnswer::Cancel {
-            return reason("external-modified");
-        }
-    }
-    let meta_rev_at_save = s.core.meta_rev.unwrap_or(0);
-    if let Err(text) = app.write_deck_file(s, &path) {
-        // a run began while the save waited on a dialog: nothing was written
-        return if s.core.ai_run {
-            reason(AI_REVIEW_SAVE_REASON)
-        } else {
-            fail(text)
-        };
-    }
-    // the saved bytes are the new baseline for the split-view guard
-    s.disk_state = record_disk_state(&path);
-    app.recovery_copies_saved(s, &previous_path);
-    app.engine.commit_saved(s.deck());
-    if s.core.meta_rev.unwrap_or(0) == meta_rev_at_save {
-        s.core.meta_dirty = false;
-    }
-    let _ = ids;
-    Ok(obj([
-        ("ok", IpcValue::Bool(true)),
-        ("path", string(s.path())),
-        ("slides", app.render_all(s)),
-    ]))
-}
-
-pub fn save_into_project(app: &App, cx: &CallContext, _args: Args) -> Reply {
-    let view = cx.sender.view;
-    let skipped = || {
-        Ok(obj([
-            ("ok", IpcValue::Bool(false)),
-            ("skipped", IpcValue::Bool(true)),
-        ]))
-    };
-    let mut state = app.state.borrow_mut();
-    let Some(s) = state.session_mut(view) else {
-        return skipped();
-    };
-    if !s.path().is_empty()
-        || s.master_edit.is_some()
-        || s.core.ai_run
-        || !app.shell.can_write_new_document()
-    {
-        return skipped();
-    }
-    let file_name = app.project_deck_file_name(s.first_save_name.as_deref());
-    let meta_rev_at_save = s.core.meta_rev.unwrap_or(0);
-    let bytes = match app.engine.save_bytes(s.deck()) {
-        Ok(bytes) => app.deck_file_bytes(s, bytes),
-        Err(e) => Err(error_text(&e.0)),
-    };
-    let bytes = match bytes {
-        Ok(bytes) => bytes,
-        Err(text) => return fail(text.strip_prefix("Error: ").unwrap_or(&text).to_owned()),
-    };
-    let written = app.shell.write_new_document(view, &file_name, &bytes);
-    // no project chosen, or a save that asked where landed meanwhile
-    let Some(written) = written.filter(|_| s.path().is_empty()) else {
-        return skipped();
-    };
-    s.core.path = written.clone();
-    s.ask_path_on_first_save = false;
-    app.follow_template(s, "", &written);
-    app.push_recent(&written);
-    app.shell.opened(view, &written);
-    s.disk_state = record_disk_state(&written);
-    app.recovery_copies_saved(s, "");
-    app.engine.commit_saved(s.deck());
-    if s.core.meta_rev.unwrap_or(0) == meta_rev_at_save {
-        s.core.meta_dirty = false;
-    }
-    Ok(obj([
-        ("ok", IpcValue::Bool(true)),
-        ("path", string(written)),
-        ("slides", app.render_all(s)),
-    ]))
-}
-
-pub fn save_as(app: &App, cx: &CallContext, args: Args) -> Reply {
-    let reply = save_as_inner(app, cx, args);
-    app.save_as_answered(cx.sender.view, &reply);
-    reply
-}
-
-fn save_as_inner(app: &App, cx: &CallContext, args: Args) -> Reply {
-    let view = cx.sender.view;
-    let mut state = app.state.borrow_mut();
-    let Some(slot) = state.slot_of(view) else {
-        return fail("no file open".into());
-    };
-    let ids = state.attached_ids(slot);
-    let Some(s) = state.slot(slot) else {
-        return fail("no file open".into());
-    };
-    if s.core.ai_run {
-        return reason(AI_REVIEW_SAVE_REASON);
-    }
-    // with copy formats on offer the suggestion carries no extension: the
-    // file type chosen in the dialog supplies it
-    let source = Some(s.path()).filter(|p| !p.is_empty());
-    let Some(default_name) = args.str(0) else {
-        // `join(dirname(source), undefined)` throws, or the suggestion is `undefined`
-        // and the filter helper reads `.replace` of it
-        return Err(IpcError {
-            name: Some(if source.is_some() {
-                "TypeError [ERR_INVALID_ARG_TYPE]".into()
-            } else {
-                "TypeError".into()
-            }),
-            message: if source.is_some() {
-                "The \"path\" argument must be of type string. Received undefined".into()
-            } else {
-                "Cannot read properties of undefined (reading 'replace')".into()
-            },
-        });
-    };
-    let suggestion = slides_save_as_suggestion(&save_as_suggestion(source, default_name));
-    let lang = app.lang();
-    let filters = slides_save_as_filters(&|key| super::i18n::tm(lang, key, &[]));
-    let filters: Vec<JsonValue> = filters
-        .into_iter()
-        .map(|f| filter_of(f.name, f.extensions))
-        .collect();
-    let picked = app.pick_save(&options([
-        ("defaultPath", jstr(suggestion)),
-        ("filters", JsonValue::Array(filters)),
-    ]))?;
-    let Some(picked) = picked else {
-        return Ok(obj([("ok", IpcValue::Bool(false))]));
-    };
-    let pick = resolve_slides_save_as_pick(&picked);
-    // A copy format writes no deck: the renderer runs the existing export to
-    // the picked path, and the session keeps its path and dirty state
-    if pick.kind == "pdf" {
-        return Ok(obj([
-            ("ok", IpcValue::Bool(false)),
-            ("exportAs", string("pdf")),
-            ("path", string(pick.path)),
-        ]));
-    }
-    if pick.kind == "png" {
-        state
-            .save_as_image_targets
-            .authorize(f64::from(view.0), &pick.path);
-        return Ok(obj([
-            ("ok", IpcValue::Bool(false)),
-            ("exportAs", string("png")),
-            ("path", string(pick.path)),
-        ]));
-    }
-    let target = pick.path;
-    let Some(s) = state.slot_mut(slot) else {
-        return fail("no file open".into());
-    };
-    let meta_rev_at_save = s.core.meta_rev.unwrap_or(0);
-    let previous_path = s.path().to_owned();
-    if let Err(text) = app.write_deck_file(s, &target) {
-        // a run began while the dialog was open: nothing was written
-        return if s.core.ai_run {
-            reason(AI_REVIEW_SAVE_REASON)
-        } else {
-            fail(text)
-        };
-    }
-    app.follow_template(s, s.path(), &target);
-    s.core.path = target.clone();
-    s.disk_state = record_disk_state(&target);
-    app.push_recent(&target);
-    app.sync_attached_paths(slot, &target, &ids);
-    app.engine.commit_saved(s.deck());
-    if s.core.meta_rev.unwrap_or(0) == meta_rev_at_save {
-        s.core.meta_dirty = false;
-    }
-    // after the deck reads as saved
-    app.recovery_copies_saved(s, &previous_path);
-    Ok(obj([
-        ("ok", IpcValue::Bool(true)),
-        ("path", string(target)),
-        ("slides", app.render_all(s)),
-    ]))
-}
 
 // ---- undo / redo / history batches ----
 
@@ -999,11 +767,11 @@ pub fn get_render_slides(app: &App, cx: &CallContext, _args: Args) -> Reply {
 }
 
 pub fn undo(app: &App, cx: &CallContext, _args: Args) -> Reply {
-    app.step_history(cx.sender.view, true)
+    app.step_history(&super::session::render_owner(cx)?, true)
 }
 
 pub fn redo(app: &App, cx: &CallContext, _args: Args) -> Reply {
-    app.step_history(cx.sender.view, false)
+    app.step_history(&super::session::render_owner(cx)?, false)
 }
 
 impl App {
@@ -1020,30 +788,44 @@ impl App {
         result
     }
 
-    fn step_history(&self, view: ViewId, undo: bool) -> Reply {
-        let answer = self.with_session_ids(view, |s, ids| {
-            // Undo is disabled in master view and during an AI run
+    fn step_history(&self, owner: &super::engine::RenderOwner, undo: bool) -> Reply {
+        let answer = self.with_session_ids(owner.view, |s, ids| -> Result<Option<IpcValue>, super::engine::EngineError> {
             if s.master_edit.is_some() || s.core.ai_run {
-                return None;
+                return Ok(None);
             }
-            s.core.settle_stale_history_batch(ids);
             let target = if undo {
-                s.core.undo_stack.pop()
+                match s.core.history_batch.as_ref() {
+                    Some(batch) if s.core.undo_stack.len() > batch.undo_start => Some(&batch.before),
+                    _ => s.core.undo_stack.last(),
+                }
             } else {
-                s.core.redo_stack.pop()
-            }?;
-            let current = s.core.take_snapshot();
+                s.core.redo_stack.last()
+            }.cloned();
+            let Some(target) = target else { return Ok(None) };
+            let current = s.core.take_snapshot()?;
+            s.core.restore_snapshot(&target)?;
+            let rendered = match self.render_all(s, owner) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    s.core.restore_snapshot(&current).map_err(|rollback| super::engine::EngineError(
+                        format!("{}; history rollback failed: {}", error.message, rollback.0)
+                    ))?;
+                    return Err(super::engine::EngineError(error.message));
+                }
+            };
+            s.core.settle_stale_history_batch(ids);
             if undo {
+                s.core.undo_stack.pop();
                 s.core.redo_stack.push(current);
             } else {
+                s.core.redo_stack.pop();
                 s.core.undo_stack.push(current);
             }
-            s.core.restore_snapshot(&target);
             s.core.schedule_history_notify();
             s.core.schedule_deck_broadcast();
-            Some(self.render_all(s))
+            Ok(Some(rendered))
         });
-        Ok(or_null(answer.flatten()))
+        Ok(or_null(answer.transpose().map_err(|error| thrown(error.0))?.flatten()))
     }
 }
 
@@ -1051,7 +833,7 @@ pub fn history_batch_begin(app: &App, cx: &CallContext, _args: Args) -> Reply {
     let mut state = app.state.borrow_mut();
     Ok(IpcValue::Bool(match state.session_mut(cx.sender.view) {
         Some(s) => {
-            s.core.begin_history_batch();
+            s.core.begin_history_batch().map_err(|error| thrown(error.0))?;
             true
         }
         None => false,

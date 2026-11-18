@@ -65,8 +65,8 @@ const core: DiagramCoreApi = {
   save: (request) => ipcRenderer.invoke(DIAGRAM_CHANNELS.save, request),
   saveIntoProject: (request) => ipcRenderer.invoke(DIAGRAM_CHANNELS.saveIntoProject, request),
   setDirty: (dirty) => ipcRenderer.send(DIAGRAM_CHANNELS.dirtyChanged, dirty),
-  onSaveRequest: (handler) => listen<[SaveRequestMode]>(DIAGRAM_CHANNELS.saveRequest, handler),
-  sendSaveRequestAck: (ok) => ipcRenderer.send(DIAGRAM_CHANNELS.saveRequestAck, ok),
+  onSaveRequest: (handler) => listen<[SaveRequestMode, string?]>(DIAGRAM_CHANNELS.saveRequest, handler),
+  sendSaveRequestAck: (ok, requestId) => ipcRenderer.send(DIAGRAM_CHANNELS.saveRequestAck, ok, requestId),
   onCloseSaveRequest: (handler) => listen<[]>(DIAGRAM_CHANNELS.closeSaveRequest, handler),
   sendCloseSaveResult: (ok) => ipcRenderer.send(DIAGRAM_CHANNELS.closeSaveResult, ok),
   onFileRenamed: (handler) => listen<[string]>(DIAGRAM_CHANNELS.fileRenamed, handler),
@@ -83,6 +83,8 @@ const core: DiagramCoreApi = {
     listen<[AutoSaveDefault]>(APP_CHANNELS.autoSaveDefaultChanged, handler),
   onChromePressed: (handler) => listen<[]>(APP_CHANNELS.chromePressed, handler),
   takeSeed: () => ipcRenderer.invoke(DIAGRAM_CHANNELS.seedTake),
+  recoveryInitialized: (token, ok, error) =>
+    ipcRenderer.invoke(DIAGRAM_CHANNELS.recoveryInitialized, token, ok, error),
 }
 
 const exporting: DiagramExportApi = {
@@ -95,8 +97,8 @@ const exporting: DiagramExportApi = {
 
 const recovery: DiagramRecoveryApi = {
   writeRecoveryCopy: (request) => ipcRenderer.invoke(DIAGRAM_CHANNELS.recoveryCopy, request),
-  onRecoveryCopyNow: (handler) => listen<[]>(DIAGRAM_CHANNELS.recoveryCopyNow, handler),
-  sendRecoveryCopyNowDone: () => ipcRenderer.send(DIAGRAM_CHANNELS.recoveryCopyNowDone),
+  onRecoveryCopyNow: (handler) => listen<[number]>(DIAGRAM_CHANNELS.recoveryCopyNow, handler),
+  sendRecoveryCopyNowDone: (generation, error) => ipcRenderer.send(DIAGRAM_CHANNELS.recoveryCopyNowDone, generation, error),
   onRecoveryReset: (handler) => listen<[]>(DIAGRAM_CHANNELS.recoveryReset, handler),
 }
 

@@ -1,0 +1,85 @@
+# Private pinned source patch. Native compile, generated ABI and runtime are unverified.
+diff --git a/libcef/common/mojom/cef.mojom b/libcef/common/mojom/cef.mojom
+--- a/libcef/common/mojom/cef.mojom
++++ b/libcef/common/mojom/cef.mojom
+@@ -151,2 +151,3 @@
+   FirstNonEmptyLayout();
++  DocumentReady();
+ };
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -359,5 +359,13 @@
+   virtual void OnNativeContextFirstNonEmptyLayout(CefRefPtr<CefBrowser> browser,
+       const CefString& frame_id, int child_id, const CefString& document_token,
+       const CefString& context_token, int world_id) {}
++  ///
++  /// Native renderer DidFinishLoad for the original registered document.
++  /// Browser RFH/document identity is revalidated before this callback.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextDocumentReady(CefRefPtr<CefBrowser> browser,
++      const CefString& frame_id, int child_id, const CefString& document_token,
++      const CefString& context_token, int world_id) {}
+ #endif
+ };
+diff --git a/libcef/renderer/native_context_sender.h b/libcef/renderer/native_context_sender.h
+--- a/libcef/renderer/native_context_sender.h
++++ b/libcef/renderer/native_context_sender.h
+@@ -70,3 +70,4 @@
+     }
+     if (layout_pending_) FirstNonEmptyLayout();
++    if (document_ready_pending_) DocumentReady();
+     return IsAdmitted();
+@@ -81,2 +82,9 @@
+ 
++  void DocumentReady() {
++    if (!IsAdmitted() || document_ready_sent_) return;
++    if (!ready_) { document_ready_pending_ = true; return; }
++    document_ready_sent_ = true;
++    host_->DocumentReady();
++  }
++
+   bool IsAdmitted() override { return admitted_ && host_.is_connected(); }
+@@ -155,2 +164,4 @@
+   bool layout_sent_ = false;
++  bool document_ready_pending_ = false;
++  bool document_ready_sent_ = false;
+   std::deque<std::tuple<uint32_t, bool, std::vector<uint8_t>, bool, uint64_t, bool>> pending_replies_;
+diff --git a/libcef/renderer/render_frame_observer.cc b/libcef/renderer/render_frame_observer.cc
+--- a/libcef/renderer/render_frame_observer.cc
++++ b/libcef/renderer/render_frame_observer.cc
+@@ -82,3 +82,15 @@
+ void CefRenderFrameObserver::DidFinishLoad() {
++  if (render_frame()) {
++    const auto document = render_frame()->GetWebFrame()->GetDocument();
++    if (!document.IsNull()) {
++      const auto document_token = document.Token().ToString();
++      for (const auto& [token, identity] : native_contexts_) {
++        if (identity.first != document_token || identity.second != 0) continue;
++        auto found = native_context_senders_.find(token);
++        if (found != native_context_senders_.end()) found->second->DocumentReady();
++        break;
++      }
++    }
++  }
+   if (frame_) {
+     frame_->OnDidFinishLoad();
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -226,2 +226,10 @@
+ 
++  void DocumentReady() override {
++    if (!registered_ || !traffic_ || !traffic_->IsLive() || document_ready_sent_ ||
++        !evaluation_ || !evaluation_->IsCurrentDocument()) return;
++    document_ready_sent_ = true;
++    client_->OnNativeContextDocumentReady(browser_, frame_id_, child_id_,
++                                          document_, context_, world_);
++  }
++
+   bool attempted_ = false;
+@@ -231,2 +241,3 @@
+   bool layout_sent_ = false;
++  bool document_ready_sent_ = false;
+   std::optional<blink::DocumentToken> document_identity_;

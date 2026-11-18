@@ -27,7 +27,7 @@ use crate::shell::projects::chat_store::{
     CHAT_STATE_CACHE_LIMIT, CHAT_TITLE_CHARS, CHAT_TITLE_MAX_CHARS, ChatAppendedEvent,
     ChatAppendedListener, ChatDataChange, ChatSender, ChatStoreError, ChatStoreGuide,
     ChatStoreHost, ChatStoreOptions, FOREIGN_SCAN_CACHE_LIMIT, ListenerId,
-    MAX_PENDING_OPENING_MESSAGES, ProjectChatStore, default_new_id,
+    MAX_PENDING_OPENING_MESSAGES, AppendProgress, ProjectChatStore, default_new_id,
 };
 use crate::shell::projects::folder_files::data_dir_name;
 use crate::shell::projects::paths::{canonical_path, relative_inside};
@@ -240,7 +240,7 @@ impl ChatStoreGuide for FakeGuide {
         rel_path: &str,
         change: ChatDataChange<'_>,
         data_dir: Option<&str>,
-    ) -> DataUpdateOutcome {
+    ) -> Result<DataUpdateOutcome, ChatStoreError> {
         let path = path_of(&self.world.borrow(), id, rel_path, data_dir);
         let current = path
             .as_ref()
@@ -257,7 +257,7 @@ impl ChatStoreGuide for FakeGuide {
         );
         let Some(path) = path else {
             self.mark_unwritable_flag();
-            return DataUpdateOutcome::Unwritable;
+            return Ok(DataUpdateOutcome::Unwritable);
         };
         // the fake's install id never fails; a change that does would fail the
         // write, as the guide's `tryWrite` reports it
@@ -267,19 +267,19 @@ impl ChatStoreGuide for FakeGuide {
         };
         let Ok(next) = next else {
             self.mark_unwritable_flag();
-            return DataUpdateOutcome::Unwritable;
+            return Ok(DataUpdateOutcome::Unwritable);
         };
         let fail_writes = self.world.borrow().fail_writes;
         if let Some(text) = &next
             && (fail_writes || !write_for(&path, false, text))
         {
             self.mark_unwritable_flag();
-            return DataUpdateOutcome::Unwritable;
+            return Ok(DataUpdateOutcome::Unwritable);
         }
-        DataUpdateOutcome::Ok {
+        Ok(DataUpdateOutcome::Ok {
             written: next.is_some(),
             text: next,
-        }
+        })
     }
 
     fn data_path(&mut self, id: &str, rel_path: &str, data_dir: Option<&str>) -> Option<String> {
@@ -407,10 +407,12 @@ impl ChatStoreHost for FakeHost {
         fs::rename(abs_path, join(&[to.as_str(), name.as_str()])).map_err(|error| error.to_string())
     }
 
-    fn now_iso(&mut self) -> String {
+    fn now_iso(&mut self) -> Result<String, ChatStoreError> {
         let mut world = self.world.borrow_mut();
         world.clock_ms += 1000.0;
-        to_iso_string(world.clock_ms).unwrap_or_default()
+        to_iso_string(world.clock_ms).map_err(|error| ChatStoreError {
+            message: error.to_string(), code: None, kind: crate::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
     fn new_id(&mut self) -> String {
@@ -525,6 +527,14 @@ fn thrown(error: &ChatStoreError) -> Value {
     json!({ "error": error.message })
 }
 
+fn answer_scenario_append(result: Result<AppendProgress, ChatStoreError>) -> Value {
+    match result {
+        Ok(AppendProgress::Done(outcome)) => answer(Ok(outcome)),
+        Ok(AppendProgress::NeedInstallId(_)) => json!({ "error": "install identity is required" }),
+        Err(error) => thrown(&error),
+    }
+}
+
 /// an id the spec gave; anything else is no id, as the TypeScript finds it
 fn id_of<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
@@ -602,12 +612,12 @@ fn run_op(
             let args = json_value_from_serde(op.get("args").unwrap_or(&Value::Null));
             let sender = sender_of(op);
             match op.get("times").and_then(Value::as_f64) {
-                None => answer(store.append(&args, &sender)),
+                None => answer_scenario_append(store.begin_append(&args, &sender)),
                 Some(times) => {
                     let mut out = Vec::new();
                     let mut i = 0.0;
                     while i < times {
-                        out.push(answer(store.append(&args, &sender)));
+                        out.push(answer_scenario_append(store.begin_append(&args, &sender)));
                         i += 1.0;
                     }
                     Value::Array(out)

@@ -21,37 +21,27 @@
 //! state (`deps`, `win`, `session`, `opener`, `ipcRegistered`) is a
 //! [`GenerateWindow`] the caller owns, and `deps` is the [`GenerateWindowHost`].
 //!
-//! Promises are plain calls. A session call the TypeScript leaves floating
-//! (`void current.refresh()`, last in its function) runs to its end. Where
-//! lines follow it (`void session.reset(...)` before `win.restore()`,
-//! `show()` and `focus()`), the call is split at its first await
-//! ([`GenerateSession::reset_begin`]) and goes on after those lines
-//! ([`GenerateSession::reset_finish`]), as the event loop orders them there.
-//!
-//! The shell gathers the open files and open tabs the TypeScript reads from
-//! `tabManager.openDocuments()` and hands them to every call that reads them
-//! as an [`OpenSnapshot`]. Two awaits wait on a renderer and are steps: an
-//! editor's save command and the recheck timer of "save". A save handler
-//! answers a [`WindowStep`]; the caller carries out its [`SessionNeed`] and
-//! calls [`GenerateWindow::resume_save`] with the answer. The window keeps
-//! every session in a table until its last pending save has ended, because
-//! the TypeScript session an in-flight call belongs to goes on after the
-//! window moved to another one.
+//! Parser, conversion, dialog, save and tab-open work yields an owned
+//! [`WindowNeed`]. The caller drops core borrows before dispatching it and
+//! resumes the exact [`WindowRun`] with a fresh open-document snapshot.
+//! Window setup reports its real native result separately from the original
+//! floating refresh through [`WindowOpen`]. Target-tab success is not reported
+//! until its final native constructor, seed and project-follow callback.
 
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::convert::{ConvertResult, ConvertedDocument};
-use super::generate_api::{AiTargetKind, ConvertKind, GenerateWindowState, SaveAction, channels};
-use super::materials::{InspectHost, MaterialLengthCache, inspect_material};
-use super::materials::{MaterialStatus, supported_material_exts};
+use super::convert::{ConversionJob, ConvertedDocument, MarkdownNoticeJob, NoticeCache};
+use super::generate_api::{AiTargetKind, GenerateWindowState, SaveAction, channels};
+use super::materials::{MaterialInspectJob, MaterialLengthCache};
+use super::materials::supported_material_exts;
 use super::open_materials::{
     OpenMaterialsDeps, OpenSnapshot, SaveAnswer, SaveMaterialRun, SaveMaterialStep, SaveOutcome,
     path_of_untitled, save_action_for, save_material_begin, show_untitled,
 };
 use super::session::{
-    GenerateSession, GenerateSessionHost, MaterialRef, SaveRun, SaveStep, SessionAnswer,
-    SessionNeed,
+    GenerateSession, GenerateSessionHost, MaterialRef, SessionRun, SessionStep, SessionAnswer,
+    SessionNeed, OpenCommitToken, OpenCommitReceipt,
 };
 use super::title_bar::generate_title_bar_overlay;
 use crate::packages::electron_utils::generate_handoff::GenerateHandoff;
@@ -59,6 +49,7 @@ use crate::packages::electron_utils::safe_external_url::safe_external_url;
 use crate::packages::i18n::{Lang, product_name};
 use crate::shell::renderer_disposal::Failure;
 use crate::shell::title_bar_overlay::TitleBarOverlay;
+pub use super::session::SessionOutcome as WindowOutcome;
 
 /// `NewDocumentOpener` of `apps/shell/src/main/projects/new-documents.ts`:
 /// where the window was opened from (home or an editor window)
@@ -89,33 +80,17 @@ pub struct OpenDialogResult {
 
 /// `GenerateWindowDeps` and the Electron objects the module calls. Every
 /// window is a [`WindowId`] the host made.
-pub trait GenerateWindowHost: OpenMaterialsDeps + InspectHost {
+pub trait GenerateWindowHost: OpenMaterialsDeps {
     // ---- deps ----
     /// the window the generate window sits above when the caller names none
-    fn parent_window(&mut self) -> Option<WindowId>;
+    fn parent_window(&mut self) -> Result<Option<WindowId>, Failure>;
     fn lang(&self) -> Lang;
     fn theme(&self) -> String;
-    /// `TabManager.openGenerateTargetTab`: fails when no tab could open
-    fn open_target_tab(
-        &mut self,
-        handoff: &GenerateHandoff,
-        opener: Option<&NewDocumentOpener>,
-    ) -> Result<(), Failure>;
     /// `deps.openConvertedTab` was given: the window offers conversions
     fn can_open_converted(&self) -> bool;
-    /// `TabManager.openConversionResult`: fails when no tab could open
-    fn open_converted_tab(
-        &mut self,
-        doc: &ConvertedDocument,
-        opener: Option<&NewDocumentOpener>,
-    ) -> Result<(), Failure>;
     /// every starred file in a Starred-view group
     fn starred_group_paths(&mut self, group: &str) -> Vec<String>;
     // ---- what the session's deps are made of ----
-    /// `convertSource(kind, path, { untitled })`; it never rejects
-    fn convert_source(&mut self, kind: ConvertKind, path: &str, untitled: &str) -> ConvertResult;
-    /// `markdownRedactionNotice(path)`
-    fn markdown_redaction_notice(&mut self, path: &str) -> bool;
     fn new_id(&mut self) -> String;
     fn now(&mut self) -> f64;
     /// `MAX_OUTLINE_SLIDES`
@@ -124,24 +99,24 @@ pub trait GenerateWindowHost: OpenMaterialsDeps + InspectHost {
     /// `generateText(lang, key)` of the renderer's strings
     fn generate_text(&self, lang: Lang, key: GenerateText) -> String;
     /// `nativeTheme.shouldUseDarkColors`
-    fn should_use_dark_colors(&self) -> bool;
+    fn should_use_dark_colors(&self) -> Result<bool, Failure>;
     /// `process.platform === 'darwin'`
     fn is_darwin(&self) -> bool;
     /// `process.env.ELECTRON_RENDERER_URL`
     fn renderer_url(&self) -> Option<String>;
     /// `new BrowserWindow(options)`
-    fn create_window(&mut self, options: &GenerateWindowOptions) -> WindowId;
-    fn window_is_destroyed(&self, window: WindowId) -> bool;
-    fn window_is_minimized(&self, window: WindowId) -> bool;
-    fn window_restore(&mut self, window: WindowId);
-    fn window_show(&mut self, window: WindowId);
-    fn window_focus(&mut self, window: WindowId);
-    fn window_close(&mut self, window: WindowId);
-    fn window_remove_menu(&mut self, window: WindowId);
+    fn create_window(&mut self, options: &GenerateWindowOptions) -> Result<WindowId, Failure>;
+    fn window_is_destroyed(&self, window: WindowId) -> Result<bool, Failure>;
+    fn window_is_minimized(&self, window: WindowId) -> Result<bool, Failure>;
+    fn window_restore(&mut self, window: WindowId) -> Result<(), Failure>;
+    fn window_show(&mut self, window: WindowId) -> Result<(), Failure>;
+    fn window_focus(&mut self, window: WindowId) -> Result<(), Failure>;
+    fn window_close(&mut self, window: WindowId) -> Result<(), Failure>;
+    fn window_remove_menu(&mut self, window: WindowId) -> Result<(), Failure>;
     /// `win.webContents.id`
-    fn window_web_contents_id(&self, window: WindowId) -> f64;
+    fn window_web_contents_id(&self, window: WindowId) -> Result<f64, Failure>;
     /// `win.webContents.send(GENERATE_CHANNELS.state, state)`
-    fn window_send_state(&mut self, window: WindowId, state: &GenerateWindowState);
+    fn window_send_state(&mut self, window: WindowId, state: &GenerateWindowState) -> Result<(), Failure>;
     /// `win.setTitleBarOverlay(overlay)`: fails when the window was torn down
     fn window_set_title_bar_overlay(
         &mut self,
@@ -149,17 +124,15 @@ pub trait GenerateWindowHost: OpenMaterialsDeps + InspectHost {
         overlay: &TitleBarOverlay,
     ) -> Result<(), Failure>;
     /// `nativeTheme.on('updated', ...)` for this window
-    fn watch_theme(&mut self, window: WindowId);
+    fn watch_theme(&mut self, window: WindowId) -> Result<(), Failure>;
     /// `nativeTheme.off('updated', ...)` for this window
-    fn unwatch_theme(&mut self, window: WindowId);
+    fn unwatch_theme(&mut self, window: WindowId) -> Result<(), Failure>;
     /// `win.loadURL(url)`
-    fn window_load_url(&mut self, window: WindowId, url: &str);
+    fn window_load_url(&mut self, window: WindowId, url: &str) -> Result<(), Failure>;
     /// `win.loadFile(join(__dirname, '../renderer/generate.html'))`
-    fn window_load_generate_page(&mut self, window: WindowId);
+    fn window_load_generate_page(&mut self, window: WindowId) -> Result<(), Failure>;
     /// `shell.openExternal(url)`
-    fn open_external(&mut self, url: &str);
-    /// `dialog.showOpenDialog(win, options)`
-    fn show_open_dialog(&mut self, window: WindowId, options: &Value) -> OpenDialogResult;
+    fn open_external(&mut self, url: &str) -> Result<(), Failure>;
 }
 
 /// `webPreferences` of the window, without the `preload` path the host adds
@@ -271,20 +244,56 @@ pub const IPC_HANDLE_CHANNELS: [&str; 12] = [
     channels::HOME_OPEN_WITH_GROUP,
 ];
 
-/// The continuation of a save handler while the caller carries out a
-/// [`SessionNeed`]; the caller keeps it and hands it to
-/// [`GenerateWindow::resume_save`].
 #[derive(Debug)]
 pub struct WindowRun {
-    session_id: u64,
-    run: SaveRun,
+    stage: WindowRunStage,
 }
 
-/// One step of `generate:save-material`.
+#[derive(Debug)]
+enum WindowRunStage {
+    Session { session_id: u64, run: SessionRun },
+    Opening { session_id: u64, run: SessionRun, window: WindowId },
+    AddMaterials,
+}
+
+#[derive(Debug)]
+pub enum WindowNeed {
+    Save(super::open_materials::SaveNeed),
+    Reveal(String),
+    Sleep(f64),
+    Inspect(MaterialInspectJob),
+    Notice(MarkdownNoticeJob),
+    Convert(ConversionJob),
+    OpenDialog { window: WindowId, options: Value },
+    OpenTarget { handoff: GenerateHandoff, opener: Option<NewDocumentOpener>, token: OpenCommitToken, window: WindowId },
+    OpenConverted { document: ConvertedDocument, opener: Option<NewDocumentOpener>, token: OpenCommitToken, window: WindowId },
+}
+
 #[derive(Debug)]
 pub enum WindowStep {
-    Done(Result<(), Failure>),
-    Need(SessionNeed, WindowRun),
+    Done(Result<WindowOutcome, Failure>),
+    Need(WindowNeed, WindowRun),
+}
+
+impl WindowStep {
+    fn unit(result: Result<(), Failure>) -> Self {
+        Self::Done(result.map(|()| WindowOutcome::Unit))
+    }
+}
+
+/// Native window setup completes independently of its floating inspection.
+#[derive(Debug)]
+pub struct WindowOpen {
+    pub result: Result<(), Failure>,
+    pub background: WindowStep,
+}
+
+/// Terminal state completion. This window ID selects an already captured,
+/// exact native cleanup handle; it does not grant permission to close a view.
+#[derive(Debug)]
+pub struct WindowCommitted {
+    pub outcome: WindowOutcome,
+    pub cleanup_window: WindowId,
 }
 
 /// the `init` of `openGenerateWindow`
@@ -309,6 +318,7 @@ pub struct GenerateWindow {
     session_id: Option<u64>,
     /// `lengthCache` of materials.ts
     length_cache: MaterialLengthCache,
+    notice_cache: NoticeCache,
     next_session_id: u64,
     /// where the open window was opened from (home or an editor window)
     opener: Option<NewDocumentOpener>,
@@ -325,26 +335,20 @@ struct SessionEntry {
 /// the deps of a session, over the host and the window state
 struct SessionBridge<'a, H: GenerateWindowHost> {
     host: &'a mut H,
-    win: &'a mut Option<WindowId>,
-    opener: &'a mut Option<NewDocumentOpener>,
-    length_cache: &'a mut MaterialLengthCache,
-    /// `closeGenerateWindow` ran: no session is current any more
-    window_closed: bool,
+    win: &'a Option<WindowId>,
 }
 
 /// `closeGenerateWindow`'s window part
 fn close_window_state<H: GenerateWindowHost>(
-    host: &mut H,
-    win: &mut Option<WindowId>,
-    opener: &mut Option<NewDocumentOpener>,
-) {
-    let current = win.take();
-    *opener = None;
-    if let Some(current) = current
-        && !host.window_is_destroyed(current)
-    {
-        host.window_close(current);
+    host: &mut H, win: &mut Option<WindowId>, opener: &mut Option<NewDocumentOpener>,
+) -> Result<(), Failure> {
+    if let Some(current) = *win
+        && !host.window_is_destroyed(current)? {
+        host.window_close(current)?;
     }
+    *win = None;
+    *opener = None;
+    Ok(())
 }
 
 impl<H: GenerateWindowHost> GenerateSessionHost for SessionBridge<'_, H> {
@@ -352,15 +356,12 @@ impl<H: GenerateWindowHost> GenerateSessionHost for SessionBridge<'_, H> {
         self.host.lang()
     }
 
-    fn inspect(&mut self, snap: &OpenSnapshot<'_>, path: &str) -> Result<MaterialStatus, Failure> {
-        inspect_material(&mut *self.host, self.length_cache, snap.files, path)
-    }
 
     fn path_of_untitled(
         &mut self,
         snap: &OpenSnapshot<'_>,
         web_contents_id: f64,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, Failure> {
         path_of_untitled(&mut *self.host, snap.tabs, web_contents_id)
     }
 
@@ -368,7 +369,7 @@ impl<H: GenerateWindowHost> GenerateSessionHost for SessionBridge<'_, H> {
         save_action_for(&*self.host, snap.tabs, path)
     }
 
-    fn save_material_begin(&mut self, snap: &OpenSnapshot<'_>, path: &str) -> SaveMaterialStep {
+    fn save_material_begin(&mut self, snap: &OpenSnapshot<'_>, path: &str) -> Result<SaveMaterialStep, Failure> {
         save_material_begin(&mut *self.host, snap.tabs, path)
     }
 
@@ -380,49 +381,29 @@ impl<H: GenerateWindowHost> GenerateSessionHost for SessionBridge<'_, H> {
         &mut self,
         snap: &OpenSnapshot<'_>,
         web_contents_id: f64,
-    ) -> Result<(), Failure> {
-        show_untitled(&mut *self.host, snap.tabs, web_contents_id);
-        Ok(())
+    ) -> Result<Option<String>, Failure> {
+        show_untitled(&mut *self.host, snap.tabs, web_contents_id)
     }
 
-    fn open_target_tab(&mut self, handoff: &GenerateHandoff) -> Result<(), Failure> {
-        self.host.open_target_tab(handoff, self.opener.as_ref())
-    }
 
     fn can_convert(&self) -> bool {
         self.host.can_open_converted()
     }
 
-    fn convert(&mut self, kind: ConvertKind, path: &str) -> Result<ConvertResult, Failure> {
-        let lang = self.host.lang();
-        let untitled = self.host.generate_text(lang, GenerateText::Untitled);
-        Ok(self.host.convert_source(kind, path, &untitled))
-    }
-
-    fn open_converted_tab(&mut self, doc: &ConvertedDocument) -> Result<(), Failure> {
-        self.host.open_converted_tab(doc, self.opener.as_ref())
-    }
 
     fn has_redaction_notice(&self) -> bool {
         self.host.can_open_converted()
     }
 
-    fn redaction_notice(&mut self, path: &str) -> Result<bool, Failure> {
-        Ok(self.host.markdown_redaction_notice(path))
-    }
 
-    fn push(&mut self, state: &GenerateWindowState) {
+    fn push(&mut self, state: &GenerateWindowState) -> Result<(), Failure> {
         if let Some(win) = *self.win
-            && !self.host.window_is_destroyed(win)
-        {
-            self.host.window_send_state(win, state);
+            && !self.host.window_is_destroyed(win)? {
+            self.host.window_send_state(win, state)?;
         }
+        Ok(())
     }
 
-    fn close(&mut self) {
-        self.window_closed = true;
-        close_window_state(&mut *self.host, &mut *self.win, &mut *self.opener);
-    }
 
     fn new_id(&mut self) -> String {
         self.host.new_id()
@@ -459,15 +440,9 @@ impl GenerateWindow {
         let mut entry = self.sessions.remove(at);
         let mut bridge = SessionBridge {
             host,
-            win: &mut self.win,
-            opener: &mut self.opener,
-            length_cache: &mut self.length_cache,
-            window_closed: false,
+            win: &self.win,
         };
         let result = run(&mut entry.session, &mut bridge);
-        if bridge.window_closed {
-            self.session_id = None;
-        }
         self.sessions.insert(at, entry);
         Some(result)
     }
@@ -516,246 +491,261 @@ impl GenerateWindow {
         true
     }
 
-    /// `fromWindow(event)`: the sender is the generate window's page
-    pub fn from_window<H: GenerateWindowHost>(&self, host: &H, sender_id: f64) -> bool {
+    pub fn from_window<H: GenerateWindowHost>(&self, host: &H, sender_id: f64) -> Result<bool, Failure> {
         match self.win {
-            Some(win) => {
-                !host.window_is_destroyed(win) && host.window_web_contents_id(win) == sender_id
-            }
-            None => false,
+            Some(win) => Ok(!host.window_is_destroyed(win)? && host.window_web_contents_id(win)? == sender_id),
+            None => Ok(false),
         }
     }
 
-    /// `fromHome(event)`: only the shell window's own page (Home) may ask
-    fn is_from_home<H: GenerateWindowHost>(&self, host: &mut H, sender_id: f64) -> bool {
-        if !self.configured {
-            return false;
-        }
-        match host.parent_window() {
-            Some(parent) => {
-                !host.window_is_destroyed(parent)
-                    && host.window_web_contents_id(parent) == sender_id
-            }
-            None => false,
+    fn is_from_home<H: GenerateWindowHost>(&self, host: &mut H, sender_id: f64) -> Result<bool, Failure> {
+        if !self.configured { return Ok(false); }
+        match host.parent_window()? {
+            Some(parent) => Ok(!host.window_is_destroyed(parent)? && host.window_web_contents_id(parent)? == sender_id),
+            None => Ok(false),
         }
     }
 
-    /// `generate:get-state`
+    fn sender_session<H: GenerateWindowHost>(&self, host: &H, sender_id: f64) -> Result<Option<u64>, Failure> {
+        Ok(if self.from_window(host, sender_id)? { self.session_id } else { None })
+    }
+
     pub fn handle_get_state<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        sender_id: f64,
-    ) -> Option<GenerateWindowState> {
-        if !self.from_window(&*host, sender_id) {
-            return None;
-        }
-        self.with_session(host, |session, bridge| session.state(&*bridge))
+        &mut self, host: &mut H, sender_id: f64,
+    ) -> Result<Option<GenerateWindowState>, Failure> {
+        if !self.from_window(host, sender_id)? { return Ok(None); }
+        Ok(self.with_session(host, |session, bridge| session.state(bridge)))
     }
 
-    /// `generate:get-theme`
-    pub fn handle_get_theme<H: GenerateWindowHost>(&self, host: &H, sender_id: f64) -> String {
-        if self.from_window(host, sender_id) && self.configured {
-            host.theme()
-        } else {
-            "system".to_owned()
-        }
+    pub fn handle_get_theme<H: GenerateWindowHost>(&self, host: &H, sender_id: f64) -> Result<String, Failure> {
+        Ok(if self.from_window(host, sender_id)? && self.configured { host.theme() } else { "system".into() })
     }
 
-    /// `generate:set-kind`
     pub fn handle_set_kind<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        sender_id: f64,
-        kind: Option<&Value>,
-    ) {
-        if self.from_window(&*host, sender_id) {
-            self.with_session(host, |session, bridge| session.set_kind(bridge, kind));
-        }
-    }
-
-    /// `generate:set-convert`
-    pub fn handle_set_convert<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        sender_id: f64,
-        kind: Option<&Value>,
-    ) {
-        if self.from_window(&*host, sender_id) {
-            self.with_session(host, |session, bridge| session.set_convert(bridge, kind));
-        }
-    }
-
-    /// `generate:add-materials`: the file picker, and the picked files join the list
-    pub fn handle_add_materials<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        sender_id: f64,
+        &mut self, host: &mut H, sender_id: f64, kind: Option<&Value>,
     ) -> Result<(), Failure> {
-        if !self.from_window(&*host, sender_id) || !self.has_session() || !self.configured {
-            return Ok(());
+        if self.from_window(host, sender_id)? {
+            self.with_session(host, |session, bridge| session.set_kind(bridge, kind)).unwrap_or(Ok(()))?;
         }
-        let Some(win) = self.win else {
-            return Ok(());
-        };
+        Ok(())
+    }
+
+    pub fn handle_set_convert<H: GenerateWindowHost>(
+        &mut self, host: &mut H, sender_id: f64, kind: Option<&Value>,
+    ) -> Result<(), Failure> {
+        if self.from_window(host, sender_id)? {
+            self.with_session(host, |session, bridge| session.set_convert(bridge, kind)).unwrap_or(Ok(()))?;
+        }
+        Ok(())
+    }
+
+    pub fn handle_add_materials<H: GenerateWindowHost>(
+        &mut self, host: &mut H, _snap: &OpenSnapshot<'_>, sender_id: f64,
+    ) -> WindowStep {
+        match self.from_window(host, sender_id) {
+            Err(error) => return WindowStep::Done(Err(error)),
+            Ok(false) => return WindowStep::unit(Ok(())),
+            Ok(true) => {}
+        }
+        if !self.has_session() || !self.configured { return WindowStep::unit(Ok(())); }
+        let Some(window) = self.win else { return WindowStep::unit(Ok(())); };
         let lang = host.lang();
         let options = json!({
             "title": host.generate_text(lang, GenerateText::DialogAddTitle),
-            "filters": [
-                {
-                    "name": host.generate_text(lang, GenerateText::FilterSupported),
-                    "extensions": supported_material_exts(),
-                },
-            ],
+            "filters": [{
+                "name": host.generate_text(lang, GenerateText::FilterSupported),
+                "extensions": supported_material_exts(),
+            }],
             "properties": ["openFile", "multiSelections"],
         });
-        let result = host.show_open_dialog(win, &options);
-        if !result.canceled {
-            // `session?.addPaths(...)`: the session may be gone by now
-            self.with_session(host, |session, bridge| {
-                session.add_paths(bridge, snap, &result.file_paths)
-            })
-            .unwrap_or(Ok(()))?;
+        WindowStep::Need(WindowNeed::OpenDialog { window, options },
+            WindowRun { stage: WindowRunStage::AddMaterials })
+    }
+
+    pub fn handle_remove_material<H: GenerateWindowHost>(
+        &mut self, host: &mut H, sender_id: f64, key: Option<&Value>,
+    ) -> Result<(), Failure> {
+        if self.from_window(host, sender_id)? {
+            self.with_session(host, |session, bridge| session.remove(bridge, key)).unwrap_or(Ok(()))?;
         }
         Ok(())
     }
 
-    /// `generate:remove-material`
-    pub fn handle_remove_material<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        sender_id: f64,
-        key: Option<&Value>,
-    ) {
-        if self.from_window(&*host, sender_id) {
-            self.with_session(host, |session, bridge| session.remove(bridge, key));
-        }
-    }
-
-    /// `generate:save-material`
     pub fn handle_save_material<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        sender_id: f64,
-        key: Option<&Value>,
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, sender_id: f64, key: Option<&Value>,
     ) -> WindowStep {
-        if !self.from_window(&*host, sender_id) {
-            return WindowStep::Done(Ok(()));
-        }
-        let Some(id) = self.session_id else {
-            return WindowStep::Done(Ok(()));
+        let id = match self.sender_session(host, sender_id) {
+            Err(error) => return WindowStep::Done(Err(error)),
+            Ok(None) => return WindowStep::unit(Ok(())),
+            Ok(Some(id)) => id,
         };
-        let step = self.with_session_id(host, id, |session, bridge| {
-            session.save_begin(bridge, snap, key)
-        });
-        self.save_step(id, step)
+        let step = self.with_session_id(host, id, |session, bridge| session.save_begin(bridge, snap, key));
+        self.window_step(host, snap, id, step)
     }
 
-    /// the caller carried out the [`SessionNeed`] of a [`WindowStep`]
-    pub fn resume_save<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        run: WindowRun,
-        answer: SessionAnswer,
+    pub fn resume<H: GenerateWindowHost>(
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, run: WindowRun, answer: SessionAnswer,
     ) -> WindowStep {
-        let id = run.session_id;
-        let step = self.with_session_id(host, id, |session, bridge| {
-            session.save_resume(bridge, snap, run.run, answer)
-        });
-        if let Some(entry) = self.sessions.iter_mut().find(|e| e.id == id) {
+        match (run.stage, answer) {
+            (WindowRunStage::AddMaterials, SessionAnswer::Dialog(answer)) => {
+                let result = match answer {
+                    Err(error) => return WindowStep::Done(Err(error)),
+                    Ok(result) => result,
+                };
+                if result.canceled { return WindowStep::unit(Ok(())); }
+                let Some(id) = self.session_id else { return WindowStep::unit(Ok(())); };
+                let step = self.with_session_id(host, id, |session, bridge| session.add_paths(bridge, snap, &result.file_paths));
+                self.window_step(host, snap, id, step)
+            }
+            (WindowRunStage::Session { session_id, run }, answer)
+            | (WindowRunStage::Opening { session_id, run, .. }, answer @ SessionAnswer::OpenFailed(_)) => {
+                if Some(session_id) != self.session_id {
+                    self.discard_run(WindowRun { stage: WindowRunStage::Session { session_id, run } });
+                    return WindowStep::Done(Err(Failure("generate continuation session was replaced".into())));
+                }
+                let step = self.with_session_id(host, session_id, |session, bridge| session.resume(bridge, snap, run, answer));
+                if let Some(entry) = self.sessions.iter_mut().find(|entry| entry.id == session_id) {
+                    entry.pending -= 1;
+                }
+                self.window_step(host, snap, session_id, step)
+            }
+            (stage, _) => {
+                self.discard_run(WindowRun { stage });
+                WindowStep::Done(Err(Failure("unexpected generate continuation answer".into())))
+            }
+        }
+    }
+
+    /// Consume only an actual committed open receipt. No fresh source snapshot
+    /// or live-source authority is consulted after accepted ownership transfer.
+    pub fn complete_committed_open(&mut self, run: WindowRun, receipt: OpenCommitReceipt) -> Result<WindowCommitted, Failure> {
+        let (session_id, run, window) = match run.stage {
+            WindowRunStage::Opening { session_id, run, window } => (session_id, run, window),
+            stage => {
+                self.discard_run(WindowRun { stage });
+                return Err(Failure("committed generate receipt requires a terminal opening continuation".into()));
+            }
+        };
+        let entry = self.sessions.iter_mut().find(|entry| entry.id == session_id)
+            .ok_or_else(|| Failure("committed generate session disappeared".into()))?;
+        let result = entry.session.complete_committed_open(run, receipt);
+        entry.pending -= 1;
+        if result.is_ok() && self.session_id == Some(session_id) {
+            self.session_id = None;
+            if self.win == Some(window) { self.win = None; self.opener = None; }
+        }
+        self.prune_sessions();
+        result.map(|outcome| WindowCommitted { outcome, cleanup_window: window })
+    }
+
+    pub fn discard_run(&mut self, run: WindowRun) {
+        let session = match run.stage {
+            WindowRunStage::Session { session_id, run } | WindowRunStage::Opening { session_id, run, .. } => Some((session_id, run)),
+            WindowRunStage::AddMaterials => None,
+        };
+        if let Some((session_id, run)) = session
+            && let Some(entry) = self.sessions.iter_mut().find(|entry| entry.id == session_id) {
+            entry.session.discard_run(run);
             entry.pending -= 1;
         }
-        self.save_step(id, step)
+        self.prune_sessions();
     }
 
-    /// what a step of `save` means for the window: a pending save keeps its
-    /// session in the table
-    fn save_step(&mut self, id: u64, step: Option<SaveStep>) -> WindowStep {
-        let out = match step {
-            None | Some(SaveStep::Done(Ok(()))) => WindowStep::Done(Ok(())),
-            Some(SaveStep::Done(Err(error))) => WindowStep::Done(Err(error)),
-            Some(SaveStep::Need(need, run)) => {
-                if let Some(entry) = self.sessions.iter_mut().find(|e| e.id == id) {
-                    entry.pending += 1;
-                }
-                WindowStep::Need(
-                    need,
-                    WindowRun {
-                        session_id: id,
-                        run,
-                    },
-                )
+    fn window_step<H: GenerateWindowHost>(
+        &mut self, host: &H, snap: &OpenSnapshot<'_>, id: u64, step: Option<SessionStep>,
+    ) -> WindowStep {
+        let result = match step {
+            None => WindowStep::Done(Err(Failure("generate continuation session disappeared".into()))),
+            Some(SessionStep::Done(result)) => WindowStep::Done(result),
+            Some(SessionStep::Need(need, run)) => {
+                let (need, cleanup_window) = match need {
+                    SessionNeed::Save(need) => (WindowNeed::Save(need), None),
+                    SessionNeed::Reveal(tab) => (WindowNeed::Reveal(tab), None),
+                    SessionNeed::Sleep(ms) => (WindowNeed::Sleep(ms), None),
+                    SessionNeed::Inspect(path) => {
+                        let open_files = snap.files.capture_snapshot();
+                        (WindowNeed::Inspect(MaterialInspectJob::new(path, open_files, self.length_cache.clone())), None)
+                    }
+                    SessionNeed::Notice(path) => (WindowNeed::Notice(MarkdownNoticeJob::new(path, self.notice_cache.clone())), None),
+                    SessionNeed::Convert { kind, path } => (WindowNeed::Convert(ConversionJob {
+                        kind, path, untitled: host.generate_text(host.lang(), GenerateText::Untitled),
+                    }), None),
+                    SessionNeed::OpenTarget { handoff, token } => {
+                        let Some(window) = self.win else {
+                            if let Some(entry) = self.sessions.iter_mut().find(|entry| entry.id == id) { entry.session.discard_run(run); }
+                            return WindowStep::Done(Err(Failure("generate window disappeared before target open".into())));
+                        };
+                        (WindowNeed::OpenTarget { handoff, token, window, opener: self.opener.clone() }, Some(window))
+                    }
+                    SessionNeed::OpenConverted { document, token } => {
+                        let Some(window) = self.win else {
+                            if let Some(entry) = self.sessions.iter_mut().find(|entry| entry.id == id) { entry.session.discard_run(run); }
+                            return WindowStep::Done(Err(Failure("generate window disappeared before conversion open".into())));
+                        };
+                        (WindowNeed::OpenConverted { document, token, window, opener: self.opener.clone() }, Some(window))
+                    }
+                };
+                if let Some(entry) = self.sessions.iter_mut().find(|entry| entry.id == id) { entry.pending += 1; }
+                let stage = match cleanup_window {
+                    Some(window) => WindowRunStage::Opening { session_id: id, run, window },
+                    None => WindowRunStage::Session { session_id: id, run },
+                };
+                WindowStep::Need(need, WindowRun { stage })
             }
         };
         self.prune_sessions();
-        out
+        result
     }
 
-    /// `generate:refresh`
     pub fn handle_refresh<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        sender_id: f64,
-    ) -> Result<(), Failure> {
-        if self.from_window(&*host, sender_id) {
-            self.with_session(host, |session, bridge| session.refresh(bridge, snap))
-                .unwrap_or(Ok(()))?;
-        }
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, sender_id: f64,
+    ) -> WindowStep {
+        let id = match self.sender_session(host, sender_id) {
+            Err(error) => return WindowStep::Done(Err(error)),
+            Ok(None) => return WindowStep::unit(Ok(())),
+            Ok(Some(id)) => id,
+        };
+        let step = self.with_session_id(host, id, |session, bridge| session.refresh(bridge, snap));
+        self.window_step(host, snap, id, step)
+    }
+
+    pub fn handle_make<H: GenerateWindowHost>(
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, sender_id: f64, text: Option<&Value>,
+    ) -> WindowStep {
+        let id = match self.sender_session(host, sender_id) {
+            Err(error) => return WindowStep::Done(Err(error)),
+            Ok(None) => return WindowStep::Done(Ok(WindowOutcome::Made(false))),
+            Ok(Some(id)) => id,
+        };
+        let step = self.with_session_id(host, id, |session, bridge| session.make(bridge, snap, text));
+        self.window_step(host, snap, id, step)
+    }
+
+    pub fn handle_cancel<H: GenerateWindowHost>(&mut self, host: &mut H, sender_id: f64) -> Result<(), Failure> {
+        if self.from_window(host, sender_id)? { self.close_generate_window(host)?; }
         Ok(())
     }
 
-    /// `generate:make`
-    pub fn handle_make<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        sender_id: f64,
-        text: Option<&Value>,
-    ) -> bool {
-        if !self.from_window(&*host, sender_id) {
-            return false;
-        }
-        self.with_session(host, |session, bridge| session.make(bridge, snap, text))
-            .unwrap_or(false)
-    }
-
-    /// `generate:cancel`
-    pub fn handle_cancel<H: GenerateWindowHost>(&mut self, host: &mut H, sender_id: f64) {
-        if self.from_window(&*host, sender_id) {
-            self.close_generate_window(host);
-        }
-    }
-
-    /// `generate:open-with-paths`
     pub fn handle_open_with_paths<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        sender_id: f64,
-        paths: Option<&Value>,
-    ) -> Result<(), Failure> {
-        if !self.is_from_home(host, sender_id) {
-            return Ok(());
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, sender_id: f64, paths: Option<&Value>,
+    ) -> WindowOpen {
+        match self.is_from_home(host, sender_id) {
+            Ok(true) => self.open_generate_window_with_paths(host, snap, string_list(paths), None),
+            Ok(false) => WindowOpen { result: Ok(()), background: WindowStep::unit(Ok(())) },
+            Err(error) => WindowOpen { result: Err(error), background: WindowStep::unit(Ok(())) },
         }
-        self.open_generate_window_with_paths(host, snap, string_list(paths), None)
     }
 
-    /// `generate:open-with-group`
     pub fn handle_open_with_group<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        sender_id: f64,
-        group: Option<&Value>,
-    ) -> Result<(), Failure> {
-        if !self.is_from_home(host, sender_id) {
-            return Ok(());
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, sender_id: f64, group: Option<&Value>,
+    ) -> WindowOpen {
+        match self.is_from_home(host, sender_id) {
+            Ok(true) => {}
+            Ok(false) => return WindowOpen { result: Ok(()), background: WindowStep::unit(Ok(())) },
+            Err(error) => return WindowOpen { result: Err(error), background: WindowStep::unit(Ok(())) },
         }
-        let Some(group) = group.and_then(Value::as_str).filter(|g| !g.is_empty()) else {
-            return Ok(());
+        let Some(group) = group.and_then(Value::as_str).filter(|group| !group.is_empty()) else {
+            return WindowOpen { result: Ok(()), background: WindowStep::unit(Ok(())) };
         };
         let paths = host.starred_group_paths(group);
         self.open_generate_window_with_paths(host, snap, paths, None)
@@ -764,129 +754,89 @@ impl GenerateWindow {
     /// `openGenerateWindow(init)`: open the window (or start the open one
     /// over) with these materials
     pub fn open_generate_window<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        init: OpenInit,
-    ) -> Result<(), Failure> {
-        if !self.configured {
-            return Err(Failure("the generate window is not configured".to_owned()));
-        }
-        self.opener = init.opener.clone();
-        if let Some(win) = self.win
-            && !host.window_is_destroyed(win)
-            && self.current_session().is_some_and(|s| !s.is_closed())
-        {
-            // `void session.reset(...)`: its first push goes out now, the
-            // reads land after the window calls below
-            let refs = init.refs.clone();
-            let kind = init.kind;
-            let rows = self.with_session(host, |session, bridge| {
-                session.reset_begin(bridge, &refs, kind)
-            });
-            if host.window_is_minimized(win) {
-                host.window_restore(win);
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, init: OpenInit,
+    ) -> WindowOpen {
+        let mut background = WindowStep::unit(Ok(()));
+        let result = (|| -> Result<(), Failure> {
+            if !self.configured { return Err(Failure("the generate window is not configured".into())); }
+            self.opener = init.opener;
+            if let Some(win) = self.win
+                && !host.window_is_destroyed(win)?
+                && self.current_session().is_some_and(|session| !session.is_closed()) {
+                let id = self.session_id.expect("a current session has its id");
+                let rows = self.with_session_id(host, id, |session, bridge| session.reset_begin(bridge, &init.refs, init.kind))
+                    .ok_or_else(|| Failure("generate reset session disappeared".into()))??;
+                let shown = (|| -> Result<(), Failure> {
+                    if host.window_is_minimized(win)? { host.window_restore(win)?; }
+                    host.window_show(win)?;
+                    host.window_focus(win)
+                })();
+                let step = self.with_session_id(host, id, |session, bridge| session.reset_finish(bridge, snap, rows));
+                background = self.window_step(host, snap, id, step);
+                return shown;
             }
-            host.window_show(win);
-            host.window_focus(win);
-            if let Some(rows) = rows {
-                let _ = self.with_session(host, |session, bridge| {
-                    session.reset_finish(bridge, snap, &rows)
-                });
+            let id = self.next_session_id;
+            self.next_session_id += 1;
+            self.sessions.push(SessionEntry { id, session: GenerateSession::new(&init.refs, init.kind), pending: 0 });
+            self.session_id = Some(id);
+            self.prune_sessions();
+            let lang = host.lang();
+            let parent = match init.parent { Some(parent) => Some(parent), None => host.parent_window()? };
+            let parent_destroyed = match parent { Some(parent) => host.window_is_destroyed(parent)?, None => false };
+            let options = generate_window_options(lang, parent, parent_destroyed,
+                host.should_use_dark_colors()?, host.is_darwin(), &host.generate_text(lang, GenerateText::WindowTitle));
+            let next = host.create_window(&options)?;
+            self.win = Some(next);
+            self.window_sessions.push((next, id));
+            host.window_remove_menu(next)?;
+            host.watch_theme(next)?;
+            match host.renderer_url() {
+                Some(url) if !url.is_empty() => host.window_load_url(next, &format!("{url}/generate.html"))?,
+                _ => host.window_load_generate_page(next)?,
             }
-            return Ok(());
-        }
-
-        let id = self.next_session_id;
-        self.next_session_id += 1;
-        self.sessions.push(SessionEntry {
-            id,
-            session: GenerateSession::new(&init.refs, init.kind),
-            pending: 0,
-        });
-        self.session_id = Some(id);
-        self.prune_sessions();
-        let lang = host.lang();
-        let parent = match init.parent {
-            Some(parent) => Some(parent),
-            None => host.parent_window(),
-        };
-        let parent_destroyed = parent.is_some_and(|p| host.window_is_destroyed(p));
-        let window_title = host.generate_text(lang, GenerateText::WindowTitle);
-        let options = generate_window_options(
-            lang,
-            parent,
-            parent_destroyed,
-            host.should_use_dark_colors(),
-            host.is_darwin(),
-            &window_title,
-        );
-        let next = host.create_window(&options);
-        self.win = Some(next);
-        self.window_sessions.push((next, id));
-        host.window_remove_menu(next);
-        // follow a theme switch while the window is open (nativeTheme fires 'updated')
-        host.watch_theme(next);
-
-        match host.renderer_url() {
-            Some(url) if !url.is_empty() => {
-                host.window_load_url(next, &format!("{url}/generate.html"));
-            }
-            _ => host.window_load_generate_page(next),
-        }
-        // `void current.refresh()`
-        let _ = self.with_session(host, |session, bridge| session.refresh(bridge, snap));
-        Ok(())
+            let step = self.with_session_id(host, id, |session, bridge| session.refresh(bridge, snap));
+            background = self.window_step(host, snap, id, step);
+            Ok(())
+        })();
+        WindowOpen { result, background }
     }
 
-    /// `next.once('ready-to-show', () => next.show())`
-    pub fn on_ready_to_show<H: GenerateWindowHost>(&self, host: &mut H, window: WindowId) {
-        host.window_show(window);
+    pub fn on_ready_to_show<H: GenerateWindowHost>(&self, host: &mut H, window: WindowId) -> Result<(), Failure> {
+        host.window_show(window)
     }
 
-    /// `next.on('focus', ...)`: coming back from another window is when a
-    /// material may have been saved there
     pub fn on_focus<H: GenerateWindowHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        window: WindowId,
-    ) {
-        if self.session_of(window).is_some() && self.session_of(window) == self.session_id {
-            let _ = self.with_session(host, |session, bridge| session.refresh(bridge, snap));
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, window: WindowId,
+    ) -> WindowStep {
+        if let Some(id) = self.session_of(window)
+            && Some(id) == self.session_id {
+            let step = self.with_session_id(host, id, |session, bridge| session.refresh(bridge, snap));
+            return self.window_step(host, snap, id, step);
         }
+        WindowStep::unit(Ok(()))
     }
 
-    /// `next.on('closed', ...)`
-    pub fn on_closed<H: GenerateWindowHost>(&mut self, host: &mut H, window: WindowId) {
-        host.unwatch_theme(window);
+    pub fn on_closed<H: GenerateWindowHost>(&mut self, host: &mut H, window: WindowId) -> Result<(), Failure> {
+        let result = host.unwatch_theme(window);
         let owned = self.session_of(window);
-        self.window_sessions.retain(|(w, _)| *w != window);
-        if self.win == Some(window) {
-            self.win = None;
-            self.opener = None;
-        }
+        self.window_sessions.retain(|(known, _)| *known != window);
+        if self.win == Some(window) { self.win = None; self.opener = None; }
         if owned.is_some() && owned == self.session_id {
             self.session_id = None;
             self.prune_sessions();
         }
+        result
     }
 
-    /// `refreshTitleBar`: the theme switched while the window is open
-    pub fn on_theme_updated<H: GenerateWindowHost>(&self, host: &mut H, window: WindowId) {
-        if host.window_is_destroyed(window) || host.is_darwin() {
-            return;
-        }
-        let overlay = generate_title_bar_overlay(host.should_use_dark_colors());
-        // the window was torn down between the check and the call
-        let _ = host.window_set_title_bar_overlay(window, &overlay);
+    pub fn on_theme_updated<H: GenerateWindowHost>(&self, host: &mut H, window: WindowId) -> Result<(), Failure> {
+        if host.window_is_destroyed(window)? || host.is_darwin() { return Ok(()); }
+        let overlay = generate_title_bar_overlay(host.should_use_dark_colors()?);
+        host.window_set_title_bar_overlay(window, &overlay)
     }
 
-    /// `setWindowOpenHandler`: a link opens in the browser when it is safe; the window itself never opens one
-    pub fn window_open<H: GenerateWindowHost>(&self, host: &mut H, url: &str) {
-        if let Some(target) = safe_external_url(Some(url), None) {
-            host.open_external(&target);
-        }
+    pub fn window_open<H: GenerateWindowHost>(&self, host: &mut H, url: &str) -> Result<(), Failure> {
+        if let Some(target) = safe_external_url(Some(url), None) { host.open_external(&target)?; }
+        Ok(())
     }
 
     fn session_of(&self, window: WindowId) -> Option<u64> {
@@ -903,7 +853,7 @@ impl GenerateWindow {
         snap: &OpenSnapshot<'_>,
         paths: Vec<String>,
         parent: Option<WindowId>,
-    ) -> Result<(), Failure> {
+    ) -> WindowOpen {
         self.open_generate_window(
             host,
             snap,
@@ -927,7 +877,7 @@ impl GenerateWindow {
         file_path: Option<&str>,
         title: &str,
         parent: Option<WindowId>,
-    ) -> Result<(), Failure> {
+    ) -> WindowOpen {
         let mref = match file_path.filter(|p| !p.is_empty()) {
             Some(path) => MaterialRef::Path(path.to_owned()),
             None => MaterialRef::Untitled {
@@ -948,16 +898,17 @@ impl GenerateWindow {
     }
 
     /// `closeGenerateWindow()`
-    pub fn close_generate_window<H: GenerateWindowHost>(&mut self, host: &mut H) {
+    pub fn close_generate_window<H: GenerateWindowHost>(&mut self, host: &mut H) -> Result<(), Failure> {
+        close_window_state(host, &mut self.win, &mut self.opener)?;
         self.session_id = None;
         self.prune_sessions();
-        close_window_state(host, &mut self.win, &mut self.opener);
+        Ok(())
     }
 
-    /// `generateWindowContents()`: the window's webContents id, when it is open
-    pub fn generate_window_contents<H: GenerateWindowHost>(&self, host: &H) -> Option<f64> {
-        self.win
-            .filter(|win| !host.window_is_destroyed(*win))
-            .map(|win| host.window_web_contents_id(win))
+    pub fn generate_window_contents<H: GenerateWindowHost>(&self, host: &H) -> Result<Option<f64>, Failure> {
+        match self.win {
+            Some(win) if !host.window_is_destroyed(win)? => Ok(Some(host.window_web_contents_id(win)?)),
+            _ => Ok(None),
+        }
     }
 }

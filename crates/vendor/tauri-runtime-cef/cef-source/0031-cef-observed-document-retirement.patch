@@ -1,0 +1,9 @@
+# Pinned CEF source-only patch. Generated ABI and native execution are unverified.
+diff --git a/libcef/browser/native_observed_document.h b/libcef/browser/native_observed_document.h
+--- a/libcef/browser/native_observed_document.h
++++ b/libcef/browser/native_observed_document.h
+@@ -1,3 +1,3 @@
+-    result->document_loss_ = node->AddCefPreNavigationRevoker(base::BindRepeating(
++    result->document_loss_ = node->AddCefDocumentRetirementObserver(base::BindRepeating(
+         &CefNativeObservedDocumentImpl::BeforeDocumentLoss, base::Unretained(result.get())));
+     return result;

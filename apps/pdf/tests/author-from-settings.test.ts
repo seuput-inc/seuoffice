@@ -103,6 +103,21 @@ async function savedAuthors(path: string): Promise<Map<string, unknown[]>> {
   return bySubtype
 }
 
+describe('ordinary Electron PDF opening', () => {
+  it('skips the native recovery route and preserves the pending path', async () => {
+    const path = await openWithSettings()
+    const original = Object.getOwnPropertyDescriptor(process.versions, 'electron')
+    Object.defineProperty(process.versions, 'electron', { configurable: true, value: 'test-electron' })
+    try {
+      expect(await api().consumeRecoveryPending()).toBeNull()
+      expect(await api().consumePending()).toBe(path)
+    } finally {
+      if (original) Object.defineProperty(process.versions, 'electron', original)
+      else Reflect.deleteProperty(process.versions, 'electron')
+    }
+  })
+})
+
 describe('the PDF annotation author', () => {
   it('is the user name set in Settings → General, as Docs, Sheets and Slides use it', async () => {
     await openWithSettings({ authorName: '  Ada   Lovelace ' })

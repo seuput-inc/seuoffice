@@ -4,6 +4,8 @@
 //! Values the TypeScript holds as `unknown` are [`JsonValue`]s (read with
 //! `JSON.parse` key order); `undefined` is `None`.
 
+pub mod queue;
+
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
@@ -63,6 +65,18 @@ pub fn write_app_settings(
     path: &str,
     updates: &[(&str, Option<JsonValue>)],
 ) -> Result<(), NodeError> {
+    write_app_settings_guarded(path, updates, |temp, target| {
+        fs::rename(temp, target).map_err(|error| node_error2(&error, "rename", temp, target))
+    })
+}
+
+/// Merge the current settings and stage the result before the final commit.
+/// The callback must perform the replacement while holding the caller's guard.
+pub fn write_app_settings_guarded(
+    path: &str,
+    updates: &[(&str, Option<JsonValue>)],
+    commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+) -> Result<(), NodeError> {
     let mut settings = read_app_settings(path);
     for (key, value) in updates {
         match value {
@@ -72,30 +86,30 @@ pub fn write_app_settings(
     }
     let temp_path = format!("{path}.{}.{}.tmp", std::process::id(), random_uuid());
     let text = json_stringify_pretty(&JsonValue::Object(settings), 2);
-    let written = (|| -> Result<(), NodeError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .map_err(|e| node_error(&e, "open", &temp_path))?;
-        file.write_all(text.as_bytes())
-            .map_err(|e| node_error(&e, "write", &temp_path))?;
-        file.sync_all()
-            .map_err(|e| node_error(&e, "fsync", &temp_path))?;
-        drop(file);
-        fs::rename(&temp_path, path).map_err(|e| node_error2(&e, "rename", &temp_path, path))
-    })();
-    if let Err(error) = written {
-        // The write may have failed before the temporary file was created.
-        let _ = fs::remove_file(&temp_path);
-        return Err(error);
-    }
-    Ok(())
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&temp_path)
+        .map_err(|error| node_error(&error, "open", &temp_path))?;
+    let staged = file.write_all(text.as_bytes())
+        .map_err(|error| node_error(&error, "write", &temp_path))
+        .and_then(|()| file.sync_all().map_err(|error| node_error(&error, "fsync", &temp_path)));
+    drop(file);
+    let written = staged.and_then(|()| commit(&temp_path, path));
+    if written.is_err() { let _ = fs::remove_file(&temp_path); }
+    written
 }
 
 /// `writeAppSetting(path, key, value)`
 pub fn write_app_setting(path: &str, key: &str, value: Option<JsonValue>) -> Result<(), NodeError> {
     write_app_settings(path, &[(key, value)])
+}
+
+/// Update one app setting with a guarded final replacement.
+pub fn write_app_setting_guarded(
+    path: &str,
+    key: &str,
+    value: Option<JsonValue>,
+    commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+) -> Result<(), NodeError> {
+    write_app_settings_guarded(path, &[(key, value)], commit)
 }
 
 /// `writeAppSettingThen(path, key, value, apply)`: `apply` runs only once the
@@ -311,7 +325,10 @@ fn with_defaults(stored: Option<&StoredAgentProjectPref>) -> AgentProjectPref {
 
 /// `readAgentProjectPref(path, folder)`
 pub fn read_agent_project_pref(path: &str, folder: &str) -> AgentProjectPref {
-    let settings = read_app_settings(path);
+    read_agent_project_pref_from_settings(&read_app_settings(path), folder)
+}
+
+pub fn read_agent_project_pref_from_settings(settings: &Settings, folder: &str) -> AgentProjectPref {
     let prefs = normalize_agent_project_prefs(settings.get(AGENT_PROJECT_PREFS_KEY));
     let stored = prefs.get(&project_key(&prefs, folder));
     with_defaults(stored)
@@ -323,12 +340,23 @@ pub fn write_agent_project_pref(
     folder: &str,
     patch: &JsonValue,
 ) -> Result<AgentProjectPref, SettingsError> {
+    let mut settings = read_app_settings(path);
+    let result = apply_agent_project_pref(&mut settings, folder, patch)?;
+    write_app_setting(path, AGENT_PROJECT_PREFS_KEY, settings.get(AGENT_PROJECT_PREFS_KEY).cloned())?;
+    Ok(result)
+}
+
+/// Apply one project preference change to an already-read settings snapshot.
+pub fn apply_agent_project_pref(
+    settings: &mut Settings,
+    folder: &str,
+    patch: &JsonValue,
+) -> Result<AgentProjectPref, SettingsError> {
     if !is_absolute(folder) {
         return Err(SettingsError::Plain(
             "A project folder must be an absolute path".to_owned(),
         ));
     }
-    let settings = read_app_settings(path);
     let mut prefs = normalize_agent_project_prefs(settings.get(AGENT_PROJECT_PREFS_KEY));
     let key = project_key(&prefs, folder);
     let mut next = StoredAgentProjectPref::new();
@@ -347,11 +375,7 @@ pub fn write_agent_project_pref(
     for (folder, pref) in prefs.entries() {
         stored.set(folder, JsonValue::Object(pref.clone()));
     }
-    write_app_setting(
-        path,
-        AGENT_PROJECT_PREFS_KEY,
-        Some(JsonValue::Object(stored)),
-    )?;
+    settings.set(AGENT_PROJECT_PREFS_KEY, JsonValue::Object(stored));
     Ok(result)
 }
 
@@ -699,6 +723,15 @@ pub fn write_projects_settings(path: &str, value: Option<&JsonValue>) -> Result<
     )
 }
 
+/// Normalize project settings and guard only the final replacement.
+pub fn write_projects_settings_guarded(
+    path: &str,
+    value: Option<&JsonValue>,
+    commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+) -> Result<(), NodeError> {
+    write_app_setting_guarded(path, PROJECTS_SETTING_KEY, Some(normalize_projects_settings(value).to_json()), commit)
+}
+
 /// `updateProjectsSettings(path, change)`
 pub fn update_projects_settings(
     path: &str,
@@ -709,4 +742,109 @@ pub fn update_projects_settings(
     let value = settings.to_json();
     write_projects_settings(path, Some(&value))?;
     Ok(normalize_projects_settings(Some(&value)))
+}
+
+/// Apply a change to the latest project settings before guarded replacement.
+pub fn update_projects_settings_guarded(
+    path: &str,
+    change: impl FnOnce(&mut StoredProjectsSettings),
+    commit: impl FnOnce(&str, &str) -> Result<(), NodeError>,
+) -> Result<StoredProjectsSettings, NodeError> {
+    let mut settings = read_projects_settings(path);
+    change(&mut settings);
+    let value = settings.to_json();
+    write_projects_settings_guarded(path, Some(&value), commit)?;
+    Ok(normalize_projects_settings(Some(&value)))
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+
+    #[test]
+    fn project_preference_snapshot_preserves_other_settings() {
+        let folder = std::env::current_dir().unwrap().join("synthetic-project");
+        let folder = folder.to_string_lossy();
+        let mut settings = Settings::new();
+        settings.set("theme", JsonValue::String("dark".into()));
+        let mut patch = JsObject::new();
+        patch.set("codexNetwork", JsonValue::Bool(true));
+        let updated = apply_agent_project_pref(&mut settings, &folder, &JsonValue::Object(patch)).unwrap();
+        assert!(updated.codex_network);
+        assert_eq!(read_agent_project_pref_from_settings(&settings, &folder), updated);
+        assert_eq!(settings.get("theme"), Some(&JsonValue::String("dark".into())));
+    }
+
+    #[test]
+    fn guarded_settings_keep_target_on_refusal_and_replace_failure() {
+        let dir = std::env::temp_dir().join(format!("settings-guard-{}", random_uuid()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("settings.json");
+        fs::write(&target, br#"{"theme":"dark"}"#).unwrap();
+        let path = target.to_str().unwrap();
+        for refused in [true, false] {
+            let result = write_projects_settings_guarded(path, None, |temp, dest| {
+                if refused {
+                    Err(node_error(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "revoked"), "rename", dest))
+                } else {
+                    fs::rename(temp, dir.join("missing").join("settings.json"))
+                        .map_err(|error| node_error2(&error, "rename", temp, dest))
+                }
+            });
+            assert!(result.is_err());
+            assert_eq!(fs::read(&target).unwrap(), br#"{"theme":"dark"}"#);
+            assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn guarded_settings_commit_preserves_unrelated_latest_fields() {
+        let dir = std::env::temp_dir().join(format!("settings-guard-{}", random_uuid()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("settings.json");
+        fs::write(&target, br#"{"theme":"dark"}"#).unwrap();
+        let path = target.to_str().unwrap();
+        update_projects_settings_guarded(path, |settings| {
+            settings.install_id = "0123456789abcdef".into();
+        }, |temp, dest| fs::rename(temp, dest).map_err(|error| node_error2(&error, "rename", temp, dest))).unwrap();
+        assert_eq!(read_app_settings(path).get("theme"), Some(&JsonValue::String("dark".into())));
+        assert_eq!(read_projects_settings(path).install_id, "0123456789abcdef");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn guarded_commit_finishes_before_waiting_revocation() {
+        use std::sync::{Arc, Mutex, mpsc};
+        let dir = std::env::temp_dir().join(format!("settings-guard-{}", random_uuid()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("settings.json");
+        fs::write(&target, br#"{"theme":"dark"}"#).unwrap();
+        let gate = Arc::new(Mutex::new(true));
+        let worker_gate = gate.clone();
+        let worker_target = target.clone();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            write_projects_settings_guarded(worker_target.to_str().unwrap(), None, |temp, dest| {
+                let live = worker_gate.lock().unwrap();
+                if !*live {
+                    return Err(node_error(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "revoked"), "rename", dest));
+                }
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                fs::rename(temp, dest).map_err(|error| node_error2(&error, "rename", temp, dest))
+            })
+        });
+        entered_rx.recv().unwrap();
+        let revoker = gate.clone();
+        let revoke = std::thread::spawn(move || *revoker.lock().unwrap() = false);
+        release_tx.send(()).unwrap();
+        worker.join().unwrap().unwrap();
+        revoke.join().unwrap();
+        assert!(!*gate.lock().unwrap());
+        assert_eq!(read_app_settings(target.to_str().unwrap()).get("theme"), Some(&JsonValue::String("dark".into())));
+        assert!(read_app_settings(target.to_str().unwrap()).get(PROJECTS_SETTING_KEY).is_some());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

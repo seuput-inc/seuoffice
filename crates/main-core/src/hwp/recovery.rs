@@ -193,6 +193,14 @@ pub struct RecoveryOpenedResult {
     pub restored: bool,
     pub notice: Option<String>,
 }
+/// The state-only decision made before any recovery copy or original is read.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreparedRecoveryRead {
+    Original,
+    Untitled(RecoveryIdentity),
+    File { identity: RecoveryIdentity, decision: Option<RecoveryOpenDecision> },
+}
+
 
 /// What `hwp:recovery-write` hands to a worker between its checks and its write.
 pub struct RecoveryWriteJob {
@@ -363,6 +371,25 @@ impl HwpRecovery {
         e: &E,
         wc_id: i64,
     ) -> Option<RecoveryIdentity> {
+        self.identity_with_default(e, wc_id, || match read_hwp_default_format(&UserDataOnly(e.user_data_dir())) {
+            HwpDefaultFormat::Hwp => HwpFormat::Hwp,
+            HwpDefaultFormat::Hwpx => HwpFormat::Hwpx,
+        })
+    }
+
+    pub fn existing_identity(&self, wc_id: i64) -> Option<RecoveryIdentity> {
+        self.saved_identity(wc_id).or_else(|| self.untitled_identity.get(&wc_id).cloned())
+    }
+
+    pub fn hwp_recovery_identity_with_format<E: HwpRecoveryElectron>(
+        &mut self, e: &E, wc_id: i64, format: HwpFormat,
+    ) -> Option<RecoveryIdentity> {
+        self.identity_with_default(e, wc_id, || format)
+    }
+
+    fn identity_with_default<E: HwpRecoveryElectron>(
+        &mut self, e: &E, wc_id: i64, default: impl FnOnce() -> HwpFormat,
+    ) -> Option<RecoveryIdentity> {
         let host = self.host.as_ref()?;
         if let Some(path) = self.save_path(wc_id) {
             return Some(file_identity(&path));
@@ -373,10 +400,7 @@ impl HwpRecovery {
         // a new document's copy follows the format its first save would offer
         let format = match host.untitled_copy_of(wc_id) {
             Some(copy) => copy.format,
-            None => match read_hwp_default_format(&UserDataOnly(e.user_data_dir())) {
-                HwpDefaultFormat::Hwp => HwpFormat::Hwp,
-                HwpDefaultFormat::Hwpx => HwpFormat::Hwpx,
-            },
+            None => default(),
         };
         let identity = RecoveryIdentity::Untitled(RecoveryUntitledIdentity {
             kind: "hwp".to_owned(),
@@ -467,6 +491,41 @@ impl HwpRecovery {
             e.reload(wc_id);
         }
     }
+    /// State-only preparation. The caller must hold the captured document admission.
+    pub fn prepare_recovery_read<E: HwpRecoveryElectron>(
+        &mut self, e: &E, wc_id: i64, path: &str,
+    ) -> PreparedRecoveryRead {
+        if self.host.is_none() || e.is_headless_mode() { return PreparedRecoveryRead::Original; }
+        if self.save_path(wc_id).is_none() {
+            return if self.untitled_restore.contains(&wc_id) {
+                self.untitled_identity.get(&wc_id).cloned().map_or(PreparedRecoveryRead::Original, PreparedRecoveryRead::Untitled)
+            } else { PreparedRecoveryRead::Original };
+        }
+        self.loaded_path.insert(wc_id, path.to_owned());
+        self.blocked.remove(&wc_id);
+        let decision = self.decision.get(&wc_id)
+            .and_then(|(wanted, decision)| (wanted == path).then_some(*decision));
+        if decision == Some(RecoveryOpenDecision::Original) ||
+            (decision.is_none() && self.loaded_path.iter().any(|(id, other)| *id != wc_id && other == path)) {
+            return PreparedRecoveryRead::Original;
+        }
+        PreparedRecoveryRead::File { identity: file_identity(path), decision }
+    }
+
+    /// `markCopyLoaded`'s in-memory discarded flag, without metadata I/O.
+    pub fn clear_recovery_discarded<E: HwpRecoveryElectron>(
+        &mut self, e: &E, shared: &SharedRecoveryState, identity: &RecoveryIdentity,
+    ) -> Result<(), NodeError> {
+        with_store(e, shared, |store| store.clear_discarded(identity))
+    }
+
+    /// Commit a successfully read copy only after its metadata effects settle.
+    pub fn finish_recovery_read(&mut self, wc_id: i64) {
+        self.restored.insert(wc_id);
+        self.owns_copy.insert(wc_id);
+        if let Some(host) = &self.host { host.mark_dirty(wc_id); }
+    }
+
 
     /// Before a view reads `path`: settle a recovery copy left for that file. Answers the
     /// copy's bytes when the view is to show them instead of the file, None for the file.
@@ -479,50 +538,20 @@ impl HwpRecovery {
         path: &str,
     ) -> Option<Vec<u8>> {
         let host = self.host.clone()?;
-        // a headless export converts the file on disk; it neither asks about a copy left for
-        // that file (there is no one to answer) nor uses or settles it
-        if e.is_headless_mode() {
-            return None;
-        }
-        // an untitled copy (a template's, or a recovery copy opened as a new document)
-        if self.save_path(wc_id).is_none() {
-            if self.untitled_restore.contains(&wc_id)
-                && let Some(identity) = self.untitled_identity.get(&wc_id)
-            {
+        let (identity, decision) = match self.prepare_recovery_read(e, wc_id, path) {
+            PreparedRecoveryRead::Original => return None,
+            PreparedRecoveryRead::Untitled(identity) => {
                 self.restored.insert(wc_id);
                 self.owns_copy.insert(wc_id);
-                // the TypeScript does not catch a failure here: the copy then stays as it is
-                if let Err(err) = with_store(e, shared, |store| store.mark_copy_loaded(identity)) {
-                    e.warn(&format!(
-                        "[hwp] could not mark the recovery copy loaded: {}",
-                        err.message
-                    ));
+                if let Err(err) = with_store(e, shared, |store| store.mark_copy_loaded(&identity)) {
+                    e.warn(&format!("[hwp] could not mark the recovery copy loaded: {}", err.message));
                 }
                 host.mark_dirty(wc_id);
+                return None;
             }
-            return None;
-        }
-        self.loaded_path.insert(wc_id, path.to_owned());
-        self.blocked.remove(&wc_id);
-        let identity = file_identity(path);
+            PreparedRecoveryRead::File { identity, decision } => (identity, decision),
+        };
         let settled: Result<Option<Vec<u8>>, NodeError> = (|| {
-            let wanted = self.decision.get(&wc_id);
-            let decision = match wanted {
-                Some((wanted_path, decision)) if wanted_path == path => Some(*decision),
-                _ => None,
-            };
-            if decision == Some(RecoveryOpenDecision::Original) {
-                return Ok(None);
-            }
-            // the other pane of a split shows the file as it is on disk, as it always did
-            if decision.is_none()
-                && self
-                    .loaded_path
-                    .iter()
-                    .any(|(id, other)| *id != wc_id && other == path)
-            {
-                return Ok(None);
-            }
             let mut bytes: Option<Vec<u8>> = None;
             if decision == Some(RecoveryOpenDecision::Restore) {
                 bytes = with_store(e, shared, |store| store.read_copy(&identity));
@@ -557,9 +586,7 @@ impl HwpRecovery {
         match settled {
             Ok(None) => None,
             Ok(Some(bytes)) => {
-                self.restored.insert(wc_id);
-                self.owns_copy.insert(wc_id);
-                host.mark_dirty(wc_id);
+                self.finish_recovery_read(wc_id);
                 Some(bytes)
             }
             Err(err) => {
@@ -636,23 +663,7 @@ impl HwpRecovery {
         old_path: &str,
         new_path: &str,
     ) {
-        if self.loaded_path.get(&wc_id).map(String::as_str) == Some(old_path) {
-            self.loaded_path.insert(wc_id, new_path.to_owned());
-        }
-        if let Some((path, _)) = self.decision.get_mut(&wc_id)
-            && path == old_path
-        {
-            *path = new_path.to_owned();
-        }
-        let saved_here = self
-            .host
-            .as_ref()
-            .and_then(|host| host.save_path_of(wc_id))
-            .as_deref()
-            == Some(new_path);
-        if !self.owns_copy.contains(&wc_id) || !saved_here {
-            return;
-        }
+        if !self.note_file_renamed(wc_id, old_path, new_path) { return; }
         let from = file_identity(old_path);
         let to = file_identity(new_path);
         let moved = with_store(e, shared, |store| -> Result<(), NodeError> {
@@ -691,6 +702,75 @@ impl HwpRecovery {
         }
     }
 
+    pub fn note_file_renamed(&mut self, wc_id: i64, old_path: &str, new_path: &str) -> bool {
+        if self.loaded_path.get(&wc_id).map(String::as_str) == Some(old_path) {
+            self.loaded_path.insert(wc_id, new_path.to_owned());
+        }
+        if let Some((path, _)) = self.decision.get_mut(&wc_id)
+            && path == old_path
+        {
+            *path = new_path.to_owned();
+        }
+        self.owns_copy.contains(&wc_id)
+            && self.host.as_ref().and_then(|host| host.save_path_of(wc_id)).as_deref() == Some(new_path)
+    }
+
+    pub fn begin_saved(&mut self, wc_id: i64) {
+        self.turn.remove(&wc_id);
+        self.restored.remove(&wc_id);
+        self.untitled_restore.remove(&wc_id);
+        self.save_as_default.remove(&wc_id);
+        self.owns_copy.remove(&wc_id);
+    }
+
+    pub fn finish_saved(&mut self, wc_id: i64) {
+        self.untitled_identity.remove(&wc_id);
+        self.title.remove(&wc_id);
+    }
+
+    pub fn saved_reset_targets<E: HwpRecoveryElectron>(
+        &self, e: &E, wc_id: i64, before: &RecoveryIdentity,
+    ) -> Result<Vec<i64>, NodeError> {
+        if is_untitled_identity(before) { return Ok(Vec::new()); }
+        let directory = e.user_data_dir();
+        let path = |identity| crate::packages::electron_utils::recovery_store::recovery_copy_path(&directory, identity);
+        let slot = path(before)?;
+        let mut targets = Vec::new();
+        for &other_id in &self.contents {
+            if other_id == wc_id || e.is_destroyed(other_id) { continue; }
+            if let Some(other) = self.saved_identity(other_id)
+                && path(&other)? == slot
+            {
+                targets.push(other_id);
+            }
+        }
+        Ok(targets)
+    }
+
+    pub fn hwp_recovery_file_renamed_authorized<E: HwpRecoveryElectron>(
+        &mut self, e: &E, shared: &SharedRecoveryState, wc_id: i64,
+        old_path: &str, new_path: &str,
+        admit: &mut crate::packages::electron_utils::atomic_write::WriteAdmission<'_>,
+    ) -> Result<(), NodeError> {
+        let mut follows = false;
+        admit(&mut || { follows = self.note_file_renamed(wc_id, old_path, new_path); })?;
+        if !follows { return Ok(()); }
+        let from = file_identity(old_path);
+        let to = file_identity(new_path);
+        with_store(e, shared, |store| -> Result<(), NodeError> {
+            if let Some(bytes) = store.read_copy(&from) {
+                store.write_copy_authorized(&to, &bytes, &RecoveryWriteOptions {
+                    title: Some(basename(new_path, None)),
+                    ..RecoveryWriteOptions::default()
+                }, admit)?;
+            }
+            store.delete_copy_authorized(&from, RecoveryDeleteReason::Discarded, admit)?;
+            Ok(())
+        })?;
+        if !e.is_destroyed(wc_id) { admit(&mut || e.send_recovery_reset(wc_id))?; }
+        Ok(())
+    }
+
     /// the identity a save starts from: its copy is removed once the save has landed
     pub fn hwp_recovery_before_save<E: HwpRecoveryElectron>(
         &mut self,
@@ -708,12 +788,7 @@ impl HwpRecovery {
         wc_id: i64,
         before: Option<RecoveryIdentity>,
     ) {
-        self.turn.remove(&wc_id);
-        self.restored.remove(&wc_id);
-        self.untitled_restore.remove(&wc_id);
-        self.save_as_default.remove(&wc_id);
-        // the copy is gone with the save: a clean close of this view has nothing of its own to remove
-        self.owns_copy.remove(&wc_id);
+        self.begin_saved(wc_id);
         if let Some(before) = before
             && let Err(err) = with_store(e, shared, |store| {
                 self.drop_copy(e, store, wc_id, &before, RecoveryDeleteReason::Saved)
@@ -724,12 +799,52 @@ impl HwpRecovery {
                 err.message
             ));
         }
-        self.untitled_identity.remove(&wc_id);
-        self.title.remove(&wc_id);
+        self.finish_saved(wc_id);
+    }
+
+    pub fn hwp_recovery_saved_authorized<E: HwpRecoveryElectron>(
+        &mut self, e: &E, shared: &SharedRecoveryState, wc_id: i64,
+        before: Option<RecoveryIdentity>,
+        admit: &mut crate::packages::electron_utils::atomic_write::WriteAdmission<'_>,
+    ) -> Result<(), NodeError> {
+        admit(&mut || self.begin_saved(wc_id))?;
+        if let Some(before) = before {
+            let result = with_store(e, shared, |store| -> Result<(), NodeError> {
+                if store.delete_copy_authorized(&before, RecoveryDeleteReason::Saved, admit)? != RecoveryDeleteResult::Deleted {
+                    return Ok(());
+                }
+                if !is_untitled_identity(&before) {
+                    let slot = store.copy_path(&before)?;
+                    for &other_id in &self.contents {
+                        if other_id == wc_id || e.is_destroyed(other_id) { continue; }
+                        if let Some(other) = self.saved_identity(other_id)
+                            && store.copy_path(&other)? == slot
+                        {
+                            admit(&mut || e.send_recovery_reset(other_id))?;
+                        }
+                    }
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                e.warn(&format!("[hwp] could not remove the recovery copy: {}", error.message));
+                return Err(error);
+            }
+        }
+        admit(&mut || self.finish_saved(wc_id))?;
+        Ok(())
     }
 
     /// The user chose "Don't Save" (or a tool closed the document without saving): the
     /// copy goes. No new copy is taken while the tab closes.
+    pub fn begin_dont_save(&mut self, wc_id: i64) { self.turn.remove(&wc_id); }
+
+    pub fn note_dont_save<E: HwpRecoveryElectron>(&mut self, e: &E, wc_id: i64) {
+        if self.dont_save.contains(&wc_id) { e.clear_timeout(RecoveryTimer::DontSave(wc_id)); }
+        self.dont_save.insert(wc_id);
+        e.set_timeout(RecoveryTimer::DontSave(wc_id), DONT_SAVE_HOLD_MS);
+    }
+
     pub fn hwp_recovery_dont_save<E: HwpRecoveryElectron>(
         &mut self,
         e: &E,
@@ -737,7 +852,7 @@ impl HwpRecovery {
         wc_id: i64,
     ) {
         let identity = self.hwp_recovery_identity_of(e, wc_id);
-        self.turn.remove(&wc_id);
+        self.begin_dont_save(wc_id);
         if let Some(identity) = identity
             && let Err(err) = with_store(e, shared, |store| {
                 self.drop_copy(e, store, wc_id, &identity, RecoveryDeleteReason::DontSave)
@@ -748,11 +863,7 @@ impl HwpRecovery {
                 err.message
             ));
         }
-        if self.dont_save.contains(&wc_id) {
-            e.clear_timeout(RecoveryTimer::DontSave(wc_id));
-        }
-        self.dont_save.insert(wc_id);
-        e.set_timeout(RecoveryTimer::DontSave(wc_id), DONT_SAVE_HOLD_MS);
+        self.note_dont_save(e, wc_id);
     }
 
     /// the `DONT_SAVE_HOLD_MS` timer of `hwp_recovery_dont_save` fired
@@ -1099,12 +1210,15 @@ impl HwpRecovery {
         if e.is_destroyed(wc_id) {
             return;
         }
-        self.decision
-            .insert(wc_id, (request.file_path.clone(), request.decision));
+        self.stage_file_decision(wc_id, request);
         if host.open_path_of(wc_id).as_deref() != Some(request.file_path.as_str()) {
             host.queue_file(wc_id, &request.file_path);
         }
         self.reload_if_started(e, wc_id);
+    }
+
+    pub fn stage_file_decision(&mut self, wc_id: i64, request: &RecoveryOpenFileRequest) {
+        self.decision.insert(wc_id, (request.file_path.clone(), request.decision));
     }
 
     /// `openUntitledCopy`
@@ -1131,31 +1245,21 @@ impl HwpRecovery {
                 return;
             }
         };
-        let ext = extname(&path).to_lowercase();
+        let copy = self.stage_untitled_copy(wc_id, request, &path);
+        host.queue_untitled_copy(wc_id, &path, copy);
+        self.reload_if_started(e, wc_id);
+    }
+
+    pub fn stage_untitled_copy(&mut self, wc_id: i64, request: &RecoveryOpenUntitledRequest, path: &str) -> UntitledCopy {
+        let ext = extname(path).to_lowercase();
         self.untitled_identity.insert(wc_id, request.copy.clone());
         self.title.insert(wc_id, request.title.clone());
-        match request
-            .save_as_default_path
-            .as_ref()
-            .filter(|path| !path.is_empty())
-        {
-            Some(default) => {
-                self.save_as_default.insert(wc_id, default.clone());
-            }
-            None => {
-                self.save_as_default.remove(&wc_id);
-            }
+        match request.save_as_default_path.as_ref().filter(|path| !path.is_empty()) {
+            Some(default) => { self.save_as_default.insert(wc_id, default.clone()); }
+            None => { self.save_as_default.remove(&wc_id); }
         }
         self.untitled_restore.insert(wc_id);
-        host.queue_untitled_copy(
-            wc_id,
-            &path,
-            UntitledCopy {
-                name: format!("{}{ext}", request.title),
-                format: format_of_ext(&ext),
-            },
-        );
-        self.reload_if_started(e, wc_id);
+        UntitledCopy { name: format!("{}{ext}", request.title), format: format_of_ext(&ext) }
     }
 
     /// `isUnprotectable`
@@ -1618,6 +1722,37 @@ mod tests {
     }
 
     #[test]
+    fn prepared_read_keeps_the_selected_copy_until_admitted_completion() {
+        let mut r = rig();
+        let path = r.file_view(1, "prepared.hwpx");
+        leave_copy(&r, &path, &zip_bytes(3));
+        r.rec.stage_file_decision(1, &RecoveryOpenFileRequest {
+            file_path: path.clone(), decision: RecoveryOpenDecision::Restore,
+        });
+        assert_eq!(r.rec.prepare_recovery_read(&r.e, 1, &path),
+            PreparedRecoveryRead::File { identity: file_identity(&path), decision: Some(RecoveryOpenDecision::Restore) });
+        assert!(!r.host.is_dirty(1));
+        assert!(r.copy_exists(&path));
+        r.rec.finish_recovery_read(1);
+        assert!(r.host.is_dirty(1));
+        assert!(r.rec.recovery_opened(&r.e, 1, false).restored);
+    }
+
+    #[test]
+    fn prepared_original_does_not_consume_recovery_copy() {
+        let mut r = rig();
+        let path = r.file_view(1, "original.hwpx");
+        leave_copy(&r, &path, &zip_bytes(8));
+        r.rec.stage_file_decision(1, &RecoveryOpenFileRequest {
+            file_path: path.clone(), decision: RecoveryOpenDecision::Original,
+        });
+        assert_eq!(r.rec.prepare_recovery_read(&r.e, 1, &path), PreparedRecoveryRead::Original);
+        assert!(!r.host.is_dirty(1));
+        assert!(r.copy_exists(&path));
+        assert_eq!(r.e.dialog.asked.get(), 0);
+    }
+
+    #[test]
     fn on_read_asks_once_and_a_reload_does_not_ask_again() {
         let mut r = rig();
         let path = r.file_view(1, "doc.hwpx");
@@ -1766,6 +1901,189 @@ mod tests {
         assert!(r.copy_exists(&new));
         assert_eq!(*r.e.resets.borrow(), vec![1]);
         assert!(r.e.warns.borrow().is_empty());
+    }
+
+    #[test]
+    fn revoked_rename_keeps_the_original_recovery_copy() {
+        let mut r = rig();
+        let old = r.file_view(1, "old.hwpx");
+        let bytes = zip_bytes(7);
+        assert_eq!(r.begin_write(1, &bytes), RecoveryWriteOutcome::Written);
+        let new = r.e.path("new.hwpx");
+        r.host.save_paths.borrow_mut().insert(1, new.clone());
+        let result = r.rec.hwp_recovery_file_renamed_authorized(
+            &r.e, &r.shared, 1, &old, &new, &mut |_effect| Err(NodeError { code: None, message: "revoked".into() }),
+        );
+        assert_eq!(result.unwrap_err().message, "revoked");
+        assert!(r.copy_exists(&old));
+        assert!(!r.copy_exists(&new));
+        assert!(r.e.resets.borrow().is_empty());
+    }
+
+    #[test]
+    fn revocation_after_copy_publication_does_not_remove_the_old_recovery_copy() {
+        let mut r = rig();
+        let old = r.file_view(1, "old.hwpx");
+        let bytes = zip_bytes(8);
+        assert_eq!(r.begin_write(1, &bytes), RecoveryWriteOutcome::Written);
+        let new = r.e.path("new.hwpx");
+        r.host.save_paths.borrow_mut().insert(1, new.clone());
+        let result = r.rec.hwp_recovery_file_renamed_authorized(
+            &r.e, &r.shared, 1, &old, &new, &mut |effect| {
+                if with_store(&r.e, &r.shared, |store| store.read_copy(&file_identity(&new))).is_some() {
+                    return Err(NodeError { code: None, message: "revoked".into() });
+                }
+                effect();
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err().message, "revoked");
+        assert!(r.copy_exists(&old));
+        assert!(r.copy_exists(&new));
+        assert!(r.e.resets.borrow().is_empty());
+        assert_eq!(with_store(&r.e, &r.shared, |store| store.read_copy(&file_identity(&new))), Some(bytes));
+    }
+
+    #[test]
+    fn rejected_cleanup_does_not_delete_saved_recovery_bytes() {
+        let mut r = rig();
+        let path = r.file_view(1, "doc.hwpx");
+        assert_eq!(r.begin_write(1, &zip_bytes(3)), RecoveryWriteOutcome::Written);
+        let result = with_store(&r.e, &r.shared, |store| {
+            store.delete_copy_authorized(&file_identity(&path), RecoveryDeleteReason::Saved,
+                &mut |_effect| Err(NodeError { code: None, message: "revoked".into() }))
+        });
+        assert_eq!(result.unwrap_err().message, "revoked");
+        assert!(r.copy_exists(&path));
+    }
+
+    #[test]
+    fn a_revoked_copy_state_update_is_an_error_not_a_missing_copy() {
+        let mut r = rig();
+        let path = r.file_view(1, "doc.hwpx");
+        assert_eq!(r.begin_write(1, &zip_bytes(4)), RecoveryWriteOutcome::Written);
+        with_store(&r.e, &r.shared, |store| {
+            let identity = file_identity(&path);
+            let previous = store.copy_info(&identity).unwrap().unwrap();
+            let plan = store.prepare_copy_state_update(&identity,
+                crate::packages::electron_utils::recovery_store::RecoveryCopyState::Later).unwrap().unwrap();
+            let result = plan.write_authorized(&mut |_effect| Err(NodeError { code: None, message: "revoked".into() }));
+            assert_eq!(result.unwrap_err().message, "revoked");
+            assert_eq!(store.copy_info(&identity).unwrap().unwrap().state, previous.state);
+            assert_eq!(store.read_copy(&identity), Some(zip_bytes(4)));
+        });
+    }
+
+    #[test]
+    fn stale_state_plan_cannot_change_a_replacement_copy() {
+        use crate::packages::electron_utils::recovery_store::RecoveryCopyState;
+        let mut r = rig();
+        let path = r.file_view(1, "doc.hwpx");
+        assert_eq!(r.begin_write(1, &zip_bytes(4)), RecoveryWriteOutcome::Written);
+        let identity = file_identity(&path);
+        let plan = with_store(&r.e, &r.shared, |store| {
+            store.prepare_copy_state_update(&identity, RecoveryCopyState::Later).unwrap().unwrap()
+        });
+        assert_eq!(r.begin_write(1, &zip_bytes(5)), RecoveryWriteOutcome::Written);
+        plan.write_authorized(&mut |effect| { effect(); Ok(()) }).unwrap();
+        with_store(&r.e, &r.shared, |store| {
+            assert_eq!(store.read_copy(&identity), Some(zip_bytes(5)));
+            assert_eq!(store.copy_info(&identity).unwrap().unwrap().state, RecoveryCopyState::Undecided);
+        });
+    }
+
+    #[test]
+    fn replacement_with_identical_bytes_is_still_a_new_generation() {
+        use crate::packages::electron_utils::recovery_store::RecoveryCopyState;
+        let mut r = rig();
+        let path = r.file_view(1, "doc.hwpx");
+        let bytes = zip_bytes(4);
+        assert_eq!(r.begin_write(1, &bytes), RecoveryWriteOutcome::Written);
+        let identity = file_identity(&path);
+        let plan = with_store(&r.e, &r.shared, |store| {
+            store.prepare_copy_state_update(&identity, RecoveryCopyState::Later).unwrap().unwrap()
+        });
+        assert_eq!(r.begin_write(1, &bytes), RecoveryWriteOutcome::Written);
+        plan.write_authorized(&mut |effect| { effect(); Ok(()) }).unwrap();
+        with_store(&r.e, &r.shared, |store| {
+            assert_eq!(store.read_copy(&identity), Some(bytes));
+            assert_eq!(store.copy_info(&identity).unwrap().unwrap().state, RecoveryCopyState::Undecided);
+        });
+    }
+
+    #[test]
+    fn pinned_read_state_update_does_not_settle_the_next_copy() {
+        use crate::packages::electron_utils::recovery_store::{RecoveryCopyState, RecoveryPinnedRead};
+        let mut r = rig();
+        let path = r.file_view(1, "doc.hwpx");
+        assert_eq!(r.begin_write(1, &zip_bytes(4)), RecoveryWriteOutcome::Written);
+        let identity = file_identity(&path);
+        let snapshot = RecoveryPinnedRead::open(&r.e.user_data_dir(), &identity).unwrap().read().unwrap();
+        let plan = snapshot.prepare_copy_state(RecoveryCopyState::Later).unwrap();
+        assert_eq!(r.begin_write(1, &zip_bytes(5)), RecoveryWriteOutcome::Written);
+        plan.write_authorized(&mut |effect| { effect(); Ok(()) }).unwrap();
+        with_store(&r.e, &r.shared, |store| {
+            assert_eq!(store.read_copy(&identity), Some(zip_bytes(5)));
+            assert_eq!(store.copy_info(&identity).unwrap().unwrap().state, RecoveryCopyState::Undecided);
+        });
+    }
+
+    #[test]
+    fn recovery_adoption_rejected_before_publication_preserves_source() {
+        use crate::packages::electron_utils::recovery_store::{RecoveryAdoptOptions, RecoveryAdoptPlan};
+        let r = rig();
+        let directory = r.e.dir.join("userData").join("hwp-autosave");
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("source.hwpx");
+        let content = zip_bytes(9);
+        std::fs::write(&source, &content).unwrap();
+        let options = RecoveryAdoptOptions { title: "Recovered".into(), ext: ".hwpx".into(), state: None, original_path: None };
+        let plan = RecoveryAdoptPlan::prepare(&r.e.user_data_dir(), "hwp", source.to_str().unwrap(), &options,
+            &|| "00000000-0000-4000-8000-000000000001".into(), &|| 1234.0).unwrap().unwrap();
+        let result = plan.publish_authorized(&mut |_| Err(NodeError { code: None, message: "revoked".into() }));
+        assert_eq!(result.unwrap_err().message, "revoked");
+        assert_eq!(std::fs::read(&source).unwrap(), content);
+        assert!(!directory.join("untitled").exists());
+    }
+
+    #[test]
+    fn rejected_owned_writer_never_creates_the_recovery_directory() {
+        let r = rig();
+        let identity = file_identity(&r.e.path("new.hwpx"));
+        let (plan, copy) = with_store(&r.e, &r.shared, |store| {
+            (store.prepare_write(&identity, &RecoveryWriteOptions::default()).unwrap().unwrap(),
+                store.copy_path(&identity).unwrap())
+        });
+        let directory = std::path::Path::new(&copy).parent().unwrap();
+        assert!(!directory.exists());
+        let mut copied = false;
+        let result = plan.write_via_owned(&zip_bytes(4),
+            &mut |_, _| Err(NodeError { code: None, message: "revoked".into() }),
+            &mut |_, _| { copied = true; Ok(()) });
+        assert_eq!(result.unwrap_err().message, "revoked");
+        assert!(!copied);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn a_prepared_owned_delete_preserves_copy_then_metadata_failure_order() {
+        let mut r = rig();
+        let path = r.file_view(1, "doc.hwpx");
+        assert_eq!(r.begin_write(1, &zip_bytes(5)), RecoveryWriteOutcome::Written);
+        let (plan, copy) = with_store(&r.e, &r.shared, |store| {
+            let identity = file_identity(&path);
+            (store.prepare_delete(&identity, RecoveryDeleteReason::Saved).unwrap().unwrap(), store.copy_path(&identity).unwrap())
+        });
+        let mut revoked = false;
+        let result = plan.remove_owned(&mut |effect| {
+            if revoked { return Err(NodeError { code: None, message: "revoked".into() }); }
+            effect();
+            revoked = true;
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().message, "revoked");
+        assert!(!std::path::Path::new(&copy).exists());
+        assert!(std::path::Path::new(&format!("{copy}.meta.json")).exists());
     }
 
     #[test]

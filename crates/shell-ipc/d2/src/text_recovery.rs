@@ -20,6 +20,10 @@
 //!   [`TextRecovery::view_crashed`]; the editor calls [`TextRecovery::forget`]
 //!   from its own destroyed hook, before it drops the view's dirty flag.
 
+mod owned;
+mod rename_owned;
+pub(crate) use owned::RecoverySeedSpec;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -38,6 +42,7 @@ use main_core::packages::electron_utils::recovery_store::{
     RecoveryStoreOptions, RecoveryUntitledIdentity, RecoveryWriteOptions, RecoveryWriteResult,
     SharedRecoveryState, create_recovery_store, new_untitled_recovery_id,
 };
+use main_core::shell::renderer_disposal::Failure;
 use shell_contract::hosts::{ContentsHost, DialogsHost};
 use shell_contract::ipc::Target;
 use shell_contract::runtime::{PathName, Services};
@@ -129,10 +134,18 @@ impl IntoIpc for RecoveredText {
     }
 }
 
-type Waiter = Box<dyn FnOnce()>;
+struct OwnedOpenSeed {
+    receipt: Rc<RefCell<Option<shell_contract::ipc::RecoverySeedReceipt>>>,
+    token: String,
+    lease: shell_contract::runtime::RendererGeneration,
+    loss_subscription: Option<shell_contract::runtime::CancelSubscription>,
+    recovered: Option<Option<RecoveredText>>,
+}
+type Waiter = Box<dyn FnOnce(Result<(), Failure>)>;
 
 #[derive(Default)]
 struct ViewState {
+    saved_identity: Option<Rc<()>>,
     /// the copy identity while the document has no save path
     untitled: Option<RecoveryIdentity>,
     /// the text of this tab's last copy; None when there is none to compare with
@@ -149,6 +162,7 @@ struct ViewState {
     decision: Option<RecoveryOpenDecision>,
     /// an untitled copy to load on the next open
     untitled_seed: Option<RecoveryIdentity>,
+    owned_open: Option<OwnedOpenSeed>,
     /// the title the shell gave an untitled copy, or the editor's provisional title
     title: Option<String>,
     /// first Save As suggestion of a restored document whose original is missing
@@ -157,7 +171,7 @@ struct ViewState {
     renamed_from: Option<RecoveryIdentity>,
     /// the identity this tab's last copy was written under
     written_as: Option<RecoveryIdentity>,
-    flush_waiters: Vec<Waiter>,
+    flush_waiters: HashMap<String, Waiter>,
 }
 
 impl ViewState {
@@ -179,7 +193,58 @@ pub(crate) struct TextRecovery {
     contents: ContentsHost,
     shared: SharedRecoveryHost,
     views: RefCell<HashMap<ViewId, ViewState>>,
+    saved_reservations: Cell<usize>,
+    owned_renames: RefCell<HashMap<ViewId, rename_owned::OwnedRename>>,
     title_source: RefCell<Option<TitleSource>>,
+}
+
+pub(crate) struct PreparedSavedTracking {
+    recovery: Rc<TextRecovery>,
+    view: ViewId,
+    identity: Rc<()>,
+    state: Option<ViewState>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SavedTracking {
+    view: ViewId,
+    identity: Rc<()>,
+}
+
+impl Drop for PreparedSavedTracking {
+    fn drop(&mut self) {
+        if self.state.is_some() {
+            self.recovery.saved_reservations.set(self.recovery.saved_reservations.get() - 1);
+        }
+    }
+}
+
+impl PreparedSavedTracking {
+    pub(crate) fn with_validated(
+        &mut self,
+        next: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<SavedTracking, String> {
+        if self.state.is_none() {
+            return Err("the recovery tracking stage was already committed".into());
+        }
+        let mut views = self.recovery.views.try_borrow_mut().map_err(|_| "the recovery tracking map is busy")?;
+        if views.contains_key(&self.view) {
+            return Err("the recovery tracking view already exists".into());
+        }
+        next()?;
+        let state = self.state.take().expect("the recovery tracking stage was validated");
+        views.insert(self.view, state);
+        self.recovery.saved_reservations.set(self.recovery.saved_reservations.get() - 1);
+        Ok(SavedTracking { view: self.view, identity: self.identity.clone() })
+    }
+}
+
+impl SavedTracking {
+    pub(crate) fn matches(&self, recovery: &TextRecovery) -> bool {
+        recovery.views.borrow().get(&self.view)
+            .and_then(|state| state.saved_identity.as_ref())
+            .is_some_and(|identity| Rc::ptr_eq(identity, &self.identity))
+    }
 }
 
 fn file_identity(kind: &str, file_path: &str) -> RecoveryIdentity {
@@ -220,6 +285,8 @@ impl TextRecovery {
             services: services.clone(),
             host,
             views: RefCell::default(),
+            saved_reservations: Cell::new(0),
+            owned_renames: RefCell::default(),
             title_source: RefCell::default(),
         })
     }
@@ -280,13 +347,19 @@ impl TextRecovery {
             .unwrap_or_else(|| (self.host.untitled_fallback_title)())
     }
 
-    fn settle_flush(&self, view: ViewId) {
-        let waiters = match self.views.borrow_mut().get_mut(&view) {
-            Some(state) => std::mem::take(&mut state.flush_waiters),
-            None => return,
-        };
-        for resolve in waiters {
-            resolve()
+    fn settle_flush(&self, view: ViewId, token: &str, result: Result<(), Failure>) {
+        let waiter = self.views.borrow_mut().get_mut(&view)
+            .and_then(|state| state.flush_waiters.remove(token));
+        if let Some(waiter) = waiter {
+            waiter(result);
+        }
+    }
+
+    fn fail_flushes(&self, view: ViewId, message: &str) {
+        let waiters = self.views.borrow_mut().get_mut(&view)
+            .map(|state| std::mem::take(&mut state.flush_waiters)).unwrap_or_default();
+        for (_, waiter) in waiters {
+            waiter(Err(Failure(message.to_owned())));
         }
     }
 
@@ -376,9 +449,27 @@ impl TextRecovery {
         })
     }
 
+    pub(crate) fn prepare_saved_tracking(self: &Rc<Self>, view: ViewId) -> Result<PreparedSavedTracking, String> {
+        let count = self.saved_reservations.get().checked_add(1).ok_or("the recovery tracking capacity is exhausted")?;
+        let mut views = self.views.try_borrow_mut().map_err(|_| "the recovery tracking map is busy")?;
+        if views.contains_key(&view) {
+            return Err("the recovery tracking view already exists".into());
+        }
+        views.try_reserve(count).map_err(|error| error.to_string())?;
+        drop(views);
+        let identity = Rc::new(());
+        let state = ViewState { saved_identity: Some(identity.clone()), ..ViewState::default() };
+        self.saved_reservations.set(count);
+        Ok(PreparedSavedTracking { recovery: self.clone(), view, identity, state: Some(state) })
+    }
+
     /// start tracking a view (once, when it is created)
     pub(crate) fn track(&self, view: ViewId) {
-        self.views.borrow_mut().entry(view).or_default();
+        let mut views = self.views.borrow_mut();
+        if !views.contains_key(&view) && self.saved_reservations.get() != 0 {
+            views.reserve(self.saved_reservations.get().saturating_add(1));
+        }
+        views.entry(view).or_default();
     }
 
     /// the renderer process died: its copy outlives the view
@@ -386,17 +477,21 @@ impl TextRecovery {
         if let Some(state) = self.views.borrow_mut().get_mut(&view) {
             state.crashed = true;
         }
-        self.settle_flush(view);
+        self.fail_owned_rename(view,"recovery renderer crashed");
+        self.fail_owned_open_after_loss(view,"recovery renderer crashed");
+        self.fail_flushes(view, "recovery renderer crashed");
     }
 
     /// The view is being destroyed: delete the copy it wrote when it closes
     /// clean, keep it otherwise. Call before the editor drops the view's dirty flag.
     pub(crate) fn forget(&self, view: ViewId) {
+        self.fail_owned_rename(view,"recovery view destroyed");
+        self.fail_owned_open_after_loss(view,"recovery view destroyed");
         let Some(mut state) = self.views.borrow_mut().remove(&view) else {
             return;
         };
-        for resolve in std::mem::take(&mut state.flush_waiters) {
-            resolve()
+        for (_, resolve) in std::mem::take(&mut state.flush_waiters) {
+            resolve(Err(Failure("recovery view destroyed".into())));
         }
         if state.crashed || (self.host.is_dirty)(view) || !state.owns {
             return;
@@ -406,29 +501,28 @@ impl TextRecovery {
     }
 
     /// the renderer's copy (None: nothing to write, it only answers a flush request)
+    #[cfg(test)]
     pub(crate) fn write_copy(&self, view: ViewId, text: Option<&str>) -> WriteResult {
         if !self.views.borrow().contains_key(&view) {
             return WriteResult::Skipped;
         }
-        let result = self.write_tracked(view, text);
-        self.settle_flush(view);
-        result
+        self.write_tracked(view, text).unwrap_or(WriteResult::Skipped)
     }
 
-    fn write_tracked(&self, view: ViewId, text: Option<&str>) -> WriteResult {
+    fn write_tracked(&self, view: ViewId, text: Option<&str>) -> Result<WriteResult, Failure> {
         let (identity, title) = {
             let mut views = self.views.borrow_mut();
             let Some(state) = views.get_mut(&view) else {
-                return WriteResult::Skipped;
+                return Ok(WriteResult::Skipped);
             };
             let Some(text) = text else {
-                return WriteResult::Skipped;
+                return Ok(WriteResult::Skipped);
             };
             if state.resolving || state.crashed || !(self.host.is_dirty)(view) {
-                return WriteResult::Skipped;
+                return Ok(WriteResult::Skipped);
             }
             if state.last_text.as_deref() == Some(text) {
-                return WriteResult::Unchanged;
+                return Ok(WriteResult::Unchanged);
             }
             let identity = self.identity_for(view, state);
             let title = self.copy_title(view, state, &identity);
@@ -445,17 +539,9 @@ impl TextRecovery {
                 },
             )
         });
-        // a disk error rejects the invoke in the TypeScript; the renderer
-        // then pauses its copies, which a skipped answer does as well
-        let written = match written {
-            Ok(result) => result,
-            Err(error) => {
-                eprintln!("[{}] recovery write failed: {error:?}", self.host.kind);
-                return WriteResult::Skipped;
-            }
-        };
+        let written = written.map_err(|error| Failure(format!("recovery write failed: {error:?}")))?;
         if written == RecoveryWriteResult::Superseded {
-            return WriteResult::Superseded;
+            return Ok(WriteResult::Superseded);
         }
         let old = self.views.borrow_mut().get_mut(&view).and_then(|state| {
             state.last_text = Some(text.to_owned());
@@ -470,7 +556,7 @@ impl TextRecovery {
                 self.with_store(|store| store.delete_copy(&old, RecoveryDeleteReason::ClosedClean)),
             );
         }
-        WriteResult::Written
+        Ok(WriteResult::Written)
     }
 
     /// the identity the view's copy has before a save; pass it to `saved` afterwards
@@ -502,6 +588,7 @@ impl TextRecovery {
             state.save_as_default_path = None;
         }
     }
+
 
     /// "Don't Save" / a close without saving
     pub(crate) fn dont_save(&self, view: ViewId) {
@@ -556,12 +643,16 @@ impl TextRecovery {
         }
     }
 
+
     /// The renderer's open question: the text to load instead of the file, or
     /// None. `original_path` names the file an untitled restored copy came
     /// from: it tells the editor the format, not the save target.
     pub(crate) fn resolve_open(&self, view: ViewId) -> Option<RecoveredText> {
         let (seed, save_as_default) = {
             let mut views = self.views.borrow_mut();
+            if !views.contains_key(&view) && self.saved_reservations.get() != 0 {
+                views.reserve(self.saved_reservations.get().saturating_add(1));
+            }
             let state = views.entry(view).or_default();
             state.asked = true;
             if (self.host.is_headless)() {
@@ -687,55 +778,57 @@ impl TextRecovery {
         *self.title_source.borrow_mut() = source;
     }
 
-    /// The OS is ending the session: ask every view with unsaved changes for
-    /// its copy now; `done` runs when each answered or timed out
-    /// (`contract.writeCopiesNow`)
-    pub(crate) fn write_copies_now(self: &Rc<Self>, done: impl FnOnce() + 'static) {
-        let targets: Vec<ViewId> = self
-            .views
-            .borrow()
-            .iter()
-            .filter(|(id, s)| !s.crashed && !self.is_destroyed(**id) && (self.host.is_dirty)(**id))
-            .map(|(id, _)| *id)
-            .collect();
-        let pending = Rc::new(Cell::new(targets.len()));
-        let done: Rc<RefCell<Option<Waiter>>> = Rc::new(RefCell::new(Some(Box::new(done))));
+    /// Ask each dirty renderer for a fresh copy and wait for its matching reply.
+    pub(crate) fn write_copies_now(self: &Rc<Self>, done: impl FnOnce(Result<(), Failure>) + 'static) {
+        let targets: Vec<ViewId> = self.views.borrow().iter()
+            .filter(|(id, _)| (self.host.is_dirty)(**id))
+            .map(|(id, _)| *id).collect();
         if targets.is_empty() {
-            if let Some(done) = done.borrow_mut().take() {
-                done()
-            }
+            done(Ok(()));
             return;
         }
+        let pending = Rc::new(Cell::new(targets.len()));
+        let first_error = Rc::new(RefCell::new(None::<Failure>));
+        let done = Rc::new(RefCell::new(Some(Box::new(done) as Waiter)));
         for view in targets {
-            let settled = Rc::new(Cell::new(false));
-            let finish = {
-                let pending = Rc::clone(&pending);
-                let done = Rc::clone(&done);
-                move || {
-                    if settled.replace(true) {
-                        return;
-                    }
-                    pending.set(pending.get() - 1);
-                    if pending.get() == 0 {
-                        let done = done.borrow_mut().take();
-                        if let Some(done) = done {
-                            done()
-                        }
+            if self.is_destroyed(view) || self.views.borrow().get(&view).is_some_and(|s| s.crashed) {
+                if first_error.borrow().is_none() {
+                    *first_error.borrow_mut() = Some(Failure("recovery renderer unavailable".into()));
+                }
+                pending.set(pending.get() - 1);
+                continue;
+            }
+            let token = kit::unique().to_string();
+            let weak = Rc::downgrade(self);
+            let timeout_token = token.clone();
+            let timer = kit::after(&self.services, RECOVERY_FLUSH_TIMEOUT, move || {
+                if let Some(recovery) = weak.upgrade() {
+                    recovery.settle_flush(view, &timeout_token, Err(Failure("recovery flush timed out".into())));
+                }
+            });
+            let pending = Rc::clone(&pending);
+            let first_error = Rc::clone(&first_error);
+            let done = Rc::clone(&done);
+            self.views.borrow_mut().get_mut(&view).expect("tracked view").flush_waiters.insert(token.clone(), Box::new(move |result| {
+                kit::clear(timer);
+                if let Err(error) = result {
+                    if first_error.borrow().is_none() {
+                        *first_error.borrow_mut() = Some(error);
                     }
                 }
-            };
-            let finish = Rc::new(finish);
-            let on_timeout = Rc::clone(&finish);
-            let timer = kit::after(&self.services, RECOVERY_FLUSH_TIMEOUT, move || on_timeout());
-            if let Some(state) = self.views.borrow_mut().get_mut(&view) {
-                state.flush_waiters.push(Box::new(move || {
-                    kit::clear(timer);
-                    finish()
-                }));
-            }
-            self.services
-                .events
-                .emit(Target::View(view), self.host.flush_channel, Vec::new());
+                pending.set(pending.get() - 1);
+                if pending.get() == 0 {
+                    let result = first_error.borrow_mut().take().map_or(Ok(()), Err);
+                    let callback = done.borrow_mut().take();
+                    if let Some(callback) = callback { callback(result); }
+                }
+            }));
+            self.services.events.emit(Target::View(view), self.host.flush_channel, vec![token.into_ipc()]);
+        }
+        if pending.get() == 0 {
+            let result = first_error.borrow_mut().take().map_or(Ok(()), Err);
+            let callback = done.borrow_mut().take();
+            if let Some(callback) = callback { callback(result); }
         }
     }
 
@@ -753,6 +846,9 @@ impl TextRecovery {
     pub(crate) fn open_untitled_copy(&self, view: ViewId, request: &RecoveryOpenUntitledRequest) {
         {
             let mut views = self.views.borrow_mut();
+            if !views.contains_key(&view) && self.saved_reservations.get() != 0 {
+                views.reserve(self.saved_reservations.get().saturating_add(1));
+            }
             let state = views.entry(view).or_default();
             state.untitled = Some(request.copy.clone());
             state.untitled_seed = Some(request.copy.clone());
@@ -777,18 +873,46 @@ impl TextRecovery {
         self: &Rc<Self>,
         open_channel: &'static str,
         write_channel: &'static str,
-    ) -> [Entry; 2] {
+        applied_channel: &'static str,
+    ) -> [Entry; 3] {
         let open = Rc::clone(self);
         let write = Rc::clone(self);
+        let applied = Rc::clone(self);
         [
             kit::invoke(open_channel, move |cx, _| {
+                if let Some(result)=open.consume_owned_open(cx) { return result; }
                 Ok(open.resolve_open(cx.sender.view).into_ipc())
             }),
-            kit::invoke(write_channel, move |cx, args| {
-                Ok(write
-                    .write_copy(cx.sender.view, args.str(0))
-                    .as_str()
-                    .into_ipc())
+            kit::invoke_later(write_channel, move |cx, args, responder| {
+                let view = cx.sender.view;
+                if let Some(token)=args.str(1).filter(|token|Self::is_owned_rename_token(token)){
+                    return write.handle_owned_rename(cx,token.to_owned(),args.str(0).map(str::to_owned),args.str(2).map(str::to_owned),responder);
+                }
+                let result = if let Some(message) = args.str(2) {
+                    Err(Failure(message.to_owned()))
+                } else {
+                    write.write_tracked(view, args.str(0))
+                };
+                if let Some(token) = args.str(1) {
+                    let outcome = match &result {
+                        Ok(WriteResult::Written | WriteResult::Unchanged) => Ok(()),
+                        Ok(_) => Err(Failure("recovery copy was not written".into())),
+                        Err(error) => Err(error.clone()),
+                    };
+                    write.settle_flush(view, token, outcome);
+                }
+                responder.reply(result.map(|value| value.as_str().into_ipc()).map_err(|error| kit::error(error.0)))
+            }),
+            kit::invoke(applied_channel,move|cx,args|{
+                let value=args.get(0);
+                let token=kit::as_str(kit::field(value,"token")).ok_or_else(||kit::error("the recovery acknowledgment has no token"))?;
+                let result=match kit::field(value,"ok"){
+                    IpcValue::Bool(true)=>Ok(()),
+                    IpcValue::Bool(false)=>Err(kit::as_str(kit::field(value,"error")).unwrap_or("the renderer could not apply the recovery").to_owned()),
+                    _=>return Err(kit::error("the recovery acknowledgment has no result")),
+                };
+                applied.settle_owned_open(cx,token,result)?;
+                Ok(IpcValue::Undefined)
             }),
         ]
     }
@@ -1034,6 +1158,24 @@ mod tests {
         };
         let hosts = super::RecoveryHosts::need(&rt.services).unwrap();
         (TextRecovery::new(&rt.services, host, hosts), ed)
+    }
+
+    #[test]
+    fn saved_tracking_is_invisible_until_the_admitted_initializer_succeeds() {
+        let rt = test_rt();
+        let (recovery, _) = recovery(&rt);
+        let view = ViewId(42);
+        let mut staged = recovery.prepare_saved_tracking(view).unwrap();
+        assert!(!recovery.views.borrow().contains_key(&view));
+        assert!(staged.with_validated(&mut || Err("rejected".into())).is_err());
+        assert!(!recovery.views.borrow().contains_key(&view));
+        let receipt = staged.with_validated(&mut || Ok(())).unwrap();
+        assert!(receipt.matches(&recovery));
+        assert!(staged.with_validated(&mut || Ok(())).is_err());
+        assert!(recovery.prepare_saved_tracking(view).is_err());
+        recovery.views.borrow_mut().remove(&view);
+        recovery.track(view);
+        assert!(!receipt.matches(&recovery));
     }
 
     fn copy_dir(rt: &Rt) -> std::path::PathBuf {
@@ -1343,24 +1485,46 @@ mod tests {
             rec.track(v);
         }
         ed.borrow_mut().dirty.extend([a, b]);
-        let done = Rc::new(std::cell::Cell::new(false));
+        let done = Rc::new(RefCell::new(None));
         let d = Rc::clone(&done);
-        rec.write_copies_now(move || d.set(true));
-        let mut asked: Vec<_> = rt.events().into_iter().map(|e| e.target).collect();
-        asked.sort_by_key(|t| format!("{t:?}"));
-        assert_eq!(asked.len(), 2, "only dirty views are asked");
-        rec.write_copy(a, Some("a"));
-        assert!(!done.get());
+        rec.write_copies_now(move |result| *d.borrow_mut() = Some(result));
+        assert_eq!(rt.events().len(), 2, "only dirty views are asked");
+        let token = rec.views.borrow().get(&a).unwrap().flush_waiters.keys().next().unwrap().clone();
+        rec.settle_flush(a, "stale", Ok(()));
+        assert!(done.borrow().is_none());
+        assert_eq!(rec.write_tracked(a, Some("a")), Ok(WriteResult::Written));
+        rec.settle_flush(a, &token, Ok(()));
+        assert!(done.borrow().is_none());
         rt.advance(Duration::from_millis(2_999));
-        assert!(!done.get());
+        assert!(done.borrow().is_none());
         rt.advance(Duration::from_millis(1));
-        assert!(done.get(), "b timed out");
-        // nothing dirty: done at once
-        let done = Rc::new(std::cell::Cell::new(false));
+        assert!(done.borrow().as_ref().unwrap().is_err(), "b timed out");
+        let done = Rc::new(RefCell::new(None));
         let d = Rc::clone(&done);
         ed.borrow_mut().dirty.clear();
-        rec.write_copies_now(move || d.set(true));
-        assert!(done.get());
+        rec.write_copies_now(move |result| *d.borrow_mut() = Some(result));
+        assert_eq!(*done.borrow(), Some(Ok(())));
+    }
+
+    #[test]
+    fn overlapping_flushes_settle_only_the_matching_request_and_destroy_fails_the_rest() {
+        let rt = test_rt();
+        let (rec, ed) = recovery(&rt);
+        let view = rt.view(1, Surface::Markdown).view;
+        rec.track(view);
+        ed.borrow_mut().dirty.insert(view);
+        let first = Rc::new(RefCell::new(None));
+        let result = Rc::clone(&first);
+        rec.write_copies_now(move |value| *result.borrow_mut() = Some(value));
+        let first_token = rec.views.borrow().get(&view).unwrap().flush_waiters.keys().next().unwrap().clone();
+        let second = Rc::new(RefCell::new(None));
+        let result = Rc::clone(&second);
+        rec.write_copies_now(move |value| *result.borrow_mut() = Some(value));
+        rec.settle_flush(view, &first_token, Ok(()));
+        assert_eq!(*first.borrow(), Some(Ok(())));
+        assert!(second.borrow().is_none());
+        rec.forget(view);
+        assert!(second.borrow().as_ref().unwrap().is_err());
     }
 
     #[test]

@@ -626,6 +626,11 @@ impl Updater {
     pub fn restart(&self) -> &UpdateRestart {
         &self.restart
     }
+    /// A vetoed window close cancels the pending installer restart.
+    pub fn cancel_update_restart(&mut self) {
+        self.restart.cancel_update_restart();
+    }
+
 
     /// the logger electron-updater is given (`autoUpdater.logger = record`), as
     /// the lines it writes: `info`, `warn`, `error` and `debug`
@@ -1737,5 +1742,28 @@ fn check_end_fields(result: &Option<CheckResult>) -> [(&'static str, Option<Step
     match result {
         Some(r) if r.is_update_available => [("found", r.update_version.as_deref().and_then(text))],
         _ => [("found", text("none"))],
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    struct Env;
+    impl UpdaterEnv for Env {
+        fn console_log(&self, _: &[String]) {}
+        fn now_ms(&self) -> f64 { 0.0 }
+        fn perf_now(&self) -> f64 { 0.0 }
+    }
+
+    #[test]
+    fn veto_cancels_the_updaters_installer_request() {
+        let mut updater = Updater::new(Rc::new(Env));
+        updater.restart.request_update_restart();
+        assert!(updater.restart().update_restart_requested());
+        updater.cancel_update_restart();
+        assert!(!updater.restart().update_restart_requested());
+        updater.restart.request_update_restart();
+        assert!(updater.restart().update_restart_requested());
     }
 }

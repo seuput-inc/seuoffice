@@ -52,7 +52,6 @@ use super::tools::session_tools::{
 };
 use super::tools::sheets_tools::{SheetsToolDeps, create_sheets_tools, sheets_driver};
 use super::tools::slides_tools::{SlidesToolDeps, create_slides_tools, slides_driver};
-use crate::packages::i18n::PRODUCT_NAME;
 use crate::packages::mcp_sdk::server::{Command, StartError, StartId, StopId};
 
 /// `McpRuntimeDeps`
@@ -61,8 +60,6 @@ pub struct McpRuntimeDeps<'h> {
     pub version: String,
     /// default folder for generated files
     pub default_save_dir: DefaultSaveDir<'h>,
-    /// open a file in the UI (routed to the matching tab)
-    pub open_path: Rc<dyn Fn(&str) -> bool + 'h>,
     /// drive a visible docs editor (live document session); absent in headless runs
     pub docs_control: bool,
     /// drive a visible slides deck (main-process session); absent in headless runs
@@ -276,7 +273,6 @@ fn build_tools<'h>(shared: &Shared<'h>) -> Result<Vec<McpToolDefinition<'h>>, St
     let mut tools = Vec::new();
     // the session entry point first: an agent picking a tool sees create_session
     tools.extend(create_session_tools(&drivers, Rc::clone(&host)));
-    let open_deps = Rc::clone(&deps);
     tools.extend(create_document_tools(
         Rc::new(DocToolDeps {
             version: deps.version.clone(),
@@ -284,14 +280,7 @@ fn build_tools<'h>(shared: &Shared<'h>) -> Result<Vec<McpToolDefinition<'h>>, St
             // headless create_docx is opt-in: off by default so the default surface is
             // the visible document session
             background: Some(background),
-            // open_in_seuoffice reports ok only when the file routed to a tab
-            open_in_tab: Some(Rc::new(move |file_path: &str| {
-                if (open_deps.open_path)(file_path) {
-                    Ok(())
-                } else {
-                    Err(format!("could not open {file_path} in {PRODUCT_NAME}"))
-                }
-            })),
+            open_in_tab: true,
             docs: deps.docs_control,
             extra_formats: Some(extra_formats),
             cli: deps.cli_runner.clone(),

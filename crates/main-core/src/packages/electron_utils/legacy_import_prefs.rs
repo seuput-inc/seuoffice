@@ -63,7 +63,12 @@ pub fn write_legacy_import_skip(
     skip: bool,
 ) -> Result<(), NodeError> {
     let settings = read_settings(settings_path);
-    let mut map = skip_map(&settings);
+    let map = updated_skip_map(&settings, kind, skip);
+    write_with_map(settings_path, &settings, map)
+}
+
+fn updated_skip_map(settings: &JsObject<JsonValue>, kind: &str, skip: bool) -> JsObject<JsonValue> {
+    let mut map = skip_map(settings);
     // `map[kind] = true` on a plain object: an own `__proto__` is not made
     if skip {
         if kind != "__proto__" {
@@ -78,7 +83,25 @@ pub fn write_legacy_import_skip(
             .map(|(key, value)| (key.to_owned(), value.clone()))
             .collect();
     }
-    write_with_map(settings_path, &settings, map)
+    map
+}
+
+/// Run on a worker while holding the settings path's FIFO completion. The
+/// admission covers namespace changes, never the settings read or bulk write.
+pub fn write_legacy_import_skip_authorized(
+    settings_path: &str,
+    kind: &str,
+    skip: bool,
+    admit: &mut crate::node_fs::FileAdmission<'_>,
+) -> Result<(), NodeError> {
+    let mut settings = read_settings(settings_path);
+    let map = updated_skip_map(&settings, kind, skip);
+    settings.set(LEGACY_IMPORT_SKIP_KEY, JsonValue::Object(map));
+    // The original retryable in-place fallback admits its open, then drains
+    // the write to that exact descriptor outside the authority gate.
+    super::atomic_write::write_json_atomic_authorized(
+        settings_path, &JsonValue::Object(settings), admit,
+    )
 }
 
 /// true while no format is set to skip, i.e. every legacy import still asks
@@ -96,4 +119,23 @@ pub fn write_legacy_import_prompt(settings_path: &str, prompt: bool) -> Result<(
         }
     }
     write_with_map(settings_path, &settings, map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn updating_one_import_preference_keeps_other_known_choices() {
+        let JsonValue::Object(settings) = json_parse(
+            r#"{"theme":"dark","legacyImportSkipConfirm":{"odt":true,"hwp":false,"unknown":true}}"#,
+        ).unwrap() else { panic!("expected settings object") };
+        let map = updated_skip_map(&settings, "word97", true);
+        assert_eq!(map.get("word97"), Some(&JsonValue::Bool(true)));
+        assert_eq!(map.get("odt"), Some(&JsonValue::Bool(true)));
+        assert_eq!(map.get("hwp"), None);
+        assert_eq!(map.get("unknown"), None);
+        let removed = updated_skip_map(&settings, "odt", false);
+        assert_eq!(removed.get("odt"), None);
+    }
 }

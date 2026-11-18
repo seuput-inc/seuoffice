@@ -82,7 +82,6 @@ const ab = (i = 0) => ({ $: 'b', k: 'ab', i })
 const PNG = '89504e470d0a1a0a'
 const parse = (...answers: unknown[]) => ({ d2: { hwp: { parse_file_to_text: answers } } })
 const text = (t: string) => ({ ok: true, kind: 'text', text: t })
-const pick = (call: object, hosts: unknown) => ({ calls: [call], hosts })
 const dialogs = (...answers: unknown[]) => ({ shared: { dialogs: { open: answers } } })
 const fetchImage = (...args: unknown[]) => ({ channel: 'hwp:fetch-image', args })
 const analyze = (op: unknown, buffers?: string[]) => ({

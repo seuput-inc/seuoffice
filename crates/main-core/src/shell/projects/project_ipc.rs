@@ -39,6 +39,13 @@
 //! [`IpcStep`], and the caller drives it:
 //!
 //! - `Done(reply)`: the handler's answer.
+//! - `SettingsWrite(write)`: run the owned mutation on the per-file settings
+//!   queue and pass its result to `finish_settings_write` on core.
+//! - `ContextRead`: prepare context, queue its conditional settings mutation,
+//!   then revalidate and answer on core before releasing the queue.
+//! - `TrustUse`, `TrustWithout`, and `TrustAnswer`: prepare identity or trust
+//!   changes, queue writes, and acknowledge them on core; release the queue
+//!   before displaying any prompt.
 //! - `AskTrust { owner, prompt, pending }`: show the first-time trust prompt
 //!   over `owner`'s window (`ProjectDialogs.askTrust`: a modal message box,
 //!   which may block), then call [`ProjectIpc::resume_trust`] with `pending`
@@ -56,19 +63,25 @@
 //! it is [`field`]. A handler answers `Ok(None)` where the TypeScript
 //! answers `undefined`.
 
+mod chat_results;
+pub use chat_results::{ChatAppendOwner, ChatDocumentOpen};
+
 use jscompat::node_path::host::{is_absolute, join};
 use jscompat::{JsObject, JsonValue, trim, truthy};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::chat_store::{ChatAppendedEvent, ChatSender};
+use super::chat_store::{AppendContinuation, ChatAppendedEvent, ChatSender, ChatStoreError};
 use super::folder_files::data_dir_name;
 use super::paths::relative_inside;
 use super::project_dialog_text::{ProjectFolderPickPurpose, ProjectTrustChoice};
 use super::project_files::{
     CloudOnlyResolver, list_ignored_files, thrown_limit, to_entry, with_cloud_flags,
 };
-use super::project_guide::{GuideStep, NewProjectRequest, ProjectAiVisibility, SelectionTarget};
+use super::project_guide::{
+    GuideStep, MemoryEditor, MutationRequest, MutationResult, NewProjectRequest, ProjectAiVisibility, ProjectSettingsWrite,
+    ProjectSettingsWriteResult, ProjectSettingsPatch as GuideSettingsPatch, SelectionTarget,
+};
 use super::project_tools::PROJECT_SCOPE_UNKNOWN;
 use crate::packages::ai_provider::agent_session_policy::process_platform;
 use crate::packages::electron_utils::default_save_dir::Thrown;
@@ -107,6 +120,36 @@ pub enum ProjectWindow {
         editor: ProjectEditor,
         doc_path: Option<String>,
     },
+}
+
+/// Core-owned panel choice or an unresolved starting selection for worker lookup.
+pub enum WindowProjectLookup {
+    Chosen(Option<ProjectId>),
+    Initial(SelectionTarget),
+}
+
+/// Owner and target captured before a queued selection write.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectionRequest {
+    pub sender: i64,
+    pub window: ProjectWindow,
+    pub target: SelectionTarget,
+    pub project_id: Option<ProjectId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatAppendRequest {
+    pub sender: i64,
+    pub window: ProjectWindow,
+    pub args: JsonValue,
+    pub poster: ChatSender,
+    chat_ref: ProjectChatRef,
+}
+
+impl ChatAppendRequest {
+    pub fn chat_ref(&self) -> &ProjectChatRef {
+        &self.chat_ref
+    }
 }
 
 /// `MemoryOp` author of `editMemory(id, change, by)`
@@ -255,6 +298,16 @@ pub trait ProjectIpcGuide {
     ) -> Result<DecideTrustResult, Thrown>;
 }
 
+
+pub enum IpcAppendProgress {
+    Done(Value),
+    NeedInstallId(AppendContinuation),
+}
+
+pub enum IpcAppendStep<P> {
+    Done(IpcStep<P>),
+    NeedInstallId { request: ChatAppendRequest, continuation: AppendContinuation },
+}
 /// `ProjectFolderServices.chats`: the `Pick<ProjectChatStore, ...>` the
 /// handlers call. Where the handler reads only the `status` of an answer, it
 /// is the JSON the store answers.
@@ -262,26 +315,28 @@ pub trait ProjectIpcChats {
     /// `newChat(projectId)`: the new chat's id (the TypeScript answers
     /// `{ chatId }`)
     fn new_chat(&mut self, project_id: &str) -> Result<ProjectId, Thrown>;
-    fn list_chats(&mut self, project_id: &str) -> Result<Vec<ProjectChatListItem>, Thrown>;
+    fn list_chats(&mut self, project_id: &str) -> Result<Vec<ProjectChatListItem>, ChatStoreError>;
     /// `openChat(args)`
-    fn open_chat(&mut self, args: &JsonValue) -> Result<Value, Thrown>;
+    fn open_chat(&mut self, args: &JsonValue) -> Result<Value, ChatStoreError>;
     /// `append(args, sender)`; the store's `onAppended` listeners run inside
     /// it (see [`ProjectIpcChats::take_appended`])
-    fn append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<Value, Thrown>;
-    fn rename_chat(&mut self, args: &JsonValue) -> Result<ProjectWriteResult, Thrown>;
+    fn begin_append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<IpcAppendProgress, ChatStoreError>;
+    fn resume_append(&mut self, continuation: AppendContinuation) -> Result<IpcAppendProgress, ChatStoreError>;
+    fn cancel_append(&mut self, continuation: AppendContinuation);
+    fn rename_chat(&mut self, args: &JsonValue) -> Result<ProjectWriteResult, ChatStoreError>;
     fn delete_chat(&mut self, chat_ref: &ProjectChatRef) -> Result<ProjectWriteResult, Thrown>;
     fn attach_document(
         &mut self,
         chat_ref: &ProjectChatRef,
         doc_path: &str,
-    ) -> Result<ProjectWriteResult, Thrown>;
+    ) -> Result<ProjectWriteResult, ChatStoreError>;
     fn chat_for_document(
         &mut self,
         project_id: &str,
         doc_path: &str,
-    ) -> Result<Option<ProjectId>, Thrown>;
+    ) -> Result<Option<ProjectId>, ChatStoreError>;
     /// `chatInfo(ref)`: `None` (`null`) for a chat that is not visible
-    fn chat_info(&mut self, chat_ref: &ProjectChatRef) -> Result<Option<ChatDocuments>, Thrown>;
+    fn chat_info(&mut self, chat_ref: &ProjectChatRef) -> Result<Option<ChatDocuments>, ChatStoreError>;
     /// The calls `onAppended(listener)` made to the layer's listener since the
     /// last call, in order. The plumbing registers one listener on the first
     /// use of the services; here the events it saw are taken after each
@@ -332,9 +387,6 @@ pub trait ProjectIpcHost {
     fn legacy_chat_for(&mut self, doc_path: &str) -> Result<Option<LegacyDocumentChat>, Thrown>;
     /// `openFolder(path)`: in Explorer / Finder
     fn open_folder(&mut self, path: &str) -> Result<(), Thrown>;
-    /// `openDocument(path)`: opens (or focuses) a document through the shell's
-    /// file-open path; its webContents id, or `None`
-    fn open_document(&mut self, path: &str) -> Option<i64>;
     /// `showHome()`: switches to the home tab; its webContents id, or `None`
     fn show_home(&mut self) -> Option<i64>;
     /// `projectsChanged()`: the list, a folder or a project's place changed
@@ -365,6 +417,7 @@ enum Resume<P> {
     /// `addFolder` and `relocateProject`
     AddFolder(P),
     AdoptFolderHint(P),
+    HintAdopt { window: ProjectWindow, doc_path: String, pending: P },
     /// `second`: the call after the person confirmed an existing folder
     CreateProject {
         request: NewProjectRequest,
@@ -409,6 +462,16 @@ impl<P> Waiting<P> {
 /// [`ProjectIpc::resume_trust`]
 #[derive(Debug, Clone, PartialEq)]
 pub struct AwaitingTrust<P>(Box<Waiting<P>>);
+impl<P> AwaitingTrust<P> {
+    /// Immutable paths from the prompt, before asynchronous view construction.
+    pub fn view_targets(&self)->(Vec<String>,Option<String>) { trust_view_paths(&self.0.prompt) }
+    /// Resume only after every selected view reports its actual outcome.
+    pub fn finish_view(self,opened:bool)->IpcStep<P> {
+        let waiting=*self.0;
+        if opened { waiting.wait() } else { waiting.ask() }
+    }
+}
+
 
 /// A request waiting for the person to come back to the page after [view
 /// all]: [`ProjectIpc::resume_return`]
@@ -420,6 +483,39 @@ pub struct AwaitingReturn<P>(Box<Waiting<P>>);
 pub enum IpcStep<P> {
     /// the handler's answer
     Done(Reply),
+    /// Execute the owned read-modify-write off core, then call
+    /// `finish_settings_write` on core before releasing its queue completion.
+    SettingsWrite(ProjectSettingsWrite),
+    Mutation(MutationRequest),
+    /// Assemble context on core, then conditionally persist and revalidate it.
+    ContextRead { project_id: ProjectId },
+    /// Persist a selection after checking its originating window and target.
+    SelectionWrite(SelectionRequest),
+    InitialChat { window: ProjectWindow, selection: ProjectSelection },
+    ListChats { window: ProjectWindow, project_id: ProjectId },
+    OpenChat { sender: i64, chat_ref: ProjectChatRef, args: JsonValue },
+    RenameChat { chat_ref: ProjectChatRef, args: JsonValue },
+    AttachChat { chat_ref: ProjectChatRef, doc_path: String },
+    OpenDocumentChat { chat_ref: ProjectChatRef },
+    NewChat { sender: i64, project_id: ProjectId },
+    DeleteChat { sender: i64, chat_ref: ProjectChatRef },
+    /// Validate an append and obtain its install identity before writing.
+    ChatAppend(ChatAppendRequest),
+    /// Continue a trust answer outside the modal, through the settings queue.
+    TrustAnswer { project_id: ProjectId, pending: P, answer: ProjectTrustAnswer },
+    /// Commit a trust revocation without holding the core thread.
+    TrustWithout { project_id: ProjectId, sender: i64 },
+    /// Obtain the install identity and prepare a trust approval.
+    TrustUse { project_id: ProjectId, sender: i64 },
+    /// Prepare and commit an initial folder adoption outside the core thread.
+    AdoptStart { owner: i64, folder: String, relocate_id: Option<ProjectId> },
+    CreateStart { owner: i64, request: NewProjectRequest, second: bool },
+    ConfirmExisting { owner: i64, request: NewProjectRequest, folder_path: String },
+    HintStart { owner: i64, window: ProjectWindow, doc_path: String },
+    HintAnswer { owner: i64, window: ProjectWindow, doc_path: String, pending: P, answer: ProjectTrustAnswer },
+    HintSelection { owner: i64, window: ProjectWindow, doc_path: String, result: AddFolderResult },
+    /// Commit an adoption answer after the modal has returned.
+    AdoptAnswer { owner: i64, pending: P, answer: ProjectTrustAnswer, create: Option<(NewProjectRequest, bool)> },
     /// show the trust prompt over `owner`'s window; the choice goes to
     /// [`ProjectIpc::resume_trust`]
     AskTrust {
@@ -427,6 +523,8 @@ pub enum IpcStep<P> {
         prompt: Box<ProjectTrustPrompt>,
         pending: AwaitingTrust<P>,
     },
+    ViewTrustFiles { paths:Vec<String>, chats:Option<String>, pending:AwaitingTrust<P> },
+    OpenDocumentChatTarget { path:Option<String>, chat_ref:ProjectChatRef },
     /// wait for the person to come back to `owner`'s page; the outcome of the
     /// [`PageReturnWatch`] goes to [`ProjectIpc::resume_return`]
     WaitForReturn {
@@ -651,7 +749,7 @@ impl<K: PartialEq, V> Ordered<K, V> {
 /// open in the app and the chats folder in the file manager. The paths are
 /// built here from the prompt main made, never from a request. `true` when
 /// something opened in the app, so the prompt waits for the person.
-fn show_trust_files(host: &mut dyn ProjectIpcHost, prompt: &ProjectTrustPrompt) -> bool {
+fn trust_view_paths(prompt: &ProjectTrustPrompt) -> (Vec<String>, Option<String>) {
     let root = prompt.folder_path.as_str();
     let data_dir = join(&[root, data_dir_name(root).as_str()]);
     let data_dir = data_dir.as_str();
@@ -673,21 +771,11 @@ fn show_trust_files(host: &mut dyn ProjectIpcHost, prompt: &ProjectTrustPrompt) 
             join(&[root, project_folder_name("rootClaudeFile")]),
         ),
     ];
-    let mut opened = false;
-    for (text, path) in files {
-        if text.is_none() {
-            continue;
-        }
-        if host.open_document(&path).is_some() {
-            opened = true;
-        }
-    }
-    if !prompt.foreign_chats.is_empty() {
-        // The prompt still lists the chats by title.
-        let _ = host.open_folder(&join(&[data_dir, project_folder_name("chatsDir")]));
-    }
-    opened
+    let paths=files.into_iter().filter_map(|(text,path)|text.as_ref().map(|_|path)).collect();
+    let chats=(!prompt.foreign_chats.is_empty()).then(||join(&[data_dir,project_folder_name("chatsDir")]));
+    (paths,chats)
 }
+
 
 /// `registerProjectFolderIpc`'s state: which window shows which chat, which
 /// events each window listens to, and what is held for a window not listening
@@ -966,6 +1054,27 @@ impl ProjectIpc {
         deps.guide.get_selection(&target).ok()?.project_id
     }
 
+    pub fn prepare_window_project(
+        &self,
+        sender: i64,
+        window: Option<&ProjectWindow>,
+        preset: Option<ProjectId>,
+    ) -> WindowProjectLookup {
+        let Some(window) = window else { return WindowProjectLookup::Chosen(None); };
+        if let Some(chosen) = self.chosen.get(&sender) { return WindowProjectLookup::Chosen(chosen.clone()); }
+        let target = match window {
+            ProjectWindow::Home => SelectionTarget::Home,
+            ProjectWindow::Editor { doc_path, .. } => {
+                if let Some(path) = truthy(doc_path.as_deref()) {
+                    SelectionTarget::Document { path: path.to_owned() }
+                } else {
+                    SelectionTarget::Untitled { project_id: self.untitled.get(&sender).cloned().unwrap_or(preset) }
+                }
+            }
+        };
+        WindowProjectLookup::Initial(target)
+    }
+
     /// `windowOf(sender)` of the handlers: an `Err` for a window that is not
     /// an AI window
     fn window_of(host: &mut dyn ProjectIpcHost, sender: i64) -> Result<ProjectWindow, Thrown> {
@@ -979,7 +1088,7 @@ impl ProjectIpc {
         chats: &mut dyn ProjectIpcChats,
         win: &ProjectWindow,
         mut selection: ProjectSelection,
-    ) -> Result<ProjectSelection, Thrown> {
+    ) -> Result<ProjectSelection, ChatStoreError> {
         let project_id = truthy(selection.project_id.as_deref()).map(str::to_owned);
         let doc_path = truthy(doc_path_of(win)).map(str::to_owned);
         selection.initial_chat_id = match (project_id, doc_path) {
@@ -1004,6 +1113,125 @@ impl ProjectIpc {
         raw: Option<&JsonValue>,
     ) -> Result<IpcStep<P>, Thrown> {
         match name {
+            "getSelection" => {
+                let window = Self::window_of(&mut *deps.host, sender)?;
+                let target = self.target_of(&mut *deps.host, sender, &window)?;
+                let selection = deps.guide.get_selection(&target)?;
+                self.chosen.set(sender, selection.project_id.clone());
+                Ok(IpcStep::InitialChat { window, selection })
+            }
+            "listChats" => Ok(IpcStep::ListChats {
+                project_id: project_id_of(raw)?,
+                window: Self::window_of(&mut *deps.host, sender)?,
+            }),
+            "openChat" => {
+                let chat_ref = chat_ref_of(raw)?;
+                let mut args = JsObject::new();
+                args.set("projectId", JsonValue::String(chat_ref.project_id.clone()));
+                args.set("chatId", JsonValue::String(chat_ref.chat_id.clone()));
+                if let Some(JsonValue::Number(limit)) = field(raw, "limit") {
+                    args.set("limit", JsonValue::Number(*limit));
+                }
+                Ok(IpcStep::OpenChat { sender, chat_ref, args: JsonValue::Object(args) })
+            }
+            "renameChat" => {
+                let chat_ref = chat_ref_of(raw)?;
+                let title = text_of(raw, "title")?;
+                let mut args = JsObject::new();
+                args.set("projectId", JsonValue::String(chat_ref.project_id.clone()));
+                args.set("chatId", JsonValue::String(chat_ref.chat_id.clone()));
+                args.set("title", JsonValue::String(title.to_owned()));
+                Ok(IpcStep::RenameChat { chat_ref, args: JsonValue::Object(args) })
+            }
+            "attachDocument" => {
+                let chat_ref = chat_ref_of(raw)?;
+                let win = Self::window_of(&mut *deps.host, sender)?;
+                let Some(doc_path) = truthy(doc_path_of(&win)) else {
+                    return reply(&ProjectWriteResult::Ok).map(IpcStep::Done);
+                };
+                Ok(IpcStep::AttachChat { chat_ref, doc_path: doc_path.to_owned() })
+            }
+            "openDocumentChat" => Ok(IpcStep::OpenDocumentChat { chat_ref: chat_ref_of(raw)? }),
+            "newChat" => Ok(IpcStep::NewChat { sender, project_id: project_id_of(raw)? }),
+            "deleteChat" => Ok(IpcStep::DeleteChat { sender, chat_ref: chat_ref_of(raw)? }),
+            "appendChat" => self.prepare_append_chat(deps, sender, raw),
+            "setSelection" => {
+                let window = Self::window_of(&mut *deps.host, sender)?;
+                let project_id = match field(raw, "projectId") {
+                    Some(JsonValue::Null) => None,
+                    Some(JsonValue::String(id)) if is_valid_project_id(id) => Some(id.clone()),
+                    _ => return Err(bad_request()),
+                };
+                let target = self.target_of(&mut *deps.host, sender, &window)?;
+                Ok(IpcStep::SelectionWrite(SelectionRequest { sender, window, target, project_id }))
+            }
+            "saveInstructions" => Ok(IpcStep::Mutation(MutationRequest::SaveInstructions {
+                project_id: project_id_of(raw)?, text: text_of(raw, "text")?.to_owned(),
+            })),
+            "saveMemory" => Ok(IpcStep::Mutation(MutationRequest::SaveMemory {
+                project_id: project_id_of(raw)?, text: text_of(raw, "text")?.to_owned(),
+            })),
+            "editMemory" => Ok(IpcStep::Mutation(MutationRequest::EditMemory {
+                project_id: project_id_of(raw)?, change: memory_op_of(field(raw, "change"))?, by: MemoryEditor::Person,
+            })),
+            "remember" => {
+                let project_id = if field(raw, "scope").is_none() { None } else {
+                    deps.scopes.project_of(sender, raw.unwrap_or(&JsonValue::Null)).ok().flatten()
+                };
+                let Some(project_id) = truthy(project_id.as_deref()) else {
+                    return Err(Thrown(PROJECT_SCOPE_UNKNOWN.to_owned()));
+                };
+                Ok(IpcStep::Mutation(MutationRequest::EditMemory {
+                    project_id: project_id.to_owned(), change: memory_op_of(field(raw, "change"))?, by: MemoryEditor::Ai,
+                }))
+            }
+            "applyMemoryConsolidation" => {
+                let Some(JsonValue::Array(entries)) = field(raw, "entries") else { return Err(bad_request()); };
+                Ok(IpcStep::Mutation(MutationRequest::ApplyMemoryConsolidation {
+                    project_id: project_id_of(raw)?, entries: entries.clone(),
+                }))
+            }
+            "undoMemoryConsolidation" => Ok(IpcStep::Mutation(MutationRequest::UndoMemoryConsolidation {
+                project_id: project_id_of(raw)?, backup_name: text_of(raw, "backupName")?.to_owned(),
+            })),
+            "addIgnore" => Ok(IpcStep::Mutation(MutationRequest::AddIgnore {
+                project_id: project_id_of(raw)?, rel_path: text_of(raw, "relPath")?.to_owned(),
+            })),
+            "removeIgnore" => Ok(IpcStep::Mutation(MutationRequest::RemoveIgnore {
+                project_id: project_id_of(raw)?, rel_path: text_of(raw, "relPath")?.to_owned(),
+            })),
+            "renameProject" => Ok(IpcStep::Mutation(MutationRequest::RenameProject {
+                project_id: project_id_of(raw)?, name: text_of(raw, "name")?.to_owned(),
+            })),
+            "retryUnwritable" => Ok(IpcStep::Mutation(MutationRequest::RetryUnwritable {
+                project_id: project_id_of(raw)?,
+            })),
+            "readContext" => Ok(IpcStep::ContextRead { project_id: project_id_of(raw)? }),
+            "removeFromList" => Ok(IpcStep::SettingsWrite(ProjectSettingsWrite::Remove {
+                project_id: project_id_of(raw)?,
+            })),
+            "setPinned" => {
+                let Some(JsonValue::Bool(pinned)) = field(raw, "pinned") else {
+                    return Err(bad_request());
+                };
+                Ok(IpcStep::SettingsWrite(ProjectSettingsWrite::Pin {
+                    project_id: project_id_of(raw)?, pinned: *pinned,
+                }))
+            }
+            "setSettings" => {
+                let patch = field(raw, "settings");
+                let flag = |key| match field(patch, key) {
+                    Some(JsonValue::Bool(value)) => Some(*value),
+                    _ => None,
+                };
+                Ok(IpcStep::SettingsWrite(ProjectSettingsWrite::Switches {
+                    project_id: project_id_of(raw)?,
+                    patch: GuideSettingsPatch {
+                        memory_enabled: flag("memoryEnabled"),
+                        read_agents_files: flag("readAgentsFiles"),
+                    },
+                }))
+            }
             "addFolder" => self.add_folder(deps, sender),
             "createProject" => self.create_project(deps, sender, raw),
             "relocateProject" => self.relocate_project(deps, sender, raw),
@@ -1013,6 +1241,193 @@ impl ProjectIpc {
                 .handle_answered(deps, other, sender, raw)
                 .map(IpcStep::Done),
         }
+    }
+
+    pub fn finish_mutation<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, project_id: &str,
+        result: MutationResult,
+    ) -> Result<IpcStep<P>, Thrown> {
+        if let Some(part) = result.changed {
+            self.announce(&mut *deps.host, project_id, part);
+        }
+        reply(&result.reply).map(IpcStep::Done)
+    }
+
+    pub fn execute_mutation_sync<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, request: MutationRequest,
+    ) -> Result<IpcStep<P>, Thrown> {
+        match request {
+            MutationRequest::SaveInstructions { project_id, text } => {
+                let write = deps.guide.save_instructions(&project_id, &text);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Instructions, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::SaveMemory { project_id, text } => {
+                let write = deps.guide.save_memory(&project_id, &text);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Memory, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::EditMemory { project_id, change, by } => {
+                let author = match by { MemoryEditor::Ai => MemoryAuthor::Ai, MemoryEditor::Person => MemoryAuthor::Person };
+                let write = deps.guide.edit_memory(&project_id, &change, author);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Memory, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::ApplyMemoryConsolidation { project_id, entries } => {
+                let write = deps.guide.apply_memory_consolidation(&project_id, &entries);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Memory, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::UndoMemoryConsolidation { project_id, backup_name } => {
+                let write = deps.guide.undo_memory_consolidation(&project_id, &backup_name);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Memory, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::AddIgnore { project_id, rel_path } => {
+                let write = deps.guide.add_ignore(&project_id, &rel_path);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Settings, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::RemoveIgnore { project_id, rel_path } => {
+                let write = deps.guide.remove_ignore(&project_id, &rel_path);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Settings, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::RenameProject { project_id, name } => {
+                let write = deps.guide.rename_project(&project_id, &name);
+                let result = self.announced(&mut *deps.host, &project_id, ProjectChangedPart::Settings, write)?;
+                reply(&result).map(IpcStep::Done)
+            }
+            MutationRequest::RetryUnwritable { project_id } => reply(&deps.guide.retry_unwritable(&project_id)?).map(IpcStep::Done),
+        }
+    }
+
+    /// Drives a staged write for synchronous probe hosts.
+    pub fn execute_settings_write_sync<P>(
+        guide: &mut dyn ProjectIpcGuide<Pending = P>,
+        write: &ProjectSettingsWrite,
+    ) -> Result<ProjectSettingsWriteResult, Thrown> {
+        match write {
+            ProjectSettingsWrite::Pin { project_id, pinned } => {
+                guide.set_pinned(project_id, *pinned)?;
+                Ok(ProjectSettingsWriteResult::Pinned)
+            }
+            ProjectSettingsWrite::Remove { project_id } => {
+                guide.remove_from_list(project_id)?;
+                Ok(ProjectSettingsWriteResult::Removed)
+            }
+            ProjectSettingsWrite::Switches { project_id, patch } => {
+                guide.set_settings(project_id, &ProjectSettingsPatch {
+                    memory_enabled: patch.memory_enabled,
+                    read_agents_files: patch.read_agents_files,
+                }).map(ProjectSettingsWriteResult::Switches)
+            }
+        }
+    }
+
+    /// Announces and answers only after the worker's write has succeeded.
+    pub fn finish_settings_write<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        write: ProjectSettingsWrite,
+        result: Result<ProjectSettingsWriteResult, Thrown>,
+    ) -> Result<IpcStep<P>, Thrown> {
+        let result = result?;
+        let value = match (&write, result) {
+            (ProjectSettingsWrite::Pin { .. }, ProjectSettingsWriteResult::Pinned) => None,
+            (ProjectSettingsWrite::Remove { .. }, ProjectSettingsWriteResult::Removed) => {
+                deps.host.projects_changed();
+                None
+            }
+            (ProjectSettingsWrite::Switches { .. }, ProjectSettingsWriteResult::Switches(settings)) =>
+                reply(&settings)?,
+            _ => return Err(Thrown("project settings write returned the wrong result".into())),
+        };
+        self.announce(&mut *deps.host, write.project_id(), ProjectChangedPart::Settings);
+        Ok(IpcStep::Done(value))
+    }
+
+    pub fn finish_context_read<P>(result: Result<ProjectContextResult, Thrown>) -> Result<IpcStep<P>, Thrown> {
+        reply(&result?).map(IpcStep::Done)
+    }
+
+    pub fn selection_owner_current<P>(
+        &self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        request: &SelectionRequest,
+    ) -> Result<bool, Thrown> {
+        let window = Self::window_of(&mut *deps.host, request.sender)?;
+        Ok(window == request.window
+            && self.target_of(&mut *deps.host, request.sender, &window)? == request.target)
+    }
+
+    pub fn finish_selection<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        request: SelectionRequest,
+        result: Result<ProjectSelection, Thrown>,
+    ) -> Result<IpcStep<P>, Thrown> {
+        let selection = result?;
+        if matches!(request.target, SelectionTarget::Untitled { .. }) {
+            self.untitled.set(request.sender, request.project_id.clone());
+        }
+        self.chosen.set(request.sender, selection.project_id.clone());
+        if request.project_id.is_none() {
+            self.unwatch(request.sender);
+        }
+        Ok(IpcStep::InitialChat { window: request.window, selection })
+    }
+
+    pub fn finish_initial_chat<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>,
+        window: &ProjectWindow, selection: ProjectSelection,
+    ) -> Result<IpcStep<P>, ChatStoreError> {
+        let selection = Self::with_initial_chat(&mut *deps.chats, window, selection)?;
+        reply(&selection).map(IpcStep::Done).map_err(|error| ChatStoreError {
+            message: error.0, code: None, kind: super::chat_store::ChatStoreErrorKind::Failure,
+        })
+    }
+
+    pub fn finish_list_chats<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, window: &ProjectWindow, project_id: &str,
+    ) -> Result<IpcStep<P>, ChatStoreError> {
+        let chats = deps.chats.list_chats(project_id)?;
+        let legacy = truthy(doc_path_of(window))
+            .and_then(|path| deps.host.legacy_chat_for(path).ok().flatten());
+        reply(&ProjectChatListResult { chats, legacy }).map(IpcStep::Done).map_err(|error| ChatStoreError {
+            message: error.0, code: None, kind: super::chat_store::ChatStoreErrorKind::Failure,
+        })
+    }
+
+    pub fn finish_open_chat<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, sender: i64,
+        chat_ref: &ProjectChatRef, args: &JsonValue,
+    ) -> Result<IpcStep<P>, ChatStoreError> {
+        let opened = deps.chats.open_chat(args)?;
+        if status_of(&opened) == Some("ok") {
+            self.watch(sender, chat_ref);
+        }
+        Ok(IpcStep::Done(Some(opened)))
+    }
+
+    pub fn finish_rename_chat<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, chat_ref: &ProjectChatRef, args: &JsonValue,
+    ) -> Result<IpcStep<P>, ChatStoreError> {
+        let result = deps.chats.rename_chat(args)?;
+        let result = self.announced(&mut *deps.host, &chat_ref.project_id, ProjectChangedPart::Chats, Ok(result))
+            .map_err(|error| ChatStoreError { message: error.0, code: None, kind: super::chat_store::ChatStoreErrorKind::Failure })?;
+        reply(&result).map(IpcStep::Done).map_err(|error| ChatStoreError {
+            message: error.0, code: None, kind: super::chat_store::ChatStoreErrorKind::Failure,
+        })
+    }
+
+    pub fn finish_attach_chat<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, chat_ref: &ProjectChatRef, doc_path: &str,
+    ) -> Result<IpcStep<P>, ChatStoreError> {
+        let result = deps.chats.attach_document(chat_ref, doc_path)?;
+        reply(&result).map(IpcStep::Done).map_err(|error| ChatStoreError {
+            message: error.0, code: None, kind: super::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
     /// What the person chose in the trust prompt an `AskTrust` step asked for
@@ -1032,10 +1447,8 @@ impl ProjectIpc {
                 self.answered(deps, waiting, Some(decision))
             }
             Some(ProjectTrustChoice::View) => {
-                if show_trust_files(&mut *deps.host, &waiting.prompt) {
-                    return Ok(waiting.wait());
-                }
-                Ok(waiting.ask())
+                let (paths,chats)=trust_view_paths(&waiting.prompt);
+                Ok(IpcStep::ViewTrustFiles { paths,chats,pending:AwaitingTrust(Box::new(waiting)) })
             }
         }
     }
@@ -1067,30 +1480,48 @@ impl ProjectIpc {
     ) -> Result<IpcStep<P>, Thrown> {
         let owner = waiting.owner;
         match waiting.resume {
-            Resume::AddFolder(pending) => {
-                let result = deps.guide.resume_add_folder(pending, answer)?;
-                reply(&after_add_folder(&mut *deps.host, result)).map(IpcStep::Done)
-            }
+            Resume::AddFolder(pending) => Ok(IpcStep::AdoptAnswer { owner, pending, answer, create: None }),
             Resume::AdoptFolderHint(pending) => {
                 let result = deps.guide.resume_adopt_folder_hint(pending, answer)?;
                 reply(&after_add_folder(&mut *deps.host, result)).map(IpcStep::Done)
             }
+            Resume::HintAdopt { window, doc_path, pending } =>
+                Ok(IpcStep::HintAnswer { owner, window, doc_path, pending, answer }),
             Resume::CreateProject {
                 request,
                 second,
                 pending,
-            } => {
-                let created = deps.guide.resume_create_project(pending, answer)?;
-                Self::created(deps, owner, request, second, created)
-            }
+            } => Ok(IpcStep::AdoptAnswer { owner, pending, answer, create: Some((request, second)) }),
             Resume::DecideTrust {
                 project_id,
                 pending,
-            } => {
-                let write = deps.guide.resume_decide_trust(pending, answer);
-                self.decided(&mut *deps.host, &project_id, write)
-            }
+            } => Ok(IpcStep::TrustAnswer { project_id, pending, answer }),
         }
+    }
+
+    pub fn finish_adopt_answer<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        owner: i64,
+        create: Option<(NewProjectRequest, bool)>,
+        result: Result<AddFolderResult, Thrown>,
+    ) -> Result<IpcStep<P>, Thrown> {
+        let result = result?;
+        match create {
+            None => reply(&after_add_folder(&mut *deps.host, result)).map(IpcStep::Done),
+            Some((request, second)) => Self::created(deps, owner, request, second, result.into()),
+        }
+    }
+
+    pub fn finish_create_answer<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        owner: i64,
+        request: NewProjectRequest,
+        second: bool,
+        result: Result<CreateProjectResult, Thrown>,
+    ) -> Result<IpcStep<P>, Thrown> {
+        Self::created(deps, owner, request, second, result?)
     }
 
     /// The handlers that answer at once
@@ -1105,34 +1536,6 @@ impl ProjectIpc {
             // ---- list ----
             "listProjects" => reply(&deps.guide.list_projects()?),
             "getDefaultParentFolder" => reply(&deps.guide.get_default_parent_folder()?),
-            "removeFromList" => {
-                let project_id = project_id_of(raw)?;
-                deps.guide.remove_from_list(&project_id)?;
-                deps.host.projects_changed();
-                self.announce(&mut *deps.host, &project_id, ProjectChangedPart::Settings);
-                Ok(None)
-            }
-            "setPinned" => {
-                let Some(JsonValue::Bool(pinned)) = field(raw, "pinned") else {
-                    return Err(bad_request());
-                };
-                let project_id = project_id_of(raw)?;
-                deps.guide.set_pinned(&project_id, *pinned)?;
-                self.announce(&mut *deps.host, &project_id, ProjectChangedPart::Settings);
-                Ok(None)
-            }
-            "renameProject" => {
-                let project_id = project_id_of(raw)?;
-                let write = text_of(raw, "name")
-                    .and_then(|name| deps.guide.rename_project(&project_id, name));
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Settings,
-                    write,
-                )?;
-                reply(&result)
-            }
             "openInFileManager" => {
                 let root = deps.guide.project_root(&project_id_of(raw)?);
                 if let Some(root) = truthy(root.as_deref()) {
@@ -1140,37 +1543,8 @@ impl ProjectIpc {
                 }
                 Ok(None)
             }
-            "retryUnwritable" => reply(&deps.guide.retry_unwritable(&project_id_of(raw)?)?),
-
-            // ---- selection for this window's document ----
-            "getSelection" => {
-                let win = Self::window_of(&mut *deps.host, sender)?;
-                let target = self.target_of(&mut *deps.host, sender, &win)?;
-                let selection = deps.guide.get_selection(&target)?;
-                self.chosen.set(sender, selection.project_id.clone());
-                reply(&Self::with_initial_chat(&mut *deps.chats, &win, selection)?)
-            }
-            "setSelection" => {
-                let win = Self::window_of(&mut *deps.host, sender)?;
-                let project_id = match field(raw, "projectId") {
-                    Some(JsonValue::Null) => None,
-                    Some(JsonValue::String(id)) if is_valid_project_id(id) => Some(id.clone()),
-                    _ => return Err(bad_request()),
-                };
-                let target = self.target_of(&mut *deps.host, sender, &win)?;
-                let selection = deps.guide.set_selection(&target, project_id.as_deref())?;
-                if matches!(target, SelectionTarget::Untitled { .. }) {
-                    self.untitled.set(sender, project_id.clone());
-                }
-                self.chosen.set(sender, selection.project_id.clone());
-                if project_id.is_none() {
-                    self.unwatch(sender);
-                }
-                reply(&Self::with_initial_chat(&mut *deps.chats, &win, selection)?)
-            }
 
             // ---- one send ----
-            "readContext" => reply(&deps.guide.read_context(&project_id_of(raw)?)?),
             "openScope" => reply(
                 &deps
                     .tools
@@ -1190,202 +1564,9 @@ impl ProjectIpc {
             ),
             "search" => reply(&deps.tools.search(sender, raw.unwrap_or(&JsonValue::Null))?),
             "read" => reply(&deps.tools.read(sender, raw.unwrap_or(&JsonValue::Null))?),
-            "remember" => self.remember(deps, sender, raw),
-
-            // ---- memory ----
-            "editMemory" => {
-                let project_id = project_id_of(raw)?;
-                let change = memory_op_of(field(raw, "change"))?;
-                let write = deps
-                    .guide
-                    .edit_memory(&project_id, &change, MemoryAuthor::Person);
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Memory,
-                    write,
-                )?;
-                reply(&result)
-            }
-            "saveMemory" => {
-                let project_id = project_id_of(raw)?;
-                let write =
-                    text_of(raw, "text").and_then(|text| deps.guide.save_memory(&project_id, text));
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Memory,
-                    write,
-                )?;
-                reply(&result)
-            }
-            "applyMemoryConsolidation" => {
-                let Some(JsonValue::Array(entries)) = field(raw, "entries") else {
-                    return Err(bad_request());
-                };
-                let project_id = project_id_of(raw)?;
-                let write = deps.guide.apply_memory_consolidation(&project_id, entries);
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Memory,
-                    write,
-                )?;
-                reply(&result)
-            }
-            "undoMemoryConsolidation" => {
-                let project_id = project_id_of(raw)?;
-                let write = text_of(raw, "backupName").and_then(|backup_name| {
-                    deps.guide
-                        .undo_memory_consolidation(&project_id, backup_name)
-                });
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Memory,
-                    write,
-                )?;
-                reply(&result)
-            }
-
-            // ---- chats ----
-            "listChats" => {
-                let project_id = project_id_of(raw)?;
-                let win = Self::window_of(&mut *deps.host, sender)?;
-                let chats = deps.chats.list_chats(&project_id)?;
-                let mut legacy = None;
-                if let Some(doc_path) = truthy(doc_path_of(&win)) {
-                    legacy = deps.host.legacy_chat_for(doc_path).ok().flatten();
-                }
-                reply(&ProjectChatListResult { chats, legacy })
-            }
-            "newChat" => {
-                let project_id = project_id_of(raw)?;
-                let chat_id = deps.chats.new_chat(&project_id)?;
-                self.watch(
-                    sender,
-                    &ProjectChatRef {
-                        project_id,
-                        chat_id: chat_id.clone(),
-                    },
-                );
-                Ok(Some(serde_json::json!({ "chatId": chat_id })))
-            }
-            "openChat" => {
-                let chat_ref = chat_ref_of(raw)?;
-                let mut args = JsObject::new();
-                args.set("projectId", JsonValue::String(chat_ref.project_id.clone()));
-                args.set("chatId", JsonValue::String(chat_ref.chat_id.clone()));
-                if let Some(JsonValue::Number(limit)) = field(raw, "limit") {
-                    args.set("limit", JsonValue::Number(*limit));
-                }
-                let opened = deps.chats.open_chat(&JsonValue::Object(args))?;
-                if status_of(&opened) == Some("ok") {
-                    self.watch(sender, &chat_ref);
-                }
-                Ok(Some(opened))
-            }
-            "appendChat" => self.append_chat(deps, sender, raw),
-            "renameChat" => {
-                let chat_ref = chat_ref_of(raw)?;
-                let write = text_of(raw, "title").and_then(|title| {
-                    let mut args = JsObject::new();
-                    args.set("projectId", JsonValue::String(chat_ref.project_id.clone()));
-                    args.set("chatId", JsonValue::String(chat_ref.chat_id.clone()));
-                    args.set("title", JsonValue::String(title.to_owned()));
-                    deps.chats.rename_chat(&JsonValue::Object(args))
-                });
-                let result = self.announced(
-                    &mut *deps.host,
-                    &chat_ref.project_id,
-                    ProjectChangedPart::Chats,
-                    write,
-                )?;
-                reply(&result)
-            }
-            "deleteChat" => {
-                let chat_ref = chat_ref_of(raw)?;
-                let result = deps.chats.delete_chat(&chat_ref)?;
-                let key = key_of(&chat_ref.project_id, &chat_ref.chat_id);
-                if result == ProjectWriteResult::Ok && self.watching.get(&sender) == Some(&key) {
-                    self.unwatch(sender);
-                }
-                if result == ProjectWriteResult::Ok {
-                    self.announce(
-                        &mut *deps.host,
-                        &chat_ref.project_id,
-                        ProjectChangedPart::Chats,
-                    );
-                }
-                reply(&result)
-            }
-            "attachDocument" => {
-                let chat_ref = chat_ref_of(raw)?;
-                // the path is this window's saved document, as the shell knows it
-                let win = Self::window_of(&mut *deps.host, sender)?;
-                let Some(doc_path) = truthy(doc_path_of(&win)) else {
-                    return reply(&ProjectWriteResult::Ok);
-                };
-                reply(&deps.chats.attach_document(&chat_ref, doc_path)?)
-            }
-            "openDocumentChat" => self.open_document_chat(deps, raw),
-
             // ---- project screen ----
             "getProjectDetail" => reply(&deps.guide.get_project_detail(&project_id_of(raw)?)?),
             "getSettings" => reply(&deps.guide.get_settings(&project_id_of(raw)?)?),
-            "setSettings" => {
-                let patch = field(raw, "settings");
-                let settings = ProjectSettingsPatch {
-                    memory_enabled: match field(patch, "memoryEnabled") {
-                        Some(JsonValue::Bool(flag)) => Some(*flag),
-                        _ => None,
-                    },
-                    read_agents_files: match field(patch, "readAgentsFiles") {
-                        Some(JsonValue::Bool(flag)) => Some(*flag),
-                        _ => None,
-                    },
-                };
-                let project_id = project_id_of(raw)?;
-                let result = deps.guide.set_settings(&project_id, &settings)?;
-                self.announce(&mut *deps.host, &project_id, ProjectChangedPart::Settings);
-                reply(&result)
-            }
-            "saveInstructions" => {
-                let project_id = project_id_of(raw)?;
-                let write = text_of(raw, "text")
-                    .and_then(|text| deps.guide.save_instructions(&project_id, text));
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Instructions,
-                    write,
-                )?;
-                reply(&result)
-            }
-            "addIgnore" => {
-                let project_id = project_id_of(raw)?;
-                let write = text_of(raw, "relPath")
-                    .and_then(|rel_path| deps.guide.add_ignore(&project_id, rel_path));
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Settings,
-                    write,
-                )?;
-                reply(&result)
-            }
-            "removeIgnore" => {
-                let project_id = project_id_of(raw)?;
-                let write = text_of(raw, "relPath")
-                    .and_then(|rel_path| deps.guide.remove_ignore(&project_id, rel_path));
-                let result = self.announced(
-                    &mut *deps.host,
-                    &project_id,
-                    ProjectChangedPart::Settings,
-                    write,
-                )?;
-                reply(&result)
-            }
             "listIgnoredFiles" => {
                 let visibility = deps.guide.ai_visibility(&project_id_of(raw)?)?;
                 let Some(visibility) = visibility else {
@@ -1431,8 +1612,7 @@ impl ProjectIpc {
         let Some(folder) = truthy(folder.as_deref()) else {
             return reply(&cancelled_add()).map(IpcStep::Done);
         };
-        let step = deps.guide.add_folder(folder)?;
-        Self::folder_step(deps, sender, step, Resume::AddFolder)
+        Ok(IpcStep::AdoptStart { owner: sender, folder: folder.to_owned(), relocate_id: None })
     }
 
     fn relocate_project<P>(
@@ -1448,8 +1628,7 @@ impl ProjectIpc {
         let Some(folder) = truthy(folder.as_deref()) else {
             return reply(&cancelled_add()).map(IpcStep::Done);
         };
-        let step = deps.guide.relocate_project(&project_id, folder)?;
-        Self::folder_step(deps, sender, step, Resume::AddFolder)
+        Ok(IpcStep::AdoptStart { owner: sender, folder: folder.to_owned(), relocate_id: Some(project_id) })
     }
 
     fn adopt_folder_hint<P>(
@@ -1464,8 +1643,62 @@ impl ProjectIpc {
             })
             .map(IpcStep::Done);
         };
+        Ok(IpcStep::HintStart { owner: sender, window: win.clone(), doc_path: doc_path.to_owned() })
+    }
+
+    pub fn continue_hint_start<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, owner: i64, doc_path: &str,
+    ) -> Result<IpcStep<P>, Thrown> {
         let step = deps.guide.adopt_folder_hint(doc_path)?;
-        Self::folder_step(deps, sender, step, Resume::AdoptFolderHint)
+        Self::folder_step(deps, owner, step, Resume::AdoptFolderHint)
+    }
+
+    pub fn prompt_hint<P>(
+        owner: i64, window: ProjectWindow, doc_path: String, prompt: Box<ProjectTrustPrompt>, pending: P,
+    ) -> IpcStep<P> {
+        Waiting { owner, prompt, resume: Resume::HintAdopt { window, doc_path, pending } }.ask()
+    }
+
+    pub fn finish_hint_adoption<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, owner: i64, window: ProjectWindow,
+        doc_path: String, result: Result<AddFolderResult, Thrown>,
+    ) -> Result<IpcStep<P>, Thrown> {
+        let result = result?;
+        if matches!(result, AddFolderResult::Added { .. }) {
+            Ok(IpcStep::HintSelection { owner, window, doc_path, result })
+        } else {
+            reply(&after_add_folder(&mut *deps.host, result)).map(IpcStep::Done)
+        }
+    }
+
+    pub fn hint_owner_current<P>(
+        &self, deps: &mut ProjectIpcDeps<'_, P>, owner: i64, window: &ProjectWindow,
+    ) -> bool {
+        deps.host.window_of(owner).as_ref() == Some(window)
+    }
+
+    pub fn finish_hint_selection<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, result: AddFolderResult,
+    ) -> Result<IpcStep<P>, Thrown> {
+        reply(&after_add_folder(&mut *deps.host, result)).map(IpcStep::Done)
+    }
+
+    pub fn continue_adopt_start<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        owner: i64,
+        folder: &str,
+        relocate_id: Option<&str>,
+    ) -> Result<IpcStep<P>, Thrown> {
+        let step = match relocate_id {
+            Some(id) => deps.guide.relocate_project(id, folder)?,
+            None => deps.guide.add_folder(folder)?,
+        };
+        Self::folder_step(deps, owner, step, Resume::AddFolder)
+    }
+
+    pub fn prompt_adopt<P>(owner: i64, prompt: Box<ProjectTrustPrompt>, pending: P) -> IpcStep<P> {
+        Waiting { owner, prompt, resume: Resume::AddFolder(pending) }.ask()
     }
 
     /// `afterAdd(await guide.<addFolder>(...))`: the answer of the guide's
@@ -1491,7 +1724,7 @@ impl ProjectIpc {
 
     fn decide_trust<P>(
         &mut self,
-        deps: &mut ProjectIpcDeps<'_, P>,
+        _deps: &mut ProjectIpcDeps<'_, P>,
         sender: i64,
         raw: Option<&JsonValue>,
     ) -> Result<IpcStep<P>, Thrown> {
@@ -1501,6 +1734,20 @@ impl ProjectIpc {
             _ => return Err(bad_request()),
         };
         let project_id = project_id_of(raw)?;
+        if decision == ProjectTrustDecision::Without {
+            return Ok(IpcStep::TrustWithout { project_id, sender });
+        }
+        Ok(IpcStep::TrustUse { project_id, sender })
+    }
+
+    /// Continue the trust state machine after preparing its request.
+    pub fn continue_decide_trust<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        sender: i64,
+        project_id: ProjectId,
+        decision: ProjectTrustDecision,
+    ) -> Result<IpcStep<P>, Thrown> {
         let step = deps.guide.decide_trust(&project_id, decision);
         match step {
             Ok(GuideStep::AskTrust { prompt, pending }) => Ok(Waiting {
@@ -1517,6 +1764,15 @@ impl ProjectIpc {
         }
     }
 
+    pub fn prompt_decide_trust<P>(
+        sender: i64,
+        project_id: ProjectId,
+        prompt: Box<ProjectTrustPrompt>,
+        pending: P,
+    ) -> IpcStep<P> {
+        Waiting { owner: sender, prompt, resume: Resume::DecideTrust { project_id, pending } }.ask()
+    }
+
     /// `announced(projectId, 'settings', guide.decideTrust(...))`
     fn decided<P>(
         &mut self,
@@ -1526,6 +1782,15 @@ impl ProjectIpc {
     ) -> Result<IpcStep<P>, Thrown> {
         let result = self.announced(host, project_id, ProjectChangedPart::Settings, write)?;
         reply(&result).map(IpcStep::Done)
+    }
+
+    pub fn finish_trust_answer<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        project_id: &str,
+        result: Result<DecideTrustResult, Thrown>,
+    ) -> Result<IpcStep<P>, Thrown> {
+        self.decided(&mut *deps.host, project_id, result)
     }
 
     fn create_project<P>(
@@ -1558,8 +1823,7 @@ impl ProjectIpc {
             };
             request.parent_dir = Some(parent.to_owned());
         }
-        let step = deps.guide.create_project(&request)?;
-        Self::create_step(deps, sender, request, false, step)
+        Ok(IpcStep::CreateStart { owner: sender, request, second: false })
     }
 
     /// The answer of `guide.createProject(...)`, or the trust prompt it
@@ -1586,64 +1850,54 @@ impl ProjectIpc {
         }
     }
 
+    pub fn continue_create_start<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, owner: i64,
+        request: NewProjectRequest, second: bool,
+    ) -> Result<IpcStep<P>, Thrown> {
+        let step = deps.guide.create_project(&request)?;
+        Self::create_step(deps, owner, request, second, step)
+    }
+
+    pub fn prompt_create<P>(
+        owner: i64, request: NewProjectRequest, second: bool,
+        prompt: Box<ProjectTrustPrompt>, pending: P,
+    ) -> IpcStep<P> {
+        Waiting { owner, prompt, resume: Resume::CreateProject { request, second, pending } }.ask()
+    }
+
     /// What `createProject` does with an answer of `guide.createProject(...)`:
     /// a folder that exists is added after the person confirmed it (the call
     /// again with `useExisting`), anything else is the answer.
     fn created<P>(
         deps: &mut ProjectIpcDeps<'_, P>,
         owner: i64,
-        mut request: NewProjectRequest,
+        request: NewProjectRequest,
         second: bool,
         created: CreateProjectResult,
     ) -> Result<IpcStep<P>, Thrown> {
         if !second && let CreateProjectResult::Exists { folder_path } = &created {
-            if !deps.dialogs.confirm_use_existing(owner, folder_path)? {
-                return reply(&cancelled_create()).map(IpcStep::Done);
-            }
-            request.use_existing = Some(true);
-            let step = deps.guide.create_project(&request)?;
-            return Self::create_step(deps, owner, request, true, step);
+            return Ok(IpcStep::ConfirmExisting { owner, request, folder_path: folder_path.clone() });
         }
         reply(&after_add_created(&mut *deps.host, created)).map(IpcStep::Done)
     }
 
-    fn remember<P>(
-        &mut self,
-        deps: &mut ProjectIpcDeps<'_, P>,
-        sender: i64,
-        raw: Option<&JsonValue>,
-    ) -> Result<Reply, Thrown> {
-        // the project comes from the run scope this window holds, never from the request
-        let project_id = if field(raw, "scope").is_none() {
-            None
-        } else {
-            deps.scopes
-                .project_of(sender, raw.unwrap_or(&JsonValue::Null))
-                .ok()
-                .flatten()
-        };
-        let Some(project_id) = truthy(project_id.as_deref()) else {
-            return Err(Thrown(PROJECT_SCOPE_UNKNOWN.to_owned()));
-        };
-        let change = memory_op_of(field(raw, "change"))?;
-        let write = deps
-            .guide
-            .edit_memory(project_id, &change, MemoryAuthor::Ai);
-        let result = self.announced(
-            &mut *deps.host,
-            project_id,
-            ProjectChangedPart::Memory,
-            write,
-        )?;
-        reply(&result)
+    pub fn continue_confirm_existing<P>(
+        deps: &mut ProjectIpcDeps<'_, P>, owner: i64, mut request: NewProjectRequest, folder_path: &str,
+    ) -> Result<IpcStep<P>, Thrown> {
+        if !deps.dialogs.confirm_use_existing(owner, folder_path)? {
+            return reply(&cancelled_create()).map(IpcStep::Done);
+        }
+        request.use_existing = Some(true);
+        Ok(IpcStep::CreateStart { owner, request, second: true })
     }
 
-    fn append_chat<P>(
+
+    fn prepare_append_chat<P>(
         &mut self,
         deps: &mut ProjectIpcDeps<'_, P>,
         sender: i64,
         raw: Option<&JsonValue>,
-    ) -> Result<Reply, Thrown> {
+    ) -> Result<IpcStep<P>, Thrown> {
         let chat_ref = chat_ref_of(raw)?;
         let win = Self::window_of(&mut *deps.host, sender)?;
         let mut args = match raw {
@@ -1660,10 +1914,47 @@ impl ProjectIpc {
             doc_path: doc_path_of(&win).map(str::to_owned),
             key: Some(JsonValue::Number(sender as f64)),
         };
-        let result = deps.chats.append(&JsonValue::Object(args), &poster);
-        // the store's listener ran inside the call, thrown or not
+        Ok(IpcStep::ChatAppend(ChatAppendRequest {
+            sender, window: win, args: JsonValue::Object(args), poster, chat_ref,
+        }))
+    }
+
+    pub fn chat_append_owner_current<P>(
+        &self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        request: &ChatAppendRequest,
+    ) -> Result<bool, Thrown> {
+        Ok(Self::window_of(&mut *deps.host, request.sender)? == request.window)
+    }
+
+    pub fn finish_append_chat<P>(
+        &mut self,
+        deps: &mut ProjectIpcDeps<'_, P>,
+        request: ChatAppendRequest,
+    ) -> Result<IpcAppendStep<P>, ChatStoreError> {
+        let result = deps.chats.begin_append(&request.args, &request.poster);
         self.forward_appended(deps);
-        let result = result?;
+        self.finish_append_progress(deps, request, result?)
+    }
+
+    pub fn resume_append_chat<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, request: ChatAppendRequest,
+        continuation: AppendContinuation,
+    ) -> Result<IpcAppendStep<P>, ChatStoreError> {
+        let result = deps.chats.resume_append(continuation)?;
+        self.finish_append_progress(deps, request, result)
+    }
+
+    fn finish_append_progress<P>(
+        &mut self, deps: &mut ProjectIpcDeps<'_, P>, request: ChatAppendRequest,
+        progress: IpcAppendProgress,
+    ) -> Result<IpcAppendStep<P>, ChatStoreError> {
+        let result = match progress {
+            IpcAppendProgress::Done(result) => result,
+            IpcAppendProgress::NeedInstallId(continuation) =>
+                return Ok(IpcAppendStep::NeedInstallId { request, continuation }),
+        };
+        let ChatAppendRequest { sender, chat_ref, .. } = request;
         self.watch(sender, &chat_ref);
         // a saved message moves the chat in the lists (title, time, last editor)
         if status_of(&result) == Some("saved") {
@@ -1673,41 +1964,24 @@ impl ProjectIpc {
                 ProjectChangedPart::Chats,
             );
         }
-        Ok(Some(result))
+        Ok(IpcAppendStep::Done(IpcStep::Done(Some(result))))
     }
 
-    fn open_document_chat<P>(
+    pub fn finish_open_document_chat<P>(
         &mut self,
         deps: &mut ProjectIpcDeps<'_, P>,
-        raw: Option<&JsonValue>,
-    ) -> Result<Reply, Thrown> {
-        let chat_ref = chat_ref_of(raw)?;
-        let Some(info) = deps.chats.chat_info(&chat_ref)? else {
-            return Ok(None);
+        chat_ref: &ProjectChatRef,
+    ) -> Result<IpcStep<P>, ChatStoreError> {
+        let Some(info) = deps.chats.chat_info(chat_ref)? else {
+            return Ok(IpcStep::Done(None));
         };
-        let mut target: Option<i64> = None;
-        let latest = info.documents.last().map(String::as_str);
-        let root = deps.guide.project_root(&chat_ref.project_id);
-        if let (Some(latest), Some(root)) = (truthy(latest), truthy(root.as_deref()))
-            && info.last_editor != ProjectEditor::Home
-            && let Some(path) = document_path_in(root, latest, &self.platform)
-        {
-            target = deps.host.open_document(&path);
-        }
-        // no document (or one that cannot be opened), or a chat last used at home
-        if target.is_none() {
-            target = deps.host.show_home();
-        }
-        if let Some(target) = target {
-            let payload = serde_json::to_value(&chat_ref).unwrap_or(Value::Null);
-            self.deliver(
-                &mut *deps.host,
-                target,
-                ProjectFolderEventMethod::OnOpenChat,
-                payload,
-            );
-        }
-        Ok(None)
+        let latest=info.documents.last().map(String::as_str);
+        let root=deps.guide.project_root(&chat_ref.project_id);
+        let path=match (truthy(latest),truthy(root.as_deref())) {
+            (Some(latest),Some(root)) if info.last_editor!=ProjectEditor::Home=>document_path_in(root,latest,&self.platform),
+            _=>None,
+        };
+        Ok(IpcStep::OpenDocumentChatTarget { path,chat_ref:chat_ref.clone() })
     }
 }
 
@@ -1814,5 +2088,32 @@ impl PageReturnWatch {
     /// what the promise resolved with; `None` while it is pending
     pub fn outcome(&self) -> Option<bool> {
         self.outcome
+    }
+}
+
+#[cfg(test)]
+mod trust_view_tests {
+    use super::*;
+
+    fn waiting()->AwaitingTrust<()> {
+        AwaitingTrust(Box::new(Waiting {
+            owner:7,
+            prompt:Box::new(ProjectTrustPrompt {
+                project_id:"project".into(),name:"Project".into(),folder_path:"/project".into(),
+                instructions:Some("instructions".into()),memory:None,agents:Some("agents".into()),claude:None,
+                foreign_chats:Vec::new(),
+            }),
+            resume:Resume::DecideTrust { project_id:"project".into(),pending:() },
+        }))
+    }
+
+    #[test]
+    fn view_waits_only_after_an_actual_document_opens() {
+        let pending=waiting();
+        let (paths,chats)=pending.view_targets();
+        assert_eq!(paths.len(),2);
+        assert!(chats.is_none());
+        assert!(matches!(pending.finish_view(false),IpcStep::AskTrust { owner:7,.. }));
+        assert!(matches!(waiting().finish_view(true),IpcStep::WaitForReturn { owner:7,.. }));
     }
 }

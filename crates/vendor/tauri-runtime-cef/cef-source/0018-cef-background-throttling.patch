@@ -1,0 +1,281 @@
+# Private pinned source patch; source adaptation and native behavior are unverified.
+# Adapted from Electron v43.8.3, allow_disabling_blink_scheduler_throttling_per_renderview.patch
+# and disable_hidden.patch (MIT). Chromium b859317bf11f6be47f9b7799ec690a0a42a1fb33;
+# CEF 14c5a089e8452874cb1a556dc3fde26ed2d87723; Chromium/CEF BSD licenses apply.
+# Copyright (c) Electron contributors
+# Copyright (c) 2013-2020 GitHub Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+# LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+# WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+diff --git a/include/internal/cef_types.h b/include/internal/cef_types.h
+--- a/include/internal/cef_types.h
++++ b/include/internal/cef_types.h
+@@ -736,6 +736,14 @@
+   /// CefBrowserHost::SetAxViewportCollapse.
+   ///
+   cef_state_t ax_viewport_collapse;
++#endif
++#if CEF_API_ADDED(15401)
++  ///
++  /// Background throttling for this browser. DEFAULT and ENABLED preserve
++  /// Chromium behavior; DISABLED keeps hidden pages scheduled and painting.
++  /// The native window itself remains hidden.
++  ///
++  cef_state_t background_throttling;
+ #endif
+ } cef_browser_settings_t;
+ 
+diff --git a/include/internal/cef_types_wrappers.h b/include/internal/cef_types_wrappers.h
+--- a/include/internal/cef_types_wrappers.h
++++ b/include/internal/cef_types_wrappers.h
+@@ -582,6 +582,11 @@
+ 
+     target->chrome_status_bubble = src->chrome_status_bubble;
+     target->chrome_zoom_bubble = src->chrome_zoom_bubble;
++#if CEF_API_ADDED(15401)
++    target->background_throttling = CEF_MEMBER_EXISTS(src, background_throttling)
++                                        ? src->background_throttling
++                                        : STATE_DEFAULT;
++#endif
+ #if CEF_API_ADDED(CEF_EXPERIMENTAL)
+     if (CEF_MEMBER_EXISTS(src, ax_viewport_collapse)) {
+       target->ax_viewport_collapse = src->ax_viewport_collapse;
+diff --git a/libcef/browser/browser_contents_delegate.cc b/libcef/browser/browser_contents_delegate.cc
+--- a/libcef/browser/browser_contents_delegate.cc
++++ b/libcef/browser/browser_contents_delegate.cc
+@@ -14,6 +14,7 @@
+ #include "chrome/common/chrome_result_codes.h"
+ #include "components/input/native_web_keyboard_event.h"
+ #include "content/browser/renderer_host/render_widget_host_impl.h"
++#include "content/browser/renderer_host/render_widget_host_view_base.h"
+ #include "content/public/browser/focused_node_details.h"
+ #include "content/public/browser/keyboard_event_processing_result.h"
+ #include "content/public/browser/navigation_entry.h"
+@@ -95,6 +96,7 @@
+     // Make sure MaybeCreateFrame is called at least one time.
+     // Create the frame representation before OnAfterCreated is called for a new
+     // browser.
++    ApplyBackgroundThrottling(new_contents->GetPrimaryMainFrame());
+     browser_info_->MaybeCreateFrame(new_contents->GetPrimaryMainFrame());
+ 
+     // Make sure RenderWidgetCreated is called at least one time. This Observer
+@@ -332,8 +334,36 @@
+   browser_info_->GetMainFrame()->UpdateDraggableRegions(std::move(cef_regions));
+ }
+ 
++void CefBrowserContentsDelegate::ApplyBackgroundThrottling(
++    content::RenderFrameHost* frame) {
++#if CEF_API_ADDED(15401)
++  auto browser = browser_info_->browser();
++  if (!browser || !frame ||
++      browser->settings().background_throttling != STATE_DISABLED) {
++    return;
++  }
++  frame->GetRenderViewHost()->SetSchedulerThrottling(false);
++  auto* view = frame->GetView();
++  if (!view)
++    return;
++  auto* widget = content::RenderWidgetHostImpl::From(view->GetRenderWidgetHost());
++  if (widget) {
++    widget->disable_hidden_ = true;
++    if (widget->IsHidden()) {
++      auto* view_base = static_cast<content::RenderWidgetHostViewBase*>(view);
++      if (view_base->IsRenderWidgetHostViewChildFrame())
++        widget->WasShown({});
++      else
++        view_base->ShowWithVisibility(
++            content::PageVisibilityState::kHiddenButPainting);
++    }
++  }
++#endif
++}
++
+ void CefBrowserContentsDelegate::RenderFrameCreated(
+     content::RenderFrameHost* render_frame_host) {
++  ApplyBackgroundThrottling(render_frame_host);
+   browser_info_->MaybeCreateFrame(render_frame_host);
+   if (render_frame_host->GetParent() == nullptr) {
+     auto render_view_host = render_frame_host->GetRenderViewHost();
+@@ -384,6 +414,7 @@
+ }
+ 
+ void CefBrowserContentsDelegate::RenderViewReady() {
++  ApplyBackgroundThrottling(web_contents()->GetPrimaryMainFrame());
+   platform_delegate()->RenderViewReady();
+ 
+   if (auto browser_host = browser_info_->browser()) {
+diff --git a/libcef/browser/browser_contents_delegate.h b/libcef/browser/browser_contents_delegate.h
+--- a/libcef/browser/browser_contents_delegate.h
++++ b/libcef/browser/browser_contents_delegate.h
+@@ -192,6 +192,8 @@
+   void OnTitleChange(const std::u16string& title);
+   void OnFullscreenModeChange(bool fullscreen);
+ 
++  void ApplyBackgroundThrottling(content::RenderFrameHost* frame);
++
+   void OnStateChanged(State state_changed);
+ 
+   scoped_refptr<CefBrowserInfo> browser_info_;
+diff --git a/tests/ceftests/browser_settings_unittest.cc b/tests/ceftests/browser_settings_unittest.cc
+--- a/tests/ceftests/browser_settings_unittest.cc
++++ b/tests/ceftests/browser_settings_unittest.cc
+@@ -4,6 +4,7 @@
+ // can be found in the LICENSE file.
+ 
+ #include "include/base/cef_callback.h"
++#include "include/cef_render_handler.h"
+ #include "include/cef_parser.h"
+ #include "include/wrapper/cef_closure_task.h"
+ #include "tests/ceftests/test_handler.h"
+@@ -113,3 +114,135 @@
+   handler->ExecuteTest();
+   ReleaseAndWaitForDestructor(handler);
+ }
++
++#if CEF_API_ADDED(15401)
++TEST(BrowserSettingsTest, BackgroundThrottlingCopiesAndOldStructDefaults) {
++  CefBrowserSettings defaults;
++  EXPECT_EQ(STATE_DEFAULT, defaults.background_throttling);
++
++  CefBrowserSettings disabled;
++  disabled.background_throttling = STATE_DISABLED;
++  CefBrowserSettings copied = disabled;
++  EXPECT_EQ(STATE_DISABLED, copied.background_throttling);
++
++  CefBrowserSettings enabled;
++  enabled.background_throttling = STATE_ENABLED;
++  copied = enabled;
++  EXPECT_EQ(STATE_ENABLED, copied.background_throttling);
++
++  cef_browser_settings_t old_settings{};
++  old_settings.size = offsetof(cef_browser_settings_t, background_throttling);
++  old_settings.background_throttling = STATE_DISABLED;
++  copied = old_settings;
++  EXPECT_EQ(STATE_DEFAULT, copied.background_throttling);
++}
++#endif
++
++#if CEF_API_ADDED(15401)
++namespace {
++class HiddenPolicyIsolationTest : public TestHandler, public CefRenderHandler {
++ public:
++  explicit HiddenPolicyIsolationTest(bool native_window = false) : native_window_(native_window) {}
++  void RunTest() override {
++    AddResource("https://tests/disabled",
++                "<script>document.title='disabled:'+document.visibilityState</script>", "text/html");
++    AddResource("https://other.test/replacement",
++                "<script>document.title='replacement:'+document.visibilityState</script>", "text/html");
++    AddResource("https://tests/default",
++                "<script>document.title='default:'+document.visibilityState</script>", "text/html");
++    CefBrowserSettings settings;
++    settings.background_throttling = STATE_DISABLED;
++    StartBrowser("https://tests/disabled", settings);
++    SetTestTimeout(10000);
++  }
++  CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
++  void GetViewRect(CefRefPtr<CefBrowser>, CefRect& rect) override {
++    rect = CefRect(0, 0, 100, 100);
++  }
++  void OnPaint(CefRefPtr<CefBrowser>, PaintElementType, const RectList&,
++               const void*, int, int) override {}
++  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
++    TestHandler::OnAfterCreated(browser);
++    if (!disabled_) disabled_ = browser;
++    else default_ = browser;
++#if defined(OS_WIN)
++    if (native_window_)
++      EXPECT_FALSE(::IsWindowVisible(browser->GetHost()->GetWindowHandle()));
++    else
++#endif
++      browser->GetHost()->WasHidden(true);
++  }
++  void OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString& title) override {
++    const auto value = title.ToString();
++    if (value.rfind("disabled:", 0) == 0) {
++      EXPECT_EQ(disabled_->GetIdentifier(), browser->GetIdentifier());
++      EXPECT_EQ("disabled:visible", value);
++      if (!navigated_) {
++        navigated_ = true;
++        browser->GetMainFrame()->LoadURL("https://other.test/replacement");
++      }
++    } else if (value.rfind("replacement:", 0) == 0) {
++      EXPECT_EQ(disabled_->GetIdentifier(), browser->GetIdentifier());
++      EXPECT_EQ("replacement:visible", value);
++      if (!started_default_) {
++        started_default_ = true;
++        CefBrowserSettings settings;
++        StartBrowser("https://tests/default", settings);
++      }
++    } else if (value.rfind("default:", 0) == 0 && !closed_disabled_) {
++      ASSERT_TRUE(default_);
++      EXPECT_NE(disabled_->GetIdentifier(), default_->GetIdentifier());
++      EXPECT_EQ(default_->GetIdentifier(), browser->GetIdentifier());
++      EXPECT_EQ("default:hidden", value);
++      closed_disabled_ = true;
++      disabled_->GetHost()->CloseBrowser(true);
++      default_->GetMainFrame()->ExecuteJavaScript(
++          "document.title='after:'+document.visibilityState", "", 0);
++    } else if (value.rfind("after:", 0) == 0) {
++      EXPECT_EQ(default_->GetIdentifier(), browser->GetIdentifier());
++      EXPECT_EQ("after:hidden", value);
++      completed_ = true;
++      DestroyTest();
++    }
++  }
++  void DestroyTest() override {
++    EXPECT_TRUE(completed_);
++    TestHandler::DestroyTest();
++  }
++ private:
++  void StartBrowser(const CefString& url, const CefBrowserSettings& settings) {
++    CefWindowInfo info;
++#if defined(OS_WIN)
++    if (native_window_) {
++      info.SetAsPopup(kNullWindowHandle, "hidden-policy-test");
++      info.style &= ~WS_VISIBLE;
++      info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
++    } else
++#endif
++      info.SetAsWindowless(kNullWindowHandle);
++    EXPECT_TRUE(CefBrowserHost::CreateBrowser(info, this, url, settings, nullptr, nullptr));
++  }
++  CefRefPtr<CefBrowser> disabled_;
++  CefRefPtr<CefBrowser> default_;
++  const bool native_window_;
++  bool navigated_ = false;
++  bool started_default_ = false;
++  bool closed_disabled_ = false;
++  bool completed_ = false;
++  IMPLEMENT_REFCOUNTING(HiddenPolicyIsolationTest);
++};
++}  // namespace
++
++TEST(BrowserSettingsTest, HiddenPolicyIsPerBrowserAndSurvivesOtherClose) {
++  CefRefPtr<HiddenPolicyIsolationTest> handler = new HiddenPolicyIsolationTest();
++  handler->ExecuteTest();
++  ReleaseAndWaitForDestructor(handler);
++}
++#if defined(OS_WIN)
++TEST(BrowserSettingsTest, HiddenNativeWindowsKeepPoliciesIndependent) {
++  CefRefPtr<HiddenPolicyIsolationTest> handler = new HiddenPolicyIsolationTest(true);
++  handler->ExecuteTest();
++  ReleaseAndWaitForDestructor(handler);
++}
++#endif
++#endif

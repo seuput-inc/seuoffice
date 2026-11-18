@@ -64,9 +64,18 @@ pub enum PageEvent {
 /// run on the core thread, in the order it was sent.
 pub trait PageEvents: Send + Sync {
     fn send(&self, event: PageEvent);
+    /// Deliver only if the guard still holds when the core thread receives it.
+    fn send_if(&self, event: PageEvent, guard: Box<dyn FnOnce() -> bool + Send>);
 }
 
 pub trait ProjectsHost: Send + Sync {
+    /// Run a short effect while the captured native owner and original request remain valid.
+    fn with_request_owner(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        effect: &mut dyn FnMut() -> Result<(), shell_contract::IpcError>,
+    ) -> Result<(), shell_contract::IpcError>;
     /// Called once at registration: where to send [`PageEvent`]s
     fn attach(&self, events: Arc<dyn PageEvents>);
     /// `trackProjectContents(contents)`: from now on report this view's
@@ -127,17 +136,13 @@ pub trait ProjectFiles: Send + Sync {
         options: &mut IndexSearchOptions<'_>,
     ) -> Result<IndexSearchResult, Thrown>;
     /// `fileIndexStore.pathsIndexedAsOnDisk(paths)`
-    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Vec<String>;
+    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Result<Vec<String>, Thrown>;
     /// `readKnowledgeFilePage(filePath, offset)`: the file parsed to text, one
-    /// page of it. Waits for the parser: it runs on the core thread's call.
+    /// page of it. Called on a worker because parsing and dirty checks can wait.
     fn read_page(&self, file_path: &str, offset: f64) -> Result<KbReadPage, Thrown>;
-    /// `setOpenFilesSource(...)`'s list: `[...tabManager.openDocuments(),
-    /// ...detachedOpenDocuments()]` with each document's dirty state. A call
-    /// that cannot say is an `Err`: every file then counts as open with
-    /// unsaved changes. It answers at once: the dirty state of a document the
-    /// renderer owns is what the editors last reported, never a question to
-    /// the renderer from the core thread.
-    fn open_files(&self) -> Result<Vec<OpenFileState>, OpenFilesSourceFailed>;
+    /// Query current open documents and dirty state. The callback runs on the
+    /// core thread after any renderer dirty checks have completed.
+    fn open_files_async(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>);
 }
 
 pub type ProjectFilesHost = Arc<dyn ProjectFiles>;

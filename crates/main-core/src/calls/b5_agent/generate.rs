@@ -45,7 +45,7 @@ use crate::shell::generate::generate_api::{
 };
 use crate::shell::generate::generate_window::{
     GenerateText, GenerateWindow, GenerateWindowHost, GenerateWindowOptions, IPC_HANDLE_CHANNELS,
-    NewDocumentOpener, OpenDialogResult, OpenInit, WindowId, WindowStep,
+    NewDocumentOpener, OpenDialogResult, OpenInit, WindowId, WindowNeed, WindowOpen, WindowOutcome, WindowStep,
 };
 use crate::shell::generate::limits::{
     LONG_MATERIAL_NOTICE_CHARS, MAX_IMAGE_MATERIAL_BYTES, MAX_MATERIAL_BYTES, MAX_MATERIALS,
@@ -66,7 +66,7 @@ use crate::shell::generate::request::{
     validate_generate_request,
 };
 use crate::shell::generate::session::{
-    GenerateSession, GenerateSessionHost, MaterialRef, SaveStep, SessionAnswer, SessionNeed,
+    GenerateSession, GenerateSessionHost, MaterialRef, SessionStep, SessionOutcome, SessionAnswer, SessionNeed,
 };
 use crate::shell::generate::title_bar::{GENERATE_TITLE_BAR_HEIGHT, generate_title_bar_overlay};
 use crate::shell::renderer_disposal::Failure;
@@ -853,18 +853,17 @@ struct OpenFake {
 impl OpenMaterialsDeps for OpenFake {
     type Contents = FakeContents;
 
-    fn web_contents_for(&mut self, tab_id: &str) -> Option<FakeContents> {
+    fn web_contents_for(&mut self, tab_id: &str) -> Result<Option<FakeContents>, Failure> {
         log_line(&self.log, vec![text("webContentsFor"), text(tab_id)]);
-        let spec = self.scenario.get("contents")?.get(tab_id)?;
-        Some(FakeContents {
+        let Some(spec) = self.scenario.get("contents").and_then(|contents| contents.get(tab_id)) else {
+            return Ok(None);
+        };
+        Ok(Some(FakeContents {
             id: field_f64(spec, "id").unwrap_or(f64::NAN),
             destroyed: field_bool(spec, "destroyed"),
-        })
+        }))
     }
 
-    fn reveal(&mut self, tab_id: &str) {
-        log_line(&self.log, vec![text("reveal"), text(tab_id)]);
-    }
 
     fn has_save(&self, kind: DocumentTabKind) -> bool {
         list(self.scenario.get("save"))
@@ -885,6 +884,10 @@ impl OpenMaterialsDeps for OpenFake {
 }
 
 impl OpenFake {
+    fn reveal(&mut self, tab_id: &str) -> Result<(), Failure> {
+        log_line(&self.log, vec![text("reveal"), text(tab_id)]);
+        Ok(())
+    }
     /// the open tabs of the scenario: the snapshot the shell would hand over
     fn tabs(&self) -> Vec<OpenDocumentTab> {
         list(self.scenario.get("tabs"))
@@ -966,23 +969,32 @@ fn open_call(args: &[Value], cx: &mut Context) -> Answer {
                 SaveAction::Show => text("show"),
             }
         } else if let Some(path) = field_str(step, "saveMaterial") {
-            let mut step = save_material_begin(&mut deps, &tabs, path);
-            let outcome = loop {
-                match step {
-                    SaveMaterialStep::Done(outcome) => break outcome,
-                    SaveMaterialStep::Need(need, run) => {
-                        let answer = deps.carry_out(&need);
-                        step = SaveMaterialStep::Done(run.resume(&mut deps, answer));
-                    }
+            match save_material_begin(&mut deps, &tabs, path) {
+                Err(Failure(message)) => error_value(&message),
+                Ok(mut step) => {
+                    let outcome = loop {
+                        match step {
+                            SaveMaterialStep::Done(outcome) => break Ok(outcome),
+                            SaveMaterialStep::Reveal(tab) => {
+                                break deps.reveal(&tab).map(|()| SaveOutcome::Shown);
+                            }
+                            SaveMaterialStep::Need(need, run) => {
+                                let answer = deps.carry_out(&need);
+                                step = SaveMaterialStep::Done(run.resume(&mut deps, answer));
+                            }
+                        }
+                    };
+                    outcome.map_or_else(|Failure(message)| error_value(&message), |outcome| text(outcome.as_str()))
                 }
-            };
-            text(outcome.as_str())
+            }
         } else if let Some(id) = field_f64(step, "pathOfUntitled") {
-            path_of_untitled(&mut deps, &tabs, id).map_or(Value::Null, Value::from)
+            path_of_untitled(&mut deps, &tabs, id)
+                .map_or_else(|Failure(message)| error_value(&message), |path| path.map_or(Value::Null, Value::from))
         } else {
             let id = field_f64(step, "showUntitled").unwrap_or(f64::NAN);
-            show_untitled(&mut deps, &tabs, id);
-            Value::Null
+            unit(show_untitled(&mut deps, &tabs, id).and_then(|tab| {
+                tab.map_or(Ok(()), |tab| deps.reveal(&tab))
+            }))
         });
     }
     cx.logs.extend(log.take());
@@ -1020,13 +1032,6 @@ impl SessionFake {
         };
         Some(items[seen.min(items.len() - 1)].clone())
     }
-}
-
-impl GenerateSessionHost for SessionFake {
-    fn lang(&self) -> Lang {
-        lang_of(&self.scenario)
-    }
-
     fn inspect(&mut self, _snap: &OpenSnapshot<'_>, path: &str) -> Result<MaterialStatus, Failure> {
         log_line(&self.log, vec![text("inspect"), text(path)]);
         match self.nth("inspect", "inspect", path) {
@@ -1034,70 +1039,6 @@ impl GenerateSessionHost for SessionFake {
             _ => Err(Failure(format!("inspect failed: {path}"))),
         }
     }
-
-    fn path_of_untitled(
-        &mut self,
-        _snap: &OpenSnapshot<'_>,
-        web_contents_id: f64,
-    ) -> Option<String> {
-        log_line(
-            &self.log,
-            vec![text("pathOfUntitled"), num(web_contents_id)],
-        );
-        let key = number_to_string(web_contents_id);
-        // a source that rejects is `catch(() => null)` in the TypeScript
-        match self.nth("pathOfUntitled", "untitled", &key) {
-            Some(Value::String(path)) => Some(path),
-            _ => None,
-        }
-    }
-
-    fn save_action_for(&mut self, _snap: &OpenSnapshot<'_>, path: &str) -> SaveAction {
-        log_line(&self.log, vec![text("saveActionFor"), text(path)]);
-        match self
-            .scenario
-            .get("saveActionFor")
-            .and_then(|t| t.get(path))
-            .and_then(Value::as_str)
-        {
-            Some("save") => SaveAction::Save,
-            _ => SaveAction::Show,
-        }
-    }
-
-    fn save_material_begin(&mut self, _snap: &OpenSnapshot<'_>, path: &str) -> SaveMaterialStep {
-        log_line(&self.log, vec![text("saveMaterial"), text(path)]);
-        SaveMaterialStep::Done(
-            match self
-                .scenario
-                .get("saveMaterial")
-                .and_then(|t| t.get(path))
-                .and_then(Value::as_str)
-            {
-                Some("shown") => SaveOutcome::Shown,
-                Some("failed" | "throws") => SaveOutcome::Failed,
-                _ => SaveOutcome::Saved,
-            },
-        )
-    }
-
-    fn save_material_resume(&mut self, _run: SaveMaterialRun, _answer: SaveAnswer) -> SaveOutcome {
-        SaveOutcome::Failed
-    }
-
-    fn show_untitled(
-        &mut self,
-        _snap: &OpenSnapshot<'_>,
-        web_contents_id: f64,
-    ) -> Result<(), Failure> {
-        log_line(&self.log, vec![text("showUntitled"), num(web_contents_id)]);
-        if field_bool(&self.scenario, "showUntitledThrows") {
-            Err(Failure("showUntitled failed".to_owned()))
-        } else {
-            Ok(())
-        }
-    }
-
     fn open_target_tab(
         &mut self,
         handoff: &crate::packages::electron_utils::generate_handoff::GenerateHandoff,
@@ -1109,11 +1050,6 @@ impl GenerateSessionHost for SessionFake {
             Ok(())
         }
     }
-
-    fn can_convert(&self) -> bool {
-        field_bool(&self.scenario, "canConvert")
-    }
-
     fn convert(
         &mut self,
         kind: ConvertKind,
@@ -1138,7 +1074,6 @@ impl GenerateSessionHost for SessionFake {
             )))
         }
     }
-
     fn open_converted_tab(&mut self, doc: &ConvertedDocument) -> Result<(), Failure> {
         log_line(&self.log, vec![text("openConvertedTab"), doc_view(doc)]);
         if field_str(&self.scenario, "openConverted") == Some("throws") {
@@ -1147,11 +1082,6 @@ impl GenerateSessionHost for SessionFake {
             Ok(())
         }
     }
-
-    fn has_redaction_notice(&self) -> bool {
-        field_bool(&self.scenario, "hasNotice")
-    }
-
     fn redaction_notice(&mut self, path: &str) -> Result<bool, Failure> {
         log_line(&self.log, vec![text("redactionNotice"), text(path)]);
         match self.scenario.get("notice").and_then(|t| t.get(path)) {
@@ -1160,14 +1090,98 @@ impl GenerateSessionHost for SessionFake {
             _ => Ok(false),
         }
     }
-
-    fn push(&mut self, state: &GenerateWindowState) {
-        log_line(&self.log, vec![text("push"), to_value(state)]);
-    }
-
-    fn close(&mut self) {
+    fn close(&mut self) -> Result<(), Failure> {
         log_line(&self.log, vec![text("close")]);
+        Ok(())
     }
+}
+
+impl GenerateSessionHost for SessionFake {
+    fn lang(&self) -> Lang {
+        lang_of(&self.scenario)
+    }
+
+
+    fn path_of_untitled(
+        &mut self,
+        _snap: &OpenSnapshot<'_>,
+        web_contents_id: f64,
+    ) -> Result<Option<String>, Failure> {
+        log_line(
+            &self.log,
+            vec![text("pathOfUntitled"), num(web_contents_id)],
+        );
+        let key = number_to_string(web_contents_id);
+        // a source that rejects is `catch(() => null)` in the TypeScript
+        Ok(match self.nth("pathOfUntitled", "untitled", &key) {
+            Some(Value::String(path)) => Some(path),
+            _ => None,
+        })
+    }
+
+    fn save_action_for(&mut self, _snap: &OpenSnapshot<'_>, path: &str) -> SaveAction {
+        log_line(&self.log, vec![text("saveActionFor"), text(path)]);
+        match self
+            .scenario
+            .get("saveActionFor")
+            .and_then(|t| t.get(path))
+            .and_then(Value::as_str)
+        {
+            Some("save") => SaveAction::Save,
+            _ => SaveAction::Show,
+        }
+    }
+
+    fn save_material_begin(&mut self, _snap: &OpenSnapshot<'_>, path: &str) -> Result<SaveMaterialStep, Failure> {
+        log_line(&self.log, vec![text("saveMaterial"), text(path)]);
+        Ok(SaveMaterialStep::Done(
+            match self
+                .scenario
+                .get("saveMaterial")
+                .and_then(|t| t.get(path))
+                .and_then(Value::as_str)
+            {
+                Some("shown") => SaveOutcome::Shown,
+                Some("failed" | "throws") => SaveOutcome::Failed,
+                _ => SaveOutcome::Saved,
+            },
+        ))
+    }
+
+    fn save_material_resume(&mut self, _run: SaveMaterialRun, _answer: SaveAnswer) -> SaveOutcome {
+        SaveOutcome::Failed
+    }
+
+    fn show_untitled(
+        &mut self,
+        _snap: &OpenSnapshot<'_>,
+        web_contents_id: f64,
+    ) -> Result<Option<String>, Failure> {
+        log_line(&self.log, vec![text("showUntitled"), num(web_contents_id)]);
+        if field_bool(&self.scenario, "showUntitledThrows") {
+            Err(Failure("showUntitled failed".to_owned()))
+        } else {
+            Ok(Some(jscompat::number_to_string(web_contents_id)))
+        }
+    }
+
+
+    fn can_convert(&self) -> bool {
+        field_bool(&self.scenario, "canConvert")
+    }
+
+
+
+    fn has_redaction_notice(&self) -> bool {
+        field_bool(&self.scenario, "hasNotice")
+    }
+
+
+    fn push(&mut self, state: &GenerateWindowState) -> Result<(), Failure> {
+        log_line(&self.log, vec![text("push"), to_value(state)]);
+        Ok(())
+    }
+
 
     fn new_id(&mut self) -> String {
         if self.ids.is_empty() {
@@ -1198,6 +1212,57 @@ fn unit(result: Result<(), Failure>) -> Value {
     }
 }
 
+fn outcome_value(result: Result<SessionOutcome, Failure>) -> Value {
+    match result {
+        Ok(SessionOutcome::Unit) => Value::Null,
+        Ok(SessionOutcome::Made(made)) => Value::Bool(made),
+        Err(Failure(message)) => error_value(&message),
+    }
+}
+
+fn carry_session(
+    session: &mut GenerateSession, host: &mut SessionFake, snap: &OpenSnapshot<'_>, mut step: SessionStep,
+) -> Result<SessionOutcome, Failure> {
+    loop {
+        step = match step {
+            SessionStep::Done(result) => return result,
+            SessionStep::Need(need, run) => {
+                let answer = match need {
+                    SessionNeed::Reveal(_) => SessionAnswer::Revealed(Ok(())),
+                    SessionNeed::Inspect(path) => SessionAnswer::Inspected(host.inspect(snap, &path)),
+                    SessionNeed::Notice(path) => SessionAnswer::Noticed(host.redaction_notice(&path)),
+                    SessionNeed::Convert { kind, path } => SessionAnswer::Converted(host.convert(kind, &path)),
+                    SessionNeed::OpenTarget { handoff, token } => match host.open_target_tab(&handoff) {
+                        Err(error) => SessionAnswer::OpenFailed(error),
+                        Ok(()) => {
+                            let outcome = session.complete_committed_open(run, token.commit())?;
+                            host.close()?;
+                            return Ok(outcome);
+                        }
+                    },
+                    SessionNeed::OpenConverted { document, token } => match host.open_converted_tab(&document) {
+                        Err(error) => SessionAnswer::OpenFailed(error),
+                        Ok(()) => {
+                            let outcome = session.complete_committed_open(run, token.commit())?;
+                            host.close()?;
+                            return Ok(outcome);
+                        }
+                    },
+                    SessionNeed::Sleep(ms) => {
+                        log_line(&host.log, vec![text("sleep"), num(ms)]);
+                        SessionAnswer::Slept
+                    }
+                    SessionNeed::Save(need) => {
+                        let mut open = OpenFake { scenario: host.scenario.clone(), log: Rc::clone(&host.log) };
+                        SessionAnswer::Save(open.carry_out(&need))
+                    }
+                };
+                session.resume(host, snap, run, answer)
+            }
+        };
+    }
+}
+
 fn session_call(args: &[Value], cx: &mut Context) -> Answer {
     let scenario = arg(args, 0).cloned().unwrap_or(Value::Null);
     let log = new_log();
@@ -1225,45 +1290,26 @@ fn session_call(args: &[Value], cx: &mut Context) -> Answer {
         results.push(if step.get("state").is_some() {
             to_value(&session.state(&host))
         } else if let Some(reset) = step.get("reset") {
-            unit(session.reset(
-                &mut host,
-                &snap,
-                &refs_of(reset.get("refs")),
-                ai_kind_of(reset.get("kind")),
-            ))
+            let next = session.reset(&mut host, &snap, &refs_of(reset.get("refs")), ai_kind_of(reset.get("kind")));
+            outcome_value(carry_session(&mut session, &mut host, &snap, next))
         } else if step.get("refresh").is_some() {
-            unit(session.refresh(&mut host, &snap))
+            let next = session.refresh(&mut host, &snap);
+            outcome_value(carry_session(&mut session, &mut host, &snap, next))
         } else if let Some(kind) = step.get("setKind") {
-            session.set_kind(&mut host, step_arg(kind));
-            Value::Null
+            unit(session.set_kind(&mut host, step_arg(kind)))
         } else if let Some(kind) = step.get("setConvert") {
-            session.set_convert(&mut host, step_arg(kind));
-            Value::Null
+            unit(session.set_convert(&mut host, step_arg(kind)))
         } else if let Some(paths) = step.get("addPaths") {
-            unit(session.add_paths(
-                &mut host,
-                &snap,
-                paths.as_array().map_or(&[][..], Vec::as_slice),
-            ))
+            let next = session.add_paths(&mut host, &snap, paths.as_array().map_or(&[][..], Vec::as_slice));
+            outcome_value(carry_session(&mut session, &mut host, &snap, next))
         } else if let Some(key) = step.get("remove") {
-            session.remove(&mut host, step_arg(key));
-            Value::Null
+            unit(session.remove(&mut host, step_arg(key)))
         } else if let Some(key) = step.get("save") {
-            let mut step = session.save_begin(&mut host, &snap, step_arg(key));
-            loop {
-                match step {
-                    SaveStep::Done(result) => break unit(result),
-                    SaveStep::Need(need, run) => {
-                        // the fake host never starts an editor save: only the recheck timer waits
-                        if let SessionNeed::Sleep(ms) = need {
-                            log_line(&log, vec![text("sleep"), num(ms)]);
-                        }
-                        step = session.save_resume(&mut host, &snap, run, SessionAnswer::Slept);
-                    }
-                }
-            }
+            let next = session.save_begin(&mut host, &snap, step_arg(key));
+            outcome_value(carry_session(&mut session, &mut host, &snap, next))
         } else if let Some(body) = step.get("make") {
-            Value::Bool(session.make(&mut host, &snap, step_arg(body)))
+            let next = session.make(&mut host, &snap, step_arg(body));
+            outcome_value(carry_session(&mut session, &mut host, &snap, next))
         } else {
             Value::Bool(session.is_closed())
         });
@@ -1294,7 +1340,6 @@ struct WindowFake {
     now_ms: f64,
     open: OpenFake,
     engine: Scripted,
-    notice_cache: NoticeCache,
     windows: Vec<WinState>,
     /// `nativeTheme.on` listeners, one slot per registration
     watchers: Vec<Option<WindowId>>,
@@ -1312,6 +1357,58 @@ impl WindowFake {
 
     fn line(&self, id: WindowId, what: &str) {
         log_line(&self.log, vec![text("win"), num(id as f64), text(what)]);
+    }
+    fn open_target_tab(
+        &mut self,
+        handoff: &crate::packages::electron_utils::generate_handoff::GenerateHandoff,
+        opener: Option<&NewDocumentOpener>,
+    ) -> Result<(), Failure> {
+        log_line(
+            &self.log,
+            vec![
+                text("openTargetTab"),
+                with_fixed_id(to_value(handoff)),
+                opener_value(opener),
+            ],
+        );
+        if field_str(&self.scenario, "openTarget") == Some("throws") {
+            Err(Failure("no tab could open".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+    fn open_converted_tab(
+        &mut self,
+        doc: &ConvertedDocument,
+        opener: Option<&NewDocumentOpener>,
+    ) -> Result<(), Failure> {
+        log_line(
+            &self.log,
+            vec![
+                text("openConvertedTab"),
+                with_fixed_id(doc_view(doc)),
+                opener_value(opener),
+            ],
+        );
+        if field_str(&self.scenario, "openConverted") == Some("throws") {
+            Err(Failure("no tab could open".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+    fn show_open_dialog(&mut self, window: WindowId, options: &Value) -> OpenDialogResult {
+        log_line(
+            &self.log,
+            vec![text("dialog"), num(window as f64), options.clone()],
+        );
+        let dialog = self.scenario.get("dialog");
+        OpenDialogResult {
+            canceled: dialog
+                .is_none_or(|d| d.get("canceled").and_then(Value::as_bool).unwrap_or(true)),
+            file_paths: dialog
+                .map(|d| list(d.get("filePaths")).to_vec())
+                .unwrap_or_default(),
+        }
     }
 }
 
@@ -1336,13 +1433,10 @@ fn with_fixed_id(mut value: Value) -> Value {
 impl OpenMaterialsDeps for WindowFake {
     type Contents = FakeContents;
 
-    fn web_contents_for(&mut self, tab_id: &str) -> Option<FakeContents> {
+    fn web_contents_for(&mut self, tab_id: &str) -> Result<Option<FakeContents>, Failure> {
         self.open.web_contents_for(tab_id)
     }
 
-    fn reveal(&mut self, tab_id: &str) {
-        self.open.reveal(tab_id);
-    }
 
     fn has_save(&self, kind: DocumentTabKind) -> bool {
         self.open.has_save(kind)
@@ -1393,8 +1487,8 @@ impl InspectHost for WindowFake {
 }
 
 impl GenerateWindowHost for WindowFake {
-    fn parent_window(&mut self) -> Option<WindowId> {
-        field_str(&self.scenario, "parent").map(|_| SHELL_WINDOW)
+    fn parent_window(&mut self) -> Result<Option<WindowId>, Failure> {
+        Ok(field_str(&self.scenario, "parent").map(|_| SHELL_WINDOW))
     }
 
     fn lang(&self) -> Lang {
@@ -1407,49 +1501,11 @@ impl GenerateWindowHost for WindowFake {
             .to_owned()
     }
 
-    fn open_target_tab(
-        &mut self,
-        handoff: &crate::packages::electron_utils::generate_handoff::GenerateHandoff,
-        opener: Option<&NewDocumentOpener>,
-    ) -> Result<(), Failure> {
-        log_line(
-            &self.log,
-            vec![
-                text("openTargetTab"),
-                with_fixed_id(to_value(handoff)),
-                opener_value(opener),
-            ],
-        );
-        if field_str(&self.scenario, "openTarget") == Some("throws") {
-            Err(Failure("no tab could open".to_owned()))
-        } else {
-            Ok(())
-        }
-    }
 
     fn can_open_converted(&self) -> bool {
         field_bool(&self.scenario, "canConvert")
     }
 
-    fn open_converted_tab(
-        &mut self,
-        doc: &ConvertedDocument,
-        opener: Option<&NewDocumentOpener>,
-    ) -> Result<(), Failure> {
-        log_line(
-            &self.log,
-            vec![
-                text("openConvertedTab"),
-                with_fixed_id(doc_view(doc)),
-                opener_value(opener),
-            ],
-        );
-        if field_str(&self.scenario, "openConverted") == Some("throws") {
-            Err(Failure("no tab could open".to_owned()))
-        } else {
-            Ok(())
-        }
-    }
 
     fn starred_group_paths(&mut self, group: &str) -> Vec<String> {
         log_line(&self.log, vec![text("starredGroupPaths"), text(group)]);
@@ -1459,21 +1515,7 @@ impl GenerateWindowHost for WindowFake {
             .collect()
     }
 
-    fn convert_source(
-        &mut self,
-        kind: ConvertKind,
-        path: &str,
-        untitled: &str,
-    ) -> crate::shell::generate::convert::ConvertResult {
-        convert_source(&mut self.engine, kind, path, untitled)
-    }
 
-    fn markdown_redaction_notice(&mut self, path: &str) -> bool {
-        let mut host = RealNotice {
-            engine: &mut self.engine,
-        };
-        markdown_redaction_notice(&mut host, &mut self.notice_cache, path)
-    }
 
     fn new_id(&mut self) -> String {
         "ID".to_owned()
@@ -1503,8 +1545,12 @@ impl GenerateWindowHost for WindowFake {
             .to_owned()
     }
 
-    fn should_use_dark_colors(&self) -> bool {
-        field_bool(&self.scenario, "dark")
+    fn should_use_dark_colors(&self) -> Result<bool, Failure> {
+        if field_bool(&self.scenario, "darkThrows") {
+            Err(Failure("native theme failed".into()))
+        } else {
+            Ok(field_bool(&self.scenario, "dark"))
+        }
     }
 
     fn is_darwin(&self) -> bool {
@@ -1515,7 +1561,10 @@ impl GenerateWindowHost for WindowFake {
         field_str(&self.scenario, "rendererUrl").map(str::to_owned)
     }
 
-    fn create_window(&mut self, options: &GenerateWindowOptions) -> WindowId {
+    fn create_window(&mut self, options: &GenerateWindowOptions) -> Result<WindowId, Failure> {
+        if field_bool(&self.scenario, "createThrows") {
+            return Err(Failure("native constructor failed".into()));
+        }
         let n = self
             .windows
             .iter()
@@ -1531,48 +1580,58 @@ impl GenerateWindowHost for WindowFake {
             &self.log,
             vec![text("new BrowserWindow"), num(n as f64), to_value(options)],
         );
-        n
+        Ok(n)
     }
 
-    fn window_is_destroyed(&self, window: WindowId) -> bool {
-        self.win(window).is_some_and(|w| w.destroyed)
+    fn window_is_destroyed(&self, window: WindowId) -> Result<bool, Failure> {
+        Ok(self.win(window).is_some_and(|w| w.destroyed))
     }
 
-    fn window_is_minimized(&self, window: WindowId) -> bool {
-        self.win(window).is_some_and(|w| w.minimized)
+    fn window_is_minimized(&self, window: WindowId) -> Result<bool, Failure> {
+        if field_bool(&self.scenario, "minimizedThrows") {
+            Err(Failure("native minimized query failed".into()))
+        } else {
+            Ok(self.win(window).is_some_and(|w| w.minimized))
+        }
     }
 
-    fn window_restore(&mut self, window: WindowId) {
+    fn window_restore(&mut self, window: WindowId) -> Result<(), Failure> {
         self.line(window, "restore");
+        Ok(())
     }
 
-    fn window_show(&mut self, window: WindowId) {
+    fn window_show(&mut self, window: WindowId) -> Result<(), Failure> {
         self.line(window, "show");
+        Ok(())
     }
 
-    fn window_focus(&mut self, window: WindowId) {
+    fn window_focus(&mut self, window: WindowId) -> Result<(), Failure> {
         self.line(window, "focus");
+        Ok(())
     }
 
-    fn window_close(&mut self, window: WindowId) {
+    fn window_close(&mut self, window: WindowId) -> Result<(), Failure> {
         self.line(window, "close");
+        Ok(())
     }
 
-    fn window_remove_menu(&mut self, window: WindowId) {
+    fn window_remove_menu(&mut self, window: WindowId) -> Result<(), Failure> {
         self.line(window, "removeMenu");
+        Ok(())
     }
 
-    fn window_web_contents_id(&self, window: WindowId) -> f64 {
-        match window {
+    fn window_web_contents_id(&self, window: WindowId) -> Result<f64, Failure> {
+        Ok(match window {
             SHELL_WINDOW => 100.0,
             EXPLICIT_LIVE => 150.0,
             EXPLICIT_DESTROYED => 151.0,
             n => 200.0 + n as f64,
-        }
+        })
     }
 
-    fn window_send_state(&mut self, _window: WindowId, state: &GenerateWindowState) {
+    fn window_send_state(&mut self, _window: WindowId, state: &GenerateWindowState) -> Result<(), Failure> {
         self.sends.push(to_value(state));
+        Ok(())
     }
 
     fn window_set_title_bar_overlay(
@@ -1596,15 +1655,16 @@ impl GenerateWindowHost for WindowFake {
         }
     }
 
-    fn watch_theme(&mut self, window: WindowId) {
+    fn watch_theme(&mut self, window: WindowId) -> Result<(), Failure> {
         self.watchers.push(Some(window));
         log_line(
             &self.log,
             vec![text("nativeTheme.on"), num(self.watchers.len() as f64)],
         );
+        Ok(())
     }
 
-    fn unwatch_theme(&mut self, window: WindowId) {
+    fn unwatch_theme(&mut self, window: WindowId) -> Result<(), Failure> {
         if let Some(at) = self.watchers.iter().position(|w| *w == Some(window)) {
             self.watchers[at] = None;
             log_line(
@@ -1612,37 +1672,27 @@ impl GenerateWindowHost for WindowFake {
                 vec![text("nativeTheme.off"), num((at + 1) as f64)],
             );
         }
+        Ok(())
     }
 
-    fn window_load_url(&mut self, window: WindowId, url: &str) {
+    fn window_load_url(&mut self, window: WindowId, url: &str) -> Result<(), Failure> {
         log_line(
             &self.log,
             vec![text("win"), num(window as f64), text("loadURL"), text(url)],
         );
+        Ok(())
     }
 
-    fn window_load_generate_page(&mut self, window: WindowId) {
+    fn window_load_generate_page(&mut self, window: WindowId) -> Result<(), Failure> {
         self.line(window, "loadFile");
+        Ok(())
     }
 
-    fn open_external(&mut self, url: &str) {
+    fn open_external(&mut self, url: &str) -> Result<(), Failure> {
         log_line(&self.log, vec![text("openExternal"), text(url)]);
+        Ok(())
     }
 
-    fn show_open_dialog(&mut self, window: WindowId, options: &Value) -> OpenDialogResult {
-        log_line(
-            &self.log,
-            vec![text("dialog"), num(window as f64), options.clone()],
-        );
-        let dialog = self.scenario.get("dialog");
-        OpenDialogResult {
-            canceled: dialog
-                .is_none_or(|d| d.get("canceled").and_then(Value::as_bool).unwrap_or(true)),
-            file_paths: dialog
-                .map(|d| list(d.get("filePaths")).to_vec())
-                .unwrap_or_default(),
-        }
-    }
 }
 
 fn opener_of(value: Option<&Value>) -> Option<NewDocumentOpener> {
@@ -1664,6 +1714,52 @@ fn explicit_parent(value: Option<&Value>) -> Option<WindowId> {
     }
 }
 
+fn carry_window(
+    window: &mut GenerateWindow, host: &mut WindowFake, snap: &OpenSnapshot<'_>, mut step: WindowStep,
+) -> Result<WindowOutcome, Failure> {
+    loop {
+        step = match step {
+            WindowStep::Done(result) => return result,
+            WindowStep::Need(need, run) => {
+                let answer = match need {
+                    WindowNeed::Save(need) => SessionAnswer::Save(host.open.carry_out(&need)),
+                    WindowNeed::Reveal(tab) => SessionAnswer::Revealed(host.open.reveal(&tab)),
+                    WindowNeed::Sleep(_) => SessionAnswer::Slept,
+                    WindowNeed::Inspect(job) => SessionAnswer::Inspected(job.execute(host)),
+                    WindowNeed::Notice(job) => SessionAnswer::Noticed(Ok(job.execute(&mut RealNotice { engine: &mut host.engine }))),
+                    WindowNeed::Convert(job) => SessionAnswer::Converted(Ok(job.execute(&mut host.engine))),
+                    WindowNeed::OpenDialog { window, options } => SessionAnswer::Dialog(Ok(host.show_open_dialog(window, &options))),
+                    WindowNeed::OpenTarget { handoff, opener, token, window: original } => match host.open_target_tab(&handoff, opener.as_ref()) {
+                        Err(error) => SessionAnswer::OpenFailed(error),
+                        Ok(()) => {
+                            let committed = window.complete_committed_open(run, token.commit())?;
+                            assert_eq!(committed.cleanup_window, original);
+                            if !host.window_is_destroyed(original)? { host.window_close(original)?; }
+                            return Ok(committed.outcome);
+                        }
+                    },
+                    WindowNeed::OpenConverted { document, opener, token, window: original } => match host.open_converted_tab(&document, opener.as_ref()) {
+                        Err(error) => SessionAnswer::OpenFailed(error),
+                        Ok(()) => {
+                            let committed = window.complete_committed_open(run, token.commit())?;
+                            assert_eq!(committed.cleanup_window, original);
+                            if !host.window_is_destroyed(original)? { host.window_close(original)?; }
+                            return Ok(committed.outcome);
+                        }
+                    },
+                };
+                window.resume(host, snap, run, answer)
+            }
+        };
+    }
+}
+
+fn finish_window_open(window: &mut GenerateWindow, host: &mut WindowFake, snap: &OpenSnapshot<'_>, opened: WindowOpen) -> Value {
+    // The original setup result does not await its floating refresh.
+    let _ = carry_window(window, host, snap, opened.background);
+    unit(opened.result)
+}
+
 fn window_call(args: &[Value], cx: &mut Context) -> Answer {
     let scenario = arg(args, 0).cloned().unwrap_or(Value::Null);
     let log = new_log();
@@ -1674,7 +1770,6 @@ fn window_call(args: &[Value], cx: &mut Context) -> Answer {
             log: Rc::clone(&log),
         },
         engine: Scripted::new(scenario.get("engine"), &log),
-        notice_cache: NoticeCache::new(),
         windows: vec![
             WinState {
                 id: SHELL_WINDOW,
@@ -1722,7 +1817,7 @@ fn window_call(args: &[Value], cx: &mut Context) -> Answer {
                 0.0
             })
         } else if let Some(open) = step.get("open") {
-            unit(window.open_generate_window(
+            let opened = window.open_generate_window(
                 &mut host,
                 &snap,
                 OpenInit {
@@ -1731,34 +1826,36 @@ fn window_call(args: &[Value], cx: &mut Context) -> Answer {
                     parent: explicit_parent(open.get("parent")),
                     opener: opener_of(open.get("opener")),
                 },
-            ))
+            );
+            finish_window_open(&mut window, &mut host, &snap, opened)
         } else if let Some(open) = step.get("openPaths") {
             let paths = list(open.get("paths"))
                 .iter()
                 .filter_map(|p| p.as_str().map(str::to_owned))
                 .collect();
-            unit(window.open_generate_window_with_paths(
+            let opened = window.open_generate_window_with_paths(
                 &mut host,
                 &snap,
                 paths,
                 explicit_parent(open.get("parent")),
-            ))
+            );
+            finish_window_open(&mut window, &mut host, &snap, opened)
         } else if let Some(open) = step.get("openDocument") {
-            unit(window.open_generate_window_for_document(
+            let opened = window.open_generate_window_for_document(
                 &mut host,
                 &snap,
                 field_f64(open, "webContentsId").unwrap_or(f64::NAN),
                 field_str(open, "filePath"),
                 field_str(open, "title").unwrap_or_default(),
                 explicit_parent(open.get("parent")),
-            ))
+            );
+            finish_window_open(&mut window, &mut host, &snap, opened)
         } else if step.get("close").is_some() {
-            window.close_generate_window(&mut host);
-            Value::Null
+            unit(window.close_generate_window(&mut host))
         } else if step.get("contents").is_some() {
             window
                 .generate_window_contents(&host)
-                .map_or(Value::Null, num)
+                .map_or_else(|Failure(message)| error_value(&message), |contents| contents.map_or(Value::Null, num))
         } else if let Some(ipc) = step.get("ipc") {
             ipc_step(&mut window, &mut host, &snap, registered, ipc)
         } else if let Some(event) = step.get("event") {
@@ -1809,51 +1906,38 @@ fn ipc_step(
     let call_args = list(ipc.get("args"));
     let first = call_args.first().and_then(step_arg);
     match channel {
-        channels::GET_STATE => window
-            .handle_get_state(host, sender)
-            .map_or(Value::Null, |state| to_value(&state)),
-        channels::GET_THEME => Value::from(window.handle_get_theme(&*host, sender)),
-        channels::SET_KIND => {
-            window.handle_set_kind(host, sender, first);
-            Value::Null
-        }
-        channels::SET_CONVERT => {
-            window.handle_set_convert(host, sender, first);
-            Value::Null
-        }
-        channels::ADD_MATERIALS => unit(window.handle_add_materials(host, snap, sender)),
-        channels::REMOVE_MATERIAL => {
-            window.handle_remove_material(host, sender, first);
-            Value::Null
+        channels::GET_STATE => window.handle_get_state(host, sender).map_or_else(
+            |Failure(message)| error_value(&message), |state| state.map_or(Value::Null, |state| to_value(&state))),
+        channels::GET_THEME => window.handle_get_theme(host, sender)
+            .map_or_else(|Failure(message)| error_value(&message), Value::from),
+        channels::SET_KIND => unit(window.handle_set_kind(host, sender, first)),
+        channels::SET_CONVERT => unit(window.handle_set_convert(host, sender, first)),
+        channels::REMOVE_MATERIAL => unit(window.handle_remove_material(host, sender, first)),
+        channels::ADD_MATERIALS => {
+            let step = window.handle_add_materials(host, snap, sender);
+            outcome_value(carry_window(window, host, snap, step))
         }
         channels::SAVE_MATERIAL => {
-            let mut step = window.handle_save_material(host, snap, sender, first);
-            loop {
-                match step {
-                    WindowStep::Done(result) => break unit(result),
-                    WindowStep::Need(need, run) => {
-                        let answer = match need {
-                            SessionNeed::Save(need) => {
-                                SessionAnswer::Save(host.open.carry_out(&need))
-                            }
-                            // the recheck timer: nothing else lands in a case
-                            SessionNeed::Sleep(_) => SessionAnswer::Slept,
-                        };
-                        step = window.resume_save(host, snap, run, answer);
-                    }
-                }
-            }
+            let step = window.handle_save_material(host, snap, sender, first);
+            outcome_value(carry_window(window, host, snap, step))
         }
-        channels::REFRESH => unit(window.handle_refresh(host, snap, sender)),
-        channels::MAKE => Value::Bool(window.handle_make(host, snap, sender, first)),
-        channels::CANCEL => {
-            window.handle_cancel(host, sender);
-            Value::Null
+        channels::REFRESH => {
+            let step = window.handle_refresh(host, snap, sender);
+            outcome_value(carry_window(window, host, snap, step))
         }
+        channels::MAKE => {
+            let step = window.handle_make(host, snap, sender, first);
+            outcome_value(carry_window(window, host, snap, step))
+        }
+        channels::CANCEL => unit(window.handle_cancel(host, sender)),
         channels::HOME_OPEN_WITH_PATHS => {
-            unit(window.handle_open_with_paths(host, snap, sender, first))
+            let opened = window.handle_open_with_paths(host, snap, sender, first);
+            finish_window_open(window, host, snap, opened)
         }
-        _ => unit(window.handle_open_with_group(host, snap, sender, first)),
+        _ => {
+            let opened = window.handle_open_with_group(host, snap, sender, first);
+            finish_window_open(window, host, snap, opened)
+        }
     }
 }
 
@@ -1867,7 +1951,7 @@ fn event_step(
     if name == "theme" {
         let watching: Vec<WindowId> = host.watchers.iter().flatten().copied().collect();
         for id in watching {
-            window.on_theme_updated(host, id);
+            let _ = window.on_theme_updated(host, id);
         }
         return Value::Null;
     }
@@ -1876,16 +1960,19 @@ fn event_step(
         return error_value("no window");
     }
     match name {
-        "ready-to-show" => window.on_ready_to_show(host, n),
-        "focus" => window.on_focus(host, snap, n),
-        "closed" => window.on_closed(host, n),
-        "open" => {
-            window.window_open(host, field_str(event, "url").unwrap_or_default());
-            return json!({"action": "deny"});
+        "ready-to-show" => unit(window.on_ready_to_show(host, n)),
+        "focus" => {
+            let step = window.on_focus(host, snap, n);
+            let _ = carry_window(window, host, snap, step);
+            Value::Null
         }
-        _ => {}
+        "closed" => unit(window.on_closed(host, n)),
+        "open" => {
+            let _ = window.window_open(host, field_str(event, "url").unwrap_or_default());
+            json!({"action": "deny"})
+        }
+        _ => Value::Null,
     }
-    Value::Null
 }
 
 // ---------------------------------------------------------------------------
@@ -2075,4 +2162,263 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
 
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod continuation_regressions {
+    use super::*;
+    use crate::shell::generate::session::SessionRun;
+
+    fn host() -> SessionFake {
+        SessionFake { scenario: Value::Null, log: new_log(), counts: Vec::new(), ids: Vec::new() }
+    }
+
+    fn ready(path: &str) -> MaterialStatus {
+        MaterialStatus {
+            key: path.into(), name: "ready".into(), path: Some(path.into()), ext: "md".into(),
+            size_bytes: Some(1.0), problem: None, unsaved: false, text_length: 1.0,
+        }
+    }
+
+    fn inspection(step: SessionStep) -> (String, SessionRun) {
+        match step {
+            SessionStep::Need(SessionNeed::Inspect(path), run) => (path, run),
+            _ => panic!("expected an owned inspection"),
+        }
+    }
+
+    #[test]
+    fn continuations_and_worker_jobs_are_send() {
+        fn send<T: Send>() {}
+        send::<SessionRun>();
+        send::<crate::shell::generate::generate_window::WindowRun>();
+        send::<crate::shell::generate::materials::MaterialInspectJob>();
+        send::<crate::shell::generate::convert::MarkdownNoticeJob>();
+        send::<crate::shell::generate::convert::ConversionJob>();
+        send::<crate::shell::generate::session::OpenCommitToken>();
+        send::<crate::shell::generate::session::OpenCommitReceipt>();
+    }
+
+    #[test]
+    fn removed_and_readded_path_cannot_receive_the_removed_rows_late_result() {
+        let mut host = host();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
+        let (_, old) = inspection(session.refresh(&mut host, &snap));
+        session.remove(&mut host, Some(&Value::from(material_key("/a.md")))).unwrap();
+        let (_, new) = inspection(session.add_paths(&mut host, &snap, &[Value::from("/a.md")]));
+        assert!(matches!(session.resume(&mut host, &snap, old, SessionAnswer::Inspected(Ok(ready("/a.md")))),
+            SessionStep::Done(Ok(SessionOutcome::Unit))));
+        let state = to_value(&session.state(&host));
+        assert_eq!(state["materials"][0]["state"], "checking");
+        assert_eq!(state["checking"], true);
+        assert!(matches!(session.resume(&mut host, &snap, new, SessionAnswer::Inspected(Ok(ready("/a.md")))),
+            SessionStep::Done(Ok(SessionOutcome::Unit))));
+        let state = to_value(&session.state(&host));
+        assert_eq!(state["materials"][0]["state"], "ready");
+        assert_eq!(state["checking"], false);
+    }
+
+    #[test]
+    fn reset_keeps_its_new_rows_when_an_older_inspection_finishes() {
+        let mut host = host();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let mut session = GenerateSession::new(&[MaterialRef::Path("/old.md".into())], None);
+        let (_, old) = inspection(session.refresh(&mut host, &snap));
+        let rows = session.reset_begin(&mut host, &[MaterialRef::Path("/new.md".into())], None).unwrap();
+        let (_, new) = inspection(session.reset_finish(&mut host, &snap, rows));
+        let _ = session.resume(&mut host, &snap, old, SessionAnswer::Inspected(Ok(ready("/old.md"))));
+        let state = to_value(&session.state(&host));
+        assert_eq!(state["materials"].as_array().unwrap().len(), 1);
+        assert_eq!(state["materials"][0]["path"], "/new.md");
+        assert_eq!(state["materials"][0]["state"], "checking");
+        session.discard_run(new);
+        assert_eq!(session.state(&host).checking, true, "unread rows remain visibly unchecked");
+    }
+
+    #[test]
+    fn canceling_a_refresh_cannot_clear_a_different_pending_make() {
+        let mut host = host();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
+        let (_, refresh) = inspection(session.refresh(&mut host, &snap));
+        let (_, making) = inspection(session.make(&mut host, &snap, Some(&Value::from("make"))));
+        let pushes = host.log.borrow().len();
+        session.discard_run(refresh);
+        assert!(session.state(&host).making);
+        session.discard_run(making);
+        assert!(!session.state(&host).making);
+        assert_eq!(host.log.borrow().len(), pushes, "revoked continuations cannot publish state");
+        assert!(!session.is_closed());
+    }
+
+    fn opening(session: &mut GenerateSession, host: &mut SessionFake, snap: &OpenSnapshot<'_>)
+        -> (crate::shell::generate::session::OpenCommitToken, SessionRun) {
+        let (path, refresh) = inspection(session.make(host, snap, Some(&Value::from("make"))));
+        let (path, prepare) = inspection(session.resume(host, snap, refresh, SessionAnswer::Inspected(Ok(ready(&path)))));
+        match session.resume(host, snap, prepare, SessionAnswer::Inspected(Ok(ready(&path)))) {
+            SessionStep::Need(SessionNeed::OpenTarget { token, .. }, run) => (token, run),
+            _ => panic!("expected target open after refresh and canonical preparation"),
+        }
+    }
+
+    #[test]
+    fn committed_open_is_terminal_without_host_effects() {
+        let mut host = host();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
+        let (token, run) = opening(&mut session, &mut host, &snap);
+        assert!(session.state(&host).making);
+        assert!(!session.is_closed());
+        assert!(matches!(session.make(&mut host, &snap, Some(&Value::from("again"))),
+            SessionStep::Done(Ok(SessionOutcome::Made(false)))));
+        let effects = host.log.borrow().len();
+        assert_eq!(session.complete_committed_open(run, token.commit()).unwrap(), SessionOutcome::Made(true));
+        assert!(session.is_closed());
+        assert_eq!(host.log.borrow().len(), effects);
+    }
+
+    #[test]
+    fn receipt_from_another_open_cannot_complete_this_run() {
+        let mut host = host();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let mut first = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
+        let mut second = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
+        let (first_token, first_run) = opening(&mut first, &mut host, &snap);
+        let (second_token, second_run) = opening(&mut second, &mut host, &snap);
+        assert!(first.complete_committed_open(first_run, second_token.commit()).is_err());
+        assert!(!first.is_closed());
+        assert!(!first.state(&host).making);
+        second.discard_run(second_run);
+        drop(first_token);
+    }
+
+    #[test]
+    fn rejected_open_restores_original_make_failure_without_closing() {
+        let mut host = host();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let mut session = GenerateSession::new(&[MaterialRef::Path("/a.md".into())], None);
+        let (_token, run) = opening(&mut session, &mut host, &snap);
+        assert!(matches!(session.resume(&mut host, &snap, run, SessionAnswer::OpenFailed(Failure("constructor rejected".into()))),
+            SessionStep::Done(Ok(SessionOutcome::Made(false)))));
+        assert!(!session.is_closed());
+        assert!(!session.state(&host).making);
+        assert_eq!(to_value(&session.state(&host))["failure"], "make");
+    }
+
+    #[test]
+    fn untitled_reveal_waits_for_actual_completion_and_rejects_failure() {
+        let mut host = host();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let mut session = GenerateSession::new(&[MaterialRef::Untitled {
+            web_contents_id: 7.0, title: "Untitled".into(),
+        }], None);
+        let key = Value::from("untitled:7");
+        let run = match session.save_begin(&mut host, &snap, Some(&key)) {
+            SessionStep::Need(SessionNeed::Reveal(tab), run) => { assert_eq!(tab, "7"); run }
+            _ => panic!("reveal must yield instead of acknowledging queued work"),
+        };
+        let effects = host.log.borrow().len();
+        assert!(matches!(session.resume(&mut host, &snap, run,
+            SessionAnswer::Revealed(Err(Failure("native activation rejected".into())))), SessionStep::Done(Err(_))));
+        assert_eq!(host.log.borrow().len(), effects, "failed reveal cannot publish success");
+    }
+
+    fn window_host() -> WindowFake {
+        let log = new_log();
+        WindowFake {
+            scenario: Value::Null, log: Rc::clone(&log), now_ms: 0.0,
+            open: OpenFake { scenario: Value::Null, log: Rc::clone(&log) },
+            engine: Scripted::new(None, &log), windows: Vec::new(),
+            watchers: Vec::new(), sends: Vec::new(),
+        }
+    }
+
+    fn init(path: &str) -> OpenInit {
+        OpenInit { refs: vec![MaterialRef::Path(path.into())], kind: None, parent: None, opener: None }
+    }
+
+    fn finish_inspections(window: &mut GenerateWindow, host: &mut WindowFake,
+        snap: &OpenSnapshot<'_>, mut step: WindowStep) -> WindowStep {
+        loop {
+            step = match step {
+                WindowStep::Need(WindowNeed::Inspect(job), run) => {
+                    window.resume(host, snap, run, SessionAnswer::Inspected(Ok(ready(&job.path))))
+                }
+                other => return other,
+            };
+        }
+    }
+
+    #[test]
+    fn committed_old_open_cleans_only_its_original_window_after_replacement() {
+        let mut host = window_host();
+        let mut window = GenerateWindow::new();
+        window.configure();
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        let opened = window.open_generate_window(&mut host, &snap, init("/old.md"));
+        opened.result.unwrap();
+        assert!(matches!(finish_inspections(&mut window, &mut host, &snap, opened.background), WindowStep::Done(Ok(_))));
+        let step = window.handle_make(&mut host, &snap, 201.0, Some(&Value::from("make")));
+        let (token, run) = match finish_inspections(&mut window, &mut host, &snap, step) {
+            WindowStep::Need(WindowNeed::OpenTarget { token, window: original, .. }, run) => {
+                assert_eq!(original, 1); (token, run)
+            }
+            _ => panic!("expected actual constructor boundary"),
+        };
+        window.on_closed(&mut host, 1).unwrap();
+        let opened = window.open_generate_window(&mut host, &snap, init("/new.md"));
+        opened.result.unwrap();
+        let _ = finish_inspections(&mut window, &mut host, &snap, opened.background);
+        let effects = host.log.borrow().len();
+        let sends = host.sends.len();
+        let committed = window.complete_committed_open(run, token.commit()).unwrap();
+        assert_eq!(committed.cleanup_window, 1);
+        assert_eq!(committed.outcome, WindowOutcome::Made(true));
+        assert_eq!(window.generate_window_contents(&host).unwrap(), Some(202.0));
+        assert_eq!(host.log.borrow().len(), effects, "core receipt must not close any native window");
+        assert_eq!(host.sends.len(), sends);
+        let state = window.handle_get_state(&mut host, 202.0).unwrap().unwrap();
+        assert_eq!(to_value(&state)["materials"][0]["path"], "/new.md");
+        assert!(!state.making);
+    }
+
+    #[test]
+    fn native_setup_errors_remain_errors_and_reset_refresh_still_completes() {
+        let holder = OpenFilesHolder::new();
+        let snap = OpenSnapshot { files: &holder, tabs: &[] };
+        for failure in ["darkThrows", "createThrows"] {
+            let mut host = window_host();
+            host.scenario = json!({(failure): true});
+            let mut window = GenerateWindow::new();
+            window.configure();
+            let opened = window.open_generate_window(&mut host, &snap, init("/a.md"));
+            assert!(opened.result.is_err());
+            assert!(host.windows.is_empty());
+            assert!(matches!(opened.background, WindowStep::Done(Ok(WindowOutcome::Unit))));
+        }
+        let mut host = window_host();
+        let mut window = GenerateWindow::new();
+        window.configure();
+        let opened = window.open_generate_window(&mut host, &snap, init("/old.md"));
+        opened.result.unwrap();
+        let _ = finish_inspections(&mut window, &mut host, &snap, opened.background);
+        host.scenario = json!({"minimizedThrows": true});
+        let effects = host.log.borrow().len();
+        let opened = window.open_generate_window(&mut host, &snap, init("/new.md"));
+        assert!(opened.result.is_err());
+        assert!(matches!(finish_inspections(&mut window, &mut host, &snap, opened.background), WindowStep::Done(Ok(_))));
+        assert_eq!(host.log.borrow().len(), effects, "failed minimized check cannot restore/show/focus");
+        let state = window.handle_get_state(&mut host, 201.0).unwrap().unwrap();
+        assert!(!state.checking);
+        assert_eq!(to_value(&state)["materials"][0]["path"], "/new.md");
+    }
 }

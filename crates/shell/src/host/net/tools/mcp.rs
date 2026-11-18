@@ -16,8 +16,11 @@ use shell_ipc_a::mcp::{
 
 use super::super::http;
 use super::schema::OutputSchemas;
-use super::{NOT_BUILT, Unbuilt, current_lang, unbuilt};
+use super::current_lang;
 use crate::host::HostContext;
+use crate::host::w::on_core;
+use shell_ipc_d2::docs::editors::DocsEditors;
+use shell_ipc_w::tabs::TabsState;
 
 pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
     let net: McpNetHost = Arc::new(ShellMcpNet::default());
@@ -26,7 +29,7 @@ pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
         version: cx.app.package_info().version.to_string(),
     });
     hosts.insert(shell);
-    let tabs: McpTabsHost = Arc::new(Unbuilt);
+    let tabs: McpTabsHost = Arc::new(ShellMcpTabs);
     hosts.insert(tabs);
     hosts.insert(shell_ipc_a::mcp::hub_factory());
     hosts.insert(shell_ipc_a::mcp::bridges_factory());
@@ -96,7 +99,8 @@ impl McpNet for ShellMcpNet {
         let method = init.method.as_deref().unwrap_or("GET").to_uppercase();
         let method = reqwest::Method::from_bytes(method.as_bytes())
             .map_err(|_| FetchError::type_error("Failed to fetch"))?;
-        let mut builder = http::client(url, redirect == Redirect::Follow).request(method.clone(), url);
+        let mut builder =
+            http::client(url, redirect == Redirect::Follow).request(method.clone(), url);
         if let Some(headers) = &init.headers {
             for (name, value) in headers.entries() {
                 builder = builder.header(name, value);
@@ -168,30 +172,92 @@ impl McpShell for ShellMcpShell {
     }
 }
 
-impl McpTabs for Unbuilt {
-    fn open_blank_docs_tab(&self) -> ViewId {
-        unbuilt("McpTabs::open_blank_docs_tab");
-        panic!("McpTabs::open_blank_docs_tab is {NOT_BUILT}")
+struct ShellMcpTabs;
+
+impl McpTabs for ShellMcpTabs {
+    fn open_blank_docs_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
+        let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
+        let pending = done.clone();
+        let ran = crate::host::w::on_core_local(move |provided| {
+            let Some(done) = pending.borrow_mut().take() else { return; };
+            let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
+                return done(Err("SeuOffice is not ready".into()));
+            };
+            let cancel = shell_contract::runtime::CancelToken::new();
+            let operation = match crate::host::native_commands::issue(
+                shell_contract::ipc::NativeEditorCommand::NewDocument { surface: shell_contract::Surface::Docs, directory: None },
+                cancel.clone(),
+            ) {
+                Ok(operation) => operation,
+                Err(error) => return done(Err(error)),
+            };
+            tabs.open_mcp_blank_docs_native(operation, Box::new(move |result| {
+                drop(cancel);
+                done(result);
+            }));
+        });
+        if !ran {
+            if let Some(done) = done.borrow_mut().take() { done(Err("SeuOffice is not ready".into())); }
+        }
     }
 
-    fn authorize_docs_save(&self, _: ViewId, _: &str) {
-        unbuilt("McpTabs::authorize_docs_save");
+    fn authorize_docs_save(&self, view: ViewId, path: &str) {
+        let path = path.to_owned();
+        on_core(move |provided| {
+            if let Some(editor) = provided.all::<DocsEditors>().into_iter().next() {
+                editor.authorize_mcp_doc_write(view, &path);
+            }
+        });
     }
 
-    fn abandon_blank_docs_tab(&self, _: ViewId) {
-        unbuilt("McpTabs::abandon_blank_docs_tab");
+    fn abandon_blank_docs_tab(&self, view: ViewId) {
+        on_core(move |provided| {
+            if let Some(tabs) = provided.all::<TabsState>().into_iter().next() {
+                tabs.abandon_mcp_blank_docs(view);
+            }
+        });
     }
 
-    fn open_blank_sheets_tab(&self) -> Result<ViewId, String> {
-        unbuilt("McpTabs::open_blank_sheets_tab");
-        Err(NOT_BUILT.into())
+    fn open_blank_sheets_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
+        let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
+        let pending = done.clone();
+        let ran = crate::host::w::on_core_local(move |provided| {
+            let Some(done) = pending.borrow_mut().take() else { return; };
+            let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
+                return done(Err("SeuOffice is not ready".into()));
+            };
+            let cancel = shell_contract::runtime::CancelToken::new();
+            let operation = match crate::host::native_commands::issue(
+                shell_contract::ipc::NativeEditorCommand::NewDocument { surface: shell_contract::Surface::Sheets, directory: None },
+                cancel.clone(),
+            ) {
+                Ok(operation) => operation,
+                Err(error) => return done(Err(error)),
+            };
+            tabs.open_mcp_blank_sheets_native(operation, Box::new(move |result| {
+                drop(cancel);
+                done(result);
+            }));
+        });
+        if !ran {
+            if let Some(done) = done.borrow_mut().take() { done(Err("SeuOffice is not ready".into())); }
+        }
     }
 
-    fn authorize_sheets_save(&self, _: ViewId, _: &str) {
-        unbuilt("McpTabs::authorize_sheets_save");
+    fn authorize_sheets_save(&self, view: ViewId, path: &str) {
+        let path = path.to_owned();
+        on_core(move |_| {
+            if let Some(sheets) = shell_ipc_d1::sheets::views() {
+                sheets.authorize_mcp_write(view, &path);
+            }
+        });
     }
 
-    fn abandon_blank_sheets_tab(&self, _: ViewId) {
-        unbuilt("McpTabs::abandon_blank_sheets_tab");
+    fn abandon_blank_sheets_tab(&self, view: ViewId) {
+        on_core(move |provided| {
+            if let Some(tabs) = provided.all::<TabsState>().into_iter().next() {
+                tabs.abandon_mcp_blank_sheets(view);
+            }
+        });
     }
 }

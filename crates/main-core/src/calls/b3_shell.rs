@@ -49,9 +49,7 @@ use crate::shell::document_links::{
 use crate::shell::document_links_menu::{
     DocumentLinkMenuHandlers, DocumentLinkMenuLabels, MenuItem, document_link_menu_items,
 };
-use crate::shell::document_password_prompt::{
-    DocumentPasswordPrompts, DocumentPasswordWindow, PromptId,
-};
+use crate::shell::document_password_prompt::{DocumentPasswordPrompts, Effect, PromptId};
 use crate::shell::feedback::{
     FEEDBACK_SURVEY_URL, FeedbackEnvironment, feedback_details, feedback_strings, feedback_text,
     platform_label,
@@ -939,25 +937,6 @@ fn gate_call(args: &[Value], cx: &mut Context, last: bool) -> Answer {
 
 // ---- document-password-prompt ----
 
-struct FakePasswordWindow {
-    answers: Rc<RefCell<VecDeque<Option<String>>>>,
-    log: Log,
-}
-
-impl DocumentPasswordWindow for FakePasswordWindow {
-    fn prompt(&mut self, file_name: &str, retry: bool) -> Option<String> {
-        self.log.push(vec![
-            Value::from("prompt"),
-            Value::from(file_name),
-            Value::Bool(retry),
-        ]);
-        self.answers.borrow_mut().pop_front().flatten()
-    }
-
-    fn close(&mut self) {
-        self.log.push(vec![Value::from("close")]);
-    }
-}
 
 /// `[answers, ops]`: `{ create }`, `{ ask, retry }`, `{ close }`
 fn prompts_call(args: &[Value], cx: &mut Context) -> Answer {
@@ -970,7 +949,7 @@ fn prompts_call(args: &[Value], cx: &mut Context) -> Answer {
     let ops = arg(args, 1)
         .and_then(Value::as_array)
         .ok_or_else(|| bad("ops"))?;
-    let answers = Rc::new(RefCell::new(answers));
+    let mut answers = answers;
     let log = Log::default();
     let mut queue = DocumentPasswordPrompts::new();
     let mut prompts: Vec<PromptId> = Vec::new();
@@ -984,28 +963,32 @@ fn prompts_call(args: &[Value], cx: &mut Context) -> Answer {
         ])
     };
     for op in ops {
-        if let Some(name) = field_str(op, "create") {
-            let window = FakePasswordWindow {
-                answers: answers.clone(),
-                log: log.clone(),
-            };
-            prompts.push(queue.create(Box::new(window), name));
+        let effects = if let Some(name) = field_str(op, "create") {
+            prompts.push(queue.create(name));
+            Vec::new()
         } else if let Some(i) = field_f64(op, "ask") {
-            let retry = field_bool(op, "retry");
-            let (ask, outcome) = queue.ask(prompts[i as usize], retry);
+            let (ask, effects) = queue.ask(prompts[i as usize], field_bool(op, "retry"));
             asks.push(ask);
-            if let crate::shell::document_password_prompt::Asked::Settled(answer) = outcome {
-                done.push(asks.len() - 1);
-                settled.push(pair(asks.len() - 1, answer));
-            }
+            effects
         } else if let Some(i) = field_f64(op, "close") {
-            for resumed in queue.close(prompts[i as usize]) {
-                let seq = asks
-                    .iter()
-                    .position(|ask| *ask == resumed.ask)
-                    .expect("an ask that was made");
-                done.push(seq);
-                settled.push(pair(seq, resumed.answer));
+            queue.close(prompts[i as usize])
+        } else {
+            Vec::new()
+        };
+        for effect in effects {
+            match effect {
+                Effect::CloseWindow { .. } => log.push(vec![Value::from("close")]),
+                Effect::Prompt { ask, file_name, retry, .. } => {
+                    log.push(vec![Value::from("prompt"), Value::from(file_name), Value::Bool(retry)]);
+                    let seq = asks.iter().position(|item| *item == ask).expect("an ask that was made");
+                    done.push(seq);
+                    settled.push(pair(seq, answers.pop_front().flatten()));
+                }
+                Effect::Cancelled { ask } => {
+                    let seq = asks.iter().position(|item| *item == ask).expect("an ask that was made");
+                    done.push(seq);
+                    settled.push(pair(seq, None));
+                }
             }
         }
     }

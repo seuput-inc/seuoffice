@@ -12,9 +12,13 @@ probe = []
 
 [dependencies]
 shell-contract = { path = "../../shell-contract" }
+shell-ipc-a = { path = "../a" }
 main-core.workspace = true
 jscompat.workspace = true
 serde_json.workspace = true
 encoding_rs.workspace = true
 # new URL(value, base) of the mind map link preview, the version main-core uses
 url = "2.5"
+
+[dev-dependencies]
+file-commit.workspace = true

@@ -108,6 +108,21 @@ impl FakeHost {
 }
 
 impl ProjectsHost for FakeHost {
+    fn with_request_owner(
+        &self,
+        owner: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        effect: &mut dyn FnMut() -> Result<(), shell_contract::IpcError>,
+    ) -> Result<(), shell_contract::IpcError> {
+        let generation = owner.context.renderer().ok_or_else(|| shell_contract::IpcError {
+            name: Some("Error".into()), message: "Renderer document authentication is not ready.".into(),
+        })?;
+        generation.with_active(|| cancel.with_active(effect).ok_or_else(|| shell_contract::IpcError {
+            name: Some("Error".into()), message: "The project request was cancelled.".into(),
+        })?).ok_or_else(|| shell_contract::IpcError {
+            name: Some("Error".into()), message: "The renderer was replaced.".into(),
+        })?
+    }
     fn attach(&self, events: Arc<dyn PageEvents>) {
         self.state.lock().unwrap().events = Some(events);
     }
@@ -269,18 +284,14 @@ impl ProjectFiles for FakeFiles {
         })
     }
 
-    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Vec<String> {
+    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Result<Vec<String>, Thrown> {
         let indexed: Vec<&str> = self.config["files"]["indexedAsOnDisk"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .collect();
-        paths
-            .iter()
-            .filter(|path| indexed.contains(&path.as_str()))
-            .cloned()
-            .collect()
+        Ok(paths.iter().filter(|path| indexed.contains(&path.as_str())).cloned().collect())
     }
 
     /// `readKnowledgeFilePage` for a text file: `parseFileToText` of one reads
@@ -306,19 +317,21 @@ impl ProjectFiles for FakeFiles {
         })
     }
 
-    fn open_files(&self) -> Result<Vec<OpenFileState>, OpenFilesSourceFailed> {
-        if self.config["openFilesFail"].as_bool() == Some(true) {
-            return Err(OpenFilesSourceFailed);
-        }
-        Ok(self.config["openFiles"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|doc| OpenFileState {
-                file_path: doc["filePath"].as_str().map(str::to_owned),
-                dirty: doc["dirty"].as_bool().unwrap_or(false),
-            })
-            .collect())
+    fn open_files_async(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
+        let result = if self.config["openFilesFail"].as_bool() == Some(true) {
+            Err(OpenFilesSourceFailed)
+        } else {
+            Ok(self.config["openFiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|doc| OpenFileState {
+                    file_path: doc["filePath"].as_str().map(str::to_owned),
+                    dirty: doc["dirty"].as_bool().unwrap_or(false),
+                })
+                .collect())
+        };
+        done(result);
     }
 }
 
@@ -450,6 +463,7 @@ pub fn probe_hosts(hosts: &mut Hosts, case: &Value) {
     // the same fake, for the triggers
     hosts.insert(host.clone());
     hosts.insert(host as ProjectsHostRef);
+    hosts.insert(super::ProjectCleanupShutdown(shell_contract::runtime::CancelToken::default()));
     hosts.insert(Arc::new(FakeFiles {
         log: log.clone(),
         config: config.clone(),

@@ -1,58 +1,27 @@
-//! `apps/shell/src/main/document-password-prompt.ts`.
-//!
-//! The TypeScript chains the prompts through promises: each one awaits the
-//! promise its predecessor resolves on `close`. Here the module-level `queue`
-//! is a [`DocumentPasswordPrompts`] value and the continuation of an `ask`
-//! that had to wait is run by the `close` that released it: [`close`] returns
-//! the asks it resumed, in the order the promises would continue.
-//!
-//! [`close`]: DocumentPasswordPrompts::close
+//! Asynchronous effects of `apps/shell/src/main/document-password-prompt.ts`.
 
-/// `DocumentPasswordWindow`
-pub trait DocumentPasswordWindow {
-    /// the typed password, or `None` when the user cancels
-    fn prompt(&mut self, file_name: &str, retry: bool) -> Option<String>;
-    fn close(&mut self);
-}
-
-/// The prompt `createDocumentPasswordPrompt` returned, by the order it was created in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PromptId(usize);
 
-/// One call of `ask`, by the order the calls were made in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AskId(usize);
 
-/// An `ask` that waited for its turn and has settled now.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResumedAsk {
-    pub ask: AskId,
-    pub answer: Option<String>,
-}
-
-/// What `ask` did at once.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Asked {
-    /// the prompt had its turn: this is what the promise resolves to
-    Settled(Option<String>),
-    /// the previous prompt is still open: a `close` of it resumes this ask
-    Waiting,
+pub enum Effect {
+    Prompt { prompt: PromptId, ask: AskId, file_name: String, retry: bool },
+    CloseWindow { prompt: PromptId },
+    Cancelled { ask: AskId },
 }
 
 struct Prompt {
-    window: Box<dyn DocumentPasswordWindow>,
     file_name: String,
-    /// the prompt whose `release` this one's `turn` is; `None` for the first
     turn: Option<usize>,
-    /// `release()` was called: the promise the next prompt awaits is resolved
     released: bool,
     shown: bool,
     closed: bool,
-    /// the asks waiting for `turn`, with their `retry`
     waiting: Vec<(AskId, bool)>,
 }
 
-/// The module-level `queue` and the prompts chained on it.
 #[derive(Default)]
 pub struct DocumentPasswordPrompts {
     prompts: Vec<Prompt>,
@@ -60,78 +29,99 @@ pub struct DocumentPasswordPrompts {
 }
 
 impl DocumentPasswordPrompts {
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
-    /// `createDocumentPasswordPrompt(window, fileName)`
-    pub fn create(&mut self, window: Box<dyn DocumentPasswordWindow>, file_name: &str) -> PromptId {
+    pub fn create(&mut self, file_name: &str) -> PromptId {
         let turn = self.prompts.len().checked_sub(1);
         self.prompts.push(Prompt {
-            window,
-            file_name: file_name.to_string(),
-            turn,
-            released: false,
-            shown: false,
-            closed: false,
-            waiting: Vec::new(),
+            file_name: file_name.to_owned(), turn, released: false,
+            shown: false, closed: false, waiting: Vec::new(),
         });
         PromptId(self.prompts.len() - 1)
     }
 
-    fn has_turn(&self, id: usize) -> bool {
-        match self.prompts[id].turn {
-            None => true,
-            Some(before) => self.prompts[before].released,
-        }
-    }
-
-    /// `prompt.ask(retry)`: after `await turn`, `null` for a closed prompt,
-    /// else the window's answer
-    fn run_ask(&mut self, id: usize, retry: bool) -> Option<String> {
+    fn run_ask(&mut self, id: usize, ask: AskId, retry: bool) -> Effect {
         let prompt = &mut self.prompts[id];
-        if prompt.closed {
-            return None;
-        }
+        if prompt.closed { return Effect::Cancelled { ask }; }
         prompt.shown = true;
-        prompt.window.prompt(&prompt.file_name, retry)
+        Effect::Prompt { prompt: PromptId(id), ask, file_name: prompt.file_name.clone(), retry }
     }
 
-    /// `prompt.ask(retry)`
-    pub fn ask(&mut self, prompt: PromptId, retry: bool) -> (AskId, Asked) {
+    pub fn ask(&mut self, prompt: PromptId, retry: bool) -> (AskId, Vec<Effect>) {
         let ask = AskId(self.asks);
         self.asks += 1;
-        if self.has_turn(prompt.0) {
-            return (ask, Asked::Settled(self.run_ask(prompt.0, retry)));
+        let turn = self.prompts[prompt.0].turn;
+        if turn.is_none_or(|before| self.prompts[before].released) {
+            (ask, vec![self.run_ask(prompt.0, ask, retry)])
+        } else {
+            self.prompts[prompt.0].waiting.push((ask, retry));
+            (ask, Vec::new())
         }
-        self.prompts[prompt.0].waiting.push((ask, retry));
-        (ask, Asked::Waiting)
+    }
+    pub fn abort(&mut self, prompt: PromptId) -> Vec<Effect> {
+        let waiting = std::mem::take(&mut self.prompts[prompt.0].waiting);
+        let mut effects: Vec<_> = waiting.into_iter().map(|(ask, _)| Effect::Cancelled { ask }).collect();
+        effects.extend(self.close(prompt));
+        effects
     }
 
-    /// `prompt.close()` (idempotent): the window closes only for a prompt
-    /// that showed, then the promise of this prompt resolves and the asks of
-    /// the next one that were waiting for it continue.
-    pub fn close(&mut self, prompt: PromptId) -> Vec<ResumedAsk> {
+
+    pub fn close(&mut self, prompt: PromptId) -> Vec<Effect> {
         let id = prompt.0;
-        if self.prompts[id].closed {
-            return Vec::new();
-        }
+        if self.prompts[id].closed { return Vec::new(); }
         self.prompts[id].closed = true;
-        // a prompt that never showed must not close another caller's window
-        if self.prompts[id].shown {
-            self.prompts[id].window.close();
-        }
+        let mut effects = Vec::new();
+        if self.prompts[id].shown { effects.push(Effect::CloseWindow { prompt }); }
         self.prompts[id].released = true;
-        let mut resumed = Vec::new();
         for next in 0..self.prompts.len() {
-            if self.prompts[next].turn != Some(id) {
-                continue;
-            }
+            if self.prompts[next].turn != Some(id) { continue; }
             for (ask, retry) in std::mem::take(&mut self.prompts[next].waiting) {
-                let answer = self.run_ask(next, retry);
-                resumed.push(ResumedAsk { ask, answer });
+                effects.push(self.run_ask(next, ask, retry));
             }
         }
-        resumed
+        effects
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_prompt_waits_for_close_and_retries_in_place() {
+        let mut queue = DocumentPasswordPrompts::new();
+        let first = queue.create("first.xlsx");
+        let second = queue.create("second.pptx");
+        let (a, effects) = queue.ask(first, false);
+        assert_eq!(effects, vec![Effect::Prompt { prompt: first, ask: a, file_name: "first.xlsx".into(), retry: false }]);
+        let (b, effects) = queue.ask(second, false);
+        assert!(effects.is_empty());
+        let (retry, effects) = queue.ask(first, true);
+        assert_eq!(effects, vec![Effect::Prompt { prompt: first, ask: retry, file_name: "first.xlsx".into(), retry: true }]);
+        assert_eq!(queue.close(first), vec![Effect::CloseWindow { prompt: first }, Effect::Prompt { prompt: second, ask: b, file_name: "second.pptx".into(), retry: false }]);
+        assert!(queue.close(first).is_empty());
+    }
+
+    #[test]
+    fn closed_queued_prompt_cannot_close_another_window() {
+        let mut queue = DocumentPasswordPrompts::new();
+        let first = queue.create("first.xlsx");
+        let second = queue.create("second.xlsx");
+        let (ask, _) = queue.ask(second, false);
+        assert!(queue.close(second).is_empty());
+        assert_eq!(queue.close(first), vec![Effect::Cancelled { ask }]);
+    }
+
+    #[test]
+    fn owner_destruction_settles_a_queued_ask_without_closing_active_window() {
+        let mut queue = DocumentPasswordPrompts::new();
+        let first = queue.create("first.xlsx");
+        let second = queue.create("second.xlsx");
+        let (_, first_effects) = queue.ask(first, false);
+        assert!(matches!(first_effects[0], Effect::Prompt { .. }));
+        let (ask, _) = queue.ask(second, false);
+        assert_eq!(queue.abort(second), vec![Effect::Cancelled { ask }]);
+        assert_eq!(queue.close(first), vec![Effect::CloseWindow { prompt: first }]);
+        assert!(queue.abort(second).is_empty());
     }
 }

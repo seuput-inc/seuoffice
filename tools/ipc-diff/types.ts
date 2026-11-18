@@ -27,6 +27,8 @@ export interface Call {
   view?: number
   /** the arguments in the wire form of crates/shell/bridge/wire.ts; `$DIR` in a string is the case's folder */
   args: unknown[]
+  /** Event argument references to normalize even when no later call needs their value. */
+  capture?: unknown[]
   /** the buffers the arguments point at, as hex */
   buffers?: string[]
   /**
@@ -37,6 +39,8 @@ export interface Call {
   defer?: true
   /** not a call: the answer of the deferred invoke at this index (`{timeout: true}` after 20 s) */
   await?: number
+  /** An explicit outcome required on each side, in addition to parity. */
+  expectAnswer?: { value: unknown; buffers: string[] } | { error: string }
 }
 
 export interface Case {

@@ -3,10 +3,15 @@
 // SPDX-License-Identifier: MIT
 
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+
+#[cfg(target_os = "macos")]
+pub(crate) use macos::destroy_browser_host_window;
+#[cfg(windows)]
+pub(crate) use windows::destroy_browser_host_window;
 
 #[cfg(any(
   target_os = "linux",

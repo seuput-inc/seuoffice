@@ -1,0 +1,149 @@
+diff --git a/include/cef_render_process_handler.h b/include/cef_render_process_handler.h
+--- a/include/cef_render_process_handler.h
++++ b/include/cef_render_process_handler.h
+@@ -40,6 +40,7 @@
+ #define CEF_INCLUDE_CEF_RENDER_PROCESS_HANDLER_H_
+ #pragma once
+ 
++#include "include/cef_api_hash.h"
+ #include "include/cef_base.h"
+ #include "include/cef_browser.h"
+ #include "include/cef_dom.h"
+@@ -145,6 +146,42 @@ class CefRenderProcessHandler : public virtual CefBaseRefCounted {
+                                         CefRefPtr<CefProcessMessage> message) {
+     return false;
+   }
++
++#if CEF_API_ADDED(15401)
++  ///
++  /// Called during context creation with native Blink document and V8 context
++  /// tokens and the Blink world ID. Tokens identify renderer objects only;
++  /// they are not browser authorization or evidence of navigation approval.
++  /// No event is emitted if native identity is unavailable.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextCreated(CefRefPtr<CefBrowser> browser,
++                                      CefRefPtr<CefFrame> frame,
++                                      CefRefPtr<CefV8Context> context,
++                                      const CefString& document_token,
++                                      const CefString& context_token,
++                                      int world_id) {}
++
++  ///
++  /// Called before the exact context identified at creation is released.
++  /// The document token is retained from creation, not read from the frame.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextReleased(CefRefPtr<CefBrowser> browser,
++                                       CefRefPtr<CefFrame> frame,
++                                       const CefString& document_token,
++                                       const CefString& context_token,
++                                       int world_id) {}
++
++  ///
++  /// Called when a released context cannot be matched to its native token.
++  /// Consumers must revoke all authority for this frame, not infer identity.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextIdentityLost(CefRefPtr<CefBrowser> browser,
++                                           CefRefPtr<CefFrame> frame) {}
++
++#endif
+ };
+ 
+ #endif  // CEF_INCLUDE_CEF_RENDER_PROCESS_HANDLER_H_
+diff --git a/libcef/renderer/render_frame_observer.h b/libcef/renderer/render_frame_observer.h
+--- a/libcef/renderer/render_frame_observer.h
++++ b/libcef/renderer/render_frame_observer.h
+@@ -7,6 +7,12 @@
+ #ifndef LIBCEF_RENDERER_RENDER_FRAME_OBSERVER_H_
+ #define LIBCEF_RENDERER_RENDER_FRAME_OBSERVER_H_
+ 
++#include <map>
++#include <string>
++#include <utility>
++
++#include "cef/libcef/common/mojom/cef.mojom.h"
++#include "mojo/public/cpp/bindings/remote.h"
+ #include "content/public/renderer/render_frame_observer.h"
+ 
+ class CefFrameImpl;
+@@ -38,6 +44,9 @@ class CefRenderFrameObserver : public content::RenderFrameObserver {
+   void OnLoadError();
+ 
+   CefFrameImpl* frame_ = nullptr;
++  std::map<std::string, std::pair<std::string, int>> native_contexts_;
++  std::map<std::string, mojo::Remote<cef::mojom::NativeContextHost>>
++      native_context_channels_;
+ };
+ 
+ #endif  // LIBCEF_RENDERER_RENDER_FRAME_OBSERVER_H_
+diff --git a/libcef/renderer/render_frame_observer.cc b/libcef/renderer/render_frame_observer.cc
+--- a/libcef/renderer/render_frame_observer.cc
++++ b/libcef/renderer/render_frame_observer.cc
+@@ -26,6 +26,7 @@
+ #include "third_party/blink/public/web/web_element.h"
+ #include "third_party/blink/public/web/web_local_frame.h"
+ #include "third_party/blink/public/web/web_node.h"
++#include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+ 
+ CefRenderFrameObserver::CefRenderFrameObserver(
+     content::RenderFrame* render_frame)
+@@ -143,6 +144,28 @@ void CefRenderFrameObserver::DidCreateScriptContext(
+ 
+     CefRefPtr<CefV8Context> contextPtr(new CefV8ContextImpl(isolate, context));
+ 
++    if (CEF_API_IS_ADDED(15401)) {
++      auto state = blink::WebLocalFrame::ContextToken(context);
++      auto document = frame->GetDocument();
++      if (state && !document.IsNull() &&
++          blink::WebLocalFrame::FrameForContext(context) == frame) {
++        const auto document_token = document.Token().ToString();
++        const auto context_token = state->ToString();
++        if (native_contexts_.emplace(
++                context_token, std::make_pair(document_token, world_id)).second) {
++          mojo::Remote<cef::mojom::NativeContextHost> channel;
++          render_frame()->GetBrowserInterfaceBroker().GetInterface(
++              channel.BindNewPipeAndPassReceiver());
++          channel->Register(document.Token(), *state, world_id);
++          native_context_channels_.emplace(context_token, std::move(channel));
++
++          handler->OnNativeContextCreated(browserPtr.get(), framePtr.get(),
++                                          contextPtr, document_token,
++                                          context_token, world_id);
++        }
++      }
++    }
++
+     handler->OnContextCreated(browserPtr.get(), framePtr.get(), contextPtr);
+   }
+ 
+@@ -177,6 +200,28 @@ void CefRenderFrameObserver::WillReleaseScriptContext(
+ 
+     CefRefPtr<CefV8Context> contextPtr(new CefV8ContextImpl(isolate, context));
+ 
++    if (CEF_API_IS_ADDED(15401)) {
++      bool matched = false;
++      if (auto state = blink::WebLocalFrame::ContextToken(context)) {
++        const auto context_token = state->ToString();
++        auto it = native_contexts_.find(context_token);
++        if (it != native_contexts_.end()) {
++          auto identity = std::move(it->second);
++          native_context_channels_.erase(context_token);
++          native_contexts_.erase(it);
++          handler->OnNativeContextReleased(browserPtr.get(), framePtr.get(),
++                                           identity.first, context_token,
++                                           identity.second);
++          matched = true;
++        }
++      }
++      if (!matched) {
++        native_context_channels_.clear();
++        native_contexts_.clear();
++        handler->OnNativeContextIdentityLost(browserPtr.get(), framePtr.get());
++      }
++    }
++
+     handler->OnContextReleased(browserPtr.get(), framePtr.get(), contextPtr);
+   }
+ 

@@ -24,6 +24,7 @@ use main_core::shell::doc_picker::doc_list::{
     DocListDeps, DocListOptions, doc_list, to_mention_items,
 };
 use main_core::shell::doc_picker::picker::paths_of;
+use shell_contract::error::IpcError;
 use shell_contract::hosts::ContentsHost;
 use shell_contract::ids::{ViewId, WindowId};
 use shell_contract::ipc::{CallContext, ChannelKind, Handler, RegisterError, Registry, Responder};
@@ -74,6 +75,7 @@ pub trait DocPickerWindow: Send + Sync {
     /// Creates the window hidden, modal to its parent when given, and loads
     /// the page; its view
     fn create(&self, options: &DocPickerWindowOptions) -> ViewId;
+    fn renderer_ready(&self, view: ViewId);
     fn show(&self);
     fn focus(&self);
     /// `win.close()`: the window ends and reports `window_closed`
@@ -86,6 +88,7 @@ pub type DocPickerWindowHost = Arc<dyn DocPickerWindow>;
 struct State {
     /// the picker window's view; none while there is no window
     view: Option<ViewId>,
+    generation: u64,
     /// the pending `doc:pick-attachments` answer (`settle`)
     settle: Option<Responder>,
     /// the items of the list the window last read; ids are validated against it
@@ -274,6 +277,7 @@ impl DocPickerControl {
             return reply.reply(Ok(failed("busy")));
         }
         let lang = inner.window.lang();
+        state.generation = state.generation.checked_add(1).expect("picker generation exhausted");
         let view = inner.window.create(&DocPickerWindowOptions {
             width: 720,
             height: 640,
@@ -316,6 +320,63 @@ impl Handler for Pick {
     }
 }
 
+struct ListDocuments {
+    control: DocPickerControl,
+    mentions: bool,
+}
+
+impl Handler for ListDocuments {
+    fn call(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
+        let view = cx.sender.view;
+        let control = self.control.clone();
+        let mentions = self.mentions;
+        let workers = control.0.workers.clone();
+        workers.spawn(Box::new(move || {
+            let result = if mentions {
+                let mut asker = control.asker_of(view);
+                asker.web_contents_id = Some(view.0);
+                match doc_list(control.0.sources.as_ref(), &asker, DocListOptions { project_files: true }) {
+                    Ok(items) => {
+                        let items = to_mention_items(&items).into_iter().map(|item| {
+                            IpcValue::Object(vec![
+                                ("path".into(), item.path.map_or(IpcValue::Null, IpcValue::String)),
+                                ("name".into(), IpcValue::String(item.name)),
+                                ("dir".into(), IpcValue::String(item.dir)),
+                                ("group".into(), IpcValue::String(item.group.as_str().to_owned())),
+                                ("state".into(), IpcValue::String(item.state.as_str().to_owned())),
+                            ])
+                        }).collect();
+                        Ok(IpcValue::Object(vec![
+                            ("ok".into(), IpcValue::Bool(true)),
+                            ("items".into(), IpcValue::Array(items)),
+                        ]))
+                    }
+                    Err(_) => Ok(failed("unavailable")),
+                }
+            } else if !control.is_window_view(view) {
+                Ok(unavailable())
+            } else {
+                let asker = control.0.lock().asker.clone();
+                match doc_list(control.0.sources.as_ref(), &asker, DocListOptions::default()) {
+                    Ok(items) => {
+                        let value = IpcValue::Object(vec![
+                            ("ok".into(), IpcValue::Bool(true)),
+                            ("items".into(), IpcValue::Array(items.iter().map(item_ipc).collect())),
+                        ]);
+                        let mut state = control.0.lock();
+                        if state.view == Some(view) {
+                            state.last_items = Some(items);
+                        }
+                        Ok(value)
+                    }
+                    Err(message) => Err(IpcError { name: Some("Error".into()), message }),
+                }
+            };
+            reply.reply(result);
+        }));
+    }
+}
+
 pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), RegisterError> {
     let window: DocPickerWindowHost = services.hosts.need(Batch::W)?;
     let sources: DocPickerSourcesHost = services.hosts.need(Batch::W)?;
@@ -345,31 +406,25 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
                     IpcValue::String(c.0.window.lang().as_str().to_owned()),
                 ),
                 ("theme".into(), IpcValue::String(c.0.window.theme())),
+                ("readyToken".into(), IpcValue::String(c.0.lock().generation.to_string())),
             ]))
         },
     )?;
 
     let c = control.clone();
-    handle(
-        registry,
-        "doc-picker:list",
-        ChannelKind::Invoke,
-        move |cx, _| {
-            if !c.is_window_view(cx.sender.view) {
-                return Ok(unavailable());
-            }
-            let asker = c.0.lock().asker.clone();
-            let items = doc_list(c.0.sources.as_ref(), &asker, DocListOptions::default());
-            let value = IpcValue::Object(vec![
-                ("ok".into(), IpcValue::Bool(true)),
-                (
-                    "items".into(),
-                    IpcValue::Array(items.iter().map(item_ipc).collect()),
-                ),
-            ]);
-            c.0.lock().last_items = Some(items);
-            Ok(value)
-        },
+    handle(registry, "doc-picker:ready", ChannelKind::Invoke, move |cx, args| {
+        let state = c.0.lock();
+        if state.view == Some(cx.sender.view)
+            && matches!(args.first(), Some(IpcValue::String(token)) if token == &state.generation.to_string())
+        {
+            c.0.window.renderer_ready(cx.sender.view);
+        }
+        Ok(IpcValue::Undefined)
+    })?;
+
+    registry.register(
+        Batch::W, "doc-picker:list", ChannelKind::Invoke,
+        Rc::new(ListDocuments { control: control.clone(), mentions: false }),
     )?;
 
     let c = control.clone();
@@ -433,48 +488,9 @@ pub fn register(registry: &mut dyn Registry, services: &Services) -> Result<(), 
         }),
     )?;
 
-    let c = control;
-    handle(
-        registry,
-        "doc:attach-list",
-        ChannelKind::Invoke,
-        move |cx, _| {
-            // the `@` list alone shows the files of the asking panel's project (spec 5.13)
-            let mut asker = c.asker_of(cx.sender.view);
-            asker.web_contents_id = Some(cx.sender.view.0);
-            let items = doc_list(
-                c.0.sources.as_ref(),
-                &asker,
-                DocListOptions {
-                    project_files: true,
-                },
-            );
-            let items = to_mention_items(&items)
-                .into_iter()
-                .map(|item| {
-                    IpcValue::Object(vec![
-                        (
-                            "path".into(),
-                            item.path.map_or(IpcValue::Null, IpcValue::String),
-                        ),
-                        ("name".into(), IpcValue::String(item.name)),
-                        ("dir".into(), IpcValue::String(item.dir)),
-                        (
-                            "group".into(),
-                            IpcValue::String(item.group.as_str().to_owned()),
-                        ),
-                        (
-                            "state".into(),
-                            IpcValue::String(item.state.as_str().to_owned()),
-                        ),
-                    ])
-                })
-                .collect();
-            Ok(IpcValue::Object(vec![
-                ("ok".into(), IpcValue::Bool(true)),
-                ("items".into(), IpcValue::Array(items)),
-            ]))
-        },
+    registry.register(
+        Batch::W, "doc:attach-list", ChannelKind::Invoke,
+        Rc::new(ListDocuments { control, mentions: true }),
     )
 }
 

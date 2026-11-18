@@ -6,6 +6,7 @@
       "../../NOTICE": "NOTICE.txt",
       "../../LICENSE-UNICODE.txt": "LICENSE-UNICODE.txt",
       "../../apps/shell/build/THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
+      "out/engine-host": "engine-host",
       "../../apps/docs/out": "modules/docs",
       "../../apps/sheets/out": "modules/sheets",
       "../../apps/slides/out": "modules/slides",

@@ -70,9 +70,7 @@ impl SaveOutcome {
 /// `!!deps.save[kind]`
 pub trait OpenMaterialsDeps {
     type Contents: MaterialContents;
-    fn web_contents_for(&mut self, tab_id: &str) -> Option<Self::Contents>;
-    /// bring a tab (and its window) forward
-    fn reveal(&mut self, tab_id: &str);
+    fn web_contents_for(&mut self, tab_id: &str) -> Result<Option<Self::Contents>, Failure>;
     /// whether the host gave a save for this kind of tab
     fn has_save(&self, kind: DocumentTabKind) -> bool;
     /// `console.warn('[generate] saving a material failed:', error)`
@@ -111,6 +109,7 @@ pub struct SaveMaterialRun(());
 #[derive(Debug)]
 pub enum SaveMaterialStep {
     Done(SaveOutcome),
+    Reveal(String),
     Need(SaveNeed, SaveMaterialRun),
 }
 
@@ -187,21 +186,20 @@ pub fn save_material_begin<D: OpenMaterialsDeps>(
     deps: &mut D,
     tabs: &[OpenDocumentTab],
     path: &str,
-) -> SaveMaterialStep {
+) -> Result<SaveMaterialStep, Failure> {
     // closed meanwhile, or already clean: nothing left to save
     let Some(tab) = tab_of_path(tabs, path).filter(|tab| tab.dirty) else {
-        return SaveMaterialStep::Done(SaveOutcome::Saved);
+        return Ok(SaveMaterialStep::Done(SaveOutcome::Saved));
     };
-    let contents = match deps.web_contents_for(&tab.id) {
+    let contents = match deps.web_contents_for(&tab.id)? {
         Some(contents) if !contents.is_destroyed() => contents,
-        _ => return SaveMaterialStep::Done(SaveOutcome::Saved),
+        _ => return Ok(SaveMaterialStep::Done(SaveOutcome::Saved)),
     };
     if !can_save_in_place(deps, &tab) {
-        deps.reveal(&tab.id);
-        return SaveMaterialStep::Done(SaveOutcome::Shown);
+        return Ok(SaveMaterialStep::Reveal(tab.id));
     }
     let path = tab.file_path.as_deref().unwrap_or_default();
-    match tab.kind {
+    Ok(match tab.kind {
         DocumentTabKind::Docs | DocumentTabKind::Sheets | DocumentTabKind::Slides => {
             SaveMaterialStep::Need(
                 SaveNeed::ToPath {
@@ -222,7 +220,7 @@ pub fn save_material_begin<D: OpenMaterialsDeps>(
             )
         }
         _ => SaveMaterialStep::Done(SaveOutcome::Failed),
-    }
+    })
 }
 
 impl SaveMaterialRun {
@@ -244,14 +242,12 @@ pub fn path_of_untitled<D: OpenMaterialsDeps>(
     deps: &mut D,
     tabs: &[OpenDocumentTab],
     web_contents_id: f64,
-) -> Option<String> {
+) -> Result<Option<String>, Failure> {
     for tab in tabs {
-        let id = deps.web_contents_for(&tab.id).map(|c| c.id());
-        if id == Some(web_contents_id) {
-            return tab.file_path.clone();
-        }
+        let id = deps.web_contents_for(&tab.id)?.map(|contents| contents.id());
+        if id == Some(web_contents_id) { return Ok(tab.file_path.clone()); }
     }
-    None
+    Ok(None)
 }
 
 /// `showUntitled(webContentsId)`
@@ -259,12 +255,12 @@ pub fn show_untitled<D: OpenMaterialsDeps>(
     deps: &mut D,
     tabs: &[OpenDocumentTab],
     web_contents_id: f64,
-) {
+) -> Result<Option<String>, Failure> {
     for tab in tabs {
-        let id = deps.web_contents_for(&tab.id).map(|c| c.id());
+        let id = deps.web_contents_for(&tab.id)?.map(|contents| contents.id());
         if id == Some(web_contents_id) {
-            deps.reveal(&tab.id);
-            return;
+            return Ok(Some(tab.id.clone()));
         }
     }
+    Ok(None)
 }

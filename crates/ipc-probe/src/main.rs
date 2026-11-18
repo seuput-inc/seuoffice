@@ -63,18 +63,30 @@ static SURFACES: LazyLock<HashMap<String, Surface>> = LazyLock::new(|| {
 });
 
 /// The views of the case, in the order `Views::all` lists them
-struct CaseViews(Vec<Sender>);
+struct CaseViews {
+    views: Mutex<Vec<Sender>>,
+    generations: Mutex<HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    replaced: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
+}
 
 impl Views for CaseViews {
     fn sender_of(&self, view: ViewId) -> Option<Sender> {
-        self.0.iter().find(|s| s.view == view).copied()
+        self.views.lock().unwrap().iter().find(|s| s.view == view).copied()
     }
 
     fn all(&self) -> Vec<Sender> {
-        self.0.clone()
+        self.views.lock().unwrap().clone()
     }
 
     fn on_destroyed(&self, _listener: Box<dyn Fn(ViewId) + Send + Sync>) {}
+
+    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+        self.generations.lock().unwrap().get(&view).cloned()
+    }
+
+    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+        self.replaced.lock().unwrap().push(listener);
+    }
 }
 
 /// `app.getPath(name)` is `<folder>/<name>`, as fakes.ts answers it
@@ -124,6 +136,87 @@ impl Events {
     }
 }
 
+/// A case-local reference to the actual argument one side emitted. The
+/// comparison normalizes only the referenced identity, never the remaining
+/// event fields or the argument used to answer the real handler.
+#[derive(Clone)]
+struct EventArgument {
+    step: usize,
+    channel: String,
+    view: u64,
+    arg: usize,
+    occurrence: usize,
+}
+impl EventArgument {
+    fn parse(value: &Value) -> Result<Option<Self>, String> {
+        let Some(object) = value.as_object() else { return Ok(None) };
+        if object.len() != 1 || !object.contains_key("$eventArg") { return Ok(None); }
+        let reference = object["$eventArg"].as_object().ok_or("invalid event argument reference")?;
+        let number = |name: &str| -> Result<u64, String> {
+            reference.get(name).and_then(Value::as_u64).filter(|n| *n <= 9_007_199_254_740_991)
+                .ok_or_else(|| "invalid event argument reference".to_owned())
+        };
+        Ok(Some(Self {
+            step: usize::try_from(number("step")?).map_err(|e| e.to_string())?,
+            channel: reference.get("channel").and_then(Value::as_str).ok_or("invalid event argument reference")?.to_owned(),
+            view: number("view")?,
+            arg: usize::try_from(number("arg")?).map_err(|e| e.to_string())?,
+            occurrence: usize::try_from(number("occurrence")?).map_err(|e| e.to_string())?,
+        }))
+    }
+    fn key(&self) -> String {
+        json!([self.step, self.channel.as_str(), self.view, self.arg, self.occurrence]).to_string()
+    }
+}
+
+#[derive(Default)]
+struct EventReferences {
+    wanted: HashMap<String, EventArgument>,
+    values: HashMap<String, Value>,
+}
+impl EventReferences {
+    fn collect(&mut self, value: &Value) -> Result<(), String> {
+        if let Some(reference) = EventArgument::parse(value)? {
+            self.wanted.insert(reference.key(), reference);
+        } else {
+            match value {
+                Value::Array(values) => for value in values { self.collect(value)?; },
+                Value::Object(values) => for value in values.values() { self.collect(value)?; },
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    fn resolve(&self, value: &Value) -> Result<Value, String> {
+        if let Some(reference) = EventArgument::parse(value)? {
+            let key = reference.key();
+            return self.values.get(&key).cloned().ok_or_else(|| format!("event argument not captured: {key}"));
+        }
+        match value {
+            Value::Array(values) => values.iter().map(|value| self.resolve(value)).collect::<Result<Vec<_>, _>>().map(Value::Array),
+            Value::Object(values) => values.iter().map(|(name, value)| Ok((name.clone(), self.resolve(value)?)))
+                .collect::<Result<serde_json::Map<_, _>, String>>().map(Value::Object),
+            _ => Ok(value.clone()),
+        }
+    }
+    fn capture(&mut self, step: usize, mut events: Vec<Value>) -> Result<Vec<Value>, String> {
+        for (key, reference) in &self.wanted {
+            if reference.step != step { continue; }
+            let index = events.iter().enumerate().filter(|(_, event)| {
+                event["channel"].as_str() == Some(reference.channel.as_str()) && event["view"].as_u64() == Some(reference.view)
+            }).nth(reference.occurrence).map(|(index, _)| index)
+                .ok_or_else(|| format!("event argument not found: {key}"))?;
+            let args = events[index]["args"].as_array_mut().ok_or_else(|| format!("event argument not found: {key}"))?;
+            let value = args.get_mut(reference.arg).ok_or_else(|| format!("event argument not found: {key}"))?;
+            let kind = if value.is_number() { "number" } else if value.is_string() { "string" }
+                else { return Err(format!("event identity is not a number or string: {key}")); };
+            self.values.insert(key.clone(), value.clone());
+            *value = Value::String(format!("$EVENT:{key}:{kind}"));
+        }
+        Ok(events)
+    }
+}
+
 impl EventSink for Recorder {
     fn emit(&self, target: Target, channel: &'static str, args: Vec<IpcValue>) {
         let mut e = wire::Encoder::default();
@@ -137,6 +230,17 @@ impl EventSink for Recorder {
                 "buffers": buffers,
             }));
         }
+    }
+
+    fn emit_to_owner_checked(&self, owner: &shell_contract::ipc::NativeRequestOwner, channel: &'static str, args: Vec<IpcValue>) -> Result<(), String> {
+        let generation = owner.context.renderer().filter(|generation| generation.is_active())
+            .ok_or_else(|| "renderer generation unavailable".to_owned())?;
+        if self.views.sender_of(owner.view).is_none() || !self.views.renderer_generation(owner.view)
+            .is_some_and(|current| current.is_active() && current.same_generation(generation)) {
+            return Err(format!("renderer does not own view {}", owner.view.0));
+        }
+        self.emit(Target::View(owner.view), channel, args);
+        Ok(())
     }
 }
 
@@ -283,7 +387,21 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     let core = CoreThread::spawn("core");
     let ui = CoreThread::spawn("ui");
     let tracked = Arc::new(Tracked::default());
-    let case_views = Arc::new(CaseViews(views.clone()));
+    let case_views = Arc::new(CaseViews {
+        views: Mutex::new(views.clone()),
+        generations: Mutex::new(views.iter().map(|sender| (sender.view, shell_contract::runtime::RendererGeneration::new())).collect()),
+        replaced: Mutex::new(Vec::new()),
+    });
+    // Probe-only synthetic owners are captured alongside case view creation.
+    // They model lifetimes for fixtures and are not native authentication.
+    let case_owners: HashMap<ViewId, shell_contract::ipc::NativeRequestOwner> = views.iter()
+        .filter(|sender| sender.surface == Surface::Slides)
+        .filter_map(|sender| case_views.generations.lock().unwrap().get(&sender.view).map(|generation| {
+            (sender.view, shell_contract::ipc::NativeRequestOwner {
+                view: sender.view,
+                context: shell_contract::ipc::NativeContext::with_renderer((), generation.clone()),
+            })
+        })).collect();
     let recorder = Arc::new(Recorder {
         views: case_views.clone(),
         events: Events::default(),
@@ -291,6 +409,24 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     let log: ProbeLog = Arc::default();
     let mut hosts = Hosts::default();
     hosts.insert(log.clone());
+    let register_views = case_views.clone();
+    let shell_registration = Arc::new(shell_ipc_w::tabs::ProbeShellRegistration::default());
+    let register_shell = shell_registration.clone();
+    let registrar: shell_ipc_w::tabs::ProbeViewRegistrar = Arc::new(move |sender, generation| {
+        let mut views = register_views.views.lock().map_err(|error| error.to_string())?;
+        let mut generations = register_views.generations.lock().map_err(|error| error.to_string())?;
+        if views.iter().any(|existing| existing.view == sender.view) || generations.contains_key(&sender.view) {
+            return Err("Synthetic view was already registered".into());
+        }
+        views.push(sender);
+        generations.insert(sender.view, generation.clone());
+        drop(generations);
+        drop(views);
+        register_shell.registered(sender, generation);
+        Ok(())
+    });
+    hosts.insert(shell_registration);
+    hosts.insert(registrar);
     let given = &case["hosts"];
     fakes::insert_shared(&mut hosts, &given["shared"], &views, &log);
     shell_ipc_u::probe_hosts(&mut hosts, &given["u"]);
@@ -298,16 +434,21 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     shell_ipc_m::probe_hosts(&mut hosts, &given["m"]);
     shell_ipc_w::probe_hosts(&mut hosts, &given["w"]);
     shell_ipc_d1::probe_hosts(&mut hosts, &given["d1"]);
+    if let Some(owner) = case_owners.get(&ViewId(100)) {
+        if let Some(shell) = hosts.get::<Arc<shell_ipc_d1::slides::fake::FakeShell>>() {
+            *shell.audience_owner.lock().map_err(|error| error.to_string())? = Some(owner.clone());
+        }
+    }
     shell_ipc_d2::probe_hosts(&mut hosts, &given["d2"]);
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: ui.clone(),
         core: core.clone(),
         workers: Arc::new(CatchingWorkers(Arc::new(TrackedWorkers(tracked.clone())))),
         events: recorder.clone(),
-        views: case_views,
+        views: case_views.clone(),
         paths: Arc::new(CasePaths(PathBuf::from(dir))),
         hosts: Arc::new(hosts),
-    };
+    });
 
     let trigger_services = services.clone();
     let own = case["batch"].as_str().map(str::to_owned);
@@ -335,6 +476,11 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     }
 
     let mut calls = Vec::new();
+    let mut references = EventReferences::default();
+    for call in case["calls"].as_array().into_iter().flatten() {
+        references.collect(&call["args"])?;
+        references.collect(&call["capture"])?;
+    }
     // deferred invokes by the index of their call, until an `await` step takes them
     let mut deferred: HashMap<u64, Pending> = HashMap::new();
     for (i, call) in case["calls"].as_array().into_iter().flatten().enumerate() {
@@ -349,7 +495,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             let drained = drain(&core, &ui, &tracked);
             let mut out = json!({
                 "answer": answer,
-                "events": recorder.events.take(),
+                "events": references.capture(i, recorder.events.take())?,
             });
             if !drained {
                 out["undrained"] = json!(true);
@@ -367,7 +513,8 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             let services = trigger_services.clone();
             let name = call["name"].as_str().unwrap_or("").to_string();
             let unknown = format!("unknown trigger {name}");
-            let args = call["args"].clone();
+            let args = references.resolve(&call["args"])?;
+            let owner = case_owners.get(&sender.view).cloned();
             let (tx, rx) = mpsc::channel::<Reply>();
             let known = run_on(core.as_ref(), move || {
                 // answered on the core thread or later, after a timer, a
@@ -384,6 +531,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
                         Some("d1") => shell_ipc_d1::probe_trigger(
                             &name,
                             ViewId(view),
+                            owner,
                             &args,
                             &services,
                             provided,
@@ -436,7 +584,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             let drained = drain(&core, &ui, &tracked);
             let mut out = json!({
                 "answer": answer,
-                "events": recorder.events.take(),
+                "events": references.capture(i, recorder.events.take())?,
             });
             if !drained {
                 out["undrained"] = json!(true);
@@ -451,11 +599,30 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             .flatten()
             .map(|b| unhex(b.as_str().unwrap_or("")))
             .collect();
-        let args =
-            wire::decode_list(&call["args"], &buffers).map_err(|e| format!("call {i}: {e}"))?;
+        let resolved = references.resolve(&call["args"])?;
+        let args = wire::decode_list(&resolved, &buffers).map_err(|e| format!("call {i}: {e}"))?;
         let (tx, rx) = mpsc::channel();
         let name = channel.to_string();
         let request = (kind == ChannelKind::Invoke).then_some(RequestId(i as u64 + 1));
+        let native = if sender.surface == Surface::Slides {
+            case_owners.get(&sender.view).map(|owner| owner.context.clone())
+        } else if sender.surface == Surface::Sheets && matches!(
+            channel,
+            "workbook:create-document" | "sheets:capture-screen-sources" | "sheets:capture-screen-source"
+        ) {
+            // This host was installed above as SyntheticOwnedEffects, not native authentication.
+            let effects = trigger_services.hosts
+                .get::<shell_contract::hosts::OwnedEffectsHost>()
+                .ok_or_else(|| "the probe has no synthetic owned-effects fixture".to_owned())?;
+            case_views.renderer_generation(sender.view)
+                .map(|generation| effects.capture_owner(sender.view, &generation)
+                    .map(|owner| owner.context))
+                .transpose()?
+        } else if matches!(channel, "docs:write-recovery-now-done" | "hwp:recovery-flushed") {
+            case_views.renderer_generation(sender.view).map(|generation| shell_contract::ipc::NativeContext::with_renderer((), generation))
+        } else {
+            None
+        };
         core.post(Box::new(move || {
             DISPATCHER.with(|d| {
                 let d = d.borrow();
@@ -464,6 +631,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
                     sender,
                     kind,
                     request,
+                    native,
                     &name,
                     args,
                     Box::new(move |r| {
@@ -481,7 +649,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
         let drained = drain(&core, &ui, &tracked);
         let mut out = json!({
             "answer": answer,
-            "events": recorder.events.take(),
+            "events": references.capture(i, recorder.events.take())?,
         });
         if !drained {
             out["undrained"] = json!(true);
@@ -557,6 +725,28 @@ mod tests {
             .iter()
             .map(|e| e["channel"].as_str().unwrap().to_owned())
             .collect()
+    }
+
+    #[test]
+    fn replay_uses_each_actual_event_identity_and_retains_stale_values() {
+        let old = json!({"$eventArg":{"step":0,"channel":"copy-now","view":1,"arg":0,"occurrence":0}});
+        let new = json!({"$eventArg":{"step":1,"channel":"copy-now","view":1,"arg":0,"occurrence":0}});
+        let args = json!([old, new, null]);
+        let mut refs = EventReferences::default();
+        refs.collect(&args).unwrap();
+        let first = refs.capture(0, vec![json!({"view":1,"channel":"copy-now","args":[91],"buffers":[]})]).unwrap();
+        refs.capture(1, vec![json!({"view":1,"channel":"copy-now","args":[92],"buffers":[]})]).unwrap();
+        assert_eq!(refs.resolve(&args).unwrap(), json!([91, 92, null]));
+        assert_eq!(first[0]["args"][0], "$EVENT:[0,\"copy-now\",1,0,0]:number");
+    }
+
+    #[test]
+    fn replay_rejects_missing_or_wrong_view_event() {
+        let reference = json!({"$eventArg":{"step":0,"channel":"copy-now","view":2,"arg":0,"occurrence":0}});
+        let mut refs = EventReferences::default();
+        refs.collect(&reference).unwrap();
+        assert!(refs.resolve(&reference).is_err());
+        assert!(refs.capture(0, vec![json!({"view":1,"channel":"copy-now","args":[9],"buffers":[]})]).is_err());
     }
 
     /// A batch whose registration sends `channels`

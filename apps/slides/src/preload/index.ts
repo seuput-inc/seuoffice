@@ -225,6 +225,7 @@ const api: SlidesApi = {
   openPptx: (fitWidthPx) => ipcRenderer.invoke('slides:open', fitWidthPx),
   openPptxPath: (path, fitWidthPx) => ipcRenderer.invoke('slides:open-path', path, fitWidthPx),
   consumePendingOpen: (fitWidthPx) => ipcRenderer.invoke('slides:consume-pending-open', fitWidthPx),
+  recoveryInitialized: (token, ok, error) => ipcRenderer.invoke('slides:recovery-initialized', token, ok, error),
   consumeHeadlessExport: () => ipcRenderer.invoke('slides:consume-headless-export'),
   headlessExportDone: (result: { ok: boolean; error?: string }) =>
     ipcRenderer.send('slides:headless-export-done', result),
@@ -477,11 +478,16 @@ const api: SlidesApi = {
       }
     })
   },
-  save: (auto?: boolean) => ipcRenderer.invoke('slides:save', auto === true),
-  saveAs: (defaultName: string) => ipcRenderer.invoke('slides:save-as', defaultName),
+  save: (auto?: boolean, requestId?: string) => ipcRenderer.invoke('slides:save', auto === true, ...(requestId === undefined ? [] : [requestId])),
+  saveAs: (defaultName: string, requestId?: string) => ipcRenderer.invoke('slides:save-as', defaultName, ...(requestId === undefined ? [] : [requestId])),
   saveIntoProject: () => ipcRenderer.invoke('slides:save-into-project'),
-  onCloseSaveRequest: (handler: () => void) => {
-    const listener = () => handler()
+  onCloseSaveRequest: (handler) => {
+    const listener = (_event: IpcRendererEvent, request: unknown) => {
+      if (request === undefined) return handler()
+      if (typeof request !== 'object' || request === null || !('id' in request) || !('mode' in request)) return
+      if (typeof request.id !== 'string' || (request.mode !== 'save' && request.mode !== 'saveAs')) return
+      handler({ id: request.id, mode: request.mode })
+    }
     ipcRenderer.on('slides:close-save-request', listener)
     return () => ipcRenderer.removeListener('slides:close-save-request', listener)
   },
@@ -495,7 +501,7 @@ const api: SlidesApi = {
     ipcRenderer.on('slides:deck-changed', listener)
     return () => ipcRenderer.removeListener('slides:deck-changed', listener)
   },
-  reportCloseSaveResult: (ok: boolean) => ipcRenderer.send('slides:close-save-result', ok === true),
+  reportCloseSaveResult: (ok: boolean, requestId?: string) => ipcRenderer.send('slides:close-save-result', ok === true, ...(requestId === undefined ? [] : [requestId])),
   setAutoSavePref: (on: boolean) => ipcRenderer.send('slides:autosave-pref', on === true),
   isDirty: () => ipcRenderer.invoke('slides:is-dirty'),
   getRecentFiles: () => ipcRenderer.invoke('slides:recent'),

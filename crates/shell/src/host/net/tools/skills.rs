@@ -2,11 +2,9 @@
 //! the user skills (`shell_ipc_a::user_skills`).
 //!
 //! `AgentSkills` is main-core's `cli_agent_skills` and `cli_install` over the
-//! machine's home and environment: real. `SkillsShell` says where the bundled
-//! skills are: real. `SkillImporter` stands for the ai-provider import
-//! pipeline (archives, GitHub, zip writers), which main-core does not have:
-//! stub, except removing the import's temporary folder. `TemplateCopyTabs` is
-//! the tab manager: stub.
+//! machine's home and environment. `SkillsShell` locates the bundled skills.
+//! The import host uses main-core for staged installs and zip exports. Template
+//! copies use the shared tab state and its editor and project hooks.
 //!
 //! Where the bundled files are: a packaged shell carries them under the
 //! resource folder (`cli/`, `builtin-skills/`); a shell run from a checkout
@@ -42,7 +40,7 @@ use shell_ipc_a::user_skills::{
     TemplateCopyTabsHost,
 };
 
-use super::{NOT_BUILT, Unbuilt, now_ms, unbuilt};
+use super::now_ms;
 use crate::host::HostContext;
 
 pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
@@ -56,11 +54,11 @@ pub(super) fn install(hosts: &mut Hosts, cx: &HostContext) {
     hosts.insert(agent_skills);
     hosts.insert(shell_ipc_a::integrations::factory());
 
-    let importer: SkillImporterHost = Arc::new(Unbuilt);
+    let importer: SkillImporterHost = Arc::new(ShellSkillImporter);
     hosts.insert(importer);
     let skills_shell: SkillsShellHost = Arc::new(ShellSkills { layout });
     hosts.insert(skills_shell);
-    let tabs: TemplateCopyTabsHost = Arc::new(Unbuilt);
+    let tabs: TemplateCopyTabsHost = Arc::new(ShellTemplateCopyTabs);
     hosts.insert(tabs);
     hosts.insert(shell_ipc_a::user_skills::factory());
     hosts.insert(shell_ipc_a::user_skills::template_tabs_factory());
@@ -304,29 +302,116 @@ impl SkillsShell for ShellSkills {
     }
 }
 
-fn not_built() -> Thrown {
-    Thrown::Plain(NOT_BUILT.into())
+struct ShellSkillImporter;
+struct ShellTemplateCopyTabs;
+
+fn github_get(url: &str, accept: &str, limit: usize, aborted: Option<Aborted<'_>>) -> Result<Vec<u8>, main_core::packages::ai_provider::user_skills_import::SkillImportError> {
+    use std::io::Read;
+    use main_core::packages::ai_provider::user_skills_import::SkillImportError;
+    let error = |kind, message: String| SkillImportError::new(kind, message);
+    let validate = |url: reqwest::Url| -> Result<reqwest::Url, SkillImportError> {
+        if url.scheme() != "https"
+            || !matches!(url.host_str(), Some("github.com" | "api.github.com" | "codeload.github.com"))
+            || !url.username().is_empty() || url.password().is_some() || url.port().is_some()
+        {
+            return Err(error("unsafe", format!("Refused to connect to {}://{}", url.scheme(), url.host_str().unwrap_or(""))));
+        }
+        Ok(url)
+    };
+    let mut current = validate(reqwest::Url::parse(url).map_err(|_| error("unsafe", format!("Not a web address: {url}")))?)?;
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_| error("network", "Could not initialize network client".into()))?;
+    for hop in 0..=5 {
+        if aborted.is_some_and(|aborted| aborted()) {
+            return Err(error("cancelled", "Cancelled".into()));
+        }
+        let mut response = client.get(current.clone()).header(reqwest::header::ACCEPT, accept)
+            .header(reqwest::header::USER_AGENT, "seuoffice").send()
+            .map_err(|_| error("network", format!("Could not reach {}", current.host_str().unwrap_or(""))))?;
+        let status = response.status();
+        if status.is_redirection() {
+            let target = response.headers().get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| error("network", "A redirect without a target".into()))?;
+            if hop == 5 { return Err(error("network", "Too many redirects".into())); }
+            current = validate(current.join(target).map_err(|_| error("unsafe", "A redirect to a malformed address".into()))?)?;
+            continue;
+        }
+        if !status.is_success() {
+            let code = status.as_u16();
+            let rate_limited = code == 429 || (code == 403 &&
+                (response.headers().get("x-ratelimit-remaining").is_some_and(|value| value == "0")
+                    || response.headers().contains_key("retry-after")));
+            let kind = if rate_limited { "rate-limited" } else if [401, 403, 404, 410, 422, 451].contains(&code) { "not-found" } else { "network" };
+            let message = if rate_limited { format!("GitHub is limiting requests (HTTP {code})") } else { format!("GitHub answered HTTP {code}") };
+            return Err(error(kind, message));
+        }
+        if let Some(length) = response.content_length().filter(|length| *length > limit as u64) {
+            return Err(error("too-large", format!("The download is {length} bytes (limit {limit})")));
+        }
+        let mut body = Vec::new();
+        let mut chunk = [0u8; 16384];
+        loop {
+            if aborted.is_some_and(|aborted| aborted()) { return Err(error("cancelled", "Cancelled".into())); }
+            let count = response.read(&mut chunk).map_err(|_| error("network", "The download broke off".into()))?;
+            if count == 0 { return Ok(body); }
+            if body.len() + count > limit { return Err(error("too-large", format!("The download is over {limit} bytes"))); }
+            body.extend_from_slice(&chunk[..count]);
+        }
+    }
+    Err(error("network", "Too many redirects".into()))
 }
 
-impl SkillImporter for Unbuilt {
+impl SkillImporter for ShellSkillImporter {
     fn prepare_skill_import(
         &self,
-        _: &SkillImportSource,
-        _: &PrepareEnv,
-        _: Option<Aborted<'_>>,
+        source: &SkillImportSource,
+        env: &PrepareEnv,
+        aborted: Option<Aborted<'_>>,
     ) -> Result<SkillImport, Thrown> {
-        unbuilt("SkillImporter::prepare_skill_import");
-        Err(not_built())
+        use main_core::packages::ai_provider::{user_skills_archive as archive, user_skills_github as github, user_skills_import as import, user_skills_preview as preview};
+        let describe = |root: &str, rels: &[String], app: &str| preview::describe_candidates(root, rels, app, None);
+        match source {
+            SkillImportSource::Folder { folder } => import::prepare_folder_import(folder, &env.app_skills_dir, &env.home_dir, describe),
+            SkillImportSource::Text { text } => import::prepare_single_file_import(text, import::SkillImportOrigin::Text, &env.app_skills_dir, &env.temp_dir, describe),
+            SkillImportSource::SkillFile { file } => import::prepare_skill_file_import(file, &env.app_skills_dir, &env.home_dir, &env.temp_dir, describe),
+            SkillImportSource::Zip { file } => import::prepare_zip_import(file, &env.app_skills_dir, &env.temp_dir, |bytes, root| archive::extract(bytes, root, false, "", false), describe),
+            SkillImportSource::Github { address } => {
+                let parsed = github::parse_github_skill_address(address)
+                    .ok_or_else(|| import::SkillImportError::new("bad-address", "Not a GitHub address the app accepts"))?;
+                let mut get = |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
+                let resolved = github::resolve_github_skill_address(&parsed, &mut get)?;
+                let bytes = github::download_github_archive(&resolved.owner, &resolved.repo, &resolved.commit, None, &mut get)?;
+                let origin = import::SkillImportOrigin::Github {
+                    repo: format!("{}/{}", resolved.owner, resolved.repo),
+                    ref_: resolved.ref_, commit: resolved.commit, path: resolved.path,
+                };
+                import::prepare_github_archive(origin, resolved.skill.as_deref(), &bytes, &env.app_skills_dir, &env.temp_dir,
+                    |bytes, root, path| archive::extract(bytes, root, true, path, true),
+                    preview::describe_candidates, aborted)
+            }
+        }
     }
 
     fn install_imported_skills(
         &self,
-        _: &SkillImport,
-        _: &ImportOptions,
-        _: Discard<'_>,
+        imported: &SkillImport,
+        options: &ImportOptions,
+        discard: Discard<'_>,
     ) -> Result<InstallImportedSkillsResult, Thrown> {
-        unbuilt("SkillImporter::install_imported_skills");
-        Err(not_built())
+        main_core::packages::ai_provider::user_skills_import::install_imported_skills(
+            imported,
+            &options.app_skills_dir,
+            &options.selected,
+            &options.on_collision,
+            &mut main_core::packages::ai_provider::user_skills_import::CommitSkillInstallOptions {
+                now_ms: now_ms(),
+                discard_replaced: Some(discard),
+                limits: None,
+                random: None,
+            },
+        )
     }
 
     /// `disposeSkillImport(imported)`: the import's temporary folder goes
@@ -338,57 +423,173 @@ impl SkillImporter for Unbuilt {
 
     fn check_github_skill_update(
         &self,
-        _: &CheckUpdateOptions,
-        _: Option<Aborted<'_>>,
+        options: &CheckUpdateOptions,
+        aborted: Option<Aborted<'_>>,
     ) -> Result<GitHubSkillUpdateCheck, Thrown> {
-        unbuilt("SkillImporter::check_github_skill_update");
-        Err(not_built())
+        use main_core::packages::ai_provider::{user_skills_archive as archive, user_skills_github as github, user_skills_import as import, user_skills_preview as preview};
+        import::check_github_skill_update(
+            &options.skill_dir, &options.app_skills_dir, &options.temp_dir,
+            |repo| github::validate_repo(repo).map_err(Into::into),
+            |repo, ref_| {
+                let address = github::parse_github_skill_address(repo)
+                    .ok_or_else(|| import::SkillImportError::new("not-github", "The source record names no repository"))?;
+                let mut get = |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
+                github::github_ref_commit(&address.owner, &address.repo, ref_, &mut get).map_err(Into::into)
+            },
+            |repo, commit| {
+                let address = github::parse_github_skill_address(repo)
+                    .ok_or_else(|| import::SkillImportError::new("not-github", "The source record names no repository"))?;
+                let mut get = |url: &str, accept: &str, limit: usize| github_get(url, accept, limit, aborted);
+                github::download_github_archive(&address.owner, &address.repo, commit, None, &mut get).map_err(Into::into)
+            },
+            |bytes, root, path| archive::extract(bytes, root, true, path, false),
+            |dir, rel, app, ignored| preview::describe_skill_candidate(dir, rel, app, &[ignored.to_owned()]),
+            aborted,
+        )
     }
 
     fn apply_github_skill_update(
         &self,
-        _: &ChangedCheck,
-        _: &ApplyUpdateOptions,
-        _: Discard<'_>,
+        check: &ChangedCheck,
+        options: &ApplyUpdateOptions,
+        discard: Discard<'_>,
     ) -> Result<InstalledSkill, Thrown> {
-        unbuilt("SkillImporter::apply_github_skill_update");
-        Err(not_built())
+        use main_core::packages::ai_provider::user_skills_import::{
+            CommitSkillInstallOptions, SkillImportError, SkillInstallPlan, SkillInstallSource,
+            commit_skill_install,
+        };
+        let result = (|| {
+            let candidate = check.update.candidates.first()
+                .ok_or_else(|| SkillImportError::new("no-skills", "Nothing to update"))?;
+            if candidate.problem == Some("too-large") {
+                return Err(SkillImportError::new("too-large", format!("{} is too large", candidate.name)).into());
+            }
+            if candidate.problem.is_some() {
+                return Err(SkillImportError::new("not-installable", format!("{} cannot be installed", candidate.name)).into());
+            }
+            let plan = SkillInstallPlan {
+                candidate: candidate.clone(),
+                folder_name: jscompat::node_path::host::basename(&options.skill_dir, None),
+                replace_dirs: vec![options.skill_dir.clone()],
+                source: Some(SkillInstallSource {
+                    repo: check.record.repo.clone(), ref_: check.record.ref_.clone(),
+                    path: check.record.path.clone(), commit: check.commit.clone(),
+                }),
+            };
+            let mut dirs = commit_skill_install(&options.app_skills_dir, &[plan], &mut CommitSkillInstallOptions {
+                now_ms: now_ms(), discard_replaced: Some(discard), limits: None, random: None,
+            })?;
+            Ok(InstalledSkill { key: candidate.key.clone(), name: candidate.name.clone(), dir: dirs.remove(0), replaced: true })
+        })();
+        self.dispose_skill_import(&check.update);
+        result
     }
 
-    fn export_skill_zip(&self, _: &str, _: &str) -> Result<(), Thrown> {
-        unbuilt("SkillImporter::export_skill_zip");
-        Err(not_built())
+    fn export_skill_zip(&self, skill_dir: &str, out_path: &str) -> Result<(), Thrown> {
+        main_core::packages::ai_provider::user_skills_import::export_skill_bundle_zip(
+            &[skill_dir.to_owned()], out_path, now_ms(),
+        )
     }
 
-    fn export_skill_bundle_zip(&self, _: &[String], _: &str) -> Result<(), Thrown> {
-        unbuilt("SkillImporter::export_skill_bundle_zip");
-        Err(not_built())
+    fn export_skill_bundle_zip(&self, skill_dirs: &[String], out_path: &str) -> Result<(), Thrown> {
+        main_core::packages::ai_provider::user_skills_import::export_skill_bundle_zip(
+            skill_dirs, out_path, now_ms(),
+        )
     }
 }
 
-impl TemplateCopyTabs for Unbuilt {
-    fn open_template_copy(&self, _: &TemplateCopy) -> Result<Option<OpenedCopy>, String> {
-        unbuilt("TemplateCopyTabs::open_template_copy");
-        Err(NOT_BUILT.into())
+impl TemplateCopyTabs for ShellTemplateCopyTabs {
+    fn open_template_copy(&self, copy: &TemplateCopy) -> Result<Option<OpenedCopy>, String> {
+        if copy.editor.as_str() == "sheets" {
+            let copy = copy.clone();
+            return crate::host::w::on_core(move |provided| {
+                let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+                    return Ok(None);
+                };
+                tabs.open_sheets_template_copy(&copy).map(|opened| opened.map(|(tab_id, view)| OpenedCopy {
+                    tab_id, view, owns_copy: false,
+                }))
+            }).unwrap_or_else(|| Err("Core thread is unavailable".into()));
+        }
+        let copy = main_core::shell::tab_manager::TemplateCopy {
+            editor: copy.editor.as_str().to_owned(),
+            path: copy.path.clone(),
+            bytes: copy.bytes.clone(),
+            file_name: copy.file_name.clone(),
+            title: copy.title.clone(),
+        };
+        crate::host::w::on_core(move |provided| {
+            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+                return Ok(None);
+            };
+            tabs.with_manager(|manager, host| manager.open_template_copy(host, &copy))
+                .unwrap_or(Ok(None))
+                .map(|opened| opened.map(|(tab_id, view)| OpenedCopy {
+                    tab_id,
+                    view,
+                    owns_copy: false,
+                }))
+                .map_err(|error| error.0)
+        })
+        .unwrap_or_else(|| Err("Core thread is unavailable".into()))
     }
 
-    fn opener_file_path(&self, _: ViewId) -> Option<String> {
-        unbuilt("TemplateCopyTabs::opener_file_path");
-        None
+    fn opener_file_path(&self, opener: ViewId) -> Option<String> {
+        crate::host::w::on_core(move |provided| {
+            crate::host::shell_tabs::shell_tabs(provided)
+                .and_then(|tabs| tabs.describe_view(opener))
+                .and_then(|(_, path)| path)
+        })
+        .flatten()
     }
 
-    fn open_files(&self) -> Result<Vec<OpenFileState>, OpenFilesSourceFailed> {
-        // no tab is open, so no document has unsaved changes
-        unbuilt("TemplateCopyTabs::open_files");
-        Ok(Vec::new())
+    fn open_files(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
+        let mut done = Some(done);
+        let _ = crate::host::w::on_core_local(|provided| {
+            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+                return;
+            };
+            let Some(done) = done.take() else { return };
+            tabs.open_documents(Box::new(move |result| {
+                done(result.map(|documents| documents.into_iter().map(|document| OpenFileState {
+                    file_path: document.file_path,
+                    dirty: document.dirty,
+                }).collect()).map_err(|_| OpenFilesSourceFailed));
+            }));
+        });
+        if let Some(done) = done {
+            done(Err(OpenFilesSourceFailed));
+        }
     }
 
-    fn focus_tab(&self, _: &str) -> bool {
-        unbuilt("TemplateCopyTabs::focus_tab");
-        false
+    fn focus_tab(&self, tab_id: &str) -> bool {
+        let tab_id = tab_id.to_owned();
+        crate::host::w::on_core(move |provided| {
+            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+                return false;
+            };
+            let exists = tabs
+                .with_manager(|manager, _| manager.list().iter().any(|tab| tab.id == tab_id))
+                .unwrap_or(false);
+            if exists {
+                tabs.reveal_shell_window();
+                let _ = tabs.with_manager(|manager, host| manager.activate_tab(host, &tab_id));
+            }
+            exists
+        })
+        .unwrap_or(false)
     }
 
-    fn follow_opener_project(&self, _: ViewId, _: ViewId) {
-        unbuilt("TemplateCopyTabs::follow_opener_project");
+    fn follow_opener_project(&self, copy: ViewId, opener: ViewId) {
+        let _ = crate::host::w::on_core(move |provided| {
+            if let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() {
+                let opener = main_core::shell::projects::new_documents::NewDocumentOpener::Window {
+                    web_contents_id: i64::from(opener.0),
+                };
+                if let Err(error) = tabs.follow_opener_project(copy, &opener) {
+                    eprintln!("Could not link template copy to opener project: {error}");
+                }
+            }
+        });
     }
 }

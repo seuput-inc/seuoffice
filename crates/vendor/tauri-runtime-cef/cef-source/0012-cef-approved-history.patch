@@ -1,0 +1,385 @@
+# Private pinned source patch. Native compile, generated ABI and runtime are unverified.
+diff --git a/include/internal/cef_types.h b/include/internal/cef_types.h
+--- a/include/internal/cef_types.h
++++ b/include/internal/cef_types.h
+@@ -4222,6 +4222,26 @@
+   int is_gpu_memory_inflated;
+ } cef_task_info_t;
+ 
++#if CEF_API_ADDED(15401)
++///
++/// Outcome of one explicitly approved browser-owned history or reload command.
++///
++typedef enum {
++  ///
++  /// The exact cross-document request reached navigation start.
++  ///
++  CEF_APPROVED_HISTORY_STARTED_CROSS_DOCUMENT,
++  ///
++  /// A same-document request committed, or no main-frame navigation was needed.
++  ///
++  CEF_APPROVED_HISTORY_SAME_DOCUMENT_OR_NOOP,
++  ///
++  /// The command was rejected, superseded, or cancelled before starting.
++  ///
++  CEF_APPROVED_HISTORY_CANCELLED,
++} cef_approved_history_navigation_outcome_t;
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/include/cef_browser.h b/include/cef_browser.h
+--- a/include/cef_browser.h
++++ b/include/cef_browser.h
+@@ -286,6 +286,21 @@
+   /*--cef()--*/
+   virtual void OnComplete(bool accepted) = 0;
+ };
++
++///
++/// UI-thread completion for one approved reload or history command. Only short
++/// state updates are allowed. Do not destroy the browser or run application code.
++///
++/*--cef(source=client,added=15401)--*/
++class CefApprovedHistoryNavigationCallback : public virtual CefBaseRefCounted {
++ public:
++  ///
++  /// Called exactly once, including rejection and cancellation before start.
++  /// A same-document candidate may restart cross-document before completion.
++  ///
++  /*--cef()--*/
++  virtual void OnComplete(cef_approved_history_navigation_outcome_t outcome) = 0;
++};
+ #endif
+ 
+ ///
+@@ -1118,6 +1133,35 @@
+       const CefString& url, uint64_t issuance, const CefString& intent,
+       CefRefPtr<CefApprovedNavigationCallback> callback) = 0;
+ #endif
++
++#if CEF_API_ADDED(15401)
++  ///
++  /// Reload using the original entry, POST/repost policy and cache mode.
++  /// Browser UI thread only. A no-op must not revoke the current document.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void ReloadApprovedMainFrame(
++      bool ignore_cache, uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedHistoryNavigationCallback> callback) = 0;
++
++  ///
++  /// Traverse backward using the controller's native skip-aware history policy.
++  /// Browser UI thread only. Never replace history traversal with a URL load.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void GoBackApprovedMainFrame(
++      uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedHistoryNavigationCallback> callback) = 0;
++
++  ///
++  /// Traverse forward using the controller's native skip-aware history policy.
++  /// Browser UI thread only. Same-document traversal retains current authority.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void GoForwardApprovedMainFrame(
++      uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedHistoryNavigationCallback> callback) = 0;
++#endif
+ };
+ 
+ #endif  // CEF_INCLUDE_CEF_BROWSER_H_
+diff --git a/libcef/browser/browser_host_base.h b/libcef/browser/browser_host_base.h
+--- a/libcef/browser/browser_host_base.h
++++ b/libcef/browser/browser_host_base.h
+@@ -283,6 +283,15 @@
+   void LoadApprovedMainFrameURL(
+       const CefString& url, uint64_t issuance, const CefString& intent,
+       CefRefPtr<CefApprovedNavigationCallback> callback) override;
++  void ReloadApprovedMainFrame(
++      bool ignore_cache, uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedHistoryNavigationCallback> callback) override;
++  void GoBackApprovedMainFrame(
++      uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedHistoryNavigationCallback> callback) override;
++  void GoForwardApprovedMainFrame(
++      uint64_t issuance, const CefString& intent,
++      CefRefPtr<CefApprovedHistoryNavigationCallback> callback) override;
+ 
+   // CefBrowser methods:
+   bool IsValid() override;
+diff --git a/libcef/browser/browser_host_base.cc b/libcef/browser/browser_host_base.cc
+--- a/libcef/browser/browser_host_base.cc
++++ b/libcef/browser/browser_host_base.cc
+@@ -60,6 +60,78 @@
+   CefRefPtr<CefApprovedNavigationCallback> callback_;
+ };
+ 
++class ApprovedHistoryCompletion {
++ public:
++  explicit ApprovedHistoryCompletion(
++      CefRefPtr<CefApprovedHistoryNavigationCallback> callback)
++      : callback_(std::move(callback)) {}
++  ~ApprovedHistoryCompletion() { Finish(CEF_APPROVED_HISTORY_CANCELLED); }
++  void Finish(cef_approved_history_navigation_outcome_t outcome) {
++    auto callback = std::move(callback_);
++    if (callback) callback->OnComplete(outcome);
++  }
++
++ private:
++  CefRefPtr<CefApprovedHistoryNavigationCallback> callback_;
++};
++
++enum class ApprovedHistoryAction { kReload, kReloadIgnoreCache, kBack, kForward };
++
++void RunApprovedHistory(
++    CefRefPtr<CefBrowserHostBase> host, ApprovedHistoryAction action,
++    uint64_t issuance, const CefString& intent,
++    CefRefPtr<CefApprovedHistoryNavigationCallback> callback) {
++  CEF_REQUIRE_UIT();
++  if (!callback) return;
++  auto completion = std::make_unique<ApprovedHistoryCompletion>(std::move(callback));
++  if (host->WillBeDestroyed() || !host->GetWebContents() || intent.empty()) return;
++  auto* approval = CefApprovedNavigation::GetOrCreate(host->GetWebContents());
++  auto command = approval->ReserveCommand(
++      issuance, intent.ToString(),
++      base::BindOnce(
++          [](std::unique_ptr<ApprovedHistoryCompletion> completion,
++             content::NavigationController::CefHistoryOutcome outcome) {
++            using Outcome = content::NavigationController::CefHistoryOutcome;
++            switch (outcome) {
++              case Outcome::kStartedCrossDocument:
++                completion->Finish(CEF_APPROVED_HISTORY_STARTED_CROSS_DOCUMENT);
++                return;
++              case Outcome::kSameDocumentOrNoop:
++                completion->Finish(CEF_APPROVED_HISTORY_SAME_DOCUMENT_OR_NOOP);
++                return;
++              case Outcome::kCancelled:
++                completion->Finish(CEF_APPROVED_HISTORY_CANCELLED);
++                return;
++            }
++          }, std::move(completion)));
++  if (!command) return;
++  auto browser_info = host->browser_info();
++  base::OnceClosure navigate = base::BindOnce(
++      [](CefRefPtr<CefBrowserHostBase> host, ApprovedHistoryAction action,
++         std::unique_ptr<content::NavigationController::CefHistoryCommand> command) {
++        if (host->WillBeDestroyed() || !host->GetWebContents()) return;
++        auto& controller = host->GetWebContents()->GetController();
++        switch (action) {
++          case ApprovedHistoryAction::kReload:
++            controller.ReloadWithCefHistoryCommand(content::ReloadType::NORMAL,
++                                                   true, std::move(command));
++            return;
++          case ApprovedHistoryAction::kReloadIgnoreCache:
++            controller.ReloadWithCefHistoryCommand(content::ReloadType::BYPASSING_CACHE,
++                                                   true, std::move(command));
++            return;
++          case ApprovedHistoryAction::kBack:
++            controller.GoBackWithCefHistoryCommand(std::move(command));
++            return;
++          case ApprovedHistoryAction::kForward:
++            controller.GoForwardWithCefHistoryCommand(std::move(command));
++            return;
++        }
++      }, std::move(host), action, std::move(command));
++  if (browser_info->DeferNavigationIfLocked(navigate)) return;
++  std::move(navigate).Run();
++}
++
+ // Associates a CefBrowserHostBase instance with a WebContents. This object will
+ // be deleted automatically when the WebContents is destroyed.
+ class WebContentsUserDataAdapter : public base::SupportsUserData::Data {
+@@ -1410,6 +1482,28 @@
+   std::move(action).Run();
+ }
+ 
++void CefBrowserHostBase::ReloadApprovedMainFrame(
++    bool ignore_cache, uint64_t issuance, const CefString& intent,
++    CefRefPtr<CefApprovedHistoryNavigationCallback> callback) {
++  RunApprovedHistory(this, ignore_cache ? ApprovedHistoryAction::kReloadIgnoreCache
++                                      : ApprovedHistoryAction::kReload,
++                     issuance, intent, std::move(callback));
++}
++
++void CefBrowserHostBase::GoBackApprovedMainFrame(
++    uint64_t issuance, const CefString& intent,
++    CefRefPtr<CefApprovedHistoryNavigationCallback> callback) {
++  RunApprovedHistory(this, ApprovedHistoryAction::kBack, issuance, intent,
++                     std::move(callback));
++}
++
++void CefBrowserHostBase::GoForwardApprovedMainFrame(
++    uint64_t issuance, const CefString& intent,
++    CefRefPtr<CefApprovedHistoryNavigationCallback> callback) {
++  RunApprovedHistory(this, ApprovedHistoryAction::kForward, issuance, intent,
++                     std::move(callback));
++}
++
+ void CefBrowserHostBase::LoadMainFrameURL(
+     const content::OpenURLParams& params) {
+   auto callback =
+diff --git a/libcef/browser/approved_navigation.h b/libcef/browser/approved_navigation.h
+--- a/libcef/browser/approved_navigation.h
++++ b/libcef/browser/approved_navigation.h
+@@ -41,20 +41,49 @@
+ 
+   bool Reserve(uint64_t issuance, const std::string& intent) {
+     CEF_REQUIRE_UIT_RETURN(false);
+-    if (intent.empty() || !web_contents() || issuance <= state_->last_issued) return false;
++    if (intent.empty() || !web_contents() ||
++        issuance <= state_->reserved_issued) return false;
+     auto* node = content::FrameTreeNode::From(web_contents()->GetPrimaryMainFrame());
+     if (!node) return false;
+     auto cef_revoke = node->RevokeCefAdmission();
+     state_->navigation_id.reset();
+     state_->intent = intent;
+     state_->last_issued = issuance;
++    state_->reserved_issued = issuance;
++    state_->reserved_navigation_id.reset();
+     state_->started = false;
+     return true;
++  }
++
++  std::unique_ptr<content::NavigationController::CefHistoryCommand> ReserveCommand(
++      uint64_t issuance, const std::string& intent,
++      base::OnceCallback<void(content::NavigationController::CefHistoryOutcome)>
++          completion) {
++    CEF_REQUIRE_UIT_RETURN(nullptr);
++    if (intent.empty() || !web_contents() ||
++        issuance <= state_->reserved_issued) return nullptr;
++    state_->reserved_issued = issuance;
++    state_->reserved_navigation_id.reset();
++    return std::make_unique<content::NavigationController::CefHistoryCommand>(
++        std::make_unique<NavigationData>(state_, issuance, intent,
++                                         ProvenanceKind::kHistory),
++        base::BindRepeating(
++            [](std::shared_ptr<State> state, uint64_t issuance) {
++              return state->alive && state->reserved_issued == issuance;
++            }, state_, issuance),
++        base::BindOnce(
++            [](std::shared_ptr<State> state, uint64_t issuance, int64_t id) {
++              if (!state->alive || state->reserved_issued != issuance) return false;
++              state->reserved_navigation_id = id;
++              return true;
++            }, state_, issuance),
++        std::move(completion));
+   }
+ 
+   bool Load(const GURL& url, uint64_t issuance, const std::string& intent) {
+     CEF_REQUIRE_UIT_RETURN(false);
+     if (!web_contents() || state_->last_issued != issuance ||
++        state_->reserved_issued != issuance ||
+         state_->intent != intent || state_->started) return false;
+     auto state = state_;
+     content::NavigationController::LoadURLParams params(url);
+@@ -88,24 +117,46 @@
+     return std::make_pair(state_->last_issued, state_->intent);
+   }
+ 
++  // Browser-only query. The intent must never be sent to the renderer.
++  std::optional<std::pair<uint64_t, std::string>> GetHistoryRestoreIntent(
++      content::NavigationHandle* navigation) const {
++    CEF_REQUIRE_UIT_RETURN(std::nullopt);
++    if (!navigation || !navigation->IsInPrimaryMainFrame() ||
++        !navigation->IsServedFromBackForwardCache() ||
++        state_->reserved_issued != state_->last_issued ||
++        state_->reserved_navigation_id != navigation->GetNavigationId() ||
++        state_->navigation_id != navigation->GetNavigationId()) return std::nullopt;
++    base::AutoLock lock(state_->data_lock);
++    const auto it = state_->data.find(navigation->GetNavigationUIData());
++    if (it == state_->data.end() || it->second.kind != ProvenanceKind::kHistory ||
++        it->second.issuance != state_->last_issued ||
++        it->second.intent != state_->intent) return std::nullopt;
++    return std::make_pair(state_->last_issued, state_->intent);
++  }
++
+   void DidStartNavigation(content::NavigationHandle* navigation) override {
+     if (!navigation->IsInPrimaryMainFrame() || navigation->IsSameDocument())
+       return;
+     state_->navigation_id.reset();
+     state_->redeemed = false;
+     state_->intent.clear();
+-    std::optional<std::pair<uint64_t, std::string>> identity;
++    std::optional<Provenance> identity;
+     {
+       base::AutoLock lock(state_->data_lock);
+       const auto it = state_->data.find(navigation->GetNavigationUIData());
+       if (it != state_->data.end()) identity = it->second;
+     }
+-    if (!identity || identity->first != state_->last_issued ||
++    if (!identity || identity->issuance != state_->reserved_issued ||
+         navigation->IsRendererInitiated() ||
+-        navigation->IsPrerenderedPageActivation() || state_->started) return;
++        navigation->IsPrerenderedPageActivation()) return;
++    if (identity->kind == ProvenanceKind::kLoad &&
++        (identity->issuance != state_->last_issued || state_->started)) return;
++    if (identity->kind == ProvenanceKind::kHistory &&
++        state_->reserved_navigation_id != navigation->GetNavigationId()) return;
+     state_->started = true;
++    state_->last_issued = identity->issuance;
+     state_->navigation_id = navigation->GetNavigationId();
+-    state_->intent = identity->second;
++    state_->intent = identity->intent;
+   }
+ 
+   void DidFinishNavigation(content::NavigationHandle* navigation) override {
+@@ -118,15 +169,25 @@
+   }
+ 
+   void WebContentsDestroyed() override {
++    state_->alive = false;
+     state_->navigation_id.reset();
+     state_->intent.clear();
+   }
+ 
+  private:
++  enum class ProvenanceKind { kLoad, kHistory };
++  struct Provenance {
++    uint64_t issuance;
++    std::string intent;
++    ProvenanceKind kind;
++  };
+   struct State {
+     base::Lock data_lock;
+-    std::map<const content::NavigationUIData*, std::pair<uint64_t, std::string>> data;
++    std::map<const content::NavigationUIData*, Provenance> data;
+     uint64_t last_issued = 0;
++    uint64_t reserved_issued = 0;
++    std::optional<int64_t> reserved_navigation_id;
++    bool alive = true;
+     std::optional<int64_t> navigation_id;
+     bool redeemed = false;
+     bool started = false;
+@@ -135,22 +196,26 @@
+ 
+   class NavigationData final : public content::NavigationUIData {
+    public:
+-    NavigationData(std::shared_ptr<State> state, uint64_t issuance, std::string intent)
+-        : state_(std::move(state)), issuance_(issuance), intent_(std::move(intent)) {
++    NavigationData(std::shared_ptr<State> state, uint64_t issuance,
++                   std::string intent,
++                   ProvenanceKind kind = ProvenanceKind::kLoad)
++        : state_(std::move(state)), issuance_(issuance),
++          intent_(std::move(intent)), kind_(kind) {
+       base::AutoLock lock(state_->data_lock);
+-      state_->data.emplace(this, std::make_pair(issuance_, intent_));
++      state_->data.emplace(this, Provenance{issuance_, intent_, kind_});
+     }
+     ~NavigationData() override {
+       base::AutoLock lock(state_->data_lock);
+       state_->data.erase(this);
+     }
+     std::unique_ptr<content::NavigationUIData> Clone() override {
+-      return std::make_unique<NavigationData>(state_, issuance_, intent_);
++      return std::make_unique<NavigationData>(state_, issuance_, intent_, kind_);
+     }
+    private:
+     std::shared_ptr<State> state_;
+     uint64_t issuance_;
+     std::string intent_;
++    ProvenanceKind kind_;
+   };
+ 
+   static const void* Key() {

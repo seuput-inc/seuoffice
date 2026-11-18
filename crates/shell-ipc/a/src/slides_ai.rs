@@ -59,6 +59,14 @@ pub use sessions::{MediaCallAbort, Overrides, SessionsBuilder, SlidesAiSessions}
 /// How long a wait for the writes in flight sleeps before it looks again
 const SETTLE_POLL_MS: u64 = 20;
 
+fn native_owner(cx: &CallContext) -> Result<shell_contract::ipc::NativeRequestOwner, IpcError> {
+    let context = cx.native.as_ref().ok_or_else(|| IpcError { name: Some("Error".into()), message: "missing authenticated render capability".into() })?;
+    if !context.renderer().is_some_and(|generation| generation.is_active()) {
+        return Err(IpcError { name: Some("Error".into()), message: "renderer capability is missing or revoked".into() });
+    }
+    Ok(shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context: context.clone() })
+}
+
 /// `Date.now()`
 fn now_ms() -> f64 {
     SystemTime::now()
@@ -211,9 +219,9 @@ impl Core {
         ticket: RunBeginTicket,
         session_id: Option<u64>,
         settled: bool,
-    ) -> bool {
+    ) -> Result<bool, shell_contract::IpcError> {
         let Some(sessions) = self.sessions() else {
-            return false;
+            return Ok(false);
         };
         let wake = RunBeginWake {
             settled,
@@ -228,25 +236,25 @@ impl Core {
     /// The picture handlers after the download
     fn picture_done(
         &self,
-        view: ViewId,
+        owner: &shell_contract::ipc::NativeRequestOwner,
         replace: bool,
         op: &JsonValue,
         ticket: main_core::slides::ai_ipc::PictureTicket,
         downloaded: Option<Vec<u8>>,
-    ) -> IpcValue {
+    ) -> Result<IpcValue, shell_contract::IpcError> {
         let Some(sessions) = self.sessions() else {
-            return IpcValue::Null;
+            return Ok(IpcValue::Null);
         };
         sessions
             .picture_finish(
-                view,
+                owner,
                 replace,
                 self.host.image_decoder(),
                 op,
                 ticket,
                 downloaded,
             )
-            .map_or(IpcValue::Null, |answer| from_json(&answer))
+            .map(|answer| answer.map_or(IpcValue::Null, |answer| from_json(&answer)))
     }
 }
 
@@ -551,13 +559,16 @@ impl SlidesAiPort {
     /// `ai:insert-image-url` and `ai:replace-picture-url`
     fn picture(&self, cx: &CallContext, args: &[IpcValue], reply: Responder, replace: bool) {
         let core = &self.core;
-        let view = cx.sender.view;
+        let owner = match native_owner(cx) {
+            Ok(owner) => owner,
+            Err(error) => return reply.reply(Err(error)),
+        };
         let Some(sessions) = core.sessions() else {
             return reply.reply(Ok(IpcValue::Null));
         };
         let op = arg(args, 0);
         let ticket =
-            match sessions.picture_begin(view, replace, core.host.image_decoder(), op.as_ref()) {
+            match sessions.picture_begin(&owner, replace, core.host.image_decoder(), op.as_ref()) {
                 Err(error) => return reply.reply(Err(ipc_error(error))),
                 Ok(None) => return reply.reply(Ok(IpcValue::Null)),
                 Ok(Some(ticket)) => ticket,
@@ -567,7 +578,7 @@ impl SlidesAiPort {
         let url = match ticket.source() {
             // a user attachment: nothing to download
             PictureSource::Bytes { .. } => {
-                return reply.reply(Ok(core.picture_done(view, replace, &op, ticket, None)));
+                return reply.reply(core.picture_done(&owner, replace, &op, ticket, None));
             }
             PictureSource::Download { url } => url.clone(),
         };
@@ -578,7 +589,7 @@ impl SlidesAiPort {
             let downloaded = host.fetch_remote_image(&url);
             core_thread.post(Box::new(move || {
                 with_core(index, |core| {
-                    reply.reply(Ok(core.picture_done(view, replace, &op, ticket, downloaded)));
+                    reply.reply(core.picture_done(&owner, replace, &op, ticket, downloaded));
                 });
             }));
         }));
@@ -643,15 +654,16 @@ impl SlidesAi for SlidesAiPort {
     }
 
     fn slides_ai_snapshot_restore(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
+        let owner = match native_owner(cx) { Ok(owner) => owner, Err(error) => return reply.reply(Err(error)) };
         let id = match args.first() {
             Some(IpcValue::Number(id)) => *id,
             _ => f64::NAN,
         };
-        let restored = self
-            .core
-            .sessions()
-            .and_then(|sessions| sessions.snapshot_restore(cx.sender.view, id));
-        reply.reply(Ok(restored.unwrap_or(IpcValue::Null)))
+        let restored = self.core.sessions()
+            .map(|sessions| sessions.snapshot_restore(&owner, id))
+            .transpose()
+            .map(|value| value.flatten().unwrap_or(IpcValue::Null));
+        reply.reply(restored)
     }
 
     fn slides_ai_tool_capabilities(
@@ -697,11 +709,12 @@ pub struct SlidesAiProposalPort {
 
 impl SlidesAiProposal for SlidesAiProposalPort {
     fn slides_ai_proposal_accept(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let accepted = self
-            .core
-            .sessions()
-            .and_then(|sessions| sessions.proposal_accept(cx.sender.view));
-        reply.reply(Ok(match accepted {
+        let owner = match native_owner(cx) { Ok(owner) => owner, Err(error) => return reply.reply(Err(error)) };
+        let accepted = self.core.sessions()
+            .map(|sessions| sessions.proposal_accept(&owner))
+            .transpose()
+            .map(|value| value.flatten());
+        reply.reply(accepted.map(|accepted| match accepted {
             Some((slides, snapshot_id)) => IpcValue::Object(vec![
                 ("slides".into(), slides),
                 ("snapshotId".into(), IpcValue::Number(snapshot_id as f64)),
@@ -737,18 +750,19 @@ impl SlidesAiProposal for SlidesAiProposalPort {
             Box::new(move |settled| {
                 with_core(index, |core| {
                     let begun = core.run_begin_after_wait(view, ticket, session_id, settled);
-                    reply.reply(Ok(IpcValue::Bool(begun)));
+                    reply.reply(begun.map(IpcValue::Bool));
                 });
             }),
         );
     }
 
     fn slides_ai_run_hold(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        let held = self
-            .core
-            .sessions()
-            .and_then(|sessions| sessions.run_hold(cx.sender.view));
-        reply.reply(Ok(held.unwrap_or(IpcValue::Null)))
+        let owner = match native_owner(cx) { Ok(owner) => owner, Err(error) => return reply.reply(Err(error)) };
+        let held = self.core.sessions()
+            .map(|sessions| sessions.run_hold(&owner))
+            .transpose()
+            .map(|value| value.flatten().unwrap_or(IpcValue::Null));
+        reply.reply(held)
     }
 }
 

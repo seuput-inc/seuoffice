@@ -8,6 +8,15 @@ use main_core::packages::i18n::Lang;
 pub fn tm(lang: Lang, key: &str) -> String {
     let (en, ko) = match key {
         "untitled" => ("Untitled Diagram", "제목 없는 다이어그램"),
+        "failUnsupported" => ("This is not a diagram file that can be opened.", "열 수 있는 다이어그램 파일이 아닙니다."),
+        "failNoOriginal" => ("This picture has no diagram inside, so it cannot be opened as a diagram.", "이 그림에는 다이어그램 원본이 들어 있지 않아 다이어그램으로 열 수 없습니다."),
+        "failCorruptImage" => ("The picture file is damaged and cannot be read.", "그림 파일이 손상되어 읽을 수 없습니다."),
+        "failNotXml" => ("The file is not in the diagram format (XML). It may be damaged.", "파일 내용이 다이어그램 형식(XML)이 아닙니다. 손상되었을 수 있습니다."),
+        "failDecompress" => ("A compressed page in the file cannot be unpacked. The file may be damaged.", "파일의 압축된 쪽을 풀 수 없습니다. 파일이 손상되었을 수 있습니다."),
+        "failNoDiagram" => ("The file has no diagram pages.", "파일에 다이어그램 쪽이 없습니다."),
+        "failUnreadable" => ("The file cannot be read.", "파일을 읽을 수 없습니다."),
+        "failImport" => ("This file cannot be imported: {reason}", "이 파일을 가져올 수 없습니다: {reason}"),
+        "importVisioUnreadable" => ("The file is damaged or is not a Visio drawing.", "파일이 손상되었거나 Visio 도면이 아닙니다."),
         "dlgSaveTitle" => ("Save Diagram", "다이어그램 저장"),
         "dlgExportTitle" => ("Export Diagram", "다이어그램 내보내기"),
         "filterDrawio" => ("draw.io diagram (.drawio)", "draw.io 다이어그램 (.drawio)"),
@@ -43,6 +52,36 @@ pub fn tm(lang: Lang, key: &str) -> String {
         Lang::Ko => ko,
     }
     .to_owned()
+}
+
+pub fn open_refusal(lang: Lang, reason: &str) -> Result<String, String> {
+    let key = match reason {
+        "unsupported" => "failUnsupported",
+        "no_original" => "failNoOriginal",
+        "corrupt_image" => "failCorruptImage",
+        "not_xml" => "failNotXml",
+        "decompress_failed" => "failDecompress",
+        "no_diagram" => "failNoDiagram",
+        "unreadable" => "failUnreadable",
+        "visio_unreadable" => return Ok(tm(lang, "failImport").replace("{reason}", &tm(lang, "importVisioUnreadable"))),
+        _ => return Err(format!("Unknown diagram open failure: {reason}")),
+    };
+    Ok(tm(lang, key))
+}
+
+#[cfg(test)]
+mod open_refusal_tests {
+    use super::*;
+
+    #[test]
+    fn translates_original_reasons_and_visio_import_message() {
+        for reason in ["unsupported", "no_original", "corrupt_image", "not_xml", "decompress_failed", "no_diagram", "unreadable"] {
+            assert_ne!(open_refusal(Lang::En, reason).unwrap(), open_refusal(Lang::Ko, reason).unwrap());
+        }
+        assert_eq!(open_refusal(Lang::En, "not_xml").unwrap(), "The file is not in the diagram format (XML). It may be damaged.");
+        assert_eq!(open_refusal(Lang::Ko, "visio_unreadable").unwrap(), "이 파일을 가져올 수 없습니다: 파일이 손상되었거나 Visio 도면이 아닙니다.");
+        assert!(open_refusal(Lang::En, "unknown").is_err());
+    }
 }
 
 /// `tm('exportReplaceMsg', { count })`

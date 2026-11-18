@@ -1,0 +1,163 @@
+# Private pinned source patch. Source application is not native execution proof.
+diff --git a/content/browser/renderer_host/render_frame_host_impl.cc b/content/browser/renderer_host/render_frame_host_impl.cc
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -6821,9 +6821,29 @@
+   return !navigation_requests_.empty();
+ }
+ 
++bool RenderFrameHostImpl::MatchesApprovedBackForwardRestoreForCef(
++    const blink::DocumentToken& document_token) const {
++  DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  if (GetParent() || IsPendingDeletion() || !IsRenderFrameLive() ||
++      !frame_tree_node() || GetDocumentToken() != document_token ||
++      !frame_tree_node()->MatchesCefReadyDocument(GetGlobalFrameToken(), document_token)) {
++    return false;
++  }
++  const auto matches = [&](const NavigationRequest& request) {
++    return request.IsServedFromBackForwardCache() &&
++           request.state() == NavigationRequest::READY_TO_COMMIT &&
++           request.GetRenderFrameHost() == this &&
++           frame_tree_node()->IsLatestNavigationForCef(request.GetNavigationId());
++  };
++  if (const auto* request = frame_tree_node()->navigation_request()) return matches(*request);
++  if (navigation_requests_.size() != 1) return false;
++  return matches(*navigation_requests_.begin()->second);
++}
++
+ bool RenderFrameHostImpl::MatchesLatestDocumentForCef(
+     const blink::DocumentToken& document_token) const {
+   DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  if (MatchesApprovedBackForwardRestoreForCef(document_token)) return true;
+   if (IsPendingDeletion() || IsInBackForwardCache() ||
+       !frame_tree_node() || frame_tree_node()->navigation_request()) {
+     return false;
+diff --git a/content/browser/renderer_host/render_frame_host_impl.h b/content/browser/renderer_host/render_frame_host_impl.h
+--- a/content/browser/renderer_host/render_frame_host_impl.h
++++ b/content/browser/renderer_host/render_frame_host_impl.h
+@@ -1176,6 +1176,8 @@
+   // a navigation by arrival order.
+   bool MatchesLatestDocumentForCef(
+       const blink::DocumentToken& document_token) const;
++  bool MatchesApprovedBackForwardRestoreForCef(
++      const blink::DocumentToken& document_token) const;
+ 
+   // Helper for recording metrics when another NavigationRequest is blocked by
+   // navigation queueing, i.e. because this NavigationRequest is in the process
+diff --git a/content/public/renderer/render_frame_observer.h b/content/public/renderer/render_frame_observer.h
+--- a/content/public/renderer/render_frame_observer.h
++++ b/content/public/renderer/render_frame_observer.h
+@@ -115,6 +115,8 @@
+   // DidFinishNavigation.
+   virtual void ReadyToCommitNavigation(
+       blink::WebDocumentLoader* document_loader) {}
++
++  virtual bool WillRestoreFromBackForwardCache() { return true; }
+ 
+   // Called when a RenderFrame's page lifecycle state gets updated.
+   virtual void DidSetPageLifecycleState(
+diff --git a/content/renderer/render_frame_impl.cc b/content/renderer/render_frame_impl.cc
+--- a/content/renderer/render_frame_impl.cc
++++ b/content/renderer/render_frame_impl.cc
+@@ -4441,6 +4441,13 @@
+   GetFrameHost()->DidOpenDocumentInputStream(filtered_url);
+ }
+ 
++bool RenderFrameImpl::WillRestoreFromBackForwardCache() {
++  for (auto& observer : observers_) {
++    if (!observer.WillRestoreFromBackForwardCache()) return false;
++  }
++  return true;
++}
++
+ void RenderFrameImpl::DidSetPageLifecycleState(
+     blink::BFCacheStateChange bfcache_change) {
+   for (auto& observer : observers_) {
+diff --git a/content/renderer/render_frame_impl.h b/content/renderer/render_frame_impl.h
+--- a/content/renderer/render_frame_impl.h
++++ b/content/renderer/render_frame_impl.h
+@@ -566,6 +566,7 @@
+   void DidFailAsyncSameDocumentCommit() override;
+   void WillFreezePage() override;
+   void DidOpenDocumentInputStream(const blink::WebURL& url) override;
++  bool WillRestoreFromBackForwardCache() override;
+   void DidSetPageLifecycleState(
+       blink::BFCacheStateChange bfcache_change) override;
+   void NotifyCurrentHistoryItemChanged() override;
+diff --git a/third_party/blink/public/web/web_local_frame_client.h b/third_party/blink/public/web/web_local_frame_client.h
+--- a/third_party/blink/public/web/web_local_frame_client.h
++++ b/third_party/blink/public/web/web_local_frame_client.h
+@@ -479,6 +479,9 @@
+   // Called before a frame's page is frozen.
+   virtual void WillFreezePage() {}
+ 
++  // Native admission before a retained execution context resumes.
++  virtual bool WillRestoreFromBackForwardCache() { return true; }
++
+   // The frame's document changed its URL due to document.open().
+   virtual void DidOpenDocumentInputStream(const WebURL&) {}
+ 
+diff --git a/third_party/blink/renderer/core/exported/web_view_impl.cc b/third_party/blink/renderer/core/exported/web_view_impl.cc
+--- a/third_party/blink/renderer/core/exported/web_view_impl.cc
++++ b/third_party/blink/renderer/core/exported/web_view_impl.cc
+@@ -2535,8 +2535,8 @@
+     mojom::blink::PageRestoreParamsPtr page_restore_params,
+     SetPageLifecycleStateCallback callback) {
+   TRACE_EVENT0("navigation", "WebViewImpl::SetPageLifecycleState");
+-  SetPageLifecycleStateInternal(std::move(state),
+-                                std::move(page_restore_params));
++  if (!SetPageLifecycleStateInternal(std::move(state),
++                                     std::move(page_restore_params))) return;
+   // Tell the browser that the lifecycle update was successful.
+   std::move(callback).Run();
+ }
+@@ -2558,12 +2558,12 @@
+   return old_state_hidden && new_state_shown;
+ }
+ 
+-void WebViewImpl::SetPageLifecycleStateInternal(
++bool WebViewImpl::SetPageLifecycleStateInternal(
+     mojom::blink::PageLifecycleStatePtr new_state,
+     mojom::blink::PageRestoreParamsPtr page_restore_params) {
+   Page* page = GetPage();
+   if (!page) {
+-    return;
++    return true;
+   }
+   auto& old_state = page->GetPageLifecycleState();
+   TRACE_EVENT2("navigation", "WebViewImpl::SetPageLifecycleStateInternal",
+@@ -2573,6 +2573,14 @@
+                             !old_state->is_in_back_forward_cache;
+   bool restoring_from_bfcache = !new_state->is_in_back_forward_cache &&
+                                 old_state->is_in_back_forward_cache;
++  if (restoring_from_bfcache) {
++    for (WebFrame* frame = MainFrame(); frame; frame = frame->TraverseNext()) {
++      if (frame->IsWebLocalFrame() &&
++          !frame->ToWebLocalFrame()->Client()->WillRestoreFromBackForwardCache()) {
++        return false;
++      }
++    }
++  }
+   // `hiding_page` indicates that the page is switching visibility states in a
+   // way that we should treat as a change.  There are two definitions of this
+   // (see below), but both require that the new state is not `kVisible`.
+@@ -2748,6 +2756,7 @@
+       }
+     }
+   }
++  return true;
+ }
+ 
+ void WebViewImpl::UpdateViewTransitionState(
+diff --git a/third_party/blink/renderer/core/exported/web_view_impl.h b/third_party/blink/renderer/core/exported/web_view_impl.h
+--- a/third_party/blink/renderer/core/exported/web_view_impl.h
++++ b/third_party/blink/renderer/core/exported/web_view_impl.h
+@@ -684,7 +684,7 @@
+                                      bool is_pinch_gesture_active,
+                                      const gfx::PointF&);
+   void PropagateZoomFactorToLocalFrameRoots(Frame* frame, float zoom_factor);
+-  void SetPageLifecycleStateInternal(
++  bool SetPageLifecycleStateInternal(
+       mojom::blink::PageLifecycleStatePtr new_state,
+       mojom::blink::PageRestoreParamsPtr page_restore_params);
+ 

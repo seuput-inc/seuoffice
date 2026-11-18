@@ -629,7 +629,7 @@ impl Fetcher for FakeFetcher {
         self.dispatcher.clone()
     }
 
-    fn fetch(&mut self, url: &str, init: &FetchInit<'_>) -> Result<Box<dyn Response>, FetchError> {
+    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
         self.last_url = url.to_owned();
         if self.terse {
             log(&self.sink, vec![Value::from("fetch"), Value::from(url)]);
@@ -666,7 +666,7 @@ impl Fetcher for FakeFetcher {
                     Value::from("fetch"),
                     Value::from(url),
                     headers,
-                    Value::Bool(init.signal),
+                    Value::Bool(init.signal.is_some()),
                     pinned,
                 ],
             );
@@ -701,7 +701,7 @@ impl Fetcher for FakeFetcher {
         );
     }
 
-    fn sleep(&mut self, ms: f64) {
+    fn sleep(&mut self, ms: f64, _: Option<&dyn AbortSignal>) {
         log(&self.sink, vec![Value::from("sleep"), num(ms)]);
     }
 }
@@ -766,7 +766,7 @@ fn make_env(world: World) -> Env {
 }
 
 /// a response as the comparison prints it; its body is read to the end
-fn render(resp: Option<Box<dyn Response>>) -> Value {
+fn render(resp: Option<Box<dyn Response + '_>>) -> Value {
     let Some(mut resp) = resp else {
         return Value::Null;
     };
@@ -984,6 +984,7 @@ fn fetch_image_call(args: &[Value], cx: &mut Context) -> Answer {
         &env.tmpdir,
         &url,
         delays.as_deref(),
+        None,
     );
     let out = render(resp);
     flush(&env.sink, cx);

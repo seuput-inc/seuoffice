@@ -328,11 +328,29 @@ pub fn is_freshly_saved_path(
     }
 }
 
+#[derive(Clone)]
 struct TrackedTab {
     /// the path of the first save, following renames; `None` when the first
     /// path was not a save
     path: Option<String>,
     recorded: bool,
+}
+
+/// Sendable state for the original join algorithm on an IO worker. It contains
+/// neither callbacks nor authority and cannot publish itself.
+pub struct DocumentLinksSnapshot {
+    links: Option<Vec<DocumentLink>>,
+    tabs: Vec<(f64, TrackedTab)>,
+    version: u64,
+    revision: u64,
+}
+
+impl DocumentLinksSnapshot {
+    pub fn revision(&self) -> u64 { self.revision }
+    pub fn into_model<D: DocumentLinksDeps>(self, deps: D) -> DocumentLinks<D> {
+        DocumentLinks { deps, links: self.links, tabs: self.tabs, listeners: Vec::new(),
+            next_listener: 0, version: self.version, revision: self.revision }
+    }
 }
 
 /// the key of a `Map` of numbers (SameValueZero)
@@ -351,6 +369,7 @@ pub struct DocumentLinks<D: DocumentLinksDeps> {
     listeners: Vec<(ListenerId, Box<dyn FnMut()>)>,
     next_listener: usize,
     version: u64,
+    revision: u64,
 }
 
 impl<D: DocumentLinksDeps> DocumentLinks<D> {
@@ -362,6 +381,7 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
             listeners: Vec::new(),
             next_listener: 0,
             version: 0,
+            revision: 0,
         }
     }
 
@@ -375,9 +395,34 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
         self.version
     }
 
+    pub fn snapshot(&self) -> DocumentLinksSnapshot {
+        DocumentLinksSnapshot { links: self.links.clone(), tabs: self.tabs.clone(),
+            version: self.version, revision: self.revision }
+    }
+
+    pub fn capture_events(&mut self) -> Vec<MakeEvent> { self.deps.events() }
+
+    /// A short state acknowledgement. Persistence and listeners run afterward.
+    pub fn apply_snapshot(&mut self, expected_revision: u64, prepared: DocumentLinksSnapshot) -> Result<u64, DocumentLinksSnapshot> {
+        if self.revision != expected_revision { return Err(prepared); }
+        let commits = prepared.version.saturating_sub(self.version);
+        self.links = prepared.links;
+        self.tabs = prepared.tabs;
+        self.version = prepared.version;
+        self.revision = prepared.revision;
+        Ok(commits)
+    }
+
+    pub fn publish_snapshot_changes(&mut self, commits: u64) {
+        for _ in 0..commits {
+            for (_, listener) in &mut self.listeners { listener(); }
+        }
+    }
+
     /// `#all()`
     fn all(&mut self) -> &mut Vec<DocumentLink> {
         if self.links.is_none() {
+            self.revision = self.revision.wrapping_add(1);
             self.links = Some(self.deps.load());
         }
         self.links.as_mut().expect("loaded above")
@@ -409,6 +454,7 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
 
     /// the listener of `once('destroyed')`: `this.#tabs.delete(contents.id)`
     pub fn tab_destroyed(&mut self, id: f64) {
+        self.revision = self.revision.wrapping_add(1);
         if let Some(at) = self.tab_index(id) {
             self.tabs.remove(at);
         }
@@ -425,6 +471,7 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
         path: &str,
         fresh: Option<bool>,
     ) -> Result<(), InvalidTimeValue> {
+        self.revision = self.revision.wrapping_add(1);
         if self.tab_index(contents.id()).is_some() {
             return Ok(());
         }
@@ -445,6 +492,7 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
     /// first saved path and a make event, and no record yet. Returns whether
     /// anything was written.
     pub fn sync(&mut self) -> Result<bool, InvalidTimeValue> {
+        self.revision = self.revision.wrapping_add(1);
         let pending: Vec<(f64, String)> = self
             .tabs
             .iter()
@@ -515,6 +563,7 @@ impl<D: DocumentLinksDeps> DocumentLinks<D> {
     /// `fileMoved(oldPath, newPath)`: a file was renamed or moved inside the
     /// app: records and tracked tabs follow
     pub fn file_moved(&mut self, old_path: &str, new_path: &str) {
+        self.revision = self.revision.wrapping_add(1);
         let old_key = link_path_key(old_path);
         let next = resolve(&[new_path]);
         for (_, tab) in &mut self.tabs {
@@ -655,13 +704,20 @@ pub struct FileLinksDeps<'a> {
     warn: WarnSink<'a>,
 }
 
+impl FileLinksDeps<'_> {
+    pub fn file_path(&self) -> &str { &self.file_path }
+}
+
 impl DocumentLinksDeps for FileLinksDeps<'_> {
     fn load(&mut self) -> Vec<DocumentLink> {
-        read_document_links_file(&self.file_path)
+        let path = self.file_path.clone();
+        crate::shell::recent_files::metadata::run_sync(&self.file_path,move || Ok(read_document_links_file(&path))).unwrap_or_default()
     }
 
     fn save(&mut self, file: &DocumentLinksFile) -> Result<(), String> {
-        write_json_atomic(&self.file_path, &file.to_json()).map_err(|e| e.message)
+        let path = self.file_path.clone();
+        let payload = file.to_json();
+        crate::shell::recent_files::metadata::run_sync(&self.file_path,move || write_json_atomic(&path,&payload)).map_err(|error| error.message)
     }
 
     fn events(&mut self) -> Vec<MakeEvent> {
@@ -758,3 +814,7 @@ pub fn document_link_menu_model(
         .collect();
     DocumentLinkMenuModel { sources, derived }
 }
+
+#[cfg(test)]
+#[path = "document_links/saved_tests.rs"]
+mod saved_tests;

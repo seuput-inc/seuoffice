@@ -110,7 +110,7 @@ const nextTurn = (): Promise<void> => new Promise((resolve) => setTimeout(resolv
 
 export interface MapExport {
   /** `path`: the file Save As picked for this export; the export then asks nothing */
-  exportAs(format: ExportFormat, path?: string): void
+  exportAs(format: ExportFormat, path?: string, ownedSaveRequestId?: string): Promise<void>
   print(): void
 }
 
@@ -123,8 +123,9 @@ export function useMapExport(host: MapExportHost): MapExport {
   const hostRef = useRef(host)
   hostRef.current = host
   const queue = useRef<Promise<void>>(Promise.resolve())
-  const inTurn = useCallback((task: () => Promise<void>): void => {
+  const inTurn = useCallback((task: () => Promise<void>): Promise<void> => {
     queue.current = queue.current.then(task, task)
+    return queue.current
   }, [])
 
   /** The sheet on screen as a still copy, after what is being typed went in. */
@@ -150,12 +151,12 @@ export function useMapExport(host: MapExportHost): MapExport {
   }, [])
 
   const exportAs = useCallback(
-    async (format: ExportFormat, path?: string): Promise<void> => {
+    async (format: ExportFormat, path?: string, ownedSaveRequestId?: string): Promise<void> => {
       const current = hostRef.current
       const session = current.session
       if (!session) return
       const api = window.mindmapApi
-      const to = path === undefined ? {} : { path }
+      const to = { ...(path === undefined ? {} : { path }), ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }) }
       try {
         if (format === 'markdown') {
           current.flushAll()
@@ -222,7 +223,7 @@ export function useMapExport(host: MapExportHost): MapExport {
   // stable across renders: a save hands its Save As export pick to `exportAs`
   return useMemo(
     () => ({
-      exportAs: (format, path) => inTurn(() => exportAs(format, path)),
+      exportAs: (format, path, ownedSaveRequestId) => inTurn(() => exportAs(format, path, ownedSaveRequestId)),
       print: () => inTurn(print),
     }),
     [exportAs, print, inTurn],

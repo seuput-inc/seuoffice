@@ -41,7 +41,7 @@ pub struct ProjectFile {
 
 /// `DocListDeps` (the attachable formats are [`super::attachable`])
 pub trait DocListDeps {
-    fn open_documents(&self) -> Vec<OpenDocumentEntry>;
+    fn open_documents(&self) -> Result<Vec<OpenDocumentEntry>, String>;
     fn recent(&self) -> Vec<RecentDocumentEntry>;
     /// The AI-visible files of the asker's project, newest first; empty
     /// without one, and where `projectFiles` threw: the list goes on without
@@ -141,8 +141,8 @@ pub fn doc_list(
     deps: &dyn DocListDeps,
     asker: &DocAsker,
     options: DocListOptions,
-) -> Vec<DocListItem> {
-    let open = deps.open_documents();
+) -> Result<Vec<DocListItem>, String> {
+    let open = deps.open_documents()?;
     // a path with unsaved changes in any open copy is not the saved file
     let dirty_keys = open
         .iter()
@@ -190,7 +190,7 @@ pub fn doc_list(
     for doc in deps.recent() {
         list.include(&doc.path, &doc.title, DocItemGroup::Recent, doc.missing);
     }
-    list.items
+    Ok(list.items)
 }
 
 /// `DocMentionItem` of `@seuoffice/electron-utils/doc-attach-bridge`
@@ -240,4 +240,28 @@ pub fn to_mention_items(items: &[DocListItem]) -> Vec<MentionItem> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FailedDocuments;
+
+    impl DocListDeps for FailedDocuments {
+        fn open_documents(&self) -> Result<Vec<OpenDocumentEntry>, String> {
+            Err("dirty query failed".into())
+        }
+        fn recent(&self) -> Vec<RecentDocumentEntry> {
+            vec![RecentDocumentEntry { path: "/tmp/document.docx".into(), title: "document.docx".into(), missing: false }]
+        }
+        fn project_files(&self, _: &DocAsker) -> Vec<ProjectFile> { Vec::new() }
+        fn stat(&self, _: &str) -> Option<f64> { Some(1.0) }
+    }
+
+    #[test]
+    fn a_failed_dirty_query_never_presents_recent_files_as_safe() {
+        let result = doc_list(&FailedDocuments, &DocAsker::default(), DocListOptions::default());
+        assert_eq!(result.unwrap_err(), "dirty query failed");
+    }
 }

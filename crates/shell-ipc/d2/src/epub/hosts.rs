@@ -147,7 +147,7 @@ pub trait EpubEngine: Send + Sync {
     /// has no such entry
     fn read_text(&self, bytes: Bytes, path: &str) -> Option<DecodedText>;
     /// `openChapter(text)`
-    fn open_chapter(&self, text: &str) -> ChapterMap;
+    fn open_chapter(&self, text: &str) -> Result<ChapterMap, String>;
     /// `applyBlockEdits(map, edits)`; `edits` are checked `BlockEdit`s
     /// (`blockEditOf`). `Err` is what it threw.
     fn apply_block_edits(&self, map: &ChapterMap, edits: &[Value]) -> Result<BlockEdits, String>;
@@ -161,16 +161,16 @@ pub trait EpubEngine: Send + Sync {
     /// `validateReplacements(replacements, length)`: the problem, if any
     fn validate_replacements(&self, replacements: &[Replacement], length: usize) -> Option<String>;
     /// `applyReplacements(source, replacements)`
-    fn apply_replacements(&self, source: &str, replacements: &[Replacement]) -> String;
+    fn apply_replacements(&self, source: &str, replacements: &[Replacement]) -> Result<String, String>;
     /// `remapChapter(map, text, replacements)`
     fn remap_chapter(
         &self,
         map: &ChapterMap,
         text: &str,
         replacements: &[Replacement],
-    ) -> ChapterMap;
+    ) -> Result<ChapterMap, String>;
     /// `extractChapterText(source)`
-    fn extract_chapter_text(&self, source: &str) -> String;
+    fn extract_chapter_text(&self, source: &str) -> Result<String, String>;
     /// `saveEpub(book, edits)` of the book opened from `bytes`, the edits per
     /// entry path in the order the session holds them. `Err` is what it threw.
     fn save(
@@ -179,7 +179,7 @@ pub trait EpubEngine: Send + Sync {
         edits: &[(String, Vec<Replacement>)],
     ) -> Result<SavedBytes, String>;
     /// `epubMigrationInfo(savedBook, { oldDocHash, newDocHash })`
-    fn migration_info(&self, saved: Bytes, old_doc_hash: &str, new_doc_hash: &str) -> Value;
+    fn migration_info(&self, saved: Bytes, old_doc_hash: &str, new_doc_hash: &str) -> Result<Value, String>;
     /// `epubTranslationUnits(book, { chapters })`: `{ units, skipped }`
     fn translation_units(&self, bytes: Bytes, chapters: Option<&[usize]>) -> Result<Value, String>;
     /// `buildTranslatedEpub(bytes, options)`
@@ -263,6 +263,8 @@ pub trait EpubEngine: Send + Sync {
     ) -> Result<bool, StoreError>;
     /// `ResultStore.migrateDocument(info)`: the `MigrateResult`
     fn store_migrate_document(&self, dir: &str, info: Value) -> Result<Value, StoreError>;
+    fn store_migrate_document_owned(&self, dir: &str, info: Value,
+        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<Value, StoreError>;
 }
 
 pub type EpubEngineHost = Arc<dyn EpubEngine>;
@@ -285,11 +287,21 @@ pub trait EpubShell: Send + Sync {
         old_doc_hash: &str,
         new_doc_hash: &str,
     ) -> Result<f64, String>;
+    fn migrate_job_records_owned(&self, dir: &str, old_doc_hash: &str, new_doc_hash: &str,
+        admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<f64, String>;
     /// `fileSavedHook(contents, path)`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
-    /// the `unsaved-files` source (`setOpenFilesSource`): `None` when none is
-    /// set, `Some(Err)` when it threw
-    fn open_files(&self) -> Option<Result<Vec<OpenFileState>, ()>>;
+    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
+    fn file_saved_existing_document(&self, destination: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
+    /// The open-files source, answered on the core thread. `None` means no
+    /// source is set; `Some(Err)` means it failed and all files are unsafe.
+    fn open_files(&self, then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, ()>>)>);
     /// `randomBytes(16).toString('hex')`: a view's asset token, a flush
     /// request id
     fn random_token(&self) -> String;
@@ -300,11 +312,29 @@ pub trait EpubShell: Send + Sync {
 
 pub type EpubShellHost = Arc<dyn EpubShell>;
 
+#[cfg(test)]
+pub(crate) use fake::answer_open_files;
+
 #[cfg(any(test, feature = "probe"))]
 pub(crate) use fake::{FakeEngine, FakeShell, Log};
 
 #[cfg(any(test, feature = "probe"))]
 mod fake {
+    #[cfg(test)]
+    thread_local! {
+        static PENDING_OPEN_FILES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn answer_open_files() {
+        PENDING_OPEN_FILES.with(|pending| {
+            if let Some(answer) = pending.borrow_mut().take() {
+                answer();
+            }
+        });
+    }
+
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -546,8 +576,11 @@ mod fake {
             }
         }
 
-        fn open_chapter(&self, text: &str) -> ChapterMap {
-            chapter(text)
+        fn open_chapter(&self, text: &str) -> Result<ChapterMap, String> {
+            if let Some(error) = self.0.next("openChapter").and_then(|v| thrown(&v)) {
+                return Err(error);
+            }
+            Ok(chapter(text))
         }
 
         fn apply_block_edits(
@@ -637,13 +670,19 @@ mod fake {
             None
         }
 
-        fn apply_replacements(&self, source: &str, replacements: &[Replacement]) -> String {
-            apply_replacements(source, replacements)
+        fn apply_replacements(&self, source: &str, replacements: &[Replacement]) -> Result<String, String> {
+            if let Some(error) = self.0.next("applyReplacements").and_then(|v| thrown(&v)) {
+                return Err(error);
+            }
+            Ok(apply_replacements(source, replacements))
         }
 
-        fn remap_chapter(&self, map: &ChapterMap, text: &str, r: &[Replacement]) -> ChapterMap {
+        fn remap_chapter(&self, map: &ChapterMap, text: &str, r: &[Replacement]) -> Result<ChapterMap, String> {
+            if let Some(error) = self.0.next("remapChapter").and_then(|v| thrown(&v)) {
+                return Err(error);
+            }
             if text.contains("<broken") {
-                return broken(text, map.next_id);
+                return Ok(broken(text, map.next_id));
             }
             let mut carried: HashMap<usize, String> = map
                 .blocks
@@ -662,10 +701,13 @@ mod fake {
                 0,
             );
             remapped.next_id = next_id;
-            remapped
+            Ok(remapped)
         }
 
-        fn extract_chapter_text(&self, source: &str) -> String {
+        fn extract_chapter_text(&self, source: &str) -> Result<String, String> {
+            if let Some(error) = self.0.next("extractChapterText").and_then(|v| thrown(&v)) {
+                return Err(error);
+            }
             let mut out = String::new();
             let mut in_tag = false;
             for c in source.chars() {
@@ -676,7 +718,7 @@ mod fake {
                     _ => {}
                 }
             }
-            out
+            Ok(out)
         }
 
         fn save(
@@ -711,8 +753,11 @@ mod fake {
             Ok(SavedBytes::Changed(out))
         }
 
-        fn migration_info(&self, _saved: Bytes, old: &str, new: &str) -> Value {
-            json!({ "oldDocHash": old, "newDocHash": new })
+        fn migration_info(&self, _saved: Bytes, old: &str, new: &str) -> Result<Value, String> {
+            if let Some(error) = self.0.next("migrationInfo").and_then(|v| thrown(&v)) {
+                return Err(error);
+            }
+            Ok(json!({ "oldDocHash": old, "newDocHash": new }))
         }
 
         fn translation_units(
@@ -950,6 +995,18 @@ mod fake {
             self.store_line("migrateDocument", vec![info], None);
             Ok(Value::Null)
         }
+
+        fn store_migrate_document_owned(&self, dir: &str, info: Value,
+            admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<Value, StoreError> {
+            let mut result = None;
+            let mut info = Some(info);
+            admit(&mut || {
+                let info = info.take().ok_or_else(|| main_core::node_fs::NodeError { code: None, message: "The migration was already consumed".into() })?;
+                result = Some(self.store_migrate_document(dir, info));
+                Ok(())
+            }).map_err(|error| StoreError::Other(error.message))?;
+            result.ok_or_else(|| StoreError::Type("The migration did not execute".into()))?
+        }
     }
 
     /// The shell's fake, answering from `hosts.d2.epub.shell`: `uiLang`
@@ -1005,6 +1062,13 @@ mod fake {
             Ok(0.0)
         }
 
+        fn migrate_job_records_owned(&self, dir: &str, old: &str, new: &str,
+            admit: &mut main_core::packages::pdf_structure::files::StoreAdmission<'_>) -> Result<f64, String> {
+            let mut result = None;
+            admit(&mut || { result = Some(self.migrate_job_records(dir, old, new)); Ok(()) }).map_err(|error| error.message)?;
+            result.ok_or_else(|| "The job migration did not execute".to_owned())?
+        }
+
         fn file_saved(&self, view: ViewId, path: &str) {
             self.log
                 .lock()
@@ -1012,17 +1076,50 @@ mod fake {
                 .push(json!(["fileSavedHook", view.0, path]));
         }
 
-        fn open_files(&self) -> Option<Result<Vec<OpenFileState>, ()>> {
-            match self.case.get("openFiles")? {
-                Value::Array(files) => Some(Ok(files
+        fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
+            destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+            pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+            path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
+            let result = effects.with_owned_effect_many_extra(origin, participants, cancel, pending, &additional.iter().collect::<Vec<_>>(), &mut || {
+                self.file_saved(destination.view, path);
+                Ok(())
+            }).map(|()| shell_contract::hosts::SavedFile { path: path.to_owned(), session: shell_contract::hosts::SavedSessionReceipt::NoPublication });
+            done(result);
+        }
+        fn file_saved_existing_document(&self, destination: shell_contract::ipc::NativeSaveDestination,
+            participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+            pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+            done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
+            let result = (|| {
+                let path = destination.path().to_str().ok_or("The saved book path is not Unicode")?.to_owned();
+                effects.with_existing_document_destination_effect(&destination, destination.path(), &participants, &cancel, &pending, &additional.iter().collect::<Vec<_>>(), &mut || {
+                    self.file_saved(destination.binding().owner().view, &path); Ok(())
+                })?;
+                Ok(shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication })
+            })();
+            done(result);
+        }
+
+        fn open_files(&self, then: Box<dyn FnOnce(Option<Result<Vec<OpenFileState>, ()>>)>) {
+            let files = match self.case.get("openFiles") {
+                None => None,
+                Some(Value::Array(files)) => Some(Ok(files
                     .iter()
                     .map(|f| OpenFileState {
                         file_path: f.get("filePath").and_then(Value::as_str).map(str::to_owned),
                         dirty: f.get("dirty").and_then(Value::as_bool).unwrap_or(false),
                     })
                     .collect())),
-                _ => Some(Err(())),
+                Some(_) => Some(Err(())),
+            };
+            #[cfg(test)]
+            if self.case.get("deferOpenFiles").and_then(Value::as_bool) == Some(true) {
+                PENDING_OPEN_FILES.with(|pending| {
+                    *pending.borrow_mut() = Some(Box::new(move || then(files)));
+                });
+                return;
             }
+            then(files);
         }
 
         /// `now` of the case, 2024-01-01T00:00:00Z by default

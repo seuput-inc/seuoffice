@@ -261,10 +261,11 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             let Some(path) = e.granted(view, args.get(0)) else {
                 return reply.reply(Err(error(NOT_GRANTED)));
             };
+            let cancel = cx.cancel.clone();
             e.engine_read(
                 view,
                 &path,
-                |engine, bytes| engine.list_page_images(bytes),
+                move |engine, bytes| engine.list_page_images(bytes, &cancel),
                 reply,
             );
         },
@@ -321,10 +322,11 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             let scale = as_num(field(&request, "scale"))
                 .filter(|s| s.is_finite())
                 .unwrap_or(1.0);
+            let cancel = cx.cancel.clone();
             e.engine_read(
                 view,
                 &path,
-                move |engine, bytes| engine.render_image_png(bytes, page_index, &rect, scale),
+                move |engine, bytes| engine.render_image_png(bytes, page_index, &rect, scale, &cancel),
                 reply,
             );
         },
@@ -359,10 +361,11 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                 ("pxWidth", get("pxWidth")),
                 ("rotate", get("rotate")),
             ]);
+            let cancel = cx.cancel.clone();
             e.engine_read(
                 view,
                 &path,
-                move |engine, bytes| engine.render_page_preview_png(bytes, &preview),
+                move |engine, bytes| engine.render_page_preview_png(bytes, &preview, &cancel),
                 reply,
             );
         },
@@ -379,10 +382,11 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             let Some(path) = path.filter(|_| matches!(edits, IpcValue::Array(_))) else {
                 return reply.reply(Err(error(NOT_GRANTED)));
             };
+            let cancel = cx.cancel.clone();
             e.engine_read(
                 view,
                 &path,
-                move |engine, bytes| engine.validate_text_edits(bytes, &edits),
+                move |engine, bytes| engine.validate_text_edits(bytes, &edits, &cancel),
                 reply,
             );
         },
@@ -454,6 +458,7 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
             let pasted = join(&[&e.path(PathName::Temp), "seuoffice-pasted"]);
             let open = e.open_path(view);
             let engine = e.engine.clone();
+            let statuses = engine.image_subscription_statuses();
             let cancel = cx.cancel.clone();
             kit::on_worker(
                 &e.services,
@@ -464,6 +469,7 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                         aspect.as_deref(),
                         open.as_deref(),
                         &pasted,
+                        statuses,
                         &cancel,
                     )
                 },

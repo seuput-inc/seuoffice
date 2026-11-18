@@ -52,11 +52,12 @@ export interface FakeContents {
   id: number
   send(channel: string, ...args: unknown[]): void
   isDestroyed(): boolean
-  /** `on`/`once` of Electron's emitter (`once` listens for good: no case destroys a view) */
+  /** `on`/`once` of Electron's emitter. */
   on(event: string, listener: Fn): FakeContents
   once(event: string, listener: Fn): FakeContents
   /** calls the listeners of `event` and answers when every one is done */
   emit(event: string, ...args: unknown[]): Promise<unknown[]>
+  isCrashed(): boolean
   [key: string]: unknown
 }
 
@@ -109,24 +110,35 @@ export function caseElectron(dir: string, c: Case): CaseElectron {
   const contentsCase = shared.contents ?? {}
   const contents = new Map<number, FakeContents>()
   for (const v of views) {
-    const listeners = new Map<string, Fn[]>()
-    const listen = (event: string, listener: Fn): FakeContents => {
-      listeners.set(event, [...(listeners.get(event) ?? []), listener])
+    const listeners = new Map<string, { listener: Fn; once: boolean }[]>()
+    let destroyed = false
+    let crashed = false
+    const listen = (event: string, listener: Fn, once: boolean): FakeContents => {
+      listeners.set(event, [...(listeners.get(event) ?? []), { listener, once }])
       return fake
     }
     const fake: FakeContents = {
       id: v.view,
-      on: listen,
-      once: listen,
-      emit: (event, ...args) =>
-        Promise.all((listeners.get(event) ?? []).map((listener) => listener(...args))),
+      on: (event, listener) => listen(event, listener, false),
+      once: (event, listener) => listen(event, listener, true),
+      emit: (event, ...args) => {
+        if (event === 'destroyed') {
+          if (destroyed) return Promise.resolve([])
+          destroyed = true
+        }
+        if (event === 'render-process-gone') crashed = true
+        const current = listeners.get(event) ?? []
+        listeners.set(event, current.filter((entry) => !entry.once))
+        return Promise.all(current.map((entry) => entry.listener(...args)))
+      },
       send(channel: string, ...args: unknown[]) {
+        if (destroyed) throw new Error('Object has been destroyed')
         const e = new Encoder()
         const header = e.values(args)
         events.push({ view: v.view, channel, args: header, buffers: e.buffers.map(hex) })
       },
-      isDestroyed: () => false,
-      isCrashed: () => false,
+      isDestroyed: () => destroyed,
+      isCrashed: () => crashed,
       focus: () => log.push(['webContents.focus', v.view]),
       getZoomFactor: () =>
         zoom.get(v.view) ??

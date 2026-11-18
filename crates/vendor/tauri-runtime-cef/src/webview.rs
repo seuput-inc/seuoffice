@@ -78,6 +78,9 @@ pub struct WebviewSnapshot {
   /// Visibility is separate from occlusion, minimization, and page lifecycle.
   /// Offscreen webviews report their requested visibility.
   pub visible: Option<bool>,
+  /// This child view's own native visibility, independent of hidden ancestors.
+  /// `None` means it could not be observed; popups have no runtime-owned child.
+  pub explicit_visible: Option<bool>,
 }
 
 impl Webview {
@@ -159,8 +162,6 @@ fn color_to_argb(color: Color) -> u32 {
 ///   line is per process, so `Cef::command_line_arg` is the API for it.
 /// - `scroll_bar_style`: Chromium's overlay scrollbars are a process-wide
 ///   feature (`OverlayScrollbar`), reachable through `Cef::enable_features`.
-/// - `background_throttling`: Chromium throttles hidden pages process-wide;
-///   `--disable-background-timer-throttling` turns that off for every webview.
 /// - `accept_first_mouse`: Chromium's own view decides whether the click that
 ///   activates a window reaches the page.
 /// - `browser_extensions_enabled`, `extensions_path`: CEF removed its extension
@@ -197,6 +198,11 @@ fn browser_settings_from_webview_attributes(
       cef::sys::cef_state_t::STATE_ENABLED
     } else {
       cef::sys::cef_state_t::STATE_DISABLED
+    }),
+    background_throttling: cef::State::from(match webview_attributes.background_throttling.as_ref() {
+      Some(BackgroundThrottlingPolicy::Disabled) => cef::sys::cef_state_t::STATE_DISABLED,
+      Some(BackgroundThrottlingPolicy::Throttle | BackgroundThrottlingPolicy::Suspend) => cef::sys::cef_state_t::STATE_ENABLED,
+      None => cef::sys::cef_state_t::STATE_DEFAULT,
     }),
     background_color: match (
       webview_attributes.background_color,
@@ -243,15 +249,8 @@ fn warn_about_unsupported_attributes(label: &str, attributes: &WebviewAttributes
        CEF removed its extension loading API."
     );
   }
-  if let Some(policy) = &attributes.background_throttling
-    && !matches!(policy, BackgroundThrottlingPolicy::Throttle)
-  {
-    log::warn!(
-      "webview {label:?} sets a background throttling policy, which the CEF runtime cannot \
-       apply per webview: Chromium throttles hidden pages process-wide (its default is the \
-       `throttle` policy). Pass `--disable-background-timer-throttling` through \
-       `Cef::command_line_arg` to turn it off for every webview."
-    );
+  if matches!(attributes.background_throttling.as_ref(), Some(BackgroundThrottlingPolicy::Suspend)) {
+    log::warn!("webview {label:?} requests suspension; CEF supports per-browser throttling but not full task suspension.");
   }
   // The overlay variant only exists on Windows; elsewhere the configuration maps to
   // `Default` before it reaches the runtime.
@@ -431,10 +430,40 @@ impl ConsoleMessage {
     }
   }
 }
+pub type NativeProtocolAdmission = Box<dyn FnOnce(&mut dyn FnMut() -> std::result::Result<(), String>) -> std::result::Result<(), String> + Send>;
+
+pub(crate) struct AuthorizedProtocolCompletion(Option<Box<dyn FnOnce(std::result::Result<(), String>) + Send>>);
+impl AuthorizedProtocolCompletion {
+  fn finish(mut self, result: std::result::Result<(), String>) {
+    if let Some(completion) = self.0.take() { completion(result); }
+  }
+}
+impl Drop for AuthorizedProtocolCompletion {
+  fn drop(&mut self) {
+    if let Some(completion) = self.0.take() { completion(Err("Native protocol target was closed.".into())); }
+  }
+}
+
+pub(crate) struct ProtocolCompletion(Option<Box<dyn FnOnce(Result<()>) + Send>>);
+
+impl ProtocolCompletion {
+  fn finish(mut self, result: Result<()>) {
+    if let Some(callback) = self.0.take() { callback(result); }
+  }
+}
+
+impl Drop for ProtocolCompletion {
+  fn drop(&mut self) {
+    if let Some(callback) = self.0.take() { callback(Err(Error::FailedToSendMessage)); }
+  }
+}
+
 pub(crate) enum WebviewMessage {
   EvaluateScript(String),
   EvaluateScriptWithCallback(String, Box<dyn Fn(String) + Send + 'static>),
   Navigate(Url),
+  NavigateObserved(crate::native_observed_navigation::Dispatch),
+  BrowserSetupProtocol(crate::native_browser_protocol::Dispatch),
   Reload,
   GoBack,
   CanGoBack(Sender<Result<bool>>),
@@ -444,11 +473,12 @@ pub(crate) enum WebviewMessage {
   Close,
   Show,
   Hide,
+  SetNativeVisibleChecked(bool, AuthorizedProtocolCompletion),
   SetPosition(Position),
   SetSize(Size),
   SetBounds(Rect),
   SetFocus,
-  Reparent(WindowId, Sender<Result<()>>),
+  Reparent(WindowId, ProtocolCompletion),
   SetAutoResize(bool),
   SetZoom(f64),
   SetBackgroundColor(Option<Color>),
@@ -458,6 +488,8 @@ pub(crate) enum WebviewMessage {
   Position(Sender<Result<PhysicalPosition<i32>>>),
   Size(Sender<Result<PhysicalSize<u32>>>),
   WithWebview(Box<dyn FnOnce(Webview) + Send>),
+  BindNativeContext(Arc<crate::native_invoke::NativeInvocationTarget>),
+  NativeReload(crate::native_reload::NativeReloadDispatch),
   CookiesForUrl(Url, Sender<Result<Vec<Cookie<'static>>>>),
   Cookies(Sender<Result<Vec<Cookie<'static>>>>),
   SetCookie(Cookie<'static>),
@@ -468,8 +500,18 @@ pub(crate) enum WebviewMessage {
   CloseDevTools,
   #[cfg(any(debug_assertions, feature = "devtools"))]
   IsDevToolsOpen(Sender<bool>),
-  SendDevToolsMessage(Vec<u8>, Sender<Result<()>>),
-  OnDevToolsProtocol(Arc<DevToolsProtocolHandler>, Sender<Result<()>>),
+  SendDevToolsMessage(Vec<u8>, ProtocolCompletion),
+  SendDevToolsMessageAuthorized(Vec<u8>, NativeProtocolAdmission, AuthorizedProtocolCompletion),
+  ActivateUnprotectedInitialNavigation(ProtocolCompletion),
+  WhenNavigationReady(ProtocolCompletion),
+  OnDevToolsProtocol(Arc<DevToolsProtocolHandler>, ProtocolCompletion),
+}
+
+type DeferredWebview = Mutex<Option<(crate::runtime::WebviewOrigin, WebviewMessage)>>;
+fn cancel_deferred_webview(weak: &std::sync::Weak<DeferredWebview>) {
+  let Some(shared) = weak.upgrade() else { return };
+  let pending = match shared.lock() { Ok(mut pending) => pending.take(), Err(_) => None };
+  drop(pending);
 }
 
 /// A webview's bounds expressed as a fraction of its parent window, used to
@@ -499,6 +541,8 @@ pub(crate) struct AppWebview {
   pub(crate) browser: cef::Browser,
   pub(crate) browser_id: i32,
   pub(crate) frame_navigation_state: crate::FrameNavigationState,
+  pub(crate) network_session: Option<crate::NativeNetworkSession>,
+  pub(crate) navigation_gate: Arc<crate::navigation_event::NavigationGate>,
   pub(crate) popup_family: Arc<crate::popup::PopupFamily>,
   pub(crate) dialogs: crate::dialog::DialogState,
   pub(crate) host: cef::BrowserHost,
@@ -512,6 +556,12 @@ pub(crate) struct AppWebview {
   pub(crate) bounds_rate: Option<BoundsRate>,
   pub(crate) offscreen: Option<crate::OffscreenView>,
   pub(crate) page_fullscreen: PageFullscreen,
+}
+
+impl Drop for AppWebview {
+  fn drop(&mut self) {
+    self.navigation_gate.fail();
+  }
 }
 
 /// Whether the page shows an element through the HTML Fullscreen API, as CEF reports it to
@@ -606,7 +656,6 @@ impl<T: UserEvent> WinitCefApp<T> {
     Self::build_and_attach_webview(
       context,
       scheme_registry,
-      &mut state.live_browsers,
       appwindow,
       webview_id,
       browser_client::DragDropEventTarget::Webview,
@@ -614,13 +663,12 @@ impl<T: UserEvent> WinitCefApp<T> {
     )
   }
 
-  /// Builds a webview and attaches it to `appwindow`, bumping `live_browsers`
+  /// Builds a webview and attaches it to `appwindow`, tracking its browser lifetime
   /// and relaying it out. Works whether `appwindow` already lives in `state` or
   /// is still being assembled, so window and child creation share one path.
   pub(crate) fn build_and_attach_webview(
     context: &RuntimeContext<T>,
     scheme_registry: &request_handler::SchemeRegistry,
-    live_browsers: &mut usize,
     appwindow: &mut AppWindow,
     webview_id: u32,
     drag_drop_event_target: browser_client::DragDropEventTarget,
@@ -656,6 +704,9 @@ impl<T: UserEvent> WinitCefApp<T> {
     let scale = appwindow.window.scale_factor();
     let app_wide_theme = *context.app_wide_theme.lock().unwrap();
     let theme = appwindow.resolved_theme(app_wide_theme);
+    if !context.browser_lifetimes.begin(webview_id, appwindow.id) {
+      return Err(Error::CreateWebview("duplicate CEF browser creation".into()));
+    }
     let Some(child) = Self::build_browser_child(
       context,
       scheme_registry,
@@ -669,6 +720,9 @@ impl<T: UserEvent> WinitCefApp<T> {
       offscreen,
       pending,
     ) else {
+      if let Some(host) = context.browser_lifetimes.abort(webview_id) {
+        host.close_browser(1);
+      }
       return Err(Error::CreateWebview(
         "failed to create CEF browser".to_string().into(),
       ));
@@ -686,9 +740,22 @@ impl<T: UserEvent> WinitCefApp<T> {
       appwindow.background_surface = None;
     }
 
-    *live_browsers += 1;
+    if !context.browser_lifetimes.attach(webview_id, child.browser_id, &child.frame_navigation_state) {
+      if let Ok(mut registry) = scheme_registry.lock() {
+        for scheme in child.uri_scheme_protocols.keys() {
+          registry.remove(&(child.browser_id, scheme.clone()));
+        }
+      }
+      if let Some(host) = context.browser_lifetimes.abort(webview_id) {
+        host.close_browser(1);
+      }
+      return Err(Error::CreateWebview("CEF browser closed before attachment".into()));
+    }
     appwindow.children.push(child);
     layout_app_window(appwindow);
+    if let Some(close) = context.browser_lifetimes.close_handle(webview_id) {
+      close.complete_creation(crate::NativeBrowserCreationOutcome::Attached);
+    }
     Ok(())
   }
 
@@ -754,7 +821,49 @@ impl<T: UserEvent> WinitCefApp<T> {
       .on_web_content_process_terminate_handler
       .take()
       .map(Arc::from);
-    let frame_navigation_state = crate::FrameNavigationState::new();
+    let mut frame_navigation_state = crate::FrameNavigationState::new();
+    if !frame_navigation_state.set_trusted_init_mode(pending.runtime_specific_attributes.trusted_init_mode) { return None; }
+    frame_navigation_state.browser_close = context.browser_lifetimes.close_handle(webview_id)?;
+    let protected_init = pending.runtime_specific_attributes.trusted_init_mode != TrustedInitMode::Unprotected;
+    let explicit_initial_navigation = pending.runtime_specific_attributes.protected_navigation_start == ProtectedNavigationStart::Explicit;
+    if !protected_init && explicit_initial_navigation
+      && !frame_navigation_state.trusted_activation.configure_unprotected_explicit() { return None; }
+    if protected_init && !context.separate_renderer.load(Ordering::Acquire) {
+      log::error!("protected CEF initialization requires a separate renderer process");
+      return None;
+    }
+    frame_navigation_state.native_contexts = context.native_contexts.clone();
+    let mut trusted_extra_info = if pending.runtime_specific_attributes.trusted_init_mode == TrustedInitMode::Unprotected {
+      let info = cef::dictionary_value_create()?;
+      if info.set_int(Some(&CefString::from("seuoffice.trusted-mode")), 0) == 0 { return None; }
+      Some(info)
+    } else {
+      let seed = crate::cef_impl::trusted_init::random_capability()?;
+      if !frame_navigation_state.set_context_seed(seed.clone()) { return None; }
+      let initialization = crate::cef_impl::trusted_init::Initialization {
+        seed,
+        browser_pid: std::process::id(),
+        mode: pending.runtime_specific_attributes.trusted_init_mode,
+        scripts: initialization_scripts.iter().map(|script| crate::cef_impl::trusted_init::Script {
+          source: script.script.clone(),
+          main_only: script.for_main_frame_only,
+        }).collect(),
+      };
+      let payload = serde_json::to_string(&initialization).ok()?;
+      let info = cef::dictionary_value_create()?;
+      if info.set_string(Some(&CefString::from("seuoffice.trusted-init")), Some(&CefString::from(payload.as_str()))) == 0 {
+        return None;
+      }
+      let native_mode = match pending.runtime_specific_attributes.trusted_init_mode {
+        TrustedInitMode::ProtectedInvoke => 1,
+        TrustedInitMode::ProtectedPreload => 2,
+        TrustedInitMode::Unprotected => return None,
+      };
+      if info.set_int(Some(&CefString::from("seuoffice.trusted-mode")), native_mode) == 0 {
+        return None;
+      }
+      Some(info)
+    };
     let popup_family = Arc::new(crate::popup::PopupFamily::new(
       frame_navigation_state.clone(),
     ));
@@ -764,6 +873,10 @@ impl<T: UserEvent> WinitCefApp<T> {
       .runtime_specific_attributes
       .frame_event_handler
       .clone();
+    let navigation_view_handler = pending.runtime_specific_attributes.view_event_handler.clone();
+    let navigation_gate = Arc::new(crate::navigation_event::NavigationGate::default());
+    let registered_protocols = pending.runtime_specific_attributes.network_session.as_ref()
+      .map(crate::NativeNetworkSession::protocols).unwrap_or_default();
     let handlers = browser_client::TauriCefBrowserClientHandlers {
       // The internal navigation observer must see every notification this client
       // receives; the app observer is bound to this exact native browser. CEF can
@@ -778,9 +891,16 @@ impl<T: UserEvent> WinitCefApp<T> {
           handler(event);
         }
       })),
+      view_event_handler: pending.runtime_specific_attributes.view_event_handler.clone(),
       ipc_handler: pending.ipc_handler.map(Arc::from),
       on_page_load_handler,
       document_title_changed_handler,
+      resource_request_handler: pending.runtime_specific_attributes.resource_request_handler.clone(),
+      browser_request_policy: pending.runtime_specific_attributes.browser_resource_request_handler.clone().map(|handler| Arc::new(
+        crate::browser_request::BrowserRequestPolicy {
+          browser: frame_navigation_state.clone(), protocols: registered_protocols.clone(), handler,
+        })),
+      session_request_policy: pending.runtime_specific_attributes.network_session.as_ref().map(crate::NativeNetworkSession::policy),
       navigation_handler: pending.navigation_handler.map(Arc::from),
       new_window_handler: pending.new_window_handler.map(Arc::from),
       download_handler: pending.download_handler.take(),
@@ -798,7 +918,7 @@ impl<T: UserEvent> WinitCefApp<T> {
         window_id,
         webview_id,
         label: pending.label.clone(),
-        initial_url: Some(pending.url.as_str().to_string()),
+        initial_url: None,
         devtools_enabled,
         zoom_hotkeys_enabled,
         allowed_chrome_commands,
@@ -880,6 +1000,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       .map(|scheme| format!("{scheme}.localhost"))
       .collect();
     let real_initial_url = pending.url.as_str().to_string();
+    let retained_network_session = pending.runtime_specific_attributes.network_session.clone();
     let (browser_tx, browser_rx) = mpsc::channel();
     let (init_done, on_initialized) = request_context::deferred_init_continuation({
       let scheme_registry = scheme_registry.clone();
@@ -888,6 +1009,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       let custom_protocol_scheme = custom_protocol_scheme.clone();
       let custom_scheme_domain_names = custom_scheme_domain_names.clone();
       let label = pending.label.clone();
+      let navigation_context = context.clone();
       move |mut request_context| {
         request_context::apply_theme_scheme(request_context.as_ref(), theme);
 
@@ -899,7 +1021,7 @@ impl<T: UserEvent> WinitCefApp<T> {
           Some(&mut client),
           Some(&initial_url),
           Some(&settings),
-          None,
+          trusted_extra_info.as_mut(),
           request_context.as_mut(),
         ) else {
           log::error!("failed to create CEF browser for webview {label:?}");
@@ -910,6 +1032,11 @@ impl<T: UserEvent> WinitCefApp<T> {
           return;
         };
         let browser_id = browser.identifier();
+        if !frame_navigation_state.bind_browser(browser_id) {
+          log::error!("failed to bind native browser identity for webview {label:?}");
+          host.close_browser(1);
+          return;
+        }
 
         {
           let mut registry = scheme_registry.lock().unwrap();
@@ -919,7 +1046,8 @@ impl<T: UserEvent> WinitCefApp<T> {
               (
                 label.clone(),
                 handler.clone(),
-                initialization_scripts.clone(),
+                if protected_init { Arc::new(Vec::new()) } else { initialization_scripts.clone() },
+                frame_navigation_state.clone(),
               ),
             );
           }
@@ -946,14 +1074,98 @@ impl<T: UserEvent> WinitCefApp<T> {
         if let Some(user_agent) = &user_agent {
           apply_user_agent_override(&host, user_agent);
         }
-        load_initial_url_after_registering_initialization_scripts(
-          &browser,
-          &initialization_scripts,
-          &custom_protocol_scheme,
-          &custom_scheme_domain_names,
-          &real_initial_url,
-          &pending_initial_loads,
-        );
+        let setup_ids = crate::devtools::allocate_runtime_devtools_message_id()
+          .and_then(|enable| crate::devtools::allocate_runtime_devtools_message_id().map(|tree| (enable, tree)));
+        if let (Ok((enable_id, tree_id)), true) = (setup_ids, devtools_observer_registration.lock().unwrap().is_some()) {
+          let setup = Arc::new(Mutex::new(Some(Box::new({
+            let browser = browser.clone();
+            let scripts = initialization_scripts.clone();
+            let scheme = custom_protocol_scheme.clone();
+            let domains = custom_scheme_domain_names.clone();
+            let url = real_initial_url.clone();
+            let pending = pending_initial_loads.clone();
+            let gate = navigation_gate.clone();
+            let activation = frame_navigation_state.trusted_activation.clone();
+            let native_state = frame_navigation_state.clone();
+            move || {
+              if !protected_init && explicit_initial_navigation {
+                let ready_browser = browser.clone();
+                let ready_gate = gate.clone();
+                let ready_activation = activation.clone();
+                let action: Box<dyn FnOnce() + Send> = Box::new(move || {
+                  if !ready_activation.ready(ready_browser, url, ready_gate.clone(), native_state, true) {
+                    ready_gate.fail();
+                  }
+                });
+                match register_initialization_scripts(&browser, &scripts, &scheme, &domains, &pending, gate.clone(), action) {
+                  Ok(Some(action)) => action(),
+                  Ok(None) => {}
+                  Err(error) => {
+                    log::error!("CEF initialization failed: {error}");
+                    gate.fail();
+                    if let Some(host) = browser.host() { host.close_browser(1); }
+                  }
+                }
+              } else if !activation.ready(browser.clone(), url.clone(), gate.clone(), native_state, explicit_initial_navigation) {
+                load_initial_url_after_registering_initialization_scripts(
+                  &browser, &scripts, &scheme, &domains, &url, &pending, gate,
+                );
+              }
+            }
+          }) as Box<dyn FnOnce() + Send>)));
+          let handler = {
+            let gate = navigation_gate.clone();
+            let context = navigation_context.clone();
+            let browser = browser.clone();
+            let frame_state = frame_navigation_state.clone();
+            Arc::new(move |protocol: DevToolsProtocol| {
+              match protocol {
+                DevToolsProtocol::MethodResult { message_id, success, result }
+                  if message_id == enable_id || message_id == tree_id => {
+                    let ready = if !success { Err(()) } else if message_id == enable_id {
+                      Ok(gate.enabled())
+                    } else {
+                      gate.tree(&result)
+                    };
+                    match ready {
+                      Ok(true) => {
+                        if let Some(task) = setup.lock().unwrap().take() {
+                          if context.enqueue_message(Message::Task(task)).is_err() { gate.fail(); }
+                        }
+                      }
+                      Ok(false) => {}
+                      Err(()) => {
+                        gate.fail();
+                        let browser = browser.clone();
+                        let _ = context.enqueue_message(Message::Task(Box::new(move || {
+                          if let Some(host) = browser.host() { host.close_browser(1); }
+                        })));
+                      }
+                    }
+                  }
+                DevToolsProtocol::Event { method, params } => {
+                  if let Some(event) = gate.event(&method, &params) {
+                    frame_state.on_protocol_navigation(event.same_document);
+                    if let Some(handler) = &navigation_view_handler { handler(frame_state.clone(), crate::ViewEvent::NavigationStarted(event)); }
+                  }
+                }
+                _ => {}
+              }
+            }) as Arc<DevToolsProtocolHandler>
+          };
+          devtools_protocol_handlers.lock().unwrap().push(handler);
+          for (id, method) in [(enable_id, "Page.enable"), (tree_id, "Page.getFrameTree")] {
+            let message = serde_json::json!({"id": id, "method": method, "params": {}}).to_string();
+            if host.send_dev_tools_message(Some(message.as_bytes())) != 1 {
+              navigation_gate.fail();
+              host.close_browser(1);
+              break;
+            }
+          }
+        } else {
+          navigation_gate.fail();
+          host.close_browser(1);
+        }
 
         browser_tx
           .send(AppWebview {
@@ -962,6 +1174,8 @@ impl<T: UserEvent> WinitCefApp<T> {
             browser,
             browser_id,
             frame_navigation_state,
+            network_session: retained_network_session,
+            navigation_gate,
             popup_family,
             dialogs,
             host,
@@ -989,8 +1203,11 @@ impl<T: UserEvent> WinitCefApp<T> {
       context.content_settings.clone(),
       uri_scheme_protocols.keys(),
       &custom_protocol_scheme,
+      &context.native_custom_schemes,
       scheme_registry.clone(),
       main_thread,
+      registered_protocols,
+      pending.runtime_specific_attributes.network_session.as_ref(),
       on_initialized,
     );
     if request_context.is_none() {
@@ -1009,10 +1226,49 @@ impl<T: UserEvent> WinitCefApp<T> {
     window_id: WindowId,
     webview_id: u32,
     message: WebviewMessage,
+    origin: crate::runtime::WebviewOrigin,
   ) {
     // If the runtime is exiting, don't process any more messages to avoid macOS crash on exit.
     if self.state.exiting {
       return;
+    }
+    if matches!(&message, WebviewMessage::EvaluateScript(_) | WebviewMessage::EvaluateScriptWithCallback(_, _)
+      | WebviewMessage::Navigate(_) | WebviewMessage::NavigateObserved(_) | WebviewMessage::Reload | WebviewMessage::GoBack
+      | WebviewMessage::GoForward | WebviewMessage::WithWebview(_) | WebviewMessage::SendDevToolsMessage(_, _)
+      | WebviewMessage::SendDevToolsMessageAuthorized(_, _, _)
+      | WebviewMessage::WhenNavigationReady(_)) {
+      if let Some(gate) = self.state.windows.get(&window_id)
+        .and_then(|window| window.children.iter().find(|child| child.webview_id == webview_id))
+        .map(|child| child.navigation_gate.clone()) {
+        if gate.pending() {
+          let closing = [origin.source.close(), origin.target.as_ref().and_then(|(_, target)| target.close())];
+          let browser = origin.browser.clone();
+          let pending = Arc::new(Mutex::new(Some((origin, message))));
+          let mut subscriptions = Vec::new();
+          for close in closing.into_iter().flatten() {
+            let weak = Arc::downgrade(&pending);
+            let Ok(subscription) = close.when_closing(move || cancel_deferred_webview(&weak)) else {
+              cancel_deferred_webview(&Arc::downgrade(&pending));
+              return;
+            };
+            subscriptions.push(subscription);
+          }
+          let weak = Arc::downgrade(&pending);
+          let Ok(browser_subscription) = browser.when_closed(move |_| cancel_deferred_webview(&weak)) else {
+            cancel_deferred_webview(&Arc::downgrade(&pending));
+            return;
+          };
+          let context = self.context.clone();
+          gate.submit(Box::new(move || {
+            let _subscriptions = (subscriptions, browser_subscription);
+            let item = match pending.lock() { Ok(mut pending) => pending.take(), Err(_) => None };
+            if let Some((origin, message)) = item {
+              let _ = context.enqueue_message(Message::OriginWebview { window_id, webview_id, origin, message });
+            }
+          }));
+          return;
+        }
+      }
     }
 
     // Window-dependent messages must read window metrics like safe_surface_size.
@@ -1020,6 +1276,7 @@ impl<T: UserEvent> WinitCefApp<T> {
     // overlap with the child borrow.
     match message {
       WebviewMessage::SetBounds(_)
+      | WebviewMessage::SetNativeVisibleChecked(_, _)
       | WebviewMessage::SetSize(_)
       | WebviewMessage::SetPosition(_)
       | WebviewMessage::Position(_)
@@ -1027,7 +1284,7 @@ impl<T: UserEvent> WinitCefApp<T> {
       | WebviewMessage::SetAutoResize(_)
       | WebviewMessage::WithWebview(_)
       | WebviewMessage::Reparent(_, _) => {
-        self.handle_window_dependent_webview_message(window_id, webview_id, message);
+        self.handle_window_dependent_webview_message(window_id, webview_id, message, &origin);
       }
       message => {
         let Some(appwindow) = self.state.windows.get_mut(&window_id) else {
@@ -1051,6 +1308,7 @@ impl<T: UserEvent> WinitCefApp<T> {
     window_id: WindowId,
     webview_id: u32,
     message: WebviewMessage,
+    origin: &crate::runtime::WebviewOrigin,
   ) {
     let Some(appwindow) = self.state.windows.get_mut(&window_id) else {
       return;
@@ -1064,6 +1322,20 @@ impl<T: UserEvent> WinitCefApp<T> {
     };
 
     match message {
+      WebviewMessage::SetNativeVisibleChecked(visible, completion) => {
+        let child = &appwindow.children[child_index];
+        if child.offscreen.is_some() || child.native_parent_matches(appwindow) != Some(true) {
+          completion.finish(Err("Original native child or parent is unavailable.".into()));
+          return;
+        }
+        child.set_visible(visible);
+        let observed = child.native_explicit_visible();
+        if origin.source.is_open() && child.native_parent_matches(appwindow) == Some(true) && observed == Some(visible) {
+          completion.finish(Ok(()));
+        } else {
+          completion.finish(Err("Native child visibility could not be confirmed.".into()));
+        }
+      }
       WebviewMessage::SetBounds(bounds) => {
         let parent_size = appwindow.safe_surface_size();
         let scale = appwindow.window.scale_factor();
@@ -1122,18 +1394,18 @@ impl<T: UserEvent> WinitCefApp<T> {
       WebviewMessage::Reparent(target_window_id, tx) => {
         // CEF fixes an OSR browser's native dialog parent at creation.
         if appwindow.children[child_index].offscreen.is_some() && window_id != target_window_id {
-          let _ = tx.send(Err(Error::CreateWebview(
+          tx.finish(Err(Error::CreateWebview(
             "offscreen webviews cannot be reparented".into(),
           )));
           return;
         }
         if window_id == target_window_id {
-          let _ = tx.send(Ok(()));
+          tx.finish(Ok(()));
           return;
         }
 
         if !self.state.windows.contains_key(&target_window_id) {
-          let _ = tx.send(Err(Error::WindowNotFound));
+          tx.finish(Err(Error::WindowNotFound));
           return;
         }
 
@@ -1157,12 +1429,12 @@ impl<T: UserEvent> WinitCefApp<T> {
             Some(child)
           })
         else {
-          let _ = tx.send(Err(Error::WindowNotFound));
+          tx.finish(Err(Error::WindowNotFound));
           return;
         };
 
         let Some(target_appwindow) = self.state.windows.get_mut(&target_window_id) else {
-          let _ = tx.send(Err(Error::WindowNotFound));
+          tx.finish(Err(Error::WindowNotFound));
           return;
         };
 
@@ -1183,7 +1455,7 @@ impl<T: UserEvent> WinitCefApp<T> {
         child.raise_to_top();
 
         target_appwindow.children.push(child);
-        let _ = tx.send(Ok(()));
+        tx.finish(Ok(()));
       }
       WebviewMessage::WithWebview(callback) => {
         let child = &appwindow.children[child_index];
@@ -1208,6 +1480,8 @@ impl<T: UserEvent> WinitCefApp<T> {
             .as_ref()
             .map(|view| view.is_visible())
             .or_else(|| child.native_visible()),
+          explicit_visible: child.offscreen.as_ref().map(|view| view.is_visible())
+            .or_else(|| child.native_explicit_visible()),
         };
         let mut native = Webview::new(
           child.browser.clone(),
@@ -1269,15 +1543,33 @@ impl<T: UserEvent> WinitCefApp<T> {
           callback(String::new());
         }
       }
-      WebviewMessage::Navigate(url) => {
-        if let Some(frame) = child.browser.main_frame() {
-          frame.load_url(Some(&cef::CefString::from(url.as_str())));
+      WebviewMessage::BindNativeContext(target) => {
+        let state = &child.frame_navigation_state;
+        if !matches!(state.trusted_init_mode(), Some(crate::TrustedInitMode::ProtectedInvoke | crate::TrustedInitMode::ProtectedPreload))
+          || !state.native_contexts.bind_invocation_target(state.clone(), child.browser_id, target)
+          || !state.trusted_activation.owner_ready() {
+          state.close();
+          child.host.close_browser(1);
         }
       }
-      WebviewMessage::Reload => child.browser.reload(),
-      WebviewMessage::GoBack => child.browser.go_back(),
+      WebviewMessage::ActivateUnprotectedInitialNavigation(completion) => {
+        let state = &child.frame_navigation_state;
+        let ok = state.trusted_init_mode() == Some(crate::TrustedInitMode::Unprotected)
+          && state.trusted_activation.owner_ready();
+        completion.finish(if ok { Ok(()) } else { Err(Error::FailedToSendMessage) });
+      }
+      WebviewMessage::NativeReload(dispatch) => dispatch.execute(&child.browser, &child.frame_navigation_state),
+      WebviewMessage::NavigateObserved(dispatch) => dispatch.execute(&child.browser, &child.frame_navigation_state),
+      WebviewMessage::BrowserSetupProtocol(dispatch) => dispatch.execute(&child.browser, &child.frame_navigation_state),
+      WebviewMessage::Navigate(url) => crate::cef_impl::approved_navigation::dispatch(
+        &child.browser, &child.frame_navigation_state, crate::cef_impl::approved_navigation::Action::Navigate(url)),
+      WebviewMessage::Reload => crate::cef_impl::approved_navigation::dispatch(
+        &child.browser, &child.frame_navigation_state, crate::cef_impl::approved_navigation::Action::Reload),
+      WebviewMessage::GoBack => crate::cef_impl::approved_navigation::dispatch(
+        &child.browser, &child.frame_navigation_state, crate::cef_impl::approved_navigation::Action::Back),
       WebviewMessage::CanGoBack(tx) => _ = tx.send(Ok(child.browser.can_go_back() == 1)),
-      WebviewMessage::GoForward => child.browser.go_forward(),
+      WebviewMessage::GoForward => crate::cef_impl::approved_navigation::dispatch(
+        &child.browser, &child.frame_navigation_state, crate::cef_impl::approved_navigation::Action::Forward),
       WebviewMessage::CanGoForward(tx) => _ = tx.send(Ok(child.browser.can_go_forward() == 1)),
       WebviewMessage::Close => child.host.close_browser(0),
       WebviewMessage::SetFocus => child.host.set_focus(1),
@@ -1362,20 +1654,29 @@ impl<T: UserEvent> WinitCefApp<T> {
       WebviewMessage::CloseDevTools => child.host.close_dev_tools(),
       #[cfg(any(debug_assertions, feature = "devtools"))]
       WebviewMessage::IsDevToolsOpen(tx) => _ = tx.send(child.host.has_dev_tools() == 1),
-      WebviewMessage::SendDevToolsMessage(message, tx) => {
+      WebviewMessage::SendDevToolsMessage(message, completion) => {
         let result = child.host.send_dev_tools_message(Some(&message));
-        let _ = tx.send(if result == 1 {
-          Ok(())
-        } else {
-          Err(Error::FailedToSendMessage)
-        });
+        completion.finish(if result == 1 { Ok(()) } else { Err(Error::FailedToSendMessage) });
       }
-      WebviewMessage::OnDevToolsProtocol(handler, tx) => {
+      WebviewMessage::SendDevToolsMessageAuthorized(message, admit, completion) => {
+        let mut called = false;
+        let mut send = || {
+          if std::mem::replace(&mut called, true) { return Err("Native protocol request was already sent.".into()); }
+          if child.host.send_dev_tools_message(Some(&message)) == 1 { Ok(()) }
+          else { Err("Native protocol send failed.".into()) }
+        };
+        let result = admit(&mut send);
+        completion.finish(if result.is_ok() && !called {
+          Err("Native protocol admission did not send the request.".into())
+        } else { result });
+      }
+      WebviewMessage::WhenNavigationReady(completion) => completion.finish(Ok(())),
+      WebviewMessage::OnDevToolsProtocol(handler, completion) => {
         child
           .devtools_protocol_handlers
           .lock()
           .unwrap()
-          .push(handler);
+          .push(handler.clone());
 
         let needs_devtools_observer = child
           .devtools_observer_registration
@@ -1390,15 +1691,17 @@ impl<T: UserEvent> WinitCefApp<T> {
             child.dialogs.clone(),
           ) {
             *child.devtools_observer_registration.lock().unwrap() = Some(registration);
-            let _ = tx.send(Ok(()));
+            completion.finish(Ok(()));
           } else {
-            let _ = tx.send(Err(Error::FailedToSendMessage));
+            child.devtools_protocol_handlers.lock().unwrap().retain(|item| !Arc::ptr_eq(item, &handler));
+            completion.finish(Err(Error::FailedToSendMessage));
           }
         } else {
-          let _ = tx.send(Ok(()));
+          completion.finish(Ok(()));
         }
       }
       WebviewMessage::SetBounds(_)
+      | WebviewMessage::SetNativeVisibleChecked(_, _)
       | WebviewMessage::SetSize(_)
       | WebviewMessage::SetPosition(_)
       | WebviewMessage::Position(_)
@@ -1496,6 +1799,12 @@ pub enum RuntimeStyle {
 ///   can take the accelerators back with [`ChromeCommandGroup::History`].
 #[derive(Default, Clone)]
 pub struct CefWebviewAttributes {
+  /// Selects which browser-owned scripts run in the private context-init phase.
+  pub trusted_init_mode: TrustedInitMode,
+  pub protected_navigation_start: ProtectedNavigationStart,
+  pub network_session: Option<crate::NativeNetworkSession>,
+  pub(crate) browser_submission: Option<crate::browser_close::NativeBrowserSubmission>,
+  pub(crate) window_submission: Option<crate::native_window_close::NativeWindowSubmission>,
   /// Windowless rendering and application-provided CEF callbacks.
   pub offscreen: Option<crate::Offscreen>,
   /// The browser runtime style, see [`RuntimeStyle`]. CEF picks one when not set.
@@ -1511,6 +1820,8 @@ pub struct CefWebviewAttributes {
   /// [`FrameNavigationState`](crate::FrameNavigationState) follows a popup's
   /// native lifecycle without exposing its URLs.
   pub frame_event_handler: Option<Arc<crate::FrameEventHandler>>,
+  /// Observer of focus and HTML fullscreen changes for this native browser.
+  pub view_event_handler: Option<Arc<crate::ViewEventHandler>>,
   /// Observer of the messages the renderer writes to the JavaScript console.
   ///
   /// Scoped to this webview's own native browser, so neither a CEF-owned popup's
@@ -1527,20 +1838,26 @@ pub struct CefWebviewAttributes {
   /// equivalent — the font families and sizes, `remote_fonts`, `local_storage`,
   /// `databases`, `webgl`, `tab_to_links`, `javascript_dom_paste`, `default_encoding`.
   pub browser_settings_callback: Option<Arc<BrowserSettingsCallback>>,
+  /// Return false to cancel a resource request before it is loaded.
+  pub resource_request_handler: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+  pub browser_resource_request_handler: Option<Arc<crate::BrowserResourceRequestHandler>>,
 }
 
 impl std::fmt::Debug for CefWebviewAttributes {
   fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     formatter
       .debug_struct("CefWebviewAttributes")
+      .field("trusted_init_mode", &self.trusted_init_mode)
       .field("runtime_style", &self.runtime_style)
       .field("offscreen", &self.offscreen.is_some())
       .field("frame_event_handler", &self.frame_event_handler.is_some())
+      .field("view_event_handler", &self.view_event_handler.is_some())
       .field(
         "console_message_handler",
         &self.console_message_handler.is_some(),
       )
       .field("allowed_chrome_commands", &self.allowed_chrome_commands)
+      .field("resource_request_handler", &self.resource_request_handler.is_some())
       .field(
         "browser_settings_callback",
         &self.browser_settings_callback.is_some(),
@@ -1548,6 +1865,26 @@ impl std::fmt::Debug for CefWebviewAttributes {
       .finish()
   }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProtectedNavigationStart {
+  #[default]
+  Automatic,
+  /// Keep the native creation document inert until the owner explicitly loads.
+  Explicit,
+}
+
+/// Selects the native document-start bridge contract for a webview.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TrustedInitMode {
+  /// No protected bridge capability is created.
+  #[default]
+  Unprotected,
+  /// The trusted invoke system captures a capability without a surface preload.
+  ProtectedInvoke,
+  /// The trusted surface preload also captures the synchronous transport.
+  ProtectedPreload,
+}
+
 
 #[derive(Debug, Clone)]
 pub struct CefInitScript {
@@ -1614,9 +1951,59 @@ pub struct CefWebviewDispatcher<T: UserEvent> {
   pub(crate) window_id: Arc<Mutex<WindowId>>,
   pub(crate) webview_id: u32,
   pub(crate) context: RuntimeContext<T>,
+  pub(crate) browser_close: crate::NativeBrowserClose,
 }
 
 impl<T: UserEvent> CefWebviewDispatcher<T> {
+  pub fn browser_close(&self) -> crate::NativeBrowserClose { self.browser_close.clone() }
+
+  /// Change and inspect this original native child on the UI thread.
+  pub fn set_native_visible_checked<F>(&self, visible: bool, completion: F) -> Result<()>
+  where F: FnOnce(std::result::Result<(), String>) + Send + 'static {
+    let callback = AuthorizedProtocolCompletion(Some(Box::new(move |result| {
+      crate::native_evaluation::defer_completion(Box::new(move || completion(result)));
+    })));
+    self.context.send_message(Message::Webview {
+      window_id: *self.window_id.lock().unwrap(), webview_id: self.webview_id,
+      message: WebviewMessage::SetNativeVisibleChecked(visible, callback),
+    })
+  }
+
+  /// Reparent only between the two captured original native window creations.
+  /// Completion is deferred; neither labels nor current-window lookups grant it.
+  pub fn reparent_native_exact<F>(
+    &self, source: &crate::NativeWindowHandle, target: &crate::NativeWindowHandle, completion: F,
+  ) -> Result<()>
+  where F: FnOnce(std::result::Result<(), String>) + Send + 'static {
+    let source_id = source.id;
+    let target_id = target.id;
+    if *self.window_id.lock().map_err(|_| Error::FailedToSendMessage)? != source_id {
+      return Err(Error::FailedToSendMessage);
+    }
+    let original = self.browser_close.clone();
+    if !self.context.browser_lifetimes.close_handle(self.webview_id)
+      .is_some_and(|close| close.same_reservation(&original)) {
+      return Err(Error::FailedToSendMessage);
+    }
+    let position = self.window_id.clone();
+    let done = ProtocolCompletion(Some(Box::new(move |result| {
+      let result = result.map_err(|error| error.to_string()).and_then(|()| {
+        let mut current = position.lock().map_err(|_| "Webview parent state was poisoned.".to_owned())?;
+        if *current != source_id { return Err("Webview parent changed during reparent.".into()); }
+        *current = target_id;
+        Ok(())
+      });
+      crate::native_evaluation::defer_completion(Box::new(move || completion(result)));
+    })));
+    self.context.send_message(Message::OriginWebview {
+      window_id: source_id, webview_id: self.webview_id,
+      origin: crate::runtime::WebviewOrigin {
+        browser: original, source: source.origin(), target: Some((target_id, target.origin())),
+      },
+      message: WebviewMessage::Reparent(target_id, done),
+    })
+  }
+
   /// Sends a UTF-8 encoded Chrome DevTools Protocol message to the DevTools agent.
   ///
   /// The message's `id` must come from
@@ -1627,13 +2014,77 @@ impl<T: UserEvent> CefWebviewDispatcher<T> {
   /// identifiers reserved above that allocator's range, so they cannot be
   /// answered by a caller's message.
   pub fn send_dev_tools_message(&self, message: &[u8]) -> Result<()> {
+    if self.context.is_main_thread() { return Err(Error::FailedToSendMessage); }
     let (tx, rx) = mpsc::channel();
     self.context.send_message(Message::Webview {
       window_id: *self.window_id.lock().unwrap(),
       webview_id: self.webview_id,
-      message: WebviewMessage::SendDevToolsMessage(message.to_vec(), tx),
+      message: WebviewMessage::SendDevToolsMessage(message.to_vec(), ProtocolCompletion(Some(Box::new(move |result| { let _ = tx.send(result); })))),
     })?;
     rx.recv().map_err(|_| Error::FailedToReceiveMessage)?
+  }
+
+  /// Enqueues a DevTools message without waiting for the UI thread.
+  pub fn send_dev_tools_message_async<F: FnOnce(Result<()>) + Send + 'static>(&self, message: &[u8], completion: F) -> Result<()> {
+    self.context.send_message(Message::Webview {
+      window_id: *self.window_id.lock().unwrap(),
+      webview_id: self.webview_id,
+      message: WebviewMessage::SendDevToolsMessage(message.to_vec(), ProtocolCompletion(Some(Box::new(completion)))),
+    })
+  }
+
+  pub(crate) fn send_dev_tools_message_authorized<C: FnOnce(std::result::Result<(), String>) + Send + 'static>(
+    &self, message: &[u8], admit: NativeProtocolAdmission, completion: C,
+  ) -> Result<()> {
+    let window_id = *self.window_id.lock().unwrap();
+    self.context.send_message(Message::Webview {
+      window_id, webview_id: self.webview_id,
+      message: WebviewMessage::SendDevToolsMessageAuthorized(message.to_vec(), admit,
+        AuthorizedProtocolCompletion(Some(Box::new(completion)))),
+    })
+  }
+
+  /// Calls back once the initial navigation has been dispatched, or on failure.
+  pub fn when_navigation_ready<F: FnOnce(Result<()>) + Send + 'static>(&self, completion: F) -> Result<()> {
+    self.context.send_message(Message::Webview {
+      window_id: *self.window_id.lock().unwrap(),
+      webview_id: self.webview_id,
+      message: WebviewMessage::WhenNavigationReady(ProtocolCompletion(Some(Box::new(completion)))),
+    })
+  }
+
+  /// Signals that the owner of an unprotected explicit-start browser is ready.
+  /// This does not create a bridge or navigate the browser.
+  pub fn activate_unprotected_initial_navigation<F: FnOnce(Result<()>) + Send + 'static>(&self, completion: F) -> Result<()> {
+    self.context.send_message(Message::Webview {
+      window_id: *self.window_id.lock().unwrap(),
+      webview_id: self.webview_id,
+      message: WebviewMessage::ActivateUnprotectedInitialNavigation(ProtocolCompletion(Some(Box::new(completion)))),
+    })
+  }
+
+  /// Dispatch an unprotected navigation with an exact native document receipt.
+  pub fn navigate_observed<F: FnOnce(std::result::Result<crate::NativeObservedDocument, String>) + Send + 'static>(
+    &self, url: Url, completion: F,
+  ) -> Result<crate::NativeObservedNavigation> {
+    let (dispatch, reservation) = crate::native_observed_navigation::Dispatch::new(url, Box::new(completion));
+    self.context.send_message(Message::Webview {
+      window_id: *self.window_id.lock().unwrap(), webview_id: self.webview_id,
+      message: WebviewMessage::NavigateObserved(dispatch),
+    })?;
+    Ok(reservation)
+  }
+
+  /// Browser-creation scoped setup only; this is not document authorization.
+  pub fn send_browser_setup_protocol<F: FnOnce(std::result::Result<Vec<u8>, String>) + Send + 'static>(
+    &self, expected: crate::FrameNavigationState, method: String, params: serde_json::Value, completion: F,
+  ) -> std::result::Result<crate::NativeBrowserProtocol, String> {
+    let (dispatch, receipt) = crate::native_browser_protocol::Dispatch::new(expected, method, params, Box::new(completion))?;
+    self.context.send_message(Message::Webview {
+      window_id: *self.window_id.lock().unwrap(), webview_id: self.webview_id,
+      message: WebviewMessage::BrowserSetupProtocol(dispatch),
+    }).map_err(|error| error.to_string())?;
+    Ok(receipt)
   }
 
   /// Observes the [`DevToolsProtocol`] traffic of this browser.
@@ -1653,15 +2104,27 @@ impl<T: UserEvent> CefWebviewDispatcher<T> {
     &self,
     f: F,
   ) -> Result<()> {
+    if self.context.is_main_thread() { return Err(Error::FailedToSendMessage); }
     let (tx, rx) = mpsc::channel();
     let handler =
       Arc::new(move |protocol: DevToolsProtocol| f(protocol)) as Arc<DevToolsProtocolHandler>;
     self.context.send_message(Message::Webview {
       window_id: *self.window_id.lock().unwrap(),
       webview_id: self.webview_id,
-      message: WebviewMessage::OnDevToolsProtocol(handler, tx),
+      message: WebviewMessage::OnDevToolsProtocol(handler, ProtocolCompletion(Some(Box::new(move |result| { let _ = tx.send(result); })))),
     })?;
     rx.recv().map_err(|_| Error::FailedToReceiveMessage)?
+  }
+
+  /// Registers a protocol observer without waiting for the UI thread.
+  pub fn on_dev_tools_protocol_async<F, C>(&self, f: F, completion: C) -> Result<()>
+  where F: Fn(DevToolsProtocol) + Send + Sync + 'static, C: FnOnce(Result<()>) + Send + 'static {
+    let handler = Arc::new(f) as Arc<DevToolsProtocolHandler>;
+    self.context.send_message(Message::Webview {
+      window_id: *self.window_id.lock().unwrap(),
+      webview_id: self.webview_id,
+      message: WebviewMessage::OnDevToolsProtocol(handler, ProtocolCompletion(Some(Box::new(completion)))),
+    })
   }
 }
 
@@ -1672,22 +2135,68 @@ pub(crate) fn create_webview_detached<T: UserEvent>(
 ) -> Result<DetachedWebview<T, CefRuntime<T>>> {
   let label = pending.label.clone();
   let webview_id = context.next_webview_id();
+  let supplied = pending.runtime_specific_attributes.browser_submission.as_ref().map(|submission| submission.close()).unwrap_or_default();
+  supplied.claim().map_err(|_| Error::FailedToSendMessage)?;
+  let Some(browser_close) = context.browser_lifetimes.reserve_with_close(webview_id, window_id, supplied.clone()) else {
+    supplied.complete(crate::NativeBrowserCloseOutcome::NotCreated);
+    return Err(Error::FailedToSendMessage);
+  };
+  let weak = browser_close.weak();
+  let dispatch = context.clone();
+  if browser_close.bind_request(Arc::new(move || {
+    let Some(close) = weak() else { return Ok(()) };
+    dispatch.enqueue_message(Message::RequestBrowserClose { webview_id, close })
+      .map_err(|error| error.to_string())
+  })).is_err() {
+    context.browser_lifetimes.abort(webview_id);
+    return Err(Error::FailedToSendMessage);
+  }
+  let parent = match &context.window_scope {
+    Some((expected, close)) if *expected == window_id => {
+      let Some(effect) = close.admit() else {
+        context.browser_lifetimes.abort(webview_id);
+        return Err(Error::FailedToSendMessage);
+      };
+      Some((close.clone(), effect))
+    }
+    Some(_) => {
+      context.browser_lifetimes.abort(webview_id);
+      return Err(Error::FailedToSendMessage);
+    }
+    None => None,
+  };
   let (result_tx, result_rx) = mpsc::channel();
-  context.send_message(Message::CreateWebview {
+  if let Err(error) = context.send_message(Message::CreateWebview {
     window_id,
     webview_id,
+    parent,
     pending: Box::new(pending),
     result_tx,
-  })?;
+  }) {
+    context.browser_lifetimes.abort(webview_id);
+    return Err(error);
+  }
   // Wait until the event loop has created the browser so a creation failure is
   // surfaced to the caller instead of leaving a detached, dead browser.
-  context.wait_for_creation(result_rx)?;
+  if let Err(error) = context.wait_for_creation(result_rx) {
+    let _ = browser_close.request_close();
+    return Err(error);
+  }
+  let position = context.browser_lifetimes.position(webview_id, &browser_close).ok_or(Error::FailedToReceiveMessage)?;
   Ok(DetachedWebview {
     label,
     dispatcher: CefWebviewDispatcher {
-      window_id: Arc::new(Mutex::new(window_id)),
+      window_id: position.clone(),
       webview_id,
-      context: context.clone(),
+      context: {
+        let mut scoped = context.clone();
+        let initial = context.native_windows.capture(window_id, None, false)
+          .and_then(|origin| origin.close()).map(|close| (window_id, close));
+        scoped.window_scope = None;
+        scoped.webview_scope = Some((webview_id, browser_close.clone(), position, initial));
+        scoped
+      },
+      browser_close,
     },
   })
 }
@@ -1767,6 +2276,23 @@ mod getter_tests {
       webview_getter!(dispatcher, Url).unwrap(),
       "https://example.test/"
     );
+  }
+}
+
+impl<T: UserEvent> CefWebviewDispatcher<T> {
+  pub(crate) fn bind_native_context_target(&self, target: Arc<crate::native_invoke::NativeInvocationTarget>) -> Result<()> {
+    let window_id = *self.window_id.lock().unwrap();
+    self.context.send_message(Message::Webview {
+      window_id, webview_id: self.webview_id, message: WebviewMessage::BindNativeContext(target),
+    })
+  }
+
+  pub(crate) fn reload_native_reserved<C: FnOnce(std::result::Result<crate::NativeContextToken, String>) + Send + 'static>(
+    &self, reservation: crate::NativeReloadReservation, admission: crate::NativeReloadAdmission, completion: C,
+  ) -> Result<()> {
+    let window_id = *self.window_id.lock().unwrap();
+    let dispatch = crate::native_reload::NativeReloadDispatch::new(reservation, admission, Box::new(completion));
+    self.context.enqueue_message(Message::Webview { window_id, webview_id: self.webview_id, message: WebviewMessage::NativeReload(dispatch) })
   }
 }
 
@@ -1971,16 +2497,22 @@ impl<T: UserEvent> WebviewDispatch<T> for CefWebviewDispatcher<T> {
 
   fn reparent(&self, window_id: WindowId) -> Result<()> {
     let (tx, rx) = mpsc::channel();
+    let source_id = *self.window_id.lock().map_err(|_| Error::FailedToSendMessage)?;
+    let position = self.window_id.clone();
     self.context.send_message(Message::Webview {
-      window_id: *self.window_id.lock().unwrap(),
+      window_id: source_id,
       webview_id: self.webview_id,
-      message: WebviewMessage::Reparent(window_id, tx),
+      message: WebviewMessage::Reparent(window_id, ProtocolCompletion(Some(Box::new(move |result| {
+        let result = result.and_then(|()| {
+          let mut current = position.lock().map_err(|_| Error::FailedToSendMessage)?;
+          if *current != source_id { return Err(Error::FailedToSendMessage); }
+          *current = window_id;
+          Ok(())
+        });
+        let _ = tx.send(result);
+      })))),
     })?;
-    let result = rx.recv().map_err(|_| Error::FailedToReceiveMessage)?;
-    if result.is_ok() {
-      *self.window_id.lock().unwrap() = window_id;
-    }
-    result
+    rx.recv().map_err(|_| Error::FailedToReceiveMessage)?
   }
 
   fn cookies_for_url(&self, url: Url) -> Result<Vec<Cookie<'static>>> {
@@ -2139,7 +2671,7 @@ pub(crate) const INITIAL_LOAD_URL: &str = concat!(
 /// The keys only ever come from `allocate_runtime_devtools_message_id`, whose
 /// reserved range no caller identifier can reach, so a caller cannot release the
 /// deferred navigation early by sending a request with a hardcoded `id`.
-pub(crate) type PendingInitialLoads = Arc<Mutex<HashMap<i32, (Browser, String)>>>;
+pub(crate) type PendingInitialLoads = Arc<Mutex<HashMap<i32, (Browser, Arc<crate::navigation_event::NavigationGate>, Box<dyn FnOnce() + Send>)>>>;
 
 cef::wrap_dev_tools_message_observer! {
   struct TauriDevToolsProtocolObserver {
@@ -2156,11 +2688,8 @@ cef::wrap_dev_tools_message_observer! {
     ) -> std::os::raw::c_int {
       if let Some(message) = message {
         let protocol = DevToolsProtocol::Message(message.to_vec());
-        if let Ok(handlers) = self.handlers.lock() {
-          for handler in handlers.iter() {
-            handler(protocol.clone());
-          }
-        }
+        let handlers = self.handlers.lock().map(|handlers| handlers.clone()).unwrap_or_default();
+        for handler in handlers { handler(protocol.clone()); }
       }
       0
     }
@@ -2174,13 +2703,14 @@ cef::wrap_dev_tools_message_observer! {
     ) {
       // The real navigation was deferred until the document-start script was
       // registered; this result acknowledges that, so kick off the real load.
-      if let Some((browser, initial_url)) = self
-        .pending_initial_loads
-        .lock()
-        .unwrap()
-        .remove(&message_id)
-      {
-        post_load_initial_url(browser, initial_url);
+      let pending = self.pending_initial_loads.lock().unwrap().remove(&message_id);
+      if let Some((browser, gate, action)) = pending {
+        if success != 0 {
+          action();
+        } else {
+          gate.fail();
+          if let Some(host) = browser.host() { host.close_browser(1); }
+        }
       }
 
       let protocol = DevToolsProtocol::MethodResult {
@@ -2188,11 +2718,8 @@ cef::wrap_dev_tools_message_observer! {
         success: success != 0,
         result: result.map(|r| r.to_vec()).unwrap_or_default(),
       };
-      if let Ok(handlers) = self.handlers.lock() {
-        for handler in handlers.iter() {
-          handler(protocol.clone());
-        }
-      }
+      let handlers = self.handlers.lock().map(|handlers| handlers.clone()).unwrap_or_default();
+      for handler in handlers { handler(protocol.clone()); }
     }
 
     fn on_dev_tools_event(
@@ -2209,11 +2736,8 @@ cef::wrap_dev_tools_message_observer! {
         method: method.map(|m| format!("{m}")).unwrap_or_default(),
         params: params.map(|p| p.to_vec()).unwrap_or_default(),
       };
-      if let Ok(handlers) = self.handlers.lock() {
-        for handler in handlers.iter() {
-          handler(protocol.clone());
-        }
-      }
+      let handlers = self.handlers.lock().map(|handlers| handlers.clone()).unwrap_or_default();
+      for handler in handlers { handler(protocol.clone()); }
     }
   }
 }
@@ -2372,21 +2896,22 @@ fn register_initialization_scripts(
   initialization_scripts: &[CefInitScript],
   custom_protocol_scheme: &str,
   custom_scheme_domain_names: &[String],
-  initial_url: String,
   pending_initial_loads: &PendingInitialLoads,
-) -> std::result::Result<bool, crate::DevToolsMessageIdExhausted> {
+  gate: Arc<crate::navigation_event::NavigationGate>,
+  action: Box<dyn FnOnce() + Send>,
+) -> std::result::Result<Option<Box<dyn FnOnce() + Send>>, String> {
   let Some(source) = devtools_initialization_script_source(
     initialization_scripts,
     custom_protocol_scheme,
     custom_scheme_domain_names,
   ) else {
-    return Ok(false);
+    return Ok(Some(action));
   };
   let Some(host) = browser.host() else {
-    return Ok(false);
+    return Err("initial browser host is unavailable".into());
   };
 
-  let message_id = crate::devtools::allocate_runtime_devtools_message_id()?;
+  let message_id = crate::devtools::allocate_runtime_devtools_message_id().map_err(|error| error.to_string())?;
   let message = serde_json::json!({
     "id": message_id,
     "method": "Page.addScriptToEvaluateOnNewDocument",
@@ -2399,12 +2924,12 @@ fn register_initialization_scripts(
   pending_initial_loads
     .lock()
     .unwrap()
-    .insert(message_id, (browser.clone(), initial_url));
+    .insert(message_id, (browser.clone(), gate, action));
   if host.send_dev_tools_message(Some(message.as_bytes())) == 1 {
-    Ok(true)
+    Ok(None)
   } else {
     pending_initial_loads.lock().unwrap().remove(&message_id);
-    Ok(false)
+    Err("could not register document-start script".into())
   }
 }
 
@@ -2412,18 +2937,22 @@ wrap_task! {
   struct LoadInitialUrlTask {
     browser: Browser,
     initial_url: String,
+    gate: Arc<crate::navigation_event::NavigationGate>,
   }
 
   impl Task {
     fn execute(&self) {
-      load_initial_url(&self.browser, &self.initial_url);
+      load_initial_url(&self.browser, &self.initial_url, &self.gate);
     }
   }
 }
 
-fn post_load_initial_url(browser: Browser, initial_url: String) {
-  let mut task = LoadInitialUrlTask::new(browser, initial_url);
-  cef::post_task(sys::cef_thread_id_t::TID_UI.into(), Some(&mut task));
+pub(crate) fn post_load_initial_url(browser: Browser, initial_url: String, gate: Arc<crate::navigation_event::NavigationGate>) {
+  let mut task = LoadInitialUrlTask::new(browser.clone(), initial_url, gate.clone());
+  if cef::post_task(sys::cef_thread_id_t::TID_UI.into(), Some(&mut task)) != 1 {
+    gate.fail();
+    if let Some(host) = browser.host() { host.close_browser(1); }
+  }
 }
 
 // Browsers are created with an inert internal document so the BrowserHost exists
@@ -2441,25 +2970,25 @@ pub(crate) fn load_initial_url_after_registering_initialization_scripts(
   custom_scheme_domain_names: &[String],
   initial_url: &str,
   pending_initial_loads: &PendingInitialLoads,
+  gate: Arc<crate::navigation_event::NavigationGate>,
 ) {
   let browser_for_callback = browser.clone();
   let initial_url = initial_url.to_string();
-  let is_waiting_for_initialization_scripts = register_initialization_scripts(
-    browser,
-    initialization_scripts,
-    custom_protocol_scheme,
-    custom_scheme_domain_names,
-    initial_url.clone(),
-    pending_initial_loads,
-  );
-
-  match is_waiting_for_initialization_scripts {
-    Ok(false) => post_load_initial_url(browser_for_callback, initial_url),
-    Ok(true) => {}
+  let callback_gate = gate.clone();
+  let action: Box<dyn FnOnce() + Send> = Box::new(move || {
+    post_load_initial_url(browser_for_callback, initial_url, callback_gate);
+  });
+  match register_initialization_scripts(
+    browser, initialization_scripts, custom_protocol_scheme, custom_scheme_domain_names,
+    pending_initial_loads, gate.clone(), action,
+  ) {
+    Ok(Some(action)) => action(),
+    Ok(None) => {}
     Err(error) => {
       // Exhaustion cannot fall through to a navigation without the requested
       // document-start scripts or reuse another operation's acknowledgment.
       log::error!("CEF initialization failed: {error}");
+      gate.fail();
       if let Some(host) = browser.host() {
         host.close_browser(1);
       }
@@ -2467,9 +2996,16 @@ pub(crate) fn load_initial_url_after_registering_initialization_scripts(
   }
 }
 
-fn load_initial_url(browser: &Browser, initial_url: &str) {
+fn load_initial_url(browser: &Browser, initial_url: &str, gate: &Arc<crate::navigation_event::NavigationGate>) {
   if let Some(frame) = browser.main_frame() {
+    gate.arm();
     frame.load_url(Some(&CefString::from(initial_url)));
+    if gate.release() {
+      browser_client::check_and_reload_if_blank(browser.clone(), initial_url.to_owned());
+    }
+  } else {
+    gate.fail();
+    if let Some(host) = browser.host() { host.close_browser(1); }
   }
 }
 
@@ -2496,5 +3032,15 @@ mod tests {
       browser_settings_from_webview_attributes(&attributes).background_color,
       0xFF01_0203
     );
+  }
+
+  #[test]
+  fn protocol_completion_reports_success_or_disappearance_once() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let recorded = events.clone();
+    ProtocolCompletion(Some(Box::new(move |result| recorded.lock().unwrap().push(result.is_ok())))).finish(Ok(()));
+    let recorded = events.clone();
+    drop(ProtocolCompletion(Some(Box::new(move |result| recorded.lock().unwrap().push(result.is_ok())))));
+    assert_eq!(*events.lock().unwrap(), vec![true, false]);
   }
 }

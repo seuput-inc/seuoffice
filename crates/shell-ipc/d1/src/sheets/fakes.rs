@@ -40,6 +40,7 @@ pub struct FakeEngine {
     script: Value,
     sessions: AtomicU64,
     exit: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    effects: Option<shell_contract::hosts::OwnedEffectsHost>,
 }
 
 impl FakeEngine {
@@ -79,8 +80,166 @@ impl FakeEngine {
         }
     }
 }
+struct FakeNativeSnapshot {
+    path: String,
+    document: shell_contract::ipc::NativeInvocationDocument,
+    retained: std::sync::atomic::AtomicBool,
+}
+
+impl NativeWorkbookSnapshot for FakeNativeSnapshot {
+    fn path(&self) -> &str { &self.path }
+    fn retain_for_session(&self) -> EngineResult<()> {
+        if self.retained.swap(true, Ordering::AcqRel) { return Err(engine_error("Snapshot already retained")); }
+        Ok(())
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+}
+
+impl Drop for FakeNativeSnapshot {
+    fn drop(&mut self) {
+        if !self.retained.load(Ordering::Acquire) { let _ = fs::remove_file(&self.path); }
+    }
+}
+
+struct FakeSavedSnapshot {
+    path: String,
+    document: shell_contract::ipc::NativeSavedDocument,
+    retained: std::sync::atomic::AtomicBool,
+}
+
+impl NativeWorkbookSnapshot for FakeSavedSnapshot {
+    fn path(&self) -> &str { &self.path }
+    fn retain_for_session(&self) -> EngineResult<()> {
+        if self.retained.swap(true, Ordering::AcqRel) { return Err(engine_error("Snapshot already retained")); }
+        Ok(())
+    }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+}
+
+impl Drop for FakeSavedSnapshot {
+    fn drop(&mut self) {
+        if !self.retained.load(Ordering::Acquire) { let _ = fs::remove_file(&self.path); }
+    }
+}
+
+impl FakeEngine {
+    fn saved_input(&self, document: &shell_contract::ipc::NativeSavedDocument, actual: &shell_contract::ipc::NativeRequestOwner, actual_cancel: &shell_contract::runtime::CancelToken) -> EngineResult<shell_contract::ipc::NativeSavedInput> {
+        let effects = self.effects.as_ref().ok_or_else(|| engine_error("Saved workbook effects are unavailable"))?;
+        let target = document.target();
+        let additional: Vec<_> = target.additional().iter().collect();
+        let mut input = None;
+        effects.with_native_saved_document_same_origin(document, actual, actual_cancel, target.participants(), target.cancel(), target.pending(), &additional, &mut |value| {
+            input = Some(value.clone());
+            Ok(())
+        }).map_err(engine_error)?;
+        input.ok_or_else(|| engine_error("Saved workbook input was not admitted"))
+    }
+}
+
+fn fake_native_valid(document: &shell_contract::ipc::NativeInvocationDocument, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> EngineResult<()> {
+    shell_contract::hosts::synthetic::with_native_invocation(
+        document, document.owner(), &[], cancel, pending, &mut || Ok(()),
+    ).map_err(engine_error)
+}
+
+fn fake_snapshot(bytes: &[u8], extension: &str, document: &shell_contract::ipc::NativeInvocationDocument, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>> {
+    fake_native_valid(document, cancel, pending)?;
+    let path = std::env::temp_dir().join(format!("sheets-fake-{}.{}", jscompat::random_uuid(), extension));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| engine_error(error.to_string()))?;
+    use std::io::Write;
+    file.write_all(bytes).map_err(|error| { let _ = fs::remove_file(&path); engine_error(error.to_string()) })?;
+    let snapshot = Arc::new(FakeNativeSnapshot { path: path.to_string_lossy().into_owned(), document: document.clone(), retained: std::sync::atomic::AtomicBool::new(false) });
+    fake_native_valid(document, cancel, pending)?;
+    Ok(snapshot)
+}
+
 
 impl WorkbookEngine for FakeEngine {
+    fn snapshot_saved_document(&self, document: &shell_contract::ipc::NativeSavedDocument, actual: &shell_contract::ipc::NativeRequestOwner, actual_cancel: &shell_contract::runtime::CancelToken) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>> {
+        if document.target().surface() != shell_contract::Surface::Sheets {
+            return Err(engine_error("The saved document is not a workbook"));
+        }
+        let input = self.saved_input(document, actual, actual_cancel)?;
+        let mut path = std::env::temp_dir().join(format!("sheets-fake-{}", jscompat::random_uuid()));
+        if let Some(extension) = document.target().path().path().extension() { path.set_extension(extension); }
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| engine_error(error.to_string()))?;
+        use std::io::Write;
+        if let Err(error) = file.write_all(input.bytes()) {
+            let _ = fs::remove_file(&path);
+            return Err(engine_error(error.to_string()));
+        }
+        let path_text = match path.to_str() {
+            Some(path) => path.to_owned(),
+            None => { let _ = fs::remove_file(&path); return Err(engine_error("The workbook snapshot path is not Unicode")); }
+        };
+        let snapshot = Arc::new(FakeSavedSnapshot { path: path_text, document: document.clone(), retained: std::sync::atomic::AtomicBool::new(false) });
+        self.saved_input(document, actual, actual_cancel)?;
+        Ok(snapshot)
+    }
+    fn snapshot_saved_bytes(&self, bytes: &[u8], document: &shell_contract::ipc::NativeSavedDocument, actual: &shell_contract::ipc::NativeRequestOwner, actual_cancel: &shell_contract::runtime::CancelToken) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>> {
+        if document.target().surface() != shell_contract::Surface::Sheets {
+            return Err(engine_error("The saved document is not a workbook"));
+        }
+        self.saved_input(document, actual, actual_cancel)?;
+        let path = std::env::temp_dir().join(format!("sheets-fake-{}.xlsx", jscompat::random_uuid()));
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|error| engine_error(error.to_string()))?;
+        use std::io::Write;
+        if let Err(error) = file.write_all(bytes) {
+            let _ = fs::remove_file(&path);
+            return Err(engine_error(error.to_string()));
+        }
+        let path_text = match path.to_str() {
+            Some(path) => path.to_owned(),
+            None => { let _ = fs::remove_file(&path); return Err(engine_error("The workbook snapshot path is not Unicode")); }
+        };
+        let snapshot = Arc::new(FakeSavedSnapshot { path: path_text, document: document.clone(), retained: std::sync::atomic::AtomicBool::new(false) });
+        self.saved_input(document, actual, actual_cancel)?;
+        Ok(snapshot)
+    }
+
+
+    fn open_saved_document(&self, snapshot: &Arc<dyn NativeWorkbookSnapshot>, locale: &str, short_date: &str, timeout: Option<f64>, document: &shell_contract::ipc::NativeSavedDocument, actual: &shell_contract::ipc::NativeRequestOwner, actual_cancel: &shell_contract::runtime::CancelToken) -> EngineResult<OpenedWorkbook> {
+        let snapshot = snapshot.as_any().downcast_ref::<FakeSavedSnapshot>().ok_or_else(|| engine_error("Invalid saved workbook snapshot"))?;
+        if !snapshot.document.target().same_target(document.target()) {
+            return Err(engine_error("The snapshot belongs to another saved document"));
+        }
+        self.saved_input(document, actual, actual_cancel)?;
+        let opened = self.open(&snapshot.path, locale, short_date, timeout)?;
+        if let Err(error) = self.saved_input(document, actual, actual_cancel) {
+            self.close(&opened.session_id)?;
+            return Err(error);
+        }
+        Ok(opened)
+    }
+
+    fn snapshot_native_invocation(&self, document: &shell_contract::ipc::NativeInvocationDocument, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>> {
+        fake_native_valid(document, cancel, pending)?;
+        let path = match document.operation().selection() {
+            shell_contract::ipc::NativeInvocationSelection::HeadlessExport { surface: shell_contract::Surface::Sheets, input, .. } => input,
+            _ => return Err(engine_error("The invocation is not a Sheets export")),
+        };
+        let bytes = fs::read(path).map_err(|error| engine_error(error.to_string()))?;
+        fake_snapshot(&bytes, path.extension().and_then(|ext| ext.to_str()).unwrap_or("xlsx"), document, cancel, pending)
+    }
+    fn snapshot_native_bytes(&self, bytes: &[u8], document: &shell_contract::ipc::NativeInvocationDocument, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> EngineResult<Arc<dyn NativeWorkbookSnapshot>> {
+        fake_snapshot(bytes, "xlsx", document, cancel, pending)
+    }
+    fn open_native_invocation(&self, snapshot: &Arc<dyn NativeWorkbookSnapshot>, locale: &str, short_date: &str, timeout: Option<f64>, document: &shell_contract::ipc::NativeInvocationDocument, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> EngineResult<OpenedWorkbook> {
+        fake_native_valid(document, cancel, pending)?;
+        let snapshot = snapshot.as_any().downcast_ref::<FakeNativeSnapshot>().ok_or_else(|| engine_error("Invalid snapshot"))?;
+        if snapshot.document.owner().view != document.owner().view
+            || !snapshot.document.created().same_generation(document.created())
+            || !snapshot.document.operation().authority_generation().same_generation(document.operation().authority_generation()) {
+            return Err(engine_error("Snapshot belongs to another invocation"));
+        }
+        let opened = self.open(&snapshot.path, locale, short_date, timeout)?;
+        if let Err(error) = fake_native_valid(document, cancel, pending) {
+            self.close(&opened.session_id)?;
+            return Err(error);
+        }
+        Ok(opened)
+    }
+
     fn open(
         &self,
         path: &str,
@@ -477,6 +636,32 @@ impl WorkbookEngine for FakeEngine {
         self.line(vec!["pdf.renderPdf".into()]);
         Ok(b"%PDF-1.7".to_vec())
     }
+    fn render_pdf_owned(
+        &self, html: &str, request: &IpcValue,
+        authority: super::engine::WorkbookPrintAuthority<'_>,
+    ) -> EngineResult<Vec<u8>> {
+        match authority {
+            super::engine::WorkbookPrintAuthority::Interactive { origin, destination, cancel, pending } =>
+                owned_fake_check(origin, destination, cancel, pending).map_err(crate::value::thrown)?,
+            super::engine::WorkbookPrintAuthority::NativeInvocation { target, owner, cancel, pending } => {
+                if target.view() != owner.view || !owner.context.renderer().is_some_and(|renderer| renderer.same_generation(target.created())) {
+                    return Err(crate::value::thrown("The synthetic headless renderer was replaced"));
+                }
+                target.with_active(|| owned_fake_check(owner, owner, cancel, pending))
+                    .ok_or_else(|| crate::value::thrown("The synthetic headless operation expired"))?
+                    .map_err(crate::value::thrown)?;
+            }
+            super::engine::WorkbookPrintAuthority::ExistingDocument { binding, participants, cancel, pending, additional } => {
+                let mut result = None;
+                shell_contract::hosts::synthetic::with_existing_document_save_extra(binding, participants, cancel, pending,
+                    &additional.iter().collect::<Vec<_>>(),
+                    &mut || { result = Some(self.render_pdf(html, request)); Ok(()) })
+                    .map_err(crate::value::thrown)?;
+                return result.ok_or_else(|| crate::value::thrown("The synthetic print was not admitted"))?;
+            }
+        }
+        self.render_pdf(html, request)
+    }
 
     fn parse_save_request(&self, input: &IpcValue) -> EngineResult<IpcValue> {
         // zod's `.default([])` of the request's lists
@@ -608,8 +793,8 @@ impl WorkbookEngine for FakeEngine {
 struct FakePrompt(String);
 
 impl PasswordPrompt for FakePrompt {
-    fn ask(&self, _retry: bool) -> Option<String> {
-        Some(self.0.clone())
+    fn ask(&self, _retry: bool) -> Result<Option<String>, UnlockFailure> {
+        Ok(Some(self.0.clone()))
     }
 
     fn close(&self) {}
@@ -621,10 +806,13 @@ pub type Timer = (u64, Box<dyn FnOnce() + Send>);
 pub struct FakeShell {
     log: Option<Log>,
     script: Value,
+    os_shell: Option<shell_contract::hosts::OsShellHost>,
     /// what `after` was asked to run, by delay
     pub timers: Mutex<Vec<Timer>>,
     pub opened: Mutex<Vec<(ViewId, String)>>,
     uuids: AtomicU64,
+    #[cfg(test)]
+    clock_override: Mutex<Option<f64>>,
 }
 
 impl FakeShell {
@@ -633,6 +821,11 @@ impl FakeShell {
             log.lock().unwrap().push(Value::Array(items));
         }
     }
+    #[cfg(test)]
+    pub fn set_clock(&self, now: f64) {
+        *self.clock_override.lock().unwrap() = Some(now);
+    }
+
 
     /// runs the earliest timer scheduled with this delay, and no other
     #[cfg(test)]
@@ -661,6 +854,22 @@ impl FakeShell {
     }
 }
 
+fn owned_fake_check(
+    origin: &shell_contract::ipc::NativeRequestOwner,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+) -> Result<(), String> {
+    if cancel.is_cancelled() || pending.is_cancelled() { return Err("Save cancelled".into()); }
+    for owner in [origin, destination] {
+        if !owner.context.renderer().is_some_and(|generation| generation.is_active())
+            || owner.loss_token().is_none_or(|loss| loss.is_cancelled()) {
+            return Err("Native save owner was released".into());
+        }
+    }
+    Ok(())
+}
+
 impl SheetsShell for FakeShell {
     fn workbook_opened(&self, view: ViewId, path: &str) {
         self.line(vec![
@@ -670,21 +879,74 @@ impl SheetsShell for FakeShell {
         ]);
         self.opened.lock().unwrap().push((view, path.to_owned()));
     }
+    fn workbook_opened_owned(
+        &self, view: ViewId, path: String,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        then: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>,
+    ) {
+        then(owned_fake_check(&origin, &destination, &cancel, &pending).map(|()| {
+            self.workbook_opened(view, &path);
+            let session = match self.script.get("savedPublicationError").and_then(Value::as_str) {
+                Some(message) => {
+                    let message = message.to_owned();
+                    shell_contract::hosts::SavedSessionReceipt::Pending(Box::new(move |done| done(Err(message))))
+                }
+                None => shell_contract::hosts::SavedSessionReceipt::NoPublication,
+            };
+            shell_contract::hosts::SavedFile { path, session }
+        }));
+    }
+    fn workbook_opened_existing_document(
+        &self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+        _on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>,
+    ) {
+        let extra: Vec<_> = additional.iter().collect();
+        let result = revision.snapshot().and_then(|snapshot| {
+            if snapshot.selection().path() != expected_path { return Err("The native workbook save path changed".into()); }
+            effects.with_native_save_revision_snapshot_effect(&snapshot, &participants, &cancel, &pending, &extra, &mut || {
+                let recipient = participants.first().ok_or("The saved workbook recipient is missing")?;
+                self.workbook_opened(recipient.view, &expected_path.to_string_lossy());
+                Ok(())
+            }).map(|()| {
+                let session = match self.script.get("savedPublicationError").and_then(Value::as_str) {
+                    Some(message) => {
+                        let message = message.to_owned();
+                        shell_contract::hosts::SavedSessionReceipt::Pending(Box::new(move |done| done(Err(message))))
+                    }
+                    None => shell_contract::hosts::SavedSessionReceipt::NoPublication,
+                };
+                shell_contract::hosts::SavedFile { path: expected_path, session }
+            })
+        });
+        done(result);
+    }
 
     fn activate_tab(&self, view: ViewId) {
         self.line(vec!["shell.activateTab".into(), view.0.into()]);
     }
 
-    fn password_prompt(
+    fn password_prompt_owned(
         &self,
         _parent: Option<WindowId>,
         file_name: &str,
-    ) -> Option<Box<dyn PasswordPrompt>> {
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Option<Box<dyn PasswordPrompt>>, String> {
+        owned_fake_check(origin, destination, cancel, pending)?;
         self.line(vec!["shell.passwordPrompt".into(), file_name.into()]);
-        self.script
+        Ok(self.script
             .get("password")
             .and_then(Value::as_str)
-            .map(|p| Box::new(FakePrompt(p.to_owned())) as Box<dyn PasswordPrompt>)
+            .map(|p| Box::new(FakePrompt(p.to_owned())) as Box<dyn PasswordPrompt>))
     }
 
     fn startup(&self) -> Startup {
@@ -738,6 +1000,10 @@ impl SheetsShell for FakeShell {
     }
 
     fn now_ms(&self) -> f64 {
+        #[cfg(test)]
+        if let Some(now) = *self.clock_override.lock().unwrap() {
+            return now;
+        }
         match self.script.get("clock").and_then(Value::as_f64) {
             Some(clock) => clock,
             None => std::time::SystemTime::now()
@@ -763,12 +1029,17 @@ impl SheetsShell for FakeShell {
             .map(str::to_owned)
     }
 
-    fn write_new_document(
-        &self,
-        view: ViewId,
-        file_name: &str,
-        bytes: &[u8],
+    fn write_new_document_owned(
+        &self, origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+        _effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str, bytes: &[u8],
     ) -> Result<Option<String>, String> {
+        owned_fake_check(origin, destination, cancel, pending)?;
+        let view = destination.view;
         self.line(vec![
             "shell.writeNewDocument".into(),
             view.0.into(),
@@ -782,31 +1053,87 @@ impl SheetsShell for FakeShell {
         {
             return Err(message.to_owned());
         }
-        Ok(scripted
-            .and_then(|v| v.get("path"))
-            .and_then(Value::as_str)
-            .map(str::to_owned))
+        let path = scripted.and_then(|v| v.get("path")).and_then(Value::as_str).map(str::to_owned);
+        match path {
+            Some(path) => main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, move || Some(path))
+                .map_err(|error| error.message),
+            None => Ok(None),
+        }
     }
 
-    fn create_document(&self, request: &IpcValue, view: ViewId) -> Option<CreateDocumentAnswer> {
-        let _ = request;
-        let answer = self.script.get("createDocument").map(serde_to_ipc)?;
-        self.line(vec!["shell.createDocument".into(), view.0.into()]);
-        Some(answer)
+    fn create_document_owned(
+        &self, _request: IpcValue, view: ViewId,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        _effects: shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        then: Box<dyn FnOnce(Result<CreateDocumentAnswer, String>) + Send>,
+    ) {
+        let result = owned_fake_check(&origin, &destination, &cancel, &pending).and_then(|()| {
+            let answer = self.script.get("createDocument").map(serde_to_ipc)
+                .ok_or_else(|| "Document creation is unavailable in this host.".to_owned())?;
+            self.line(vec!["shell.createDocument".into(), view.0.into()]);
+            main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, move || answer)
+                .map_err(|error| error.message)
+        });
+        then(result);
     }
 
     fn open_generated_path(&self, path: &str) -> bool {
         self.line(vec!["shell.openGeneratedPath".into(), path.into()]);
         false
     }
+    fn open_generated_path_owned(
+        &self, path: String,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        _accepted: shell_contract::hosts::PdfReloadAccepted,
+        then: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathOutcome, String>) + Send>,
+    ) {
+        then(owned_fake_check(&origin, &destination, &cancel, &pending)
+            .map(|()| {
+                self.open_generated_path(&path);
+                shell_contract::hosts::GeneratedPathOutcome::NotOpened
+            }));
+    }
 
-    fn assert_file_saved(&self, path: &str) -> Result<(), String> {
-        match self.script.get("unsaved").and_then(Value::as_array) {
-            Some(paths) if paths.iter().any(|p| p.as_str() == Some(path)) => {
+    fn export_pdf_written_owned(
+        &self, path: String,
+        origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        _accepted: shell_contract::hosts::PdfReloadAccepted,
+        then: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathOutcome, String>) + Send>,
+    ) {
+        let result = (|| {
+            self.open_generated_path(&path);
+            let shell = self.os_shell.as_ref().ok_or("Synthetic reveal host is unavailable")?;
+            effects.with_owned_effect(&origin, &destination, &cancel, &pending, &mut || {
+                shell.show_item_in_folder(std::path::Path::new(&path));
+                Ok(())
+            })?;
+            let receipt = shell_contract::hosts::CommittedGeneratedPath::from_loaded_target(
+                origin, destination.clone(), destination, cancel, pending, effects,
+            )?;
+            Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(receipt))
+        })();
+        then(result);
+    }
+
+    fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        let result = match self.script.get("unsaved").and_then(Value::as_array) {
+            Some(paths) if paths.iter().any(|p| p.as_str() == Some(path.as_str())) => {
                 Err("The file has unsaved changes.".into())
             }
             _ => Ok(()),
-        }
+        };
+        then(result);
     }
 
     fn is_path_open_elsewhere(&self, path: &str) -> bool {
@@ -816,8 +1143,8 @@ impl SheetsShell for FakeShell {
             .is_some_and(|paths| paths.iter().any(|p| p.as_str() == Some(path)))
     }
 
-    fn short_date_pattern(&self) -> String {
-        "m/d/yyyy".into()
+    fn short_date_pattern(&self) -> Result<String, String> {
+        Ok("m/d/yyyy".into())
     }
 
     fn requested_locale(&self) -> String {
@@ -857,18 +1184,25 @@ pub struct FakeScreen {
 }
 
 impl ScreenCapture for FakeScreen {
-    fn media_access_status(&self) -> String {
+    fn media_access_status(
+        &self, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+    ) -> Result<String, String> {
+        owned_fake_check(origin, origin, cancel, cancel)?;
         let mut statuses = self.statuses.lock().unwrap();
-        if statuses.is_empty() {
+        Ok(if statuses.is_empty() {
             "granted".into()
         } else {
             statuses.remove(0)
-        }
+        })
     }
 
-    fn list_sources(&self, exclude: Option<WindowId>) -> Vec<ScreenSource> {
+    fn list_sources(
+        &self, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+        exclude: Option<WindowId>,
+    ) -> Result<Vec<ScreenSource>, String> {
+        owned_fake_check(origin, origin, cancel, cancel)?;
         let own = exclude.map(|window| format!("window:{}", window.0));
-        SOURCES
+        Ok(SOURCES
             .iter()
             .filter(|(id, _)| own.as_deref() != Some(*id))
             .map(|(id, name)| ScreenSource {
@@ -876,18 +1210,22 @@ impl ScreenCapture for FakeScreen {
                 name: (*name).into(),
                 thumbnail: String::new(),
             })
-            .collect()
+            .collect())
     }
 
-    fn capture(&self, id: &str) -> Option<ScreenImage> {
-        SOURCES
+    fn capture(
+        &self, origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+        id: &str,
+    ) -> Result<Option<ScreenImage>, String> {
+        owned_fake_check(origin, origin, cancel, cancel)?;
+        Ok(SOURCES
             .iter()
             .any(|(known, _)| *known == id)
             .then(|| ScreenImage {
                 png: b"\x89PNG".to_vec(),
                 width: 2.0,
                 height: 1.0,
-            })
+            }))
     }
 }
 
@@ -901,6 +1239,7 @@ pub fn insert_fakes(hosts: &mut Hosts, case: &Value) {
         script: script.clone(),
         sessions: AtomicU64::new(0),
         exit: Mutex::new(None),
+        effects: hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned(),
     });
     let statuses: Vec<String> = script
         .get("screenStatus")
@@ -914,9 +1253,12 @@ pub fn insert_fakes(hosts: &mut Hosts, case: &Value) {
     let shell = Arc::new(FakeShell {
         log,
         script,
+        os_shell: hosts.get::<shell_contract::hosts::OsShellHost>().cloned(),
         timers: Mutex::new(Vec::new()),
         opened: Mutex::new(Vec::new()),
         uuids: AtomicU64::new(0),
+        #[cfg(test)]
+        clock_override: Mutex::new(None),
     });
     hosts.insert::<WorkbookEngineHost>(engine.clone());
     hosts.insert::<SheetsShellHost>(shell.clone());

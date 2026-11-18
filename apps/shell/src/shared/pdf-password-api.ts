@@ -38,6 +38,7 @@ export interface PdfPasswordUiState {
   busy: boolean
   /** BCP-47 tag for documentElement.lang (drives CJK font selection) */
   lang: string
+  generation: string
   strings: PdfPasswordUiStrings
 }
 

@@ -22,7 +22,7 @@ use main_core::packages::electron_utils::default_save_dir::{
     PathProvider, Thrown, configured_default_save_dir,
 };
 use main_core::packages::electron_utils::message_box::MessageBoxOptions;
-use main_core::packages::electron_utils::unsaved_files::OpenFilesHolder;
+use main_core::packages::electron_utils::unsaved_files::{OpenFileState, OpenFilesHolder, OpenFilesSourceFailed};
 use main_core::packages::i18n::{Lang, install_lang, normalize_lang};
 use main_core::packages::project_store::{
     AddFolderResult, ApplyMemoryConsolidationArgs, ApplyMemoryConsolidationResult,
@@ -36,8 +36,8 @@ use main_core::packages::project_store::{
 use main_core::shell::app_settings::read_app_settings;
 use main_core::shell::knowledge_base::KbReadPage;
 use main_core::shell::projects::chat_store::{
-    AppendOutcome, ChatAppendedEvent, ChatAppendedListener, ChatSender, ChatStoreHost,
-    ChatStoreOptions, OpenChatOutcome, ProjectChatStore, default_new_id,
+    AppendContinuation, AppendProgress, ChatAppendedEvent, ChatAppendedListener, ChatSender, ChatStoreError, ChatStoreHost,
+    ChatStoreOptions, OpenChatOutcome, OutsideChatAssociation, ProjectChatStore, default_new_id,
 };
 use main_core::shell::projects::cloud_cache::{CacheClock, CachedCloudResolver};
 use main_core::shell::projects::cloud_files::{
@@ -60,13 +60,13 @@ use main_core::shell::projects::project_guide::{
     ProjectSettingsPatch as GuideSettingsPatch, SelectionTarget,
 };
 use main_core::shell::projects::project_ipc::{
-    AppendedNotice, ChatDocuments, MemoryAuthor, ProjectIpcChats, ProjectIpcDialogs,
+    AppendedNotice, ChatDocuments, IpcAppendProgress, MemoryAuthor, ProjectIpcChats, ProjectIpcDialogs,
     ProjectIpcGuide, ProjectIpcHost, ProjectIpcScopes, ProjectIpcTools, ProjectSettingsPatch,
     ProjectWindow,
 };
 use main_core::shell::projects::project_tools::{
     DownloadAsk, IndexSearchOptions, IndexSearchResult, IndexStore, KnowledgePages,
-    ProjectFolderTools, ProjectToolsDeps, ProjectToolsScopes, ProjectToolsStore,
+    ProjectFolderTools, ProjectReadStep, ProjectToolsDeps, ProjectToolsScopes, ProjectToolsStore,
 };
 use serde_json::Value;
 use shell_contract::hosts::{FileDialog, MessageBox};
@@ -116,6 +116,7 @@ pub(super) struct Shell {
     pub events: Arc<dyn EventSink>,
     pub views: Arc<dyn Views>,
     pub paths: Arc<dyn AppPaths>,
+    pub workers: Arc<dyn shell_contract::runtime::Workers>,
     pub provided: Rc<Provided>,
     /// the process's one default-save-folder state
     pub save_dir: crate::SharedSaveDirState,
@@ -430,7 +431,7 @@ impl IndexStore for IndexOfHost {
         self.0.search(input, options)
     }
 
-    fn paths_indexed_as_on_disk(&mut self, paths: &[String]) -> Vec<String> {
+    fn paths_indexed_as_on_disk(&mut self, paths: &[String]) -> Result<Vec<String>, Thrown> {
         self.0.paths_indexed_as_on_disk(paths)
     }
 }
@@ -442,12 +443,12 @@ struct StoreOfShell {
 }
 
 impl ProjectToolsStore for StoreOfShell {
-    fn store(&mut self) -> Option<&mut dyn IndexStore> {
-        if !self.search.available() {
-            return None;
+    fn store(&mut self) -> Result<Option<&mut dyn IndexStore>, Thrown> {
+        if !self.search.available().map_err(Thrown)? {
+            return Ok(None);
         }
         self.search.refresh_if_stale(60_000.0);
-        Some(&mut self.index)
+        Ok(Some(&mut self.index))
     }
 }
 
@@ -749,8 +750,11 @@ impl ChatStoreHost for ChatHost {
         self.shell.os.trash_item(Path::new(abs_path))
     }
 
-    fn now_iso(&mut self) -> String {
-        to_iso_string(self.shell.home.now_ms()).unwrap_or_default()
+    fn now_iso(&mut self) -> Result<String, ChatStoreError> {
+        to_iso_string(self.shell.home.now_ms()).map_err(|error| ChatStoreError {
+            message: error.to_string(), code: None,
+            kind: main_core::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
     fn new_id(&mut self) -> String {
@@ -783,8 +787,51 @@ pub(super) struct ChatsOfShell {
     appended: Rc<RefCell<Vec<AppendedNotice>>>,
 }
 
+impl ChatsOfShell {
+    pub(super) fn take_io(&mut self, operation: main_core::shell::projects::chat_store::ChatOperation) -> Result<main_core::shell::projects::chat_store::ChatIo, ChatStoreError> {
+        self.store.take_io(operation)
+    }
+
+    pub(super) fn finish_io(&mut self, ack: main_core::shell::projects::chat_store::ChatIoAcknowledgement) -> Result<main_core::shell::projects::chat_store::ChatIoCompletion, ChatStoreError> {
+        self.store.finish_io(ack)
+    }
+
+    pub(super) fn cancel_io(&mut self, io: main_core::shell::projects::chat_store::ChatIo) -> Result<(), ChatStoreError> {
+        self.store.cancel_io(io)
+    }
+
+    pub(super) fn abandon_io(&mut self, ack: main_core::shell::projects::chat_store::ChatIoAcknowledgement) -> Result<main_core::shell::projects::chat_store::ChatIoAbandoned, ChatStoreError> {
+        self.store.abandon_io(ack)
+    }
+
+    pub(super) fn publish_io_events(&mut self, events: &[main_core::shell::projects::chat_store::ChatIoAppended]) {
+        self.store.publish_io_events(events);
+    }
+
+    pub(super) fn take_outside_writes(&mut self) -> Vec<OutsideChatAssociation> {
+        self.store.take_outside_writes()
+    }
+
+    pub(super) fn finish_outside_write(&mut self, item: OutsideChatAssociation, result: Result<(), String>) {
+        self.store.finish_outside_write(item, result);
+    }
+
+}
+
 fn chat_error(error: main_core::shell::projects::chat_store::ChatStoreError) -> Thrown {
     Thrown(error.message)
+}
+
+fn ipc_append_progress(progress: AppendProgress) -> Result<IpcAppendProgress, ChatStoreError> {
+    match progress {
+        AppendProgress::Done(outcome) => serde_json::to_value(outcome)
+            .map(IpcAppendProgress::Done)
+            .map_err(|error| ChatStoreError {
+                message: error.to_string(), code: None,
+                kind: main_core::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+            }),
+        AppendProgress::NeedInstallId(continuation) => Ok(IpcAppendProgress::NeedInstallId(continuation)),
+    }
 }
 
 impl ProjectIpcChats for ChatsOfShell {
@@ -792,22 +839,31 @@ impl ProjectIpcChats for ChatsOfShell {
         self.store.new_chat(project_id).map_err(chat_error)
     }
 
-    fn list_chats(&mut self, project_id: &str) -> Result<Vec<ProjectChatListItem>, Thrown> {
-        self.store.list_chats(project_id).map_err(chat_error)
+    fn list_chats(&mut self, project_id: &str) -> Result<Vec<ProjectChatListItem>, main_core::shell::projects::chat_store::ChatStoreError> {
+        self.store.list_chats(project_id)
     }
 
-    fn open_chat(&mut self, args: &JsonValue) -> Result<Value, Thrown> {
-        let outcome: OpenChatOutcome = self.store.open_chat(args).map_err(chat_error)?;
-        serde_json::to_value(&outcome).map_err(|error| Thrown(error.to_string()))
+    fn open_chat(&mut self, args: &JsonValue) -> Result<Value, main_core::shell::projects::chat_store::ChatStoreError> {
+        let outcome: OpenChatOutcome = self.store.open_chat(args)?;
+        serde_json::to_value(&outcome).map_err(|error| main_core::shell::projects::chat_store::ChatStoreError {
+            message: error.to_string(), code: None, kind: main_core::shell::projects::chat_store::ChatStoreErrorKind::Failure,
+        })
     }
 
-    fn append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<Value, Thrown> {
-        let outcome: AppendOutcome = self.store.append(args, sender).map_err(chat_error)?;
-        serde_json::to_value(&outcome).map_err(|error| Thrown(error.to_string()))
+    fn begin_append(&mut self, args: &JsonValue, sender: &ChatSender) -> Result<IpcAppendProgress, ChatStoreError> {
+        ipc_append_progress(self.store.begin_append(args, sender)?)
     }
 
-    fn rename_chat(&mut self, args: &JsonValue) -> Result<ProjectWriteResult, Thrown> {
-        self.store.rename_chat(args).map_err(chat_error)
+    fn resume_append(&mut self, continuation: AppendContinuation) -> Result<IpcAppendProgress, ChatStoreError> {
+        ipc_append_progress(self.store.resume_append(continuation)?)
+    }
+
+    fn cancel_append(&mut self, continuation: AppendContinuation) {
+        self.store.cancel_append(continuation);
+    }
+
+    fn rename_chat(&mut self, args: &JsonValue) -> Result<ProjectWriteResult, main_core::shell::projects::chat_store::ChatStoreError> {
+        self.store.rename_chat(args)
     }
 
     fn delete_chat(&mut self, chat_ref: &ProjectChatRef) -> Result<ProjectWriteResult, Thrown> {
@@ -818,27 +874,22 @@ impl ProjectIpcChats for ChatsOfShell {
         &mut self,
         chat_ref: &ProjectChatRef,
         doc_path: &str,
-    ) -> Result<ProjectWriteResult, Thrown> {
-        self.store
-            .attach_document(chat_ref, doc_path)
-            .map_err(chat_error)
+    ) -> Result<ProjectWriteResult, main_core::shell::projects::chat_store::ChatStoreError> {
+        self.store.attach_document(chat_ref, doc_path)
     }
 
     fn chat_for_document(
         &mut self,
         project_id: &str,
         doc_path: &str,
-    ) -> Result<Option<ProjectId>, Thrown> {
-        self.store
-            .chat_for_document(project_id, doc_path)
-            .map_err(chat_error)
+    ) -> Result<Option<ProjectId>, main_core::shell::projects::chat_store::ChatStoreError> {
+        self.store.chat_for_document(project_id, doc_path)
     }
 
-    fn chat_info(&mut self, chat_ref: &ProjectChatRef) -> Result<Option<ChatDocuments>, Thrown> {
+    fn chat_info(&mut self, chat_ref: &ProjectChatRef) -> Result<Option<ChatDocuments>, main_core::shell::projects::chat_store::ChatStoreError> {
         Ok(self
             .store
-            .chat_info(chat_ref)
-            .map_err(chat_error)?
+            .chat_info(chat_ref)?
             .map(|info| ChatDocuments {
                 documents: info.documents(),
                 last_editor: info.last_editor(),
@@ -858,6 +909,55 @@ pub(super) struct ToolsOfShell {
     /// a search must leave out files open with unsaved changes
     open_files: OpenFilesHolder,
 }
+fn open_files_holder(result: Result<Vec<OpenFileState>, OpenFilesSourceFailed>) -> OpenFilesHolder {
+    let mut holder = OpenFilesHolder::new();
+    holder.set_open_files_source(Some(Box::new(move || result.clone())));
+    holder
+}
+
+impl ToolsOfShell {
+    pub(super) fn replace_open_files(&mut self, result: Result<Vec<OpenFileState>, OpenFilesSourceFailed>) -> OpenFilesHolder {
+        std::mem::replace(&mut self.open_files, open_files_holder(result))
+    }
+
+    pub(super) fn restore_open_files(&mut self, holder: OpenFilesHolder) {
+        self.open_files = holder;
+    }
+
+    pub(super) fn project_available(&mut self, project_id: &str) -> Result<bool, Thrown> {
+        Ok(self.tools.visible_test(project_id)?.is_some())
+    }
+
+    pub(super) fn project_visible(&mut self, project_id: &str, path: &str) -> Result<bool, Thrown> {
+        match self.tools.visible_test(project_id)? {
+            Some(test) => test.test(path),
+            None => Ok(false),
+        }
+    }
+
+    pub(super) fn prepare_read(
+        &mut self,
+        owner: ViewId,
+        raw: &JsonValue,
+        open_files: Result<Vec<OpenFileState>, OpenFilesSourceFailed>,
+    ) -> Result<ProjectReadStep, Thrown> {
+        let holder = open_files_holder(open_files);
+        self.tools.prepare_read(&holder, i64::from(owner.0), raw)
+    }
+
+    pub(super) fn prepare_project_read_with_open_files(
+        &mut self,
+        owner: ViewId,
+        project_id: &str,
+        path: &str,
+        offset: f64,
+        open_files: Result<Vec<OpenFileState>, OpenFilesSourceFailed>,
+    ) -> Result<ProjectReadStep, Thrown> {
+        let holder = open_files_holder(open_files);
+        self.tools.prepare_read_path(&holder, i64::from(owner.0), project_id, path, offset)
+    }
+}
+
 
 impl ProjectIpcTools for ToolsOfShell {
     fn open_scope(&mut self, owner: i64, raw: &JsonValue) -> Result<String, Thrown> {
@@ -965,15 +1065,6 @@ impl ProjectIpcHost for HostOfShell {
         Ok(())
     }
 
-    fn open_document(&mut self, path: &str) -> Option<i64> {
-        let tabs = self.shell.tabs()?;
-        if !tabs.open_document_path(path) {
-            return None;
-        }
-        let view = tabs.view_of_file(path)?;
-        self.track(view);
-        Some(i64::from(view.0))
-    }
 
     fn show_home(&mut self) -> Option<i64> {
         let tabs = self.shell.tabs()?;
@@ -1092,6 +1183,7 @@ impl Services {
             },
             ChatStoreOptions::default(),
         );
+        store.defer_outside_writes();
         store.on_appended(Box::new(Collect(appended.clone())));
 
         let scopes = SharedScopes(Rc::new(RefCell::new(ProjectScopes {
@@ -1143,12 +1235,7 @@ impl Services {
             chats: ChatsOfShell { store, appended },
             tools: ToolsOfShell {
                 tools,
-                open_files: {
-                    let files = shell.files.clone();
-                    let mut holder = OpenFilesHolder::new();
-                    holder.set_open_files_source(Some(Box::new(move || files.open_files())));
-                    holder
-                },
+                open_files: open_files_holder(Err(OpenFilesSourceFailed)),
             },
             scopes,
             dialogs: DialogsOfShell(shell.clone()),
@@ -1161,5 +1248,28 @@ impl Services {
             },
             placer,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use main_core::packages::electron_utils::unsaved_files::assert_file_saved;
+
+    #[test]
+    fn prefetched_dirty_and_failed_queries_refuse_reads() {
+        let path = "/project/document.docx";
+        let dirty = open_files_holder(Ok(vec![OpenFileState {
+            file_path: Some(path.to_owned()),
+            dirty: true,
+        }]));
+        assert!(assert_file_saved(&dirty, path).is_err());
+        let failed = open_files_holder(Err(OpenFilesSourceFailed));
+        assert!(assert_file_saved(&failed, path).is_err());
+        let clean = open_files_holder(Ok(vec![OpenFileState {
+            file_path: Some(path.to_owned()),
+            dirty: false,
+        }]));
+        assert!(assert_file_saved(&clean, path).is_ok());
     }
 }

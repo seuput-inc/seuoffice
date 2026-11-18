@@ -34,6 +34,13 @@
 //! - [`TemplateCopyTabs`] (the tab manager: open a template copy in a new
 //!   tab, a tab's file, focus a tab, the project a copy follows).
 
+mod owned_handoff;
+pub use owned_handoff::{
+    ConvertedRollback, GenerateRollback, PreparedConverted, PreparedGenerateHandoff, drop_generate_handoff_owned,
+    handoff_consumer, prepare_generate_converted, prepare_generate_handoff, report_generate_run_started_owned, take_generate_handoff_owned,
+};
+#[cfg(test)]
+pub use owned_handoff::{queue_generate_handoff_owned, record_generate_converted_fenced};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -46,8 +53,10 @@ use main_core::packages::ai_provider::user_skills_import::{
 };
 use main_core::packages::electron_utils::dialog_memory::Dialog;
 use main_core::packages::electron_utils::generate_handoff::{
-    HandoffSkillChip, HandoffStore, HandoffWebContents,
+    HandoffSkillChip, HandoffStore, HandoffWebContents, handoff_editor_for_file,
+    handoff_editor_takes_attachments,
 };
+use main_core::packages::electron_utils::user_skills_channels::template_open_input_of;
 use main_core::packages::electron_utils::unsaved_files::{
     OpenFileState, OpenFilesHolder, OpenFilesSourceFailed,
 };
@@ -55,8 +64,8 @@ use main_core::shell::agent::agent_skills::{ManageWindows, user_skills_manage_ga
 use main_core::shell::app_settings::{agent_skill_notice_due, mark_agent_skill_notice_seen};
 use main_core::shell::atomic_write::atomic_write_file;
 use main_core::shell::user_skills::template_tabs::{
-    OpenedCopyTab, PREVIEW_ENDED_CHANNEL, PreviewInput, TemplateCopy, TemplateTabs as Tabs,
-    TemplateTabsHost,
+    OpenedCopyTab, PREVIEW_ENDED_CHANNEL, PreviewInput, TemplateCopy, TemplateOpenInput,
+    TemplateTabs as Tabs, TemplateTabsHost,
 };
 use main_core::shell::user_skills::template_tabs_ipc::{
     PreviewOriginalAnswer, handle_finish_preview, handle_focus_tab, handle_open_preview,
@@ -157,7 +166,7 @@ pub trait TemplateCopyTabs: Send + Sync {
     /// the list `setOpenFilesSource` gives `fileHasUnsavedChanges`: the open
     /// documents and whether each has unsaved changes; `Err` when the shell
     /// cannot say
-    fn open_files(&self) -> Result<Vec<OpenFileState>, OpenFilesSourceFailed>;
+    fn open_files(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>);
     /// the `focusTab` dep of the shell entry: restore and focus the shell
     /// window and activate the tab; `false` when the tab is gone
     fn focus_tab(&self, tab_id: &str) -> bool;
@@ -405,6 +414,9 @@ impl Env {
             },
             env: self.clone(),
             sender,
+            authorization: None,
+            defer_changed: false,
+            changed: false,
         }
     }
 
@@ -530,6 +542,9 @@ struct IpcHost {
     dialog: DialogAdapter,
     env: Env,
     sender: Option<Sender>,
+    authorization: Option<bool>,
+    defer_changed: bool,
+    changed: bool,
 }
 
 impl UserSkillsIpcHost for IpcHost {
@@ -547,6 +562,9 @@ impl UserSkillsIpcHost for IpcHost {
     /// `userSkillsManageGate`: the settings screen (the shell window) any of
     /// them, the agent window only its install preview
     fn can_manage(&mut self, _sender_id: f64, channel: &str) -> bool {
+        if let Some(authorized) = self.authorization {
+            return authorized;
+        }
         let Some(sender) = self.sender else {
             return false;
         };
@@ -581,6 +599,10 @@ impl UserSkillsIpcHost for IpcHost {
     }
 
     fn broadcast_changed(&mut self) {
+        if self.defer_changed {
+            self.changed = true;
+            return;
+        }
         self.env
             .services
             .events
@@ -616,6 +638,7 @@ impl UserSkillsIpcHost for IpcHost {
 
 /// `UserSkillsServiceDeps`: where the person's home, settings and temporary
 /// folders are, the OS trash and the clock
+#[derive(Clone)]
 struct SkillsHost {
     paths: Arc<dyn AppPaths>,
     os_shell: OsShellHost,
@@ -756,6 +779,7 @@ pub struct SkillsCore {
     ipc: Arc<Mutex<SkillsIpc>>,
     importer: SkillImporterHost,
     env: Env,
+    skill_host: SkillsHost,
 }
 
 impl SkillsCore {
@@ -771,14 +795,14 @@ impl SkillsCore {
             deferred: None,
         };
         let ipc = Arc::new(Mutex::new(UserSkillsIpc::new(UserSkillsService::new(
-            host, library, None,
+            host.clone(), library, None,
         ))));
         // `sender.once('destroyed')` of every window that left something waiting
         let listener = ipc.clone();
         env.services.views.on_destroyed(Box::new(move |view| {
             lock(&listener).sender_destroyed(id_of(view));
         }));
-        SkillsCore { ipc, importer, env }
+        SkillsCore { ipc, importer, env, skill_host: host }
     }
 
     fn ipc(&self) -> MutexGuard<'_, SkillsIpc> {
@@ -796,6 +820,20 @@ impl SkillsCore {
         project_root: Option<&str>,
     ) -> Svc<Vec<main_core::shell::user_skills::user_skills_service::AgentEnabledSkill>> {
         self.ipc().service.enabled_for_agent(project_root)
+    }
+
+    /// Capture the worker-safe dependencies without reading settings on core.
+    /// The caller runs this inside the settings FIFO before its mutation.
+    pub fn enabled_for_agent_task(
+        &self,
+        project_root: Option<String>,
+    ) -> Box<dyn FnOnce() -> Svc<Vec<main_core::shell::user_skills::user_skills_service::AgentEnabledSkill>> + Send> {
+        let host = self.skill_host.clone();
+        let importer = self.importer.clone();
+        Box::new(move || {
+            let library = Library { importer, deferred: None };
+            UserSkillsService::new(host, library, None).enabled_for_agent(project_root.as_deref())
+        })
     }
 
     /// `userSkills.templateFile(id)`
@@ -907,6 +945,41 @@ impl UserSkillsPort {
         body(&mut ipc, &mut host, id_of(cx.sender.view))
     }
 
+    /// Queue filesystem mutations without holding the core-owned IPC lock.
+    /// Authorization is captured on core; change notifications and the reply
+    /// return to core before the settings FIFO admits the next operation.
+    fn run_queued(
+        &self,
+        cx: &CallContext,
+        channel: Option<&str>,
+        reply: Responder,
+        body: impl FnOnce(&mut SkillsIpc, &mut IpcHost, f64) -> JsonValue + Send + 'static,
+    ) {
+        let sender = cx.sender;
+        let sender_id = id_of(sender.view);
+        let mut host = self.core.env.host(Some(sender));
+        host.authorization = channel.map(|channel| host.can_manage(sender_id, channel));
+        host.defer_changed = true;
+        let path = self.core.env.settings_path();
+        let skill_host = self.core.skill_host.clone();
+        let importer = self.core.importer.clone();
+        let core = self.core.env.services.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let library = Library { importer, deferred: None };
+            let mut ipc = UserSkillsIpc::new(UserSkillsService::new(skill_host, library, None));
+            let result = body(&mut ipc, &mut host, sender_id);
+            let changed = host.changed;
+            core.post(Box::new(move || {
+                let _completion = completion;
+                if changed {
+                    host.defer_changed = false;
+                    host.broadcast_changed();
+                }
+                answer(reply, result);
+            }));
+        });
+    }
+
     /// The network call the service recorded in `import_github` or
     /// `check_update` instead of running it; `None` when the service refused
     /// first (not found, not owned, not GitHub) and its answer stands
@@ -921,9 +994,16 @@ impl crate::ports::UserSkills for UserSkillsPort {
         answer(reply, JsonValue::Bool(due))
     }
 
-    fn skills_agent_notice_seen(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        self.run(cx, |ipc, host, _| ipc.agent_notice_seen(host));
-        undefined(reply)
+    fn skills_agent_notice_seen(&self, _cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
+        let path = self.core.env.settings_path();
+        let core = self.core.env.services.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let _ = mark_agent_skill_notice_seen(&path);
+            core.post(Box::new(move || {
+                let _completion = completion;
+                undefined(reply);
+            }));
+        });
     }
 
     fn skills_ai_read(&self, _cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -941,10 +1021,17 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_apply_update(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let token = arg(&args, 0);
-        let done = self.run(cx, |ipc, host, sender| {
-            ipc.apply_update(host, sender, token.as_ref())
+        let begun = self.run(cx, |ipc, host, sender| {
+            ipc.apply_update_begin(host, sender, token.as_ref())
         });
-        answer(reply, done)
+        let (id, check) = match begun {
+            Ok(value) => value,
+            Err(refused) => return answer(reply, refused),
+        };
+        self.run_queued(cx, None, reply, move |ipc, host, _| {
+            let result = ipc.service.apply_update(&id, &check);
+            SkillsIpc::apply_update_finish(host, result)
+        });
     }
 
     fn skills_cancel_import(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1001,10 +1088,9 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_copy_to_mine(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let (id, overwrite) = (arg(&args, 0), arg(&args, 1));
-        let done = self.run(cx, |ipc, host, sender| {
+        self.run_queued(cx, Some("skills:copy-to-mine"), reply, move |ipc, host, sender| {
             ipc.copy_to_mine(host, sender, id.as_ref(), overwrite.as_ref())
         });
-        answer(reply, done)
     }
 
     fn skills_export_bundle(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1033,10 +1119,9 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_hide_builtin(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let id = arg(&args, 0);
-        let done = self.run(cx, |ipc, host, sender| {
+        self.run_queued(cx, Some("skills:hide-builtin"), reply, move |ipc, host, sender| {
             ipc.hide_builtin(host, sender, id.as_ref())
         });
-        answer(reply, done)
     }
 
     fn skills_import_folder(&self, cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
@@ -1086,10 +1171,41 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_install(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let raw = arg(&args, 0);
-        let done = self.run(cx, |ipc, host, sender| {
-            ipc.install(host, sender, raw.as_ref())
+        let work = match self.run(cx, |ipc, host, sender| ipc.install_begin(host, sender, raw.as_ref())) {
+            Ok(work) => work,
+            Err(refused) => return answer(reply, refused),
+        };
+        let path = self.core.env.settings_path();
+        let skill_host = self.core.skill_host.clone();
+        let importer = self.core.importer.clone();
+        let ipc = self.core.ipc.clone();
+        let env = self.core.env.clone();
+        let core = env.services.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let library = Library { importer, deferred: None };
+            let mut service = UserSkillsService::new(skill_host, library, None);
+            let done = service.install(&work.imported, &work.selected, &work.on_collision);
+            let core_again = core.clone();
+            core.post(Box::new(move || {
+                let (result, dispose, changed) = lock(&ipc).install_finish(work, done);
+                let workers = env.services.workers.clone();
+                let finish = move || {
+                    let _completion = completion;
+                    if changed {
+                        env.services.events.emit(Target::All, CHANGED, Vec::new());
+                    }
+                    answer(reply, result);
+                };
+                if let Some(imported) = dispose {
+                    workers.spawn(Box::new(move || {
+                        service.dispose(&imported);
+                        core_again.post(Box::new(finish));
+                    }));
+                } else {
+                    finish();
+                }
+            }));
         });
-        answer(reply, done)
     }
 
     fn skills_list(&self, _cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
@@ -1132,32 +1248,30 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_remove(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let id = arg(&args, 0);
-        let done = self.run(cx, |ipc, host, sender| {
+        self.run_queued(cx, Some("skills:remove"), reply, move |ipc, host, sender| {
             ipc.remove(host, sender, id.as_ref())
         });
-        answer(reply, done)
     }
 
     fn skills_save(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let raw = arg(&args, 0);
-        let done = self.run(cx, |ipc, host, sender| ipc.save(host, sender, raw.as_ref()));
-        answer(reply, done)
+        self.run_queued(cx, Some("skills:save"), reply, move |ipc, host, sender| {
+            ipc.save(host, sender, raw.as_ref())
+        });
     }
 
     fn skills_save_from_card(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let (raw, bytes) = marked_arg(args, &["template", "bytes"]);
-        let done = self.run(cx, |ipc, host, _| {
+        self.run_queued(cx, None, reply, move |ipc, host, _| {
             ipc.save_from_card(host, raw.as_ref(), bytes)
         });
-        answer(reply, done)
     }
 
     fn skills_set_state(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let (id, patch) = (arg(&args, 0), arg(&args, 1));
-        let done = self.run(cx, |ipc, host, sender| {
+        self.run_queued(cx, Some("skills:set-state"), reply, move |ipc, host, sender| {
             ipc.set_state(host, sender, id.as_ref(), patch.as_ref())
         });
-        answer(reply, done)
     }
 
     fn skills_suggest_name(&self, _cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1172,10 +1286,9 @@ impl crate::ports::UserSkills for UserSkillsPort {
 
     fn skills_unhide_builtins(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let names = arg(&args, 0);
-        let done = self.run(cx, |ipc, host, sender| {
+        self.run_queued(cx, Some("skills:unhide-builtins"), reply, move |ipc, host, sender| {
             ipc.unhide_builtins(host, sender, names.as_ref())
         });
-        answer(reply, done)
     }
 }
 
@@ -1210,6 +1323,8 @@ struct TabsHost {
     env: Env,
     tabs: TemplateCopyTabsHost,
     skills: Arc<Mutex<SkillsIpc>>,
+    template: Option<Svc<TemplateFile>>,
+    opener: Option<Option<String>>,
 }
 
 fn io_message(error: std::io::Error) -> String {
@@ -1270,7 +1385,7 @@ impl TemplateTabsHost for TabsHost {
 
     /// `userSkills.templateFile(id)`
     fn template_file_of(&mut self, skill_id: &str) -> Svc<TemplateFile> {
-        lock(&self.skills).service.template_file(skill_id)
+        self.template.take().unwrap_or_else(|| lock(&self.skills).service.template_file(skill_id))
     }
 
     fn open_copy(&mut self, copy: &TemplateCopy) -> Result<Option<OpenedCopyTab>, String> {
@@ -1288,7 +1403,7 @@ impl TemplateTabsHost for TabsHost {
     }
 
     fn opener_file_path(&mut self, opener_id: f64) -> Option<String> {
-        self.tabs.opener_file_path(view_of(opener_id))
+        self.opener.take().unwrap_or_else(|| self.tabs.opener_file_path(view_of(opener_id)))
     }
 
     fn focus_tab(&mut self, tab_id: &str) -> bool {
@@ -1359,6 +1474,8 @@ impl TemplateTabsCore {
                 env: env.clone(),
                 tabs: copies.clone(),
                 skills: skills.clone(),
+                template: None,
+                opener: None,
             };
             lock(&tabs).contents_destroyed(&mut host, id_of(view));
             lock(&gone).push(id_of(view));
@@ -1371,6 +1488,8 @@ impl TemplateTabsCore {
             env: self.env.clone(),
             tabs: self.copies.clone(),
             skills: self.skills.clone(),
+            template: None,
+            opener: None,
         }
     }
 
@@ -1382,17 +1501,10 @@ impl TemplateTabsCore {
         }
         let mut store = self.store.borrow_mut();
         for id in gone {
-            store.drop_generate_handoff(id);
+            store.drop_legacy_handoff(id);
         }
     }
 
-    /// `fileHasUnsavedChanges` reads the open documents through this
-    fn open_files(&self) -> OpenFilesHolder {
-        let copies = self.copies.clone();
-        let mut holder = OpenFilesHolder::new();
-        holder.set_open_files_source(Some(Box::new(move || copies.open_files())));
-        holder
-    }
 
     /// `templateTabs.openPreview(owner, input)`: spec 5.6 "make a blank
     /// template". Returns `(tabId, previewId)`.
@@ -1488,18 +1600,39 @@ impl crate::ports::TemplateTabs for TemplateTabsPort {
 
     fn skills_open_template(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
         let raw = arg(&args, 0);
-        self.core.forget_gone();
-        let mut host = self.core.host();
-        let holder = self.core.open_files();
-        let done = handle_open_template(
-            &mut lock(&self.core.tabs),
-            &mut host,
-            &mut self.core.store.borrow_mut(),
-            &holder,
-            raw.as_ref(),
-            id_of(cx.sender.view),
-        );
-        answer(reply, done)
+        let input = template_open_input_of(raw.as_ref())
+            .and_then(|input| TemplateOpenInput::from_json(&input));
+        let template = input.as_ref().filter(|input| input.with_current)
+            .map(|input| lock(&self.core.skills).service.template_file(&input.skill_id));
+        let attachable = template.as_ref().and_then(|result| result.as_ref().ok())
+            .and_then(|template| handoff_editor_for_file(&template.file_name))
+            .is_some_and(handoff_editor_takes_attachments);
+        let opener = attachable.then(|| self.core.copies.opener_file_path(cx.sender.view));
+        let with_current = opener.as_ref().is_some_and(Option::is_some);
+        let sender = id_of(cx.sender.view);
+        let core = self.core.clone();
+        let finish = move |files: Result<Vec<OpenFileState>, OpenFilesSourceFailed>| {
+            core.forget_gone();
+            let mut host = core.host();
+            host.template = template;
+            host.opener = opener;
+            let mut holder = OpenFilesHolder::new();
+            holder.set_open_files_source(Some(Box::new(move || files.clone())));
+            let done = handle_open_template(
+                &mut lock(&core.tabs),
+                &mut host,
+                &mut core.store.borrow_mut(),
+                &holder,
+                raw.as_ref(),
+                sender,
+            );
+            answer(reply, done);
+        };
+        if with_current {
+            self.core.copies.open_files(Box::new(finish));
+        } else {
+            finish(Err(OpenFilesSourceFailed));
+        }
     }
 
     fn skills_preview_original(&self, cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
@@ -1615,7 +1748,7 @@ mod tests {
 
     /// the core thread's queue: what was posted runs when the test says
     #[derive(Default)]
-    struct Queue(Mutex<VecDeque<Job>>);
+    struct Queue(Mutex<VecDeque<Job>>, std::sync::Condvar);
     impl Queue {
         fn run(&self) {
             loop {
@@ -1630,6 +1763,7 @@ mod tests {
     impl Thread for Queue {
         fn post(&self, job: Job) {
             lock(&self.0).push_back(job);
+            self.1.notify_one();
         }
         fn is_current(&self) -> bool {
             true
@@ -1680,10 +1814,13 @@ mod tests {
     struct ViewTable {
         live: Mutex<Vec<Sender>>,
         listeners: Mutex<Vec<Listener>>,
+        generations: Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+        replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
     }
     impl ViewTable {
         fn destroy(&self, view: u32) {
             lock(&self.live).retain(|sender| sender.view != ViewId(view));
+            if let Some(generation) = lock(&self.generations).remove(&ViewId(view)) { generation.revoke(); }
             for listener in lock(&self.listeners).iter() {
                 listener(ViewId(view));
             }
@@ -1698,6 +1835,13 @@ mod tests {
         }
         fn on_destroyed(&self, listener: Listener) {
             lock(&self.listeners).push(listener);
+        }
+        fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+            if !lock(&self.live).iter().any(|sender| sender.view == view) { return None; }
+            Some(lock(&self.generations).entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+        }
+        fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+            lock(&self.replacements).push(listener);
         }
     }
 
@@ -1724,7 +1868,34 @@ mod tests {
         open_error: Mutex<String>,
         trash_fails: Mutex<bool>,
     }
+    fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
+        let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
+        let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+        let source_loss = origin.loss_token();
+        let target_loss = destination.loss_token();
+        source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
+            .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+    }
+
     impl Dialogs for Pc {
+        shell_contract::synthetic_recovery_dialog_methods!();
+        fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
+        fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
+        fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
+            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+        }
+        fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
+            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+        }
+        fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
+            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+        }
+        fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
+            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+        }
+        fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
+            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+        }
         fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
             lock(&self.asked).push(format!(
                 "open {:?} {:?} {:?}",
@@ -1770,6 +1941,9 @@ mod tests {
             lock(&self.trashed).push(path.to_string_lossy().into_owned());
             Ok(())
         }
+        fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+            admit(&mut || self.trash_item(path))
+        }
     }
     impl Contents for Pc {
         fn window_of(&self, view: ViewId) -> Option<WindowId> {
@@ -1777,6 +1951,29 @@ mod tests {
         }
         fn capture_png(&self, _: ViewId) -> Result<Vec<u8>, String> {
             unreachable!()
+        }
+        fn print_to_pdf_owned(&self, _: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
+            if cancel.is_cancelled() || pending.is_cancelled() { return Err("Print request expired.".into()); }
+            self.print_to_pdf(destination.view, options)
+        }
+        fn print_to_pdf_existing_document(&self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
+            let extra = additional.iter().collect::<Vec<_>>();
+            let mut admitted = false;
+            shell_contract::hosts::synthetic::with_existing_document_save_extra(binding, participants, cancel, pending, &extra, &mut || { admitted = true; Ok(()) })?;
+            if !admitted { return Err("Print request expired.".into()); }
+            self.print_to_pdf(binding.owner().view, options)
+        }
+        fn print_to_pdf_owned_many_extra(&self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], options: IpcValue) -> Result<Vec<u8>, String> {
+            let mut owners = participants.to_vec(); owners.push(destination.clone());
+            let extra = additional.iter().collect::<Vec<_>>();
+            shell_contract::hosts::synthetic::with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || Ok(()))?;
+            self.print_to_pdf(destination.view, options)
+        }
+        fn print_to_pdf_native_invocation(&self, document: &shell_contract::ipc::NativeInvocationDocument, owner: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, options: IpcValue) -> Result<Vec<u8>, String> {
+            let mut options = Some(options);
+            let mut admitted = None;
+            shell_contract::hosts::synthetic::with_native_invocation(document, owner, participants, cancel, pending, &mut || { admitted = options.take(); Ok(()) })?;
+            self.print_to_pdf(owner.view, admitted.ok_or("Print request expired.")?)
         }
         fn print_to_pdf(&self, _: ViewId, _: IpcValue) -> Result<Vec<u8>, String> {
             unreachable!()
@@ -1977,8 +2174,8 @@ mod tests {
         fn opener_file_path(&self, opener: ViewId) -> Option<String> {
             lock(&self.files).get(&opener.0).cloned()
         }
-        fn open_files(&self) -> Result<Vec<OpenFileState>, OpenFilesSourceFailed> {
-            lock(&self.open_files).clone()
+        fn open_files(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
+            done(lock(&self.open_files).clone())
         }
         fn focus_tab(&self, tab_id: &str) -> bool {
             lock(&self.focusable).iter().any(|known| known == tab_id)
@@ -2067,7 +2264,7 @@ mod tests {
                 dir.join("builtin").to_string_lossy().into_owned(),
             )));
             hosts.insert::<TemplateCopyTabsHost>(copies.clone());
-            let services = Services {
+            let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
                 ui: queue.clone(),
                 core: queue.clone(),
                 workers: pool.clone(),
@@ -2075,7 +2272,7 @@ mod tests {
                 views: views.clone(),
                 paths: Arc::new(Paths(dir.clone())),
                 hosts: Arc::new(hosts),
-            };
+            });
             let provided = Rc::new(Provided::default());
             let skills = (factory().0)(&services, &provided).unwrap();
             let tabs = (template_tabs_factory().0)(&services, &provided).unwrap();
@@ -2110,6 +2307,7 @@ mod tests {
                 sender: from,
                 request: None,
                 cancel: CancelToken::default(),
+                native: None,
             };
             let slot: Slot = Arc::new(Mutex::new(None));
             let out = slot.clone();
@@ -2136,9 +2334,24 @@ mod tests {
             self.queue.run();
         }
 
+        fn settle_until(&self, slot: &Slot) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while lock(slot).is_none() {
+                self.settle();
+                if lock(slot).is_some() { break; }
+                if !lock(&self.pool.0).is_empty() { continue; }
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!remaining.is_zero(), "timed out waiting for skills response");
+                let guard = lock(&self.queue.0);
+                if guard.is_empty() {
+                    drop(self.queue.1.wait_timeout(guard, remaining).unwrap());
+                }
+            }
+        }
+
         fn call(&self, view: u32, channel: &str, args: Vec<IpcValue>) -> Value {
             let slot = self.start(view, channel, args);
-            self.settle();
+            self.settle_until(&slot);
             let answer = lock(&slot).take().expect("answered").expect("resolved");
             json_of(&answer)
         }
@@ -2150,7 +2363,7 @@ mod tests {
             args: Vec<IpcValue>,
         ) -> Result<IpcValue, IpcError> {
             let slot = self.start(view, channel, args);
-            self.settle();
+            self.settle_until(&slot);
             lock(&slot).take().expect("answered")
         }
 
@@ -2364,6 +2577,47 @@ mod tests {
         let unhid = w.call(MAIN, "skills:unhide-builtins", vec![]);
         assert_eq!(unhid, json!({"ok": true}));
         assert_eq!(w.changed(), before + 2);
+    }
+
+    #[test]
+    fn queued_skill_write_keeps_other_settings_and_waits_for_core_ack() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let w = World::new("settings-fifo");
+        let id = w.save_skill("queued");
+        let path = w.dir.join("data/app-settings.json").to_string_lossy().into_owned();
+        let queue = main_core::shell::app_settings::queue::for_path(&path);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        queue.submit(move |_completion| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let slot = w.start(MAIN, "skills:set-state", vec![s(&id), iv(json!({"enabled": false}))]);
+        let (next_tx, next_rx) = mpsc::channel();
+        let next_path = path.clone();
+        queue.submit(move |_completion| {
+            main_core::shell::app_settings::write_app_setting(
+                &next_path, "theme", Some(JsonValue::String("dark".into())),
+            ).unwrap();
+            next_tx.send(()).unwrap();
+        });
+        release_tx.send(()).unwrap();
+        let guard = lock(&w.queue.0);
+        let (guard, timeout) = w.queue.1.wait_timeout_while(
+            guard, Duration::from_secs(5), |jobs| jobs.is_empty(),
+        ).unwrap();
+        assert!(!timeout.timed_out() && !guard.is_empty());
+        drop(guard);
+        assert!(next_rx.try_recv().is_err(), "next writer ran before core completion");
+        w.settle_until(&slot);
+        assert_eq!(json_of(&lock(&slot).take().unwrap().unwrap()), json!({"ok": true}));
+        next_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let settings = main_core::shell::app_settings::read_app_settings(&path);
+        assert_eq!(settings.get("theme"), Some(&JsonValue::String("dark".into())));
+        assert!(settings.get("skills").is_some());
     }
 
     #[test]

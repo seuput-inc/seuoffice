@@ -27,15 +27,31 @@ pub trait DiagramShell: Send + Sync {
         file_name: &str,
         bytes: &[u8],
     ) -> Option<Result<Option<String>, String>>;
+    fn write_new_document_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str, bytes: &[u8]) -> Result<Option<String>, String>;
 
     /// `setDiagramFileSavedHook`: a save landed on a new path
     fn file_saved(&self, view: ViewId, path: &str);
+    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
+    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+        on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>);
 
     /// `setDiagramRecoveryTitleHook`: the tab title of an untitled diagram
     fn recovery_title(&self, view: ViewId) -> Option<String>;
 
     /// `setDiagramHelpHook`: draw.io's Help was picked
-    fn help(&self, view: ViewId);
+    fn help_owned(&self, origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<(), String>)>);
 
     /// `setDiagramOpenFailedHook`: the tab's file did not open after all;
     /// true when the shell closed the tab and shows `message`
@@ -43,13 +59,15 @@ pub trait DiagramShell: Send + Sync {
 
     /// `setDiagramProvisionalTitleHook`: name an untitled diagram's tab
     fn provisional_title(&self, view: ViewId, title: &str);
+    /// Reload a view after its recovery open path changes.
+    fn reload_view(&self, view: ViewId);
 
     /// `isPathOpenElsewhere(path)` of `electron-utils`
     fn is_path_open_elsewhere(&self, path: &str) -> bool;
 
     /// `assertFileSaved(path)` of `electron-utils`: `Err` carries the message
     /// of the refusal (the file is open with unsaved changes)
-    fn assert_file_saved(&self, path: &str) -> Result<(), String>;
+    fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>);
 
     /// `isHeadlessMode()` of `electron-utils`
     fn is_headless(&self) -> bool;

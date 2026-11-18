@@ -20,11 +20,11 @@ use crate::shell::detached_windows::{
 };
 use crate::shell::split_layout::{Pane, Rect, SplitDropIntent, SplitOrientation};
 use crate::shell::tab_manager::{
-    Deferred, DetachedTab, DiagramIdentity, EditorCalls, EnsureAfterReady, EnsureStep, HwpCopy,
+    Deferred, DetachedTab, DiagramIdentity, EditorCalls, EditorOpen, EnsureAfterReady, EnsureStep, HwpCopy,
     HwpUntitledCopy, LiveTab, LoadedTabView, OpenDocsOptions, OpenDocumentsRun, OpenDocumentsStep,
-    Opener, Ready, RestoredSession, RestoredSplit, SplitViewState, TabCloseStep, TabHost, TabKind,
+    HelpOpenCommit, Opener, Ready, RestoredSession, RestoredSplit, SplitViewState, TabCloseStep, TabHost, TabKind,
     TabLoadResult, TabManager, TabResult, TemplateCopy, UnloadedTabOpenContext, UnloadedTabSpec,
-    ViewSpec, canonical_path, create_plain_editor_view, help_topic_param, help_view_url,
+    ViewSpec, canonical_path, prepare_plain_editor_view, resume_plain_editor_view, help_topic_param, help_view_url,
     help_window_open,
 };
 
@@ -202,8 +202,8 @@ struct World {
     dock_on: bool,
     dock_attach: bool,
     dock_index: Option<f64>,
-    pending_docks: Vec<DetachedTab<View>>,
-    held: Vec<Option<DetachedTab<View>>>,
+    pending_docks: Vec<DetachedTab<View, ()>>,
+    held: Vec<Option<DetachedTab<View, ()>>>,
     /// `holding`: a `docsQueryDirty` or a close prompt waits for `release`
     hold: bool,
     held_steps: VecDeque<Held>,
@@ -417,7 +417,7 @@ impl World {
     /// what the adapter does when an operation returned: the docks the
     /// detached windows asked for, the promises that settled, the `closed`
     /// events of the windows destroyed
-    fn after_op(&mut self, tm: &mut TabManager<View>, dw: &mut DetachedWindows<View, Win>) {
+    fn after_op(&mut self, tm: &mut TabManager<View, ()>, dw: &mut DetachedWindows<View, Win, ()>) {
         let docks = std::mem::take(&mut self.pending_docks);
         let index = self.dock_index;
         for tab in docks {
@@ -502,13 +502,17 @@ impl EditorCalls<View> for World {
         self.state(wc_id).pending
     }
 
-    fn family_is_dirty(&mut self, kind: TabKind, wc_id: i64) -> bool {
+    fn family_is_dirty(&mut self, kind: TabKind, wc_id: i64) -> TabResult<bool> {
         self.log(vec![
             Value::from("isDirty"),
             Value::from(kind.as_str()),
             Value::from(wc_id),
         ]);
-        self.state(wc_id).dirty
+        let state = self.state(wc_id);
+        if state.query_fails {
+            return Err(crate::shell::tab_manager::TabError("dirty query failed".into()));
+        }
+        Ok(state.dirty)
     }
 
     fn hwp_memo_modal_open(&mut self, wc_id: i64) -> bool {
@@ -564,7 +568,7 @@ impl EditorCalls<View> for World {
 
 // ---- the shell window and what the tab manager was given ----
 
-impl TabHost<View> for World {
+impl TabHost<View, ()> for World {
     fn window_destroyed(&mut self) -> bool {
         self.shell.destroyed
     }
@@ -778,12 +782,13 @@ impl TabHost<View> for World {
         self.log(vec![Value::from("markDocsNewBlank"), Value::from(wc_id)]);
     }
 
-    fn queue_docs_ai_content(&mut self, wc_id: i64, content: &Value) {
+    fn queue_docs_ai_content(&mut self, wc_id: i64, content: &Value) -> TabResult<()> {
         self.log(vec![
             Value::from("queueDocsAiContent"),
             Value::from(wc_id),
             content.clone(),
         ]);
+        Ok(())
     }
 
     fn queue_docs_copy(&mut self, wc_id: i64, path: &str, name: &str) {
@@ -896,7 +901,7 @@ impl TabHost<View> for World {
         };
         if spec.plain {
             let view =
-                create_plain_editor_view::<View>(self, context.kind, context.file_path.as_deref())
+                fixture_plain_editor_view(self, context.kind, context.file_path.as_deref())
                     .map_err(|e| e.0)?;
             return Ok(LoadedTabView { view, ready: None });
         }
@@ -930,7 +935,7 @@ impl TabHost<View> for World {
 
 // ---- the detached windows ----
 
-impl DetachedHost<View, Win> for World {
+impl DetachedHost<View, Win, ()> for World {
     fn create_window(&mut self, options: &WindowOptions) -> Win {
         let mut opts = Map::new();
         opts.insert("width".into(), Value::from(options.width));
@@ -1089,7 +1094,7 @@ impl DetachedHost<View, Win> for World {
         ]);
     }
 
-    fn dock(&mut self, tab: DetachedTab<View>) {
+    fn dock(&mut self, tab: DetachedTab<View, ()>) {
         let mut tab_json = Map::new();
         tab_json.insert("kind".into(), Value::from(tab.kind.as_str()));
         tab_json.insert("title".into(), Value::from(tab.title.as_str()));
@@ -1232,7 +1237,7 @@ fn active_json(tab: Option<LiveTab<View>>) -> Value {
     })
 }
 
-fn detached_tab_json(tab: Option<&DetachedTab<View>>) -> Value {
+fn detached_tab_json(tab: Option<&DetachedTab<View, ()>>) -> Value {
     tab.map_or(Value::Null, |t| {
         let mut map = Map::new();
         map.insert("kind".into(), Value::from(t.kind.as_str()));
@@ -1298,7 +1303,7 @@ fn log_close_prompt(w: &mut World, kind: TabKind, view: View, window: &str) {
 /// the world holds, left waiting for `release`.
 fn drive_tab_close(
     w: &mut World,
-    tm: &mut TabManager<View>,
+    tm: &mut TabManager<View, ()>,
     mut step: TabCloseStep<View>,
     sink: Sink,
 ) -> Value {
@@ -1331,7 +1336,7 @@ fn drive_tab_close(
 /// the same for `openDocuments`
 fn drive_open_docs(
     w: &mut World,
-    tm: &mut TabManager<View>,
+    tm: &mut TabManager<View, ()>,
     mut step: OpenDocumentsStep<View, OpenDocumentsRun<View>>,
     sink: Sink,
 ) -> Value {
@@ -1360,7 +1365,7 @@ fn drive_open_docs(
 /// the same for `detachedOpenDocuments`
 fn drive_detached_open_docs(
     w: &mut World,
-    dw: &mut DetachedWindows<View, Win>,
+    dw: &mut DetachedWindows<View, Win, ()>,
     mut step: OpenDocumentsStep<View, DetachedOpenDocumentsRun>,
     sink: Sink,
 ) -> Value {
@@ -1390,7 +1395,7 @@ fn drive_detached_open_docs(
 /// the same for the close prompt of a detached window
 fn drive_detached_close(
     w: &mut World,
-    dw: &mut DetachedWindows<View, Win>,
+    dw: &mut DetachedWindows<View, Win, ()>,
     rec: RecId,
     mut step: DetachedCloseStep<View, Win>,
 ) {
@@ -1425,7 +1430,7 @@ fn drive_detached_close(
 /// that waits a few turns does)
 fn drive_ensure(
     w: &mut World,
-    tm: &mut TabManager<View>,
+    tm: &mut TabManager<View, ()>,
     mut step: EnsureStep<View>,
     sink: Sink,
 ) -> Value {
@@ -1487,8 +1492,8 @@ fn drive_ensure(
 /// `release`: answer the oldest run the world holds back
 fn release(
     w: &mut World,
-    tm: &mut TabManager<View>,
-    dw: &mut DetachedWindows<View, Win>,
+    tm: &mut TabManager<View, ()>,
+    dw: &mut DetachedWindows<View, Win, ()>,
     answer: Result<bool, String>,
 ) -> Value {
     let Some(held) = w.held_steps.pop_front() else {
@@ -1518,8 +1523,8 @@ fn release(
 fn scenario_call(args: &[Value], cx: &mut Context) -> Answer {
     let spec = arg(args, 0).ok_or_else(|| CallError::plain("scenario"))?;
     let mut w = World::new(spec);
-    let mut tm: TabManager<View> = TabManager::new();
-    let mut dw: DetachedWindows<View, Win> = DetachedWindows::new();
+    let mut tm: TabManager<View, ()> = TabManager::new();
+    let mut dw: DetachedWindows<View, Win, ()> = DetachedWindows::new();
     let platform = str_of(spec, "platform").unwrap_or("").to_owned();
     let mut results: Vec<Value> = Vec::new();
     for op in spec
@@ -1549,8 +1554,8 @@ fn run_op(
     name: &str,
     o: &Value,
     w: &mut World,
-    tm: &mut TabManager<View>,
-    dw: &mut DetachedWindows<View, Win>,
+    tm: &mut TabManager<View, ()>,
+    dw: &mut DetachedWindows<View, Win, ()>,
     platform: &str,
     sink: Sink,
 ) -> Value {
@@ -1687,8 +1692,13 @@ fn run_op(
             match kind {
                 TimerKind::Spare => {
                     w.spare_timer = None;
-                    if let Err(error) = tm.fire_spare_sheets_timer(w) {
-                        return error_value(&error.0);
+                    if tm.prepare_spare_sheets_view(w) {
+                        match w.create_view(&ViewSpec::Sheets { opening_workbook: None }) {
+                            Ok(view) => {
+                                if !tm.resume_spare_sheets_view(w, &view, ()) { w.close_view(&view); }
+                            }
+                            Err(error) => return error_value(&error.0),
+                        }
                     }
                 }
                 TimerKind::Dock(rec) => {
@@ -1773,14 +1783,21 @@ fn run_op(
                 file_name: str_of(c, "fileName").unwrap_or("").to_owned(),
                 title: str_of(c, "title").unwrap_or("").to_owned(),
             };
-            match tm.open_template_copy(w, &copy) {
+            let opened = match TabManager::<View>::template_editor_open(&copy) {
+                None => Ok(None),
+                Some(request) => {
+                    if copy.editor == "pdf" { w.mark_pdf_untitled_copy(&copy.path); }
+                    fixture_open_editor(w, tm, request).map(|id| tm.finish_template_copy(w, &copy, id))
+                }
+            };
+            match opened {
                 Ok(Some((tab_id, view))) => json!({ "tabId": tab_id, "wc": view.0 }),
                 Ok(None) => Value::Null,
                 Err(error) => error_value(&error.0),
             }
         }
         "plainView" => {
-            match create_plain_editor_view::<View>(w, kind_of(str_of(o, "kind")), str_of(o, "path"))
+            match fixture_plain_editor_view(w, kind_of(str_of(o, "kind")), str_of(o, "path"))
             {
                 Ok(view) => Value::from(view.0),
                 Err(error) => error_value(&error.0),
@@ -1912,9 +1929,20 @@ fn run_op(
             tm.end_exclusive_prompt(w);
             Value::Null
         }
-        "duplicate" => match tm.open_duplicate_pane_tab(w, str_of(o, "tab").unwrap_or("")) {
-            Ok(id) => id.map_or(Value::Null, Value::from),
-            Err(error) => error_value(&error.0),
+        "duplicate" => {
+            match tm.prepare_duplicate_pane_open(w, str_of(o, "tab").unwrap_or("")) {
+                None => Value::Null,
+                Some(plan) => {
+                    let created = match plan.creation_spec() {
+                        Some(spec) => w.create_view(&spec).map(Some),
+                        None => Ok(None),
+                    };
+                    match tm.resume_editor_open(w, plan, created) {
+                        Ok(id) => Value::from(id),
+                        Err(error) => error_value(&error.0),
+                    }
+                }
+            }
         },
         // ---- closing, detaching ----
         "closeTab" => {
@@ -1984,8 +2012,14 @@ fn run_op(
             .map(|(kind, view)| json!({ "kind": kind.as_str(), "wc": view.0 }))
             .collect(),
         ),
-        "dirty" => pairs_json(tm.dirty_tabs(w, kind_of(str_of(o, "kind")))),
-        "dirtyMemo" => pairs_json(tm.dirty_or_memo_hwp_tabs(w)),
+        "dirty" => match tm.dirty_tabs(w, kind_of(str_of(o, "kind"))) {
+            Ok(tabs) => pairs_json(tabs),
+            Err(error) => error_value(&error.0),
+        },
+        "dirtyMemo" => match tm.dirty_or_memo_hwp_tabs(w) {
+            Ok(tabs) => pairs_json(tabs),
+            Err(error) => error_value(&error.0),
+        },
         "live" => pairs_json(tm.live_tabs(kind_of(str_of(o, "kind")))),
         "find" => live_json(tm.find_tab_by_path(w, str_of(o, "path"))),
         "findKind" => tm
@@ -2011,6 +2045,7 @@ fn run_op(
                 w,
                 DetachedWindowOptions {
                     view: tab.view,
+                    binding: tab.binding,
                     kind: tab.kind,
                     title: tab.title,
                     file_path: tab.file_path,
@@ -2181,7 +2216,7 @@ fn run_op(
 fn window_event(
     o: &Value,
     w: &mut World,
-    dw: &mut DetachedWindows<View, Win>,
+    dw: &mut DetachedWindows<View, Win, ()>,
     platform: &str,
 ) -> Value {
     let n = o.get("window").and_then(Value::as_u64).unwrap_or(1) as usize;
@@ -2228,7 +2263,50 @@ fn window_event(
     }
 }
 
-fn open_tab(o: &Value, w: &mut World, tm: &mut TabManager<View>) -> Value {
+fn fixture_plain_editor_view(w: &mut World, kind: TabKind, path: Option<&str>) -> TabResult<View> {
+    let spec = prepare_plain_editor_view(kind, path)?;
+    let view = w.create_view(&spec)?;
+    resume_plain_editor_view(w, kind, path, &view);
+    Ok(view)
+}
+
+fn fixture_open_help(w: &mut World, tm: &mut TabManager<View, ()>, topic: Option<&str>) -> TabResult<String> {
+    let dev_url = w.renderer_dev_url();
+    match tm.prepare_help_open_pure(dev_url.as_deref(), topic)? {
+        Err((id, view, navigate)) => {
+            if let (Some(view), Some(url)) = (view, navigate) { w.load_url(&view, &url); }
+            tm.activate_tab(w, &id);
+            Ok(id)
+        }
+        Ok(plan) => {
+            let view = w.create_help_view();
+            let url = help_view_url(dev_url.as_deref(), help_topic_param(topic))?;
+            w.load_url(&view, &url);
+            w.add_child_view(&view);
+            w.set_visible(&view, false);
+            let title = w.untitled_title_for(TabKind::Help).unwrap_or_else(|| format!("{} Help", crate::packages::i18n::PRODUCT_NAME));
+            match tm.commit_help_open(plan, view, title) {
+                HelpOpenCommit::Created { id, .. } => { tm.activate_tab(w, &id); Ok(id) }
+                HelpOpenCommit::Existing { id, view, unused, navigate } => {
+                    w.remove_child_view(&unused); w.close_view(&unused);
+                    if let (Some(view), Some(url)) = (view, navigate) { w.load_url(&view, &url); }
+                    tm.activate_tab(w, &id); Ok(id)
+                }
+            }
+        }
+    }
+}
+
+fn fixture_open_editor(w: &mut World, tm: &mut TabManager<View, ()>, request: EditorOpen) -> TabResult<String> {
+    let plan = tm.prepare_editor_open(w, request);
+    let created = match plan.creation_spec() {
+        Some(spec) => w.create_view(&spec).map(Some),
+        None => Ok(None),
+    };
+    tm.resume_editor_open(w, plan, created)
+}
+
+fn open_tab(o: &Value, w: &mut World, tm: &mut TabManager<View, ()>) -> Value {
     let path = str_of(o, "path");
     let result = match str_of(o, "kind").unwrap_or("") {
         "docs" => {
@@ -2240,30 +2318,50 @@ fn open_tab(o: &Value, w: &mut World, tm: &mut TabManager<View>) -> Value {
             } else {
                 None
             };
-            tm.open_docs_tab(w, path, options.as_ref())
+            fixture_open_editor(w, tm, EditorOpen::Docs { path: path.map(str::to_owned), options })
         }
-        "sheets" => tm.open_sheets_tab(w, path, bool_of(o, "newBlank").unwrap_or(false)),
-        "slides" => tm.open_slides_tab(w, path),
-        "pdf" => tm.open_pdf_tab(w, path.unwrap_or("")),
-        "markdown" => tm.open_markdown_tab(w, path),
-        "html" => tm.open_html_tab(w, path),
-        "mindmap" => tm.open_mindmap_tab(w, path),
-        "epub" => tm.open_epub_tab(w, path.unwrap_or("")),
-        "diagram" => tm.open_diagram_tab(w, path),
+        "sheets" => fixture_open_editor(w, tm, EditorOpen::Sheets { path: path.map(str::to_owned), new_blank: bool_of(o, "newBlank").unwrap_or(false) }),
+        "slides" => fixture_open_editor(w, tm, EditorOpen::Slides { path: path.map(str::to_owned) }),
+        "pdf" => fixture_open_editor(w, tm, EditorOpen::Pdf { path: path.unwrap_or("").into() }),
+        "markdown" => fixture_open_editor(w, tm, EditorOpen::Markdown { path: path.map(str::to_owned) }),
+        "html" => fixture_open_editor(w, tm, EditorOpen::Html { path: path.map(str::to_owned) }),
+        "mindmap" => fixture_open_editor(w, tm, EditorOpen::Mindmap { path: path.map(str::to_owned) }),
+        "epub" => fixture_open_editor(w, tm, EditorOpen::Epub { path: path.unwrap_or("").into() }),
+        "diagram" => fixture_open_editor(w, tm, EditorOpen::Diagram { path: path.map(str::to_owned) }),
         "hwp" => {
             let copy = o.get("copy").map(|c| HwpCopy {
                 title: str_of(c, "title").unwrap_or("").to_owned(),
                 imported_pdf: bool_of(c, "importedPdf") == Some(true),
             });
-            tm.open_hwp_tab(w, path, copy.as_ref())
+            fixture_open_editor(w, tm, EditorOpen::Hwp { path: path.map(str::to_owned), copy })
         }
-        "help" => tm.open_help_tab(w, str_of(o, "topic")),
+        "help" => fixture_open_help(w, tm, str_of(o, "topic")),
         "present" => {
-            tm.open_html_present_tab(w, i64_of(o, "owner"), str_of(o, "title").unwrap_or(""))
+            let owner = i64_of(o, "owner");
+            let title = str_of(o, "title").unwrap_or("");
+            w.create_view(&ViewSpec::HtmlPresent { owner, title })
+                .map(|view| tm.resume_html_present_tab(w, view, title))
         }
         other => {
             return error_value(&format!("unknown kind {other}"));
         }
     };
     tab_result(result)
+}
+
+#[cfg(test)]
+mod dirty_failure_tests {
+    use super::*;
+
+    #[test]
+    fn failed_slides_dirty_check_rejects_close_and_keeps_tab() {
+        let mut world = World::new(&Value::Null);
+        let mut tabs = TabManager::<View>::new();
+        let id = fixture_open_editor(&mut world, &mut tabs, EditorOpen::Slides { path: None }).unwrap();
+        let view = tabs.web_contents_for_tab(&id).unwrap();
+        world.state(view.0).query_fails = true;
+        assert!(matches!(tabs.close_tab(&mut world, &id), TabCloseStep::Rejected(message) if message == "dirty query failed"));
+        assert_eq!(tabs.web_contents_for_tab(&id), Some(view));
+        assert!(tabs.dirty_tabs(&mut world, TabKind::Slides).is_err());
+    }
 }

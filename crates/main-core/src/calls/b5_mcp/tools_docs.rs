@@ -133,7 +133,7 @@ pub(super) fn call(name: &str, args: &[Value], cx: &mut Context) -> Option<Answe
                 version: String::new(),
                 default_save_dir: Rc::new(move || format!("{dir}/save")),
                 background: None,
-                open_in_tab: None,
+                open_in_tab: false,
                 docs: false,
                 extra_formats: None,
                 cli: None,
@@ -390,6 +390,7 @@ struct Fakes {
     resolver: Option<Value>,
     /// the open-documents control: `{ list, read, close, save }`
     open: Option<Value>,
+    open_tab: Option<String>,
 }
 
 impl Fakes {
@@ -400,12 +401,21 @@ impl Fakes {
             docs: None,
             resolver: None,
             open: None,
+            open_tab: None,
         }
     }
 
     /// the answer to one awaited host call
     fn answer(&self, call: &HostCall) -> Settled {
         match (call.control, call.method) {
+            ("NativeOpen", "openPath") => {
+                push(&self.log, vec![Value::from("openInTab"), Value::from(string_at(&call.args, 0))]);
+                if self.open_tab.as_deref() == Some("throws") {
+                    Err("cannot open".to_owned())
+                } else {
+                    Ok(Some(JsonValue::Bool(true)))
+                }
+            }
             ("FamilyDriver", method) => {
                 let Some(driver) = self
                     .drivers
@@ -758,21 +768,7 @@ fn build_deps<'h>(d: &Value, log: &Log) -> (Rc<DocToolDeps<'h>>, Option<Rc<Scrip
     let cli = d
         .get("cli")
         .map(|outcomes| Rc::new(ScriptedCli::new(Some(outcomes), Rc::clone(log))));
-    let open_in_tab = d
-        .get("openInTab")
-        .and_then(Value::as_str)
-        .filter(|mode| *mode != "none")
-        .map(|mode| {
-            let (log, throws) = (Rc::clone(log), mode == "throws");
-            Rc::new(move |path: &str| {
-                push(&log, vec![Value::from("openInTab"), Value::from(path)]);
-                if throws {
-                    Err("cannot open".to_owned())
-                } else {
-                    Ok(())
-                }
-            }) as Rc<dyn Fn(&str) -> Result<(), String>>
-        });
+    let open_in_tab = d.get("openInTab").and_then(Value::as_str).is_some_and(|mode| mode != "none");
     let deps = DocToolDeps {
         version: d
             .get("version")
@@ -812,6 +808,7 @@ fn document_call(args: &[Value], cx: &mut Context) -> Answer {
     let mut fakes = Fakes::new(Rc::clone(&log));
     fakes.docs = deps_spec.get("docs").cloned();
     fakes.resolver = deps_spec.get("resolve").cloned();
+    fakes.open_tab = deps_spec.get("openInTab").and_then(Value::as_str).map(str::to_owned);
     let tools = create_document_tools(deps, host);
     let answer = call_tool(tools, &text(&spec, "tool"), spec.get("args"), &fakes);
     if let Some(dir) = cli.and_then(|cli| cli.scratch.borrow().clone()) {

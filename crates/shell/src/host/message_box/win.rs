@@ -21,6 +21,9 @@ use windows::Win32::UI::Controls::{
 use windows::core::{BOOL, PCWSTR};
 
 use super::{Kind, Spec};
+use std::sync::Arc;
+use crate::host::dialog::owned::{Session, windows::{task_callback, task_registration}};
+use tauri_runtime_cef::WindowCefExt;
 
 /// the id of button `i`
 const FIRST_BUTTON: i32 = 1000;
@@ -50,11 +53,21 @@ fn icon_of(kind: Kind) -> PCWSTR {
     }
 }
 
-pub fn show(spec: &Spec, parent: Option<&Window>) -> MessageBoxAnswer {
-    let cancelled = || MessageBoxAnswer {
-        response: spec.cancel_id,
-        checkbox_checked: false,
-    };
+
+pub(super) fn show_owned(spec: &Spec, parent: Option<&Window>, session: &Arc<Session>) -> Result<MessageBoxAnswer, String> {
+    show_impl(spec, parent, Some(session))
+}
+
+fn show_impl(spec: &Spec, parent: Option<&Window>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
+    match parent {
+        Some(parent) => parent.native_window_handle().map_err(|error| error.to_string())?
+            .with_hwnd(|window| show_with_parent(spec, Some(window), session))
+            .map_err(|error| error.to_string())?,
+        None => show_with_parent(spec, None, session),
+    }
+}
+
+fn show_with_parent(spec: &Spec, parent: Option<HWND>, session: Option<&Arc<Session>>) -> Result<MessageBoxAnswer, String> {
     let title = wide(spec.title.as_deref().unwrap_or("SeuOffice"));
     let (instruction, content) = if spec.message.is_empty() {
         (spec.detail.clone().unwrap_or_default(), None)
@@ -74,11 +87,7 @@ pub fn show(spec: &Spec, parent: Option<&Window>) -> MessageBoxAnswer {
         .collect();
     let verification = spec.checkbox.as_deref().map(wide);
 
-    let parent_hwnd = parent
-        .and_then(|w| w.hwnd().ok())
-        .map_or(HWND(std::ptr::null_mut::<c_void>()), |h| {
-            HWND(h.0 as *mut c_void)
-        });
+    let parent_hwnd = parent.unwrap_or(HWND(std::ptr::null_mut::<c_void>()));
 
     let mut config = TASKDIALOGCONFIG::default();
     config.cbSize = size_of::<TASKDIALOGCONFIG>() as u32;
@@ -98,6 +107,12 @@ pub fn show(spec: &Spec, parent: Option<&Window>) -> MessageBoxAnswer {
     config.pszVerificationText = verification
         .as_ref()
         .map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr()));
+    let registration = session.map(task_registration).transpose()?;
+    if let Some(session) = session {
+        config.pfCallback = Some(task_callback);
+        config.lpCallbackData = (session as *const Arc<Session>) as isize;
+        session.check()?;
+    }
 
     let mut pressed = 0i32;
     let mut checked = BOOL(0);
@@ -105,16 +120,12 @@ pub fn show(spec: &Spec, parent: Option<&Window>) -> MessageBoxAnswer {
     // until the call returns; the out parameters are locals
     let result =
         unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, Some(&mut checked)) };
-    match result {
-        Ok(()) => MessageBoxAnswer {
-            response: index_of(pressed, spec.buttons.len(), spec.cancel_id),
-            checkbox_checked: spec.checkbox.is_some() && checked.as_bool(),
-        },
-        Err(error) => {
-            eprintln!("shell: dialog.showMessageBox: TaskDialogIndirect: {error}");
-            cancelled()
-        }
-    }
+    drop(registration);
+    result.map_err(|error| error.to_string())?;
+    Ok(MessageBoxAnswer {
+        response: index_of(pressed, spec.buttons.len(), spec.cancel_id),
+        checkbox_checked: spec.checkbox.is_some() && checked.as_bool(),
+    })
 }
 
 #[cfg(test)]

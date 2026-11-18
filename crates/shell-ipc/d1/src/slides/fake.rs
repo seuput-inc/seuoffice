@@ -167,6 +167,7 @@ impl FakeDeck {
 /// The fake deck engine
 pub struct FakeEngine {
     decks: Mutex<HashMap<u64, FakeDeck>>,
+    bindings: Mutex<HashMap<DeckId, HashMap<ViewId, shell_contract::runtime::RendererGeneration>>>,
     next: Mutex<u64>,
     blank_slides: usize,
     fx: Fixtures,
@@ -174,6 +175,17 @@ pub struct FakeEngine {
 }
 
 impl FakeEngine {
+    fn authorize(&self, deck: DeckId, owner: &super::engine::RenderOwner) -> Result<(), EngineError> {
+        let generation = owner.context.renderer().filter(|generation| generation.is_active())
+            .ok_or_else(|| EngineError("renderer is unavailable".into()))?;
+        let bindings = self.bindings.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !bindings.get(&deck).and_then(|views| views.get(&owner.view))
+            .is_some_and(|bound| bound.same_generation(generation)) {
+            return Err(EngineError("deck binding does not match".into()));
+        }
+        Ok(())
+    }
+
     /// `el.type` of an element: a fixture's media or 3D model makes it a picture
     fn kind_of(&self, id: &str) -> &'static str {
         if self.fx.by("media", id).is_null() && self.fx.by("models", id).is_null() {
@@ -319,7 +331,7 @@ impl FakeEngine {
                     id: id.clone(),
                     text,
                 });
-                created = Some(vec![id]);
+                created = Some(vec![IpcValue::String(id)]);
             }
             "setText" => {
                 let id = as_str(field(target, "el")).unwrap_or("");
@@ -362,7 +374,7 @@ impl FakeEngine {
                     id: id.clone(),
                     text: format!("picture:{ext}"),
                 });
-                created = Some(vec![id]);
+                created = Some(vec![IpcValue::String(id)]);
             }
             _ if CREATING.contains(&name) => {
                 let id = format!("e{}", d.next_id);
@@ -373,7 +385,7 @@ impl FakeEngine {
                         text: name.to_owned(),
                     });
                 }
-                created = Some(vec![id]);
+                created = Some(vec![IpcValue::String(id)]);
             }
             _ => {}
         }
@@ -401,6 +413,7 @@ impl FakeEngine {
             op: op.clone(),
             slide_id: slide_given.then(|| format!("slide-{slide}")),
             created,
+            before: IpcValue::Undefined,
             after,
         }
     }
@@ -418,7 +431,7 @@ impl FakeEngine {
                     id: id.clone(),
                     text: paragraphs_text(field(op, "paragraphs")),
                 });
-                created = Some(vec![id]);
+                created = Some(vec![IpcValue::String(id)]);
             }
             "setText" => {
                 let id = as_str(field(target, "el")).unwrap_or("");
@@ -446,6 +459,7 @@ impl FakeEngine {
             op: op.clone(),
             slide_id: None,
             created,
+            before: IpcValue::Undefined,
             after: IpcValue::Undefined,
         }
     }
@@ -479,83 +493,179 @@ impl SlidesEngine for FakeEngine {
         Ok(DeckId(*next))
     }
 
+    fn deck_model(&self, deck: DeckId) -> Result<jscompat::JsonValue, EngineError> {
+        use jscompat::{JsObject, JsonValue};
+        fn object(fields: impl IntoIterator<Item = (&'static str, JsonValue)>) -> JsonValue {
+            let mut object = JsObject::new();
+            for (key, value) in fields { object.set(key, value); }
+            JsonValue::Object(object)
+        }
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let deck = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        let slides = deck.slides.iter().map(|slide| {
+            let elements = slide.elements.iter().map(|element| object([
+                ("id", JsonValue::String(element.id.clone())),
+                ("type", JsonValue::String(self.kind_of(&element.id).into())),
+                ("text", object([("paragraphs", JsonValue::Array(vec![object([
+                    ("runs", JsonValue::Array(vec![object([("text", JsonValue::String(element.text.clone()))])])),
+                ])]))])),
+            ])).collect();
+            object([
+                ("path", JsonValue::String(slide.path.clone())),
+                ("elements", JsonValue::Array(elements)),
+            ])
+        }).collect();
+        Ok(object([
+            ("slides", JsonValue::Array(slides)),
+            ("size", object([("cx", JsonValue::Number(deck.cx)), ("cy", JsonValue::Number(deck.cy))])),
+        ]))
+    }
+
     fn release(&self, deck: DeckId) {
         self.decks.lock().unwrap().remove(&deck.0);
+        self.bindings.lock().unwrap().remove(&deck);
     }
 
-    fn set_slide_size(&self, deck: DeckId, cx: f64, cy: f64) {
+    fn transfer_history(&self, old: DeckId, replacement: DeckId, views: &[super::engine::RenderOwner]) -> Result<(), EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if old == replacement || !decks.contains_key(&old.0) || !decks.contains_key(&replacement.0) {
+            return Err(EngineError("deck is not open".into()));
+        }
+        let mut bindings = self.bindings.lock().map_err(|error| EngineError(error.to_string()))?;
+        let empty = HashMap::new();
+        let old_bindings = bindings.get(&old).unwrap_or(&empty);
+        if old_bindings.len() != views.len() || views.iter().map(|owner| owner.view).collect::<std::collections::HashSet<_>>().len() != views.len()
+            || bindings.get(&replacement).is_some_and(|v| !v.is_empty()) ||
+            views.iter().any(|owner| !old_bindings.get(&owner.view).zip(owner.context.renderer())
+                .is_some_and(|(bound, current)| current.is_active() && bound.same_generation(current))) {
+            return Err(EngineError("deck bindings do not match".into()));
+        }
+        let moved = bindings.remove(&old).unwrap_or_default();
+        bindings.insert(replacement, moved);
+        Ok(())
+    }
+
+    fn bind_view(&self, deck: DeckId, owner: &super::engine::RenderOwner) -> Result<(), EngineError> {
+        if !self.decks.lock().map_err(|error| EngineError(error.to_string()))?.contains_key(&deck.0) {
+            return Err(EngineError("deck is not open".into()));
+        }
+        let generation = owner.context.renderer().filter(|generation| generation.is_active())
+            .ok_or_else(|| EngineError("renderer is unavailable".into()))?;
+        let mut bindings = self.bindings.lock().map_err(|error| EngineError(error.to_string()))?;
+        let views = bindings.entry(deck).or_default();
+        if views.get(&owner.view).is_some_and(|bound| !bound.same_generation(generation)) {
+            return Err(EngineError("deck binding does not match".into()));
+        }
+        views.insert(owner.view, generation.clone());
+        Ok(())
+    }
+
+    fn unbind_view(&self, deck: DeckId, owner: &super::engine::RenderOwner) -> Result<(), EngineError> {
+        let mut bindings = self.bindings.lock().map_err(|error| EngineError(error.to_string()))?;
+        if let Some(bound) = bindings.get_mut(&deck) {
+            if bound.get(&owner.view).zip(owner.context.renderer())
+                .is_some_and(|(current, owner)| current.same_generation(owner)) {
+                bound.remove(&owner.view);
+            }
+        }
+        Ok(())
+    }
+
+    fn replace_view(&self, old: DeckId, new: DeckId, owner: &super::engine::RenderOwner) -> Result<(), EngineError> {
+        let generation = owner.context.renderer().filter(|generation| generation.is_active())
+            .ok_or_else(|| EngineError("renderer is unavailable".into()))?;
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if old == new || !decks.contains_key(&old.0) || !decks.contains_key(&new.0) {
+            return Err(EngineError("deck is not open".into()));
+        }
+        let mut bindings = self.bindings.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !bindings.get(&old).and_then(|views| views.get(&owner.view)).is_some_and(|bound| bound.same_generation(generation)) ||
+            bindings.get(&new).and_then(|views| views.get(&owner.view)).is_some_and(|bound| !bound.same_generation(generation)) {
+            return Err(EngineError("deck binding does not match".into()));
+        }
+        bindings.get_mut(&old).expect("binding was checked").remove(&owner.view);
+        bindings.entry(new).or_default().insert(owner.view, generation.clone());
+        Ok(())
+    }
+
+    fn set_slide_size(&self, deck: DeckId, cx: f64, cy: f64) -> Result<(), EngineError> {
         self.record(json!(["pptx-engine.setSlideSize", cx, cy]));
-        self.with(deck, |d| {
-            d.cx = cx;
-            d.cy = cy;
-        });
+        let mut decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get_mut(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        d.cx = cx;
+        d.cy = cy;
+        Ok(())
     }
 
-    fn size(&self, deck: DeckId) -> DeckSize {
-        self.with(deck, |d| DeckSize { cx: d.cx, cy: d.cy })
+    fn size(&self, deck: DeckId) -> Result<DeckSize, EngineError> {
+        Ok(self.with(deck, |d| DeckSize { cx: d.cx, cy: d.cy }))
     }
 
-    fn slide_paths(&self, deck: DeckId) -> Vec<String> {
-        self.with(deck, |d| d.slides.iter().map(|s| s.path.clone()).collect())
+    fn slide_paths(&self, deck: DeckId) -> Result<Vec<String>, EngineError> {
+        Ok(self.with(deck, |d| d.slides.iter().map(|s| s.path.clone()).collect()))
     }
 
-    fn slide_refs(&self, deck: DeckId) -> Vec<SlideRef> {
-        self.with(deck, |d| {
-            d.slides
-                .iter()
-                .map(|s| SlideRef {
-                    path: s.path.clone(),
-                    has_number: false,
-                })
-                .collect()
-        })
+    fn slide_refs(&self, deck: DeckId) -> Result<Vec<SlideRef>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok(d.slides.iter().map(|s| SlideRef {
+            path: s.path.clone(),
+            has_number: false,
+        }).collect())
     }
 
-    fn slides_dirty(&self, deck: DeckId) -> bool {
-        self.with(deck, |d| d.dirty)
+    fn slides_dirty(&self, deck: DeckId) -> Result<bool, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        Ok(decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?.dirty)
     }
 
-    fn default_font(&self, _deck: DeckId) -> Option<String> {
-        Some("Calibri".into())
+    fn default_font(&self, deck: DeckId) -> Result<Option<String>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(Some("Calibri".into()))
     }
 
-    fn adopt_embedded_fonts(&self, _deck: DeckId) {}
+    fn adopt_embedded_fonts(&self, _deck: DeckId, _owner: &super::engine::RenderOwner) -> Result<(), EngineError> { Ok(()) }
 
-    fn reset_font_metrics(&self) {
-        // `resetFontMetrics` of session-state drops caches; nothing is asked of a host
+    fn reset_font_metrics(&self) -> Result<(), EngineError> {
+        Ok(())
     }
 
-    fn render_all(&self, deck: DeckId, _fit_width_px: f64) -> Vec<IpcValue> {
-        self.with(deck, |d| {
-            (0..d.slides.len()).map(|i| Self::render(d, i)).collect()
-        })
+    fn render_all(&self, deck: DeckId, owner: &super::engine::RenderOwner, _fit_width_px: f64) -> Result<Vec<IpcValue>, EngineError> {
+        self.authorize(deck, owner)?;
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok((0..d.slides.len()).map(|i| Self::render(d, i)).collect())
     }
 
     fn render_slide(
         &self,
         deck: DeckId,
+        owner: &super::engine::RenderOwner,
         index: usize,
         _fit: f64,
         _reparse: bool,
-    ) -> Option<IpcValue> {
-        self.with(deck, |d| {
-            (index < d.slides.len()).then(|| Self::render(d, index))
-        })
+    ) -> Result<Option<IpcValue>, EngineError> {
+        self.authorize(deck, owner)?;
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok((index < d.slides.len()).then(|| Self::render(d, index)))
     }
 
-    fn run_txn(&self, deck: DeckId, request: &TxnRequest) -> TxnResult {
+    fn run_txn(&self, deck: DeckId, owner: &super::engine::RenderOwner, request: &TxnRequest) -> Result<TxnResult, EngineError> {
+        self.authorize(deck, owner)?;
         self.record(json!([
             "pptx-ops.runTxn",
             request.ops.len(),
             request.dry_run
         ]));
-        self.with(deck, |d| {
+        Ok(self.with(deck, |d| {
             let mut working = d.clone();
             let mut failures = Vec::new();
             let mut records = Vec::new();
             for (index, op) in request.ops.iter().enumerate() {
                 match Self::check(&working, op) {
-                    Some(error) => failures.push(TxnFailure { index, error }),
+                    Some(error) => failures.push(TxnFailure { index, op: op.clone(), error }),
                     None if !request.dry_run => records.push(Self::apply(&mut working, op)),
                     None => {}
                 }
@@ -570,28 +680,29 @@ impl SlidesEngine for FakeEngine {
             }
             TxnResult {
                 applied,
+                dry_run: request.dry_run,
                 failures: (!failures.is_empty()).then_some(failures),
                 records: (applied || request.dry_run)
                     .then_some(records)
                     .filter(|r| !r.is_empty()),
                 plan: request.dry_run.then(|| IpcValue::Array(Vec::new())),
             }
-        })
+        }))
     }
 
-    fn snapshot(&self, deck: DeckId, meta_dirty: bool) -> Snapshot {
-        self.with(deck, |d| {
+    fn snapshot(&self, deck: DeckId, meta_dirty: bool) -> Result<Snapshot, EngineError> {
+        Ok(self.with(deck, |d| {
             let mut copy = d.clone();
             copy.meta_dirty = meta_dirty;
             Snapshot(Rc::new(copy) as Rc<dyn Any>)
-        })
+        }))
     }
 
-    fn restore(&self, deck: DeckId, snapshot: &Snapshot) -> bool {
+    fn restore(&self, deck: DeckId, snapshot: &Snapshot) -> Result<bool, EngineError> {
         let copy = snapshot
             .0
             .downcast_ref::<FakeDeck>()
-            .expect("a fake snapshot")
+            .ok_or_else(|| EngineError("invalid fake snapshot".into()))?
             .clone();
         let meta_dirty = copy.meta_dirty;
         self.with(deck, |d| {
@@ -608,7 +719,7 @@ impl SlidesEngine for FakeEngine {
             d.master_stroke = stroke;
             d.next_id = next_id;
         });
-        meta_dirty
+        Ok(meta_dirty)
     }
 
     fn save_bytes(&self, deck: DeckId) -> Result<Vec<u8>, EngineError> {
@@ -622,20 +733,35 @@ impl SlidesEngine for FakeEngine {
         std::fs::write(path, bytes).map_err(|e| EngineError(e.to_string()))
     }
 
-    fn commit_saved(&self, deck: DeckId) {
-        self.with(deck, |d| d.dirty = false);
+    fn commit_saved(&self, deck: DeckId) -> Result<(), EngineError> {
+        let mut decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get_mut(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        d.dirty = false;
+        Ok(())
+    }
+    fn commit_saved_owned(&self, deck: DeckId, origin: &super::engine::RenderOwner, destination: &super::engine::RenderOwner, participants: &[super::engine::RenderOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<(), EngineError> {
+        let mut targets = participants.to_vec();
+        targets.push(destination.clone());
+        let extra = additional.iter().collect::<Vec<_>>();
+        effects.with_owned_effect_many_extra(origin, &targets, cancel, pending, &extra, &mut || self.commit_saved(deck).map_err(|error| error.0)).map_err(EngineError)
+    }
+    fn commit_saved_existing_document(&self, deck: DeckId, owner: &super::engine::RenderOwner, document: &shell_contract::runtime::RendererGeneration, destination: &shell_contract::ipc::NativeSaveDestination, participants: &[super::engine::RenderOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> Result<(), EngineError> {
+        let captured = destination.binding().owner();
+        if captured.view != owner.view
+            || !captured.context.renderer().zip(owner.context.renderer()).is_some_and(|(a, b)| a.same_generation(b))
+            || !captured.context.document_lease().is_some_and(|lease| lease.same_generation(document)) {
+            return Err(EngineError("native save belongs to another presentation".into()));
+        }
+        let extra = additional.iter().collect::<Vec<_>>();
+        effects.with_existing_document_destination_effect(destination, destination.path(), participants, cancel, pending, &extra, &mut || self.commit_saved(deck).map_err(|error| error.0)).map_err(EngineError)
     }
 
-    fn has_redaction(&self, deck: DeckId) -> bool {
-        // a fixture's `redact` marks elements "withheld from the model"
-        self.with(deck, |d| {
-            d.slides.iter().flat_map(|s| &s.elements).any(|e| {
-                self.fx
-                    .by("redact", &e.id)
-                    .as_str()
-                    .is_some_and(|label| !label.is_empty())
-            })
-        })
+    fn has_redaction(&self, deck: DeckId) -> Result<bool, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok(d.slides.iter().flat_map(|s| &s.elements).any(|e| {
+            self.fx.by("redact", &e.id).as_str().is_some_and(|label| !label.is_empty())
+        }))
     }
 
     fn encrypt_ooxml(&self, bytes: &[u8], password: &str) -> Result<Vec<u8>, EngineError> {
@@ -644,8 +770,8 @@ impl SlidesEngine for FakeEngine {
         Ok(out)
     }
 
-    fn is_encrypted_ooxml(&self, bytes: &[u8]) -> bool {
-        bytes.starts_with(b"ENC ")
+    fn is_encrypted_ooxml(&self, bytes: &[u8]) -> Result<bool, EngineError> {
+        Ok(bytes.starts_with(b"ENC "))
     }
 
     fn decrypt_office_file(&self, bytes: &[u8], password: &str) -> Result<Vec<u8>, EngineError> {
@@ -656,48 +782,41 @@ impl SlidesEngine for FakeEngine {
             .ok_or_else(|| EngineError("wrong password".into()))
     }
 
-    fn picture_media(&self, deck: DeckId, slide: usize, id: &str) -> Option<PictureMedia> {
-        let present = self.with(deck, |d| {
-            d.slides
-                .get(slide)
-                .is_some_and(|s| s.elements.iter().any(|e| e.id == id))
-        });
+    fn picture_media(&self, deck: DeckId, slide: usize, id: &str) -> Result<Option<PictureMedia>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        let present = d.slides.get(slide).is_some_and(|s| s.elements.iter().any(|e| e.id == id));
         let media = self.fx.by("media", id);
-        let target = media["target"].as_str().filter(|t| !t.is_empty())?;
-        present.then(|| PictureMedia {
+        Ok(media["target"].as_str().filter(|t| !t.is_empty()).filter(|_| present).map(|target| PictureMedia {
             kind: media["kind"].as_str().unwrap_or("").to_owned(),
             target: target.to_owned(),
             external: media["external"].as_bool().unwrap_or(false),
-        })
+        }))
     }
 
-    fn model3d_target(&self, deck: DeckId, slide: usize, id: &str) -> Option<String> {
-        let present = self.with(deck, |d| {
-            d.slides
-                .get(slide)
-                .is_some_and(|s| s.elements.iter().any(|e| e.id == id))
-        });
-        let target = self.fx.by("models", id)["target"]
-            .as_str()
-            .filter(|t| !t.is_empty())?;
-        present.then(|| target.to_owned())
+    fn model3d_target(&self, deck: DeckId, slide: usize, id: &str) -> Result<Option<String>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        let present = d.slides.get(slide).is_some_and(|s| s.elements.iter().any(|e| e.id == id));
+        Ok(self.fx.by("models", id)["target"].as_str().filter(|t| !t.is_empty() && present).map(str::to_owned))
     }
 
-    fn read_part(&self, _deck: DeckId, path: &str) -> Option<Vec<u8>> {
-        self.fx
-            .by("parts", path)
-            .as_str()
-            .map(|text| text.as_bytes().to_vec())
+    fn read_part(&self, deck: DeckId, path: &str) -> Result<Option<Vec<u8>>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(self.fx.by("parts", path).as_str().map(|text| text.as_bytes().to_vec()))
     }
 
-    fn copy_slide(&self, deck: DeckId, index: usize) -> Option<IpcValue> {
-        self.with(deck, |d| {
-            (index < d.slides.len()).then(|| Self::render(d, index))
-        })
+    fn copy_slide(&self, deck: DeckId, index: usize) -> Result<Option<IpcValue>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok((index < d.slides.len()).then(|| Self::render(d, index)))
     }
 
-    fn copy_elements(&self, deck: DeckId, slide: usize, ids: &[String]) -> Option<Vec<IpcValue>> {
-        self.with(deck, |d| {
+    fn copy_elements(&self, deck: DeckId, slide: usize, ids: &[String]) -> Result<Option<Vec<IpcValue>>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok((|| {
             let slide = d.slides.get(slide)?;
             Some(
                 ids.iter()
@@ -710,12 +829,12 @@ impl SlidesEngine for FakeEngine {
                     })
                     .collect(),
             )
-        })
+        })())
     }
 
-    fn template_cover(&self, id: &str, lang: &str, _fit: f64) -> Option<IpcValue> {
+    fn template_cover(&self, _owner: &super::engine::RenderOwner, id: &str, lang: &str, _fit: f64) -> Result<Option<IpcValue>, EngineError> {
         if id != "plain" {
-            return None;
+            return Ok(None);
         }
         // the template's sample cover goes through the page builder and opens in memory
         let spec = format!("\"{lang}\"");
@@ -726,13 +845,13 @@ impl SlidesEngine for FakeEngine {
             text: spec,
         });
         self.record(json!(["pptx-engine.openPptx", deck.to_bytes().len()]));
-        Some(Self::render(&deck, 0))
+        Ok(Some(Self::render(&deck, 0)))
     }
 
-    fn font_file_families(&self, path: &str) -> Vec<String> {
+    fn font_file_families(&self, path: &str) -> Result<Vec<String>, EngineError> {
         self.record(json!(["fonts.fontFileFamilies", path]));
         let name = path.rsplit('/').next().unwrap_or(path);
-        vec![name.split('.').next().unwrap_or(name).to_owned()]
+        Ok(vec![name.split('.').next().unwrap_or(name).to_owned()])
     }
 
     fn parse_file_text(&self, path: &str) -> Result<String, String> {
@@ -741,11 +860,11 @@ impl SlidesEngine for FakeEngine {
             .map_err(|e| main_core::node_fs::node_error(&e, "open", path).message)
     }
 
-    fn diagram_picture_ext_of(&self, _path: &str) -> Option<String> {
-        None
+    fn diagram_picture_ext_of(&self, _path: &str) -> Result<Option<String>, EngineError> {
+        Ok(None)
     }
 
-    fn generate_page(&self, spec_json: &str, _fonts: &IpcValue) -> Result<GeneratedPage, String> {
+    fn generate_page(&self, _owner: &super::engine::RenderOwner, spec_json: &str, _fonts: &IpcValue) -> Result<GeneratedPage, String> {
         if spec_json.is_empty() {
             return Err("empty page spec".into());
         }
@@ -780,16 +899,16 @@ impl SlidesEngine for FakeEngine {
         Ok(FakeDeck::from_bytes(bytes).map(|d| Self::render(&d, 0)))
     }
 
-    fn sections(&self, _deck: DeckId) -> IpcValue {
-        IpcValue::Array(self.fx.list("sections").iter().map(ipc_of).collect())
+    fn sections(&self, _deck: DeckId) -> Result<IpcValue, EngineError> {
+        Ok(IpcValue::Array(self.fx.list("sections").iter().map(ipc_of).collect()))
     }
 
-    fn slide_notes(&self, deck: DeckId, slide: usize) -> String {
-        self.with(deck, |d| d.slides[slide].notes.clone())
+    fn slide_notes(&self, deck: DeckId, slide: usize) -> Result<String, EngineError> {
+        Ok(self.with(deck, |d| d.slides[slide].notes.clone()))
     }
 
-    fn slide_comments(&self, deck: DeckId, slide: usize) -> IpcValue {
-        self.with(deck, |d| {
+    fn slide_comments(&self, deck: DeckId, slide: usize) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| {
             IpcValue::Array(
                 d.slides[slide]
                     .comments
@@ -804,11 +923,11 @@ impl SlidesEngine for FakeEngine {
                     })
                     .collect(),
             )
-        })
+        }))
     }
 
-    fn element_link(&self, deck: DeckId, slide: &IpcValue, id: &IpcValue) -> IpcValue {
-        self.with(deck, |d| {
+    fn element_link(&self, deck: DeckId, slide: &IpcValue, id: &IpcValue) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| {
             let Some(index) = super::session::slide_index(slide, d.slides.len()) else {
                 return IpcValue::Null;
             };
@@ -819,11 +938,11 @@ impl SlidesEngine for FakeEngine {
                 return IpcValue::Null;
             }
             ipc_of(self.fx.by("links", id))
-        })
+        }))
     }
 
-    fn slide_links(&self, deck: DeckId, slide: &IpcValue) -> IpcValue {
-        self.with(deck, |d| {
+    fn slide_links(&self, deck: DeckId, slide: &IpcValue) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| {
             let Some(index) = super::session::slide_index(slide, d.slides.len()) else {
                 return IpcValue::Array(Vec::new());
             };
@@ -840,11 +959,11 @@ impl SlidesEngine for FakeEngine {
                     })
                     .collect(),
             )
-        })
+        }))
     }
 
-    fn run_links(&self, deck: DeckId, slide: &IpcValue) -> IpcValue {
-        self.with(deck, |d| {
+    fn run_links(&self, deck: DeckId, slide: &IpcValue) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| {
             let Some(index) = super::session::slide_index(slide, d.slides.len()) else {
                 return IpcValue::Array(Vec::new());
             };
@@ -865,28 +984,28 @@ impl SlidesEngine for FakeEngine {
                 }
             }
             IpcValue::Array(items)
-        })
+        }))
     }
 
-    fn header_footer(&self, deck: DeckId, slide: usize) -> IpcValue {
-        self.with(deck, |d| match &d.slides[slide].header_footer {
+    fn header_footer(&self, deck: DeckId, slide: usize) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| match &d.slides[slide].header_footer {
             Some(settings) => ipc_of(settings),
             None => obj([
                 ("footer", IpcValue::Null),
                 ("slideNum", IpcValue::Bool(false)),
                 ("date", IpcValue::Null),
             ]),
-        })
+        }))
     }
 
-    fn slide_transition(&self, deck: DeckId, slide: usize) -> IpcValue {
-        self.with(deck, |d| {
+    fn slide_transition(&self, deck: DeckId, slide: usize) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| {
             string(d.slides[slide].transition.as_deref().unwrap_or("none"))
-        })
+        }))
     }
 
-    fn show_timing(&self, deck: DeckId, slide: usize) -> IpcValue {
-        self.with(deck, |d| {
+    fn show_timing(&self, deck: DeckId, slide: usize) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| {
             let s = &d.slides[slide];
             obj([
                 ("advanceMs", s.advance_ms.map_or(IpcValue::Null, num)),
@@ -903,10 +1022,10 @@ impl SlidesEngine for FakeEngine {
                     ),
                 ),
             ])
-        })
+        }))
     }
 
-    fn animations(&self, deck: DeckId, slide: usize, labels: &[(String, String)]) -> IpcValue {
+    fn animations(&self, deck: DeckId, slide: usize, labels: &[(String, String)]) -> Result<IpcValue, EngineError> {
         let label = |kind: &str| {
             labels
                 .iter()
@@ -915,7 +1034,7 @@ impl SlidesEngine for FakeEngine {
                 .map(|(_, text)| text.clone())
                 .unwrap_or_default()
         };
-        self.with(deck, |d| {
+        Ok(self.with(deck, |d| {
             let s = &d.slides[slide];
             let mut out = Vec::new();
             for a in &s.animations {
@@ -942,11 +1061,11 @@ impl SlidesEngine for FakeEngine {
                 out.push(IpcValue::Object(entries));
             }
             IpcValue::Array(out)
-        })
+        }))
     }
 
-    fn shape_keys(&self, deck: DeckId, slide: usize) -> IpcValue {
-        self.with(deck, |d| {
+    fn shape_keys(&self, deck: DeckId, slide: usize) -> Result<IpcValue, EngineError> {
+        Ok(self.with(deck, |d| {
             IpcValue::Array(
                 d.slides[slide]
                     .elements
@@ -963,39 +1082,45 @@ impl SlidesEngine for FakeEngine {
                     })
                     .collect(),
             )
-        })
+        }))
     }
 
-    fn has_narration(&self, deck: DeckId, slide: usize) -> bool {
-        self.with(deck, |d| !d.slides[slide].narration.is_empty())
+    fn has_narration(&self, deck: DeckId, slide: usize) -> Result<bool, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        let slide = d.slides.get(slide).ok_or_else(|| EngineError("slide is not open".into()))?;
+        Ok(!slide.narration.is_empty())
     }
 
-    fn section_slide_indices(&self, deck: DeckId, id: &IpcValue) -> Option<Vec<usize>> {
-        let total = self.with(deck, |d| d.slides.len());
+    fn section_slide_indices(&self, deck: DeckId, id: &IpcValue) -> Result<Option<Vec<usize>>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let total = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?.slides.len();
         let sections = self.fx.list("sections");
         let (lead, ranges) = normalize_sections(&sections, total);
         if matches!(id, IpcValue::Undefined | IpcValue::Null) {
-            return Some(lead);
+            return Ok(Some(lead));
         }
-        let at = sections.iter().position(|s| &ipc_of(&s["id"]) == id)?;
-        Some(ranges[at].clone())
+        Ok(sections.iter().position(|s| &ipc_of(&s["id"]) == id).map(|at| ranges[at].clone()))
     }
 
-    fn master_parts(&self, _deck: DeckId) -> Vec<super::engine::MasterPart> {
-        vec![super::engine::MasterPart {
+    fn master_parts(&self, deck: DeckId) -> Result<Vec<super::engine::MasterPart>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(vec![super::engine::MasterPart {
             part_path: MASTER_PART.into(),
             kind: string("master"),
             name: string("Office Theme"),
-        }]
+        }])
     }
 
-    fn master_parse(&self, deck: DeckId, part: &str, fit: f64) -> Option<IpcValue> {
-        self.master_render(deck, part, fit)
+    fn master_parse(&self, deck: DeckId, owner: &super::engine::RenderOwner, part: &str, fit: f64) -> Result<Option<IpcValue>, EngineError> {
+        self.master_render(deck, owner, part, fit)
     }
 
-    fn master_render(&self, deck: DeckId, part: &str, _fit: f64) -> Option<IpcValue> {
-        (part == MASTER_PART).then(|| {
-            self.with(deck, |d| {
+    fn master_render(&self, deck: DeckId, _owner: &super::engine::RenderOwner, part: &str, _fit: f64) -> Result<Option<IpcValue>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok((part == MASTER_PART).then(|| {
                 obj([
                     ("partPath", string(MASTER_PART)),
                     (
@@ -1020,83 +1145,104 @@ impl SlidesEngine for FakeEngine {
                         ),
                     ),
                 ])
-            })
-        })
+        }))
     }
 
-    fn master_has_element(&self, deck: DeckId, part: &str, id: &str) -> bool {
-        part == MASTER_PART && self.with(deck, |d| d.master.iter().any(|e| e.id == id))
+    fn master_has_element(&self, deck: DeckId, part: &str, id: &str) -> Result<bool, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok(part == MASTER_PART && d.master.iter().any(|e| e.id == id))
     }
 
     fn master_preview_transform(
         &self,
-        _deck: DeckId,
+        deck: DeckId,
         _part: &str,
         _id: &str,
         _offset: [f64; 4],
         _rot: f64,
-    ) {
-        // the preview moves the live master slide only: nothing the engine is asked
+    ) -> Result<(), EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(())
     }
 
-    fn image_info(&self, bytes: &[u8], ext: &str, _path: Option<&str>) -> super::engine::ImageInfo {
-        // a tiff goes through the TypeScript's own decoder, which refuses the cases' bytes;
-        // everything else asks the desktop for the picture's size
+    fn image_info(&self, bytes: &[u8], ext: &str, _path: Option<&str>) -> Result<super::engine::ImageInfo, EngineError> {
+        // A tiff's decoder rejects the fixture bytes; other images use the fake desktop.
         if ext == "tif" || ext == "tiff" {
-            return super::engine::ImageInfo::default();
+            return Ok(super::engine::ImageInfo::default());
         }
         self.record(json!(["nativeImage.info", bytes.len()]));
-        super::engine::ImageInfo {
+        Ok(super::engine::ImageInfo {
             natural: (!bytes.is_empty()).then_some((640.0, 480.0)),
             dpi: None,
-        }
+        })
     }
 
-    fn video_poster(&self, _path: &str) -> Option<Vec<u8>> {
-        None
+    fn video_poster(&self, _path: &str) -> Result<Option<Vec<u8>>, EngineError> {
+        Ok(None)
     }
 
-    fn background_image(&self, _deck: DeckId, _slide: usize) -> Option<String> {
-        None
+    fn background_image(&self, _deck: DeckId, _slide: usize) -> Result<Option<String>, EngineError> {
+        Ok(None)
     }
 
-    fn slide_index_of_id(&self, deck: DeckId, slide_id: &str) -> Option<usize> {
-        let n: usize = slide_id.strip_prefix("slide-")?.parse().ok()?;
-        self.with(deck, |d| (n < d.slides.len()).then_some(n))
+    fn slide_index_of_id(&self, deck: DeckId, slide_id: &str) -> Result<Option<usize>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        Ok(slide_id.strip_prefix("slide-").and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n < d.slides.len()))
     }
 
-    fn materialize_slide(&self, _deck: DeckId, _index: usize) {}
+    fn materialize_slide(&self, deck: DeckId, index: usize) -> Result<(), EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        let d = decks.get(&deck.0).ok_or_else(|| EngineError("deck is not open".into()))?;
+        if index >= d.slides.len() { return Err(EngineError("slide is not open".into())); }
+        Ok(())
+    }
 
-    fn reparse_deck(&self, _deck: DeckId) {}
+    fn reparse_deck(&self, deck: DeckId) -> Result<(), EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(())
+    }
 
     fn autofit_resize(
         &self,
-        _deck: DeckId,
+        deck: DeckId,
+        _owner: &super::engine::RenderOwner,
         _index: usize,
         _id: &str,
         rendered: Option<IpcValue>,
         _fit: f64,
-    ) -> Option<IpcValue> {
-        rendered
+    ) -> Result<Option<IpcValue>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(rendered)
     }
 
     fn sync_autofit_scale(
         &self,
-        _deck: DeckId,
+        deck: DeckId,
+        _owner: &super::engine::RenderOwner,
         _index: usize,
         _id: &str,
         rendered: Option<IpcValue>,
         _fit: f64,
-    ) -> Option<IpcValue> {
-        rendered
+    ) -> Result<Option<IpcValue>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(rendered)
     }
 
-    fn map_script_ops(&self, _deck: DeckId, script: &IpcValue) -> Vec<IpcValue> {
-        // a step names an op, and an element of the slide when it works on one
+    fn map_script_ops(&self, deck: DeckId, script: &IpcValue) -> Result<Vec<IpcValue>, EngineError> {
+        if !self.decks.lock().map_err(|error| EngineError(error.to_string()))?.contains_key(&deck.0) {
+            return Err(EngineError("deck is not open".into()));
+        }
         let IpcValue::Array(steps) = field(script, "steps") else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        steps
+        Ok(steps
             .iter()
             .map(|step| {
                 let mut target = vec![("slide".to_owned(), field(script, "slideIndex").clone())];
@@ -1115,65 +1261,209 @@ impl SlidesEngine for FakeEngine {
                 }
                 IpcValue::Object(op)
             })
-            .collect()
+            .collect())
     }
 
     fn group_child_frame(
         &self,
-        _deck: DeckId,
+        deck: DeckId,
         _slide: usize,
         _group_id: &str,
         _source_id: &str,
-    ) -> Option<super::engine::GroupChildFrame> {
-        None
+    ) -> Result<Option<super::engine::GroupChildFrame>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(None)
     }
 
-    fn element_index(&self, deck: DeckId, slide: usize, source_id: &str) -> Option<usize> {
-        self.with(deck, |d| {
+    fn element_index(&self, deck: DeckId, slide: usize, source_id: &str) -> Result<Option<usize>, EngineError> {
+        Ok(self.with(deck, |d| {
             d.slides
                 .get(slide)?
                 .elements
                 .iter()
                 .position(|e| e.id == source_id)
-        })
+        }))
     }
 
-    fn element_id_at(&self, deck: DeckId, slide: usize, index: usize) -> Option<String> {
-        self.with(deck, |d| {
+    fn element_id_at(&self, deck: DeckId, slide: usize, index: usize) -> Result<Option<String>, EngineError> {
+        Ok(self.with(deck, |d| {
             d.slides
                 .get(slide)?
                 .elements
                 .get(index)
                 .map(|e| e.id.clone())
-        })
+        }))
     }
 
-    fn is_imported_chart(&self, _deck: DeckId, _slide: usize, _id: &str) -> bool {
-        false
+    fn is_imported_chart(&self, _deck: DeckId, _slide: usize, _id: &str) -> Result<bool, EngineError> {
+        Ok(false)
     }
 
-    fn theme_accents(&self, _deck: DeckId) -> Option<Vec<String>> {
-        None
+    fn theme_accents(&self, _deck: DeckId) -> Result<Option<Vec<String>>, EngineError> {
+        Ok(None)
     }
 
-    fn chart_data(&self, _deck: DeckId, _slide: usize, id: &str) -> IpcValue {
-        ipc_of(self.fx.by("charts", id))
+    fn chart_data(&self, _deck: DeckId, _slide: usize, id: &str) -> Result<IpcValue, EngineError> {
+        Ok(ipc_of(self.fx.by("charts", id)))
     }
 
-    fn layouts(&self, _deck: DeckId) -> IpcValue {
-        IpcValue::Array(Vec::new())
+    fn layouts(&self, _deck: DeckId) -> Result<IpcValue, EngineError> {
+        Ok(IpcValue::Array(Vec::new()))
     }
 
-    fn ensure_builtin_layout(&self, _deck: DeckId, key: &str) -> Option<String> {
-        Some(format!("ppt/slideLayouts/builtin-{key}.xml"))
+    fn ensure_builtin_layout(&self, deck: DeckId, key: &str) -> Result<Option<String>, EngineError> {
+        let decks = self.decks.lock().map_err(|error| EngineError(error.to_string()))?;
+        if !decks.contains_key(&deck.0) { return Err(EngineError("deck is not open".into())); }
+        Ok(Some(format!("ppt/slideLayouts/builtin-{key}.xml")))
     }
 
-    fn private_font_faces(&self) -> IpcValue {
-        IpcValue::Array(self.fx.list("fontFaces").iter().map(ipc_of).collect())
+    fn private_font_faces(&self, owner: &super::engine::RenderOwner) -> Result<IpcValue, EngineError> {
+        if !owner.context.renderer().is_some_and(|generation| generation.is_active()) {
+            return Err(EngineError("renderer is unavailable".into()));
+        }
+        Ok(IpcValue::Array(self.fx.list("fontFaces").iter().map(ipc_of).collect()))
     }
 
-    fn private_font_data(&self, id: &IpcValue) -> IpcValue {
-        as_str(id).map_or(IpcValue::Null, |id| ipc_of(self.fx.by("fontData", id)))
+    fn private_font_data(&self, owner: &super::engine::RenderOwner, id: &IpcValue) -> Result<IpcValue, EngineError> {
+        if !owner.context.renderer().is_some_and(|generation| generation.is_active()) {
+            return Err(EngineError("renderer is unavailable".into()));
+        }
+        Ok(as_str(id).map_or(IpcValue::Null, |id| ipc_of(self.fx.by("fontData", id))))
+    }
+}
+
+#[derive(Default)]
+struct SyntheticGeneratedState {
+    observer: Option<shell_contract::hosts::GeneratedPathObserver>,
+    wake: Option<shell_contract::hosts::GeneratedPathWake>,
+    result: Option<Result<shell_contract::hosts::GeneratedPathOutcome, String>>,
+    observed: bool,
+    in_flight: bool,
+    acknowledged: bool,
+}
+
+#[derive(Clone, Default)]
+struct SyntheticGeneratedTask(std::sync::Arc<Mutex<SyntheticGeneratedState>>);
+
+impl SyntheticGeneratedTask {
+    fn deliver(&self) {
+        let delivery = {
+            let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+            if state.in_flight || state.observer.is_none() || state.result.is_none() { return; }
+            let (Some(observer), Some(result)) = (state.observer.take(), state.result.take()) else { return };
+            state.in_flight = true;
+            (observer, result)
+        };
+        (delivery.0)(shell_contract::hosts::GeneratedTerminalDelivery::new(delivery.1, std::sync::Arc::new(self.clone())));
+    }
+}
+
+impl shell_contract::hosts::GeneratedTerminalAck for SyntheticGeneratedTask {
+    fn complete(&self) -> Result<(), String> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.in_flight || state.acknowledged { return Err("The synthetic result is not awaiting acknowledgement".into()); }
+        state.in_flight = false;
+        state.acknowledged = true;
+        Ok(())
+    }
+    fn restore(&self, result: Result<shell_contract::hosts::GeneratedPathOutcome, String>) {
+        let wake = {
+            let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+            if !state.in_flight || state.acknowledged { return; }
+            state.in_flight = false;
+            state.result = Some(result);
+            state.wake.clone()
+        };
+        if let Some(wake) = wake { wake(); }
+    }
+}
+
+impl shell_contract::hosts::GeneratedPathPending for SyntheticGeneratedTask {
+    fn observe(&self, observer: shell_contract::hosts::GeneratedPathObserver, wake: shell_contract::hosts::GeneratedPathWake) -> Result<(), shell_contract::hosts::GeneratedObserveFailure> {
+        {
+            let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+            if state.observed {
+                return Err(shell_contract::hosts::GeneratedObserveFailure { error: "The synthetic observer was already installed".into(), observer, wake });
+            }
+            state.observed = true;
+            state.observer = Some(observer);
+            state.wake = Some(wake);
+        }
+        self.deliver();
+        Ok(())
+    }
+    fn wake_observer(&self) -> Result<(), String> {
+        let wake = self.0.lock().unwrap_or_else(|error| error.into_inner()).wake.clone()
+            .ok_or("The synthetic observer is unavailable")?;
+        wake();
+        Ok(())
+    }
+    fn take_redelivery(&self) -> Result<Option<shell_contract::hosts::GeneratedTerminalDelivery>, String> {
+        let result = {
+            let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+            if state.in_flight || state.acknowledged { return Ok(None); }
+            let result = state.result.take();
+            if result.is_some() { state.in_flight = true; }
+            result
+        };
+        Ok(result.map(|result| shell_contract::hosts::GeneratedTerminalDelivery::new(result, std::sync::Arc::new(self.clone()))))
+    }
+    fn retry(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        done(self.wake_observer());
+    }
+    fn cancel_and_drain(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        let result = {
+            let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+            if state.in_flight {
+                Err("The synthetic terminal result is awaiting acknowledgement".into())
+            } else {
+                if !state.acknowledged && state.result.is_none() {
+                    state.result = Some(Err("The synthetic generated operation was cancelled".into()));
+                }
+                Ok(())
+            }
+        };
+        if let Err(error) = result { return done(Err(error)); }
+        self.deliver();
+        done(Ok(()));
+    }
+}
+
+struct PreparedSyntheticGenerated {
+    task: std::sync::Arc<SyntheticGeneratedTask>,
+    action: Option<Box<dyn FnOnce() -> Result<shell_contract::hosts::GeneratedPathOutcome, String>>>,
+}
+impl shell_contract::hosts::PreparedGeneratedPath for PreparedSyntheticGenerated {
+    fn task(&self) -> std::sync::Arc<dyn shell_contract::hosts::GeneratedPathPending> { self.task.clone() }
+    fn start(mut self: Box<Self>) -> Result<(), shell_contract::hosts::GeneratedStartFailure> {
+        let ready = {
+            let state = self.task.0.lock().unwrap_or_else(|error| error.into_inner());
+            state.observed && !state.in_flight && !state.acknowledged && state.result.is_none()
+        };
+        if !ready {
+            return Err(shell_contract::hosts::GeneratedStartFailure { error: "The synthetic operation is not ready to start".into(), prepared: self });
+        }
+        let Some(action) = self.action.take() else {
+            return Err(shell_contract::hosts::GeneratedStartFailure { error: "The synthetic operation already started".into(), prepared: self });
+        };
+        let result = action();
+        self.task.0.lock().unwrap_or_else(|error| error.into_inner()).result = Some(result);
+        self.task.deliver();
+        Ok(())
+    }
+}
+
+impl Drop for PreparedSyntheticGenerated {
+    fn drop(&mut self) {
+        if self.action.is_none() { return; }
+        {
+            let mut state = self.task.0.lock().unwrap_or_else(|error| error.into_inner());
+            if !state.in_flight && !state.acknowledged && state.result.is_none() {
+                state.result = Some(Err("The synthetic generated operation was cancelled".into()));
+            }
+        }
+        self.task.deliver();
     }
 }
 
@@ -1192,6 +1482,10 @@ pub struct FakeShell {
     /// the hand-off a case left for the tab, taken once
     pub handoff: Mutex<Option<TakenHandoff>>,
     pub uuids: std::sync::atomic::AtomicU64,
+    pub recovery_password: Option<String>,
+    saved_effects: Option<shell_contract::hosts::OwnedEffectsHost>,
+    pub audience_owner: Mutex<Option<super::engine::RenderOwner>>,
+    pub closed_audiences: Mutex<Vec<WindowId>>,
 }
 
 impl FakeShell {
@@ -1200,12 +1494,47 @@ impl FakeShell {
             log.lock().unwrap().push(call);
         }
     }
+    fn set_bleed(&self, view: ViewId, on: bool) {
+        self.record(json!(["showChrome.setBleed", view.0, on]));
+    }
+    fn show_fullscreen_window(&self, window: WindowId, on: bool) {
+        let mut snapped = self.snapped.lock().unwrap();
+        let changed = if on {
+            snapped.insert(window.0)
+        } else {
+            snapped.remove(&window.0)
+        };
+        if changed {
+            self.record(json!(["showFullscreenWindow", window.0, on]));
+        }
+    }
+    fn fullscreen_on_display(&self, window: WindowId, display: Display) {
+        self.record(json!(["fullScreenOnDisplay", window.0, display.id]));
+    }
+    fn move_presenter_window(&self, window: WindowId, display: Display) {
+        self.record(json!(["movePresenterWindow", window.0, display.id]));
+    }
+    fn export_pdf(&self, op: &IpcValue) -> PdfExportAnswer {
+        let path = as_str(field(op, "filePath")).map(str::to_owned);
+        self.record(json!(["exportSlidesPdf", path]));
+        if let Some(path) = &path {
+            let _ = std::fs::write(path, b"%PDF-1.7");
+        }
+        PdfExportAnswer {
+            ok: path.is_some(),
+            path,
+            error: None,
+        }
+    }
 }
 
 impl SlidesShell for FakeShell {
     fn opened(&self, view: ViewId, path: &str) {
         self.record(json!(["slidesOpenedHook", view.0, path]));
         self.opened.lock().unwrap().push((view, path.to_owned()));
+    }
+    fn reload_view(&self, view: ViewId) {
+        self.record(json!(["slides.reload", view.0]));
     }
     fn dialog_parent(&self) -> Option<WindowId> {
         None
@@ -1222,49 +1551,22 @@ impl SlidesShell for FakeShell {
     fn can_write_new_document(&self) -> bool {
         self.project_dir.is_some()
     }
-    fn write_new_document(&self, _view: ViewId, name: &str, bytes: &[u8]) -> Option<String> {
-        let dir = self.project_dir.clone()?;
-        let path = format!("{dir}/{name}");
-        std::fs::write(&path, bytes).ok()?;
-        self.written
-            .lock()
-            .unwrap()
-            .push((path.clone(), bytes.to_vec()));
-        Some(path)
+    fn is_path_open_elsewhere(&self, _path: &str) -> Result<bool, EngineError> {
+        Ok(false)
     }
-    fn open_generated_path(&self, _path: &str) -> bool {
-        false
+    fn take_headless_target_owned(&self, _owner: &super::engine::RenderOwner, _cancel: &shell_contract::runtime::CancelToken) -> Result<Option<super::engine::HeadlessExportTarget>, String> {
+        Ok(None)
     }
-    fn is_path_open_elsewhere(&self, _path: &str) -> bool {
-        false
+    fn headless_export_done_owned(&self, _owner: &super::engine::RenderOwner, _cancel: &shell_contract::runtime::CancelToken, _ok: bool, _error: Option<String>) -> Result<(), String> {
+        Ok(())
     }
-    fn take_headless_target(&self, _view: ViewId) -> Option<String> {
-        None
-    }
-    fn headless_export_done(&self, _view: ViewId, _ok: bool, _error: Option<String>) {
-        // only a headless export has a waiter to settle; the cases make none
-    }
-    fn set_bleed(&self, view: ViewId, on: bool) {
-        self.record(json!(["showChrome.setBleed", view.0, on]));
-    }
-    fn show_fullscreen_window(&self, window: WindowId, on: bool) {
-        let mut snapped = self.snapped.lock().unwrap();
-        let changed = if on {
-            snapped.insert(window.0)
-        } else {
-            snapped.remove(&window.0)
-        };
-        if changed {
-            self.record(json!(["showFullscreenWindow", window.0, on]));
-        }
-    }
-    fn read_clipboard_buffer(&self, format: &str) -> Vec<u8> {
-        self.markers
+    fn read_clipboard_buffer(&self, format: &str) -> Result<Vec<u8>, EngineError> {
+        Ok(self.markers
             .lock()
             .unwrap()
             .get(format)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
     fn write_clipboard_buffer(&self, format: &str, bytes: &[u8]) {
         self.record(json!(["clipboard.writeBuffer", format, bytes.len()]));
@@ -1282,11 +1584,10 @@ impl SlidesShell for FakeShell {
     fn native_clipboard(&self, view: ViewId, op: &str) {
         self.record(json!(["webContents.clipboard", view.0, op]));
     }
-    fn prepare_for_open(
-        &self,
-        _parent: Option<WindowId>,
-        path: &str,
-        done: Box<dyn FnOnce(PreparedOpen) + Send>,
+    fn prepare_for_open_owned(
+        &self, _parent: Option<WindowId>, path: &str, _source: super::engine::RenderOwner, _destination: super::engine::RenderOwner,
+        _cancel: shell_contract::runtime::CancelToken, _pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<PreparedOpen, String>) + Send>,
     ) {
         let prepared = self
             .prepared
@@ -1294,21 +1595,127 @@ impl SlidesShell for FakeShell {
             .unwrap()
             .take()
             .unwrap_or_else(|| PreparedOpen::Plain(path.to_owned()));
-        done(prepared)
+        done(Ok(prepared))
     }
-    fn export_pdf(&self, op: &IpcValue) -> PdfExportAnswer {
-        let path = as_str(field(op, "filePath")).map(str::to_owned);
-        self.record(json!(["exportSlidesPdf", path]));
-        if let Some(path) = &path {
-            let _ = std::fs::write(path, b"%PDF-1.7");
-        }
-        PdfExportAnswer {
-            ok: path.is_some(),
-            path,
-            error: None,
+    fn prepare_for_recovery_open(
+        &self, _target: shell_contract::ipc::RecoveryOpenTarget, _snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, path: String,
+        done: Box<dyn FnOnce(Result<PreparedOpen, String>) + Send>,
+    ) {
+        let prepared = self.prepared.lock().unwrap().take().unwrap_or(PreparedOpen::Plain(path));
+        done(Ok(prepared));
+    }
+    fn unlock_recovery_copy_prepared(
+        &self,
+        _target: shell_contract::ipc::RecoveryOpenTarget,
+        _snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot,
+        _title: String,
+        bytes: Vec<u8>,
+        done: Box<dyn FnOnce(Result<Option<(Vec<u8>, String)>, String>) + Send>,
+    ) {
+        let Some(password) = self.recovery_password.clone() else {
+            return done(Ok(None));
+        };
+        let prefix = format!("ENC {password}\n");
+        done(bytes.strip_prefix(prefix.as_bytes())
+            .map(|plain| Some((plain.to_vec(), password)))
+            .ok_or_else(|| "wrong password".to_owned()));
+    }
+    fn unlock_saved_document(
+        &self,
+        document: shell_contract::ipc::NativeSavedDocument,
+        _title: String,
+        done: Box<dyn FnOnce(Result<Option<(Vec<u8>, String)>, String>) + Send>,
+    ) {
+        let Some(effects) = &self.saved_effects else {
+            return done(Err("Saved document effects are unavailable".into()));
+        };
+        let target = document.target();
+        let additional: Vec<_> = target.additional().iter().collect();
+        let mut bytes = None;
+        let admitted = effects.with_native_saved_document_input(
+            &document, target.participants(), target.cancel(), target.pending(), &additional,
+            &mut |input| { bytes = Some(input.clone()); Ok(()) },
+        );
+        if let Err(error) = admitted { return done(Err(error)); }
+        let Some(input) = bytes else { return done(Err("Saved document input was not admitted".into())); };
+        let Some(password) = self.recovery_password.clone() else { return done(Ok(None)); };
+        let prefix = format!("ENC {password}\n");
+        let result = input.bytes().strip_prefix(prefix.as_bytes())
+            .map(|plain| Some((plain.to_vec(), password)))
+            .ok_or_else(|| "wrong password".to_owned());
+        let admitted = effects.with_native_saved_document_input(
+            &document, target.participants(), target.cancel(), target.pending(), &additional,
+            &mut |_| Ok(()),
+        );
+        done(admitted.and(result));
+    }
+    fn export_pdf_owned(&self, op: &IpcValue, origin: &super::engine::RenderOwner, destination: &super::engine::RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, participants: &[super::engine::RenderOwner], additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> PdfExportAnswer {
+        let mut owners = participants.to_vec();
+        owners.push(destination.clone());
+        let extra = additional.iter().collect::<Vec<_>>();
+        let mut answer = None;
+        match effects.with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || { answer = Some(self.export_pdf(op)); Ok(()) }) {
+            Ok(()) => answer.unwrap_or_else(|| PdfExportAnswer { ok: false, path: None, error: Some("The PDF export was not admitted".into()) }),
+            Err(error) => PdfExportAnswer { ok: false, path: None, error: Some(error) },
         }
     }
-    fn ask_microphone(&self, done: Box<dyn FnOnce(bool) + Send>) {
+    fn export_pdf_native_invocation(&self, op: &IpcValue, document: &shell_contract::ipc::NativeInvocationDocument, origin: &super::engine::RenderOwner, destination: &super::engine::RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, participants: &[super::engine::RenderOwner], additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> PdfExportAnswer {
+        let mut owners = participants.to_vec();
+        owners.push(destination.clone());
+        let extra = additional.iter().collect::<Vec<_>>();
+        let mut answer = None;
+        match effects.with_native_invocation_effect_extra(document, origin, &owners, cancel, pending, &extra, &mut || { answer = Some(self.export_pdf(op)); Ok(()) }) {
+            Ok(()) => answer.unwrap_or_else(|| PdfExportAnswer { ok: false, path: None, error: Some("The PDF export was not admitted".into()) }),
+            Err(error) => PdfExportAnswer { ok: false, path: None, error: Some(error) },
+        }
+    }
+    fn export_pdf_existing_document(&self, op: &IpcValue, destination: &shell_contract::ipc::NativeSaveDestination, participants: &[super::engine::RenderOwner], cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost) -> PdfExportAnswer {
+        let extra = additional.iter().collect::<Vec<_>>();
+        let mut answer = None;
+        match effects.with_existing_document_destination_effect(destination, destination.path(), participants, cancel, pending, &extra, &mut || { answer = Some(self.export_pdf(op)); Ok(()) }) {
+            Ok(()) => answer.unwrap_or_else(|| PdfExportAnswer { ok: false, path: None, error: Some("The PDF export was not admitted".into()) }),
+            Err(error) => PdfExportAnswer { ok: false, path: None, error: Some(error) },
+        }
+    }
+    fn write_new_document_owned(&self, _origin: &super::engine::RenderOwner, _destination: &super::engine::RenderOwner, _cancel: &shell_contract::runtime::CancelToken, _pending: &shell_contract::runtime::CancelToken, _effects: &shell_contract::hosts::OwnedEffectsHost, admission: main_core::packages::electron_utils::atomic_write::owned::Admission, name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
+        let Some(dir) = &self.project_dir else { return Ok(None); };
+        let path = format!("{dir}/{name}");
+        main_core::packages::electron_utils::atomic_write::owned::write_file(&path, bytes, admission).map_err(|error| error.message)?;
+        self.written.lock().unwrap().push((path.clone(), bytes.to_vec()));
+        Ok(Some(path))
+    }
+    fn file_saved_owned(&self, origin: &super::engine::RenderOwner, destination: &super::engine::RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, effects: &shell_contract::hosts::OwnedEffectsHost, path: std::path::PathBuf, participants: &[super::engine::RenderOwner], additional: &[shell_contract::runtime::CancelToken], done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>) {
+        let mut owners = participants.to_vec();
+        owners.push(destination.clone());
+        let extra = additional.iter().collect::<Vec<_>>();
+        let result = effects.with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || {
+            self.opened(destination.view, &path.to_string_lossy());
+            Ok(())
+        }).map(|()| shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication });
+        done(result);
+    }
+    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, _on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<std::path::PathBuf>, String>)>) {
+        let extra = additional.iter().collect::<Vec<_>>();
+        let result = revision.snapshot().and_then(|snapshot| {
+            if snapshot.selection().path() != expected_path { return Err("The native save path changed".into()); }
+            effects.with_native_save_revision_snapshot_effect(&snapshot, &participants, &cancel, &pending, &extra, &mut || {
+            let recipient = participants.first().ok_or("The saved presentation recipient is missing")?;
+            self.opened(recipient.view, &expected_path.to_string_lossy());
+            Ok(())
+            }).map(|()| shell_contract::hosts::SavedFile { path: expected_path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication })
+        });
+        done(result);
+    }
+    fn set_window_title_existing_document(&self, destination: shell_contract::ipc::NativeSaveDestination, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost, title: String, done: Box<dyn FnOnce(Result<(), String>)>) {
+        let extra = additional.iter().collect::<Vec<_>>();
+        let result = effects.with_existing_document_destination_effect(&destination, destination.path(), &participants, &cancel, &pending, &extra, &mut || {
+            let recipient = participants.first().ok_or("The saved presentation recipient is missing")?;
+            self.set_window_title(recipient.view, &title);
+            Ok(())
+        });
+        done(result);
+    }
+    fn ask_microphone(&self, done: Box<dyn FnOnce(Result<bool, String>) + Send>) {
         // the status is asked first; only a status that is not `granted` is asked about
         self.record(json!([
             "systemPreferences.getMediaAccessStatus",
@@ -1317,57 +1724,96 @@ impl SlidesShell for FakeShell {
         if !self.microphone {
             self.record(json!(["systemPreferences.askForMediaAccess", "microphone"]));
         }
-        done(self.microphone)
+        done(Ok(self.microphone))
     }
     fn displays(&self) -> Vec<Display> {
         self.displays.clone()
     }
-    fn display_of(&self, window: Option<WindowId>) -> Display {
+    fn display_of(&self, window: Option<WindowId>) -> Result<Display, EngineError> {
         let first = self.displays[0];
-        match window {
+        Ok(match window {
             Some(w) if w.0 >= 100 => self.displays.get(1).copied().unwrap_or(first),
             _ => first,
-        }
+        })
     }
-    fn open_audience_window(&self, display: Display) -> Option<(ViewId, WindowId)> {
+    fn open_audience_window(&self, display: Display, _source: super::engine::RenderOwner, _cancel: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<(super::engine::RenderOwner, WindowId)>, EngineError>) + Send>) {
         self.record(json!(["BrowserWindow.audience", display.id]));
-        Some((ViewId(100), WindowId(100)))
+        done(match self.audience_owner.lock().unwrap().take() {
+            Some(owner) => Ok(Some((owner, WindowId(100)))),
+            None => {
+                self.close_audience_window(WindowId(100));
+                Err(EngineError("audience renderer capability unavailable".into()))
+            }
+        })
     }
     fn close_audience_window(&self, window: WindowId) {
         self.record(json!(["closeAudienceWindow", window.0]));
-    }
-    fn fullscreen_on_display(&self, window: WindowId, display: Display) {
-        self.record(json!(["fullScreenOnDisplay", window.0, display.id]));
-    }
-    fn move_presenter_window(&self, window: WindowId, display: Display) {
-        self.record(json!(["movePresenterWindow", window.0, display.id]));
+        self.closed_audiences.lock().unwrap().push(window);
     }
     fn set_window_title(&self, _view: ViewId, _title: &str) {
         // only a detached editor window has a title the shell sets; the cases have none
     }
-    fn take_generate_handoff(&self, view: ViewId) -> Option<TakenHandoff> {
+    fn prepare_reveal_export(
+        &self, output: shell_contract::ipc::SavedPublication, written: Option<shell_contract::ipc::NativeSavedInput>,
+        participants: Vec<super::engine::RenderOwner>, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost, _accepted: shell_contract::hosts::PdfReloadAccepted,
+        _wake: shell_contract::hosts::GeneratedPathWake,
+    ) -> Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String> {
+        if written.as_ref().is_some_and(|input| !input.output().same_publication(&output)) {
+            return Err("The synthetic output bytes belong to another publication".into());
+        }
+        let action = Box::new(move || {
+            let extra: Vec<_> = additional.iter().collect();
+            output.with_effect(&*effects, &participants, &cancel, &pending, &extra, &mut || Ok(()))?;
+            Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened)
+        });
+        Ok(Box::new(PreparedSyntheticGenerated { task: std::sync::Arc::new(SyntheticGeneratedTask::default()), action: Some(action) }))
+    }
+    fn set_window_title_owned(&self, origin: &super::engine::RenderOwner, destination: &super::engine::RenderOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, title: String, effects: &shell_contract::hosts::OwnedEffectsHost, participants: &[super::engine::RenderOwner], additional: &[shell_contract::runtime::CancelToken], done: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        let mut owners = participants.to_vec();
+        owners.push(destination.clone());
+        let extra = additional.iter().collect::<Vec<_>>();
+        let result = effects.with_owned_effect_many_extra(origin, &owners, cancel, pending, &extra, &mut || {
+            self.set_window_title(destination.view, &title);
+            Ok(())
+        });
+        done(result);
+    }
+    fn presenter_window_owned(&self, _origin: &super::engine::RenderOwner, destination: &super::engine::RenderOwner, _cancel: &shell_contract::runtime::CancelToken, _pending: &shell_contract::runtime::CancelToken, action: super::engine::PresenterWindowAction, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        use super::engine::PresenterWindowAction;
+        match action {
+            PresenterWindowAction::ShowFullscreen { window, on } => { self.set_bleed(destination.view, on); self.show_fullscreen_window(window, on); }
+            PresenterWindowAction::Refocus { .. } => {}
+            PresenterWindowAction::SwapDisplays { presenter, audience, presenter_display, audience_display } => { self.fullscreen_on_display(audience, presenter_display); self.move_presenter_window(presenter, audience_display); }
+        }
+        done(Ok(()));
+    }
+    fn take_generate_handoff_owned(&self, consumer: &super::engine::RenderOwner, _cancel: &shell_contract::runtime::CancelToken) -> Result<Option<TakenHandoff>, String> {
+        let view = consumer.view;
         self.record(json!([
             "generate-handoff.takeGenerateHandoff",
             "slides",
             view.0
         ]));
-        self.handoff.lock().unwrap().take()
+        Ok(self.handoff.lock().unwrap().take())
     }
-    fn report_generate_run_started(&self, view: ViewId, paths: &[String]) -> bool {
+    fn report_generate_run_started_owned(&self, consumer: &super::engine::RenderOwner, _cancel: &shell_contract::runtime::CancelToken, paths: &[String]) -> Result<bool, String> {
+        let view = consumer.view;
         self.record(json!([
             "generate-handoff.reportGenerateRunStarted",
             "slides",
             view.0,
             paths
         ]));
-        true
+        Ok(true)
     }
     fn random_uuid(&self) -> String {
         let n = self.uuids.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         format!("00000000-0000-4000-8000-{n:012}")
     }
-    fn assert_file_saved(&self, _path: &str) -> Result<(), String> {
-        Ok(())
+    fn assert_file_saved(&self, _path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        then(Ok(()));
     }
 }
 
@@ -1383,6 +1829,7 @@ pub fn insert(hosts: &mut shell_contract::Hosts, case: &Value) {
     );
     let engine: SlidesEngineHost = Arc::new(FakeEngine {
         decks: Mutex::default(),
+        bindings: Mutex::default(),
         next: Mutex::default(),
         blank_slides: slides["blankSlides"].as_u64().unwrap_or(1) as usize,
         fx: Fixtures(slides["fixtures"].clone()),
@@ -1396,7 +1843,7 @@ pub fn insert(hosts: &mut shell_contract::Hosts, case: &Value) {
         width: 1920.0,
         height: 1080.0,
     };
-    let shell: SlidesShellHost = Arc::new(FakeShell {
+    let shell = Arc::new(FakeShell {
         log,
         displays: if slides["externalDisplay"].as_bool().unwrap_or(false) {
             vec![display(1), display(2)]
@@ -1430,7 +1877,12 @@ pub fn insert(hosts: &mut shell_contract::Hosts, case: &Value) {
             }
         })),
         uuids: Default::default(),
+        recovery_password: slides["recoveryPassword"].as_str().map(str::to_owned),
+        saved_effects: hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned(),
+        audience_owner: Mutex::new(None),
+        closed_audiences: Mutex::new(Vec::new()),
     });
+    hosts.insert::<Arc<FakeShell>>(shell.clone());
     hosts.insert::<SlidesShellHost>(shell);
     let _ = num;
 }

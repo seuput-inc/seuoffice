@@ -11,7 +11,7 @@
 //! | trait | now |
 //! | --- | --- |
 //! | `ai_core::AiCoreHost` | real: `ui_lang` (W's one answer), `subscription_statuses` and `ai_tool_capabilities` (main-core over the subscription service's state), `is_headless_mode` (the shell has no headless export), `fetch_remote_image` (main-core's SSRF-guarded download over reqwest). Stub: `web_search`, `image_search`, `read_url` (the `@seuoffice/ai-search` backends are not in main-core) |
-//! | `ai_core::PendingAiDocs` | real: one shared instance ([`pending_ai_docs`]) |
+//! | `ai_core::PendingAiDocs` | real: one shared accepted-initialization store |
 //! | `ai_naming::NamingContext` | real (`NamingChat` is not inserted: the port drives the AI runtime itself) |
 //! | `app_ai_image::AppAiImageHost` | real: statuses and the Codex route state. Stub: `codex_generate_image` (`createCodexImageCliGenerator` is not in main-core) |
 //! | `slides_ai::SlidesAiHost` | real: `ui_lang`, `secret_codec`, statuses, `ai_tool_capabilities`, `fetch_remote_image`, `image_decoder` (the `image` crate). Stub: `generate_image`, `analyze_media` (`@seuoffice/ai-search` media tools) |
@@ -26,7 +26,9 @@
 //! these follow it.
 
 mod agent;
-mod fetch;
+pub(crate) mod codex_image;
+pub(crate) mod fetch;
+pub(crate) mod media_tools;
 mod free;
 mod jwt;
 mod native_image;
@@ -42,7 +44,7 @@ use main_core::packages::ai_provider::task::JsError;
 use main_core::packages::i18n::{Lang, document_locale_for, html_lang, normalize_lang};
 use shell_contract::hosts::Hosts;
 use shell_contract::ids::ViewId;
-use shell_contract::runtime::{CancelToken, Thread, Views};
+use shell_contract::runtime::{AppPaths, CancelToken, PathName, Thread, Views};
 use shell_ipc_a::ai_core::{PendingAiDocs, PendingAiDocsHost};
 use shell_ipc_a::ai_naming::{NamingContext, NamingContextHost};
 use shell_ipc_a::app_ai_image::{
@@ -97,7 +99,7 @@ fn codec() -> Option<&'static dyn AiSecretCodec> {
 
 /// `sharedSubscriptionStatuses()`: the subscription service's state lives on
 /// the core thread. `{}` before the subscription port registered.
-fn subscription_statuses() -> JsonValue {
+pub(crate) fn subscription_statuses() -> JsonValue {
     super::super::w::on_core(|provided| {
         provided
             .all::<SubscriptionShared>()
@@ -125,11 +127,12 @@ fn codex_image_available() -> bool {
 /// writes into this, or the new docs tab never finds its content.
 static PENDING_DOCS: OnceLock<PendingAiDocsHost> = OnceLock::new();
 
-/// The queue of AI content a fresh docs tab waits for, once installed
-#[allow(dead_code)] // W's tab hook queue_docs_ai_content
-pub(crate) fn pending_ai_docs() -> Option<PendingAiDocsHost> {
-    PENDING_DOCS.get().cloned()
+
+pub(crate) fn prepare_ai_docs_seed(view:ViewId,seed:shell_ipc_a::ai_core::AcceptedAiDoc) -> Result<shell_ipc_a::ai_core::PreparedAiSeed,String> {
+    PENDING_DOCS.get().ok_or("The pending document service is unavailable")?.prepare_accepted(view,seed)
 }
+
+
 
 /// The Tauri window of a view's window
 fn window_of(app: &AppHandle, views: &ViewTable, view: ViewId) -> Option<tauri::Window> {
@@ -174,18 +177,21 @@ impl AppAiImageHost for AppImage {
     fn codex_image_route(&self) -> CodexImageRoute {
         CodexImageRoute {
             available: codex_image_available(),
-            // the generator is not built: nothing registers it
-            registered: false,
+            registered: true,
         }
     }
 
     fn codex_generate_image(
         &self,
-        _request: &CodexImageRequest,
-        _signal: &CancelToken,
+        request: &CodexImageRequest,
+        signal: &CancelToken,
     ) -> Result<CodexImage, JsError> {
-        unbuilt("AppAiImageHost::codex_generate_image");
-        Err(JsError::error(NOT_BUILT))
+        codex_image::generate(&codex_image::CodexImageRequest {
+            prompt: request.prompt.clone(),
+            aspect_ratio: request.aspect_ratio.clone(),
+            image_size: None,
+            transparent: false,
+        }, signal)
     }
 }
 
@@ -263,6 +269,7 @@ impl ShellUi for Ui {
 }
 
 pub fn install(hosts: &mut Hosts, cx: &HostContext) {
+    codex_image::configure(crate::paths::ShellPaths::new().path(PathName::UserData));
     let lang = UiLang(hosts.get::<UiLanguageHost>().cloned());
 
     let pending: PendingAiDocsHost = Arc::new(PendingAiDocs::default());

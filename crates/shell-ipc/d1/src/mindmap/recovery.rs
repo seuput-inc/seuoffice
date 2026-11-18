@@ -8,9 +8,7 @@ use std::cell::RefMut;
 use std::fs;
 
 use main_core::node_fs::NodeError;
-use main_core::packages::electron_utils::recovery_contract::{
-    RecoveryOpenDecision, RecoveryOpenUntitledRequest,
-};
+use main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision;
 use main_core::packages::electron_utils::recovery_prompt::{
     RecoveryOpenResult, ResolveRecoveryOnOpenOptions, resolve_recovery_on_open,
 };
@@ -336,30 +334,6 @@ impl MindmapApp {
         self.recovery_of(view).save_as_default = Some(path.to_owned());
     }
 
-    /// `takeUntitledCopy`: a copy to open in this (untitled) view: its bytes,
-    /// read now so they can be queued before the renderer asks
-    pub(super) fn take_untitled_copy(
-        &self,
-        view: ViewId,
-        request: &RecoveryOpenUntitledRequest,
-    ) -> Option<Vec<u8>> {
-        let bytes = self.with_store(|store| {
-            let bytes = fs::read(store.copy_path(&request.copy).ok()?).ok()?;
-            let _ = store.mark_copy_loaded(&request.copy);
-            Some(bytes)
-        })?;
-        self.adopt_untitled_copy(view, &request.copy);
-        let mut recovery = self.recovery_of(view);
-        recovery.title = Some(request.title.clone());
-        if let Some(path) = request
-            .save_as_default_path
-            .as_ref()
-            .filter(|p| !p.is_empty())
-        {
-            recovery.save_as_default = Some(path.clone());
-        }
-        Some(bytes)
-    }
 
     /// `viewFileRenamed`: the view's file was renamed on disk: its copy follows the new path
     pub(super) fn view_file_renamed(&self, view: ViewId, old_path: &str, new_path: &str) {

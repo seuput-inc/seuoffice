@@ -35,6 +35,7 @@ export class DiagramCopier {
   #backoff = 0
   #saves = 0
   #running: Promise<CopyOutcome> | null = null
+  #lastError: unknown = null
 
   constructor(host: DiagramCopierHost) {
     this.#host = host
@@ -60,7 +61,9 @@ export class DiagramCopier {
   /** the OS is ending the session: a copy now, after any copy under way */
   async writeNow(): Promise<CopyOutcome> {
     if (this.#running) await this.#running
-    return this.#attempt()
+    const outcome = await this.#attempt()
+    if (outcome === 'failed') throw this.#lastError
+    return outcome
   }
 
   #attempt(): Promise<CopyOutcome> {
@@ -85,6 +88,7 @@ export class DiagramCopier {
       if (result === 'written') this.#copied = revision
       return result === 'written' ? 'written' : 'dropped'
     } catch (err) {
+      this.#lastError = err
       console.warn('[diagram] the recovery copy failed:', err)
       this.#backoff = RECOVERY_COPY_TIMING.backoffTicks
       return 'failed'

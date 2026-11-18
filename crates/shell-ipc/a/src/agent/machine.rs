@@ -55,21 +55,22 @@ use main_core::shell::agent::agent_window::{
     AgentWindowSendJob, AgentWindowSendStep, AgentWindowShown, AgentWindowStartJob,
     AgentWindowStartStep, ShownProposal, SubscriptionStatus, TemplateAsIs, TemplateBlank,
     TemplateCheck, TemplatePreviewInput, TemplatePreviewOutcome, WindowState, agent_answer,
-    agent_event_view, agent_get_init, agent_get_project_prefs, agent_get_project_skills,
-    agent_get_theme, agent_home_may_open, agent_live_owner, agent_open_file, agent_pick_folder,
-    agent_send, agent_set_prefs, agent_set_project_prefs, agent_set_project_skills, agent_start,
+    agent_event_view, agent_get_init, agent_get_project_prefs,
+    agent_get_theme, agent_home_may_open, agent_live_owner, agent_open_file, agent_owner_of, agent_pick_folder,
+    agent_send, agent_set_prefs, agent_set_project_prefs, invalid_agent_start,
     agent_stop, agent_template_as_is, agent_template_blank, agent_template_check,
-    agent_window_load, agent_window_options, agent_window_reuse,
+    agent_window_load, agent_window_options, agent_window_reuse, plan_agent_start, start_agent_with_plan,
 };
 use main_core::shell::agent::project_skills::{
-    ProjectSkillLike, project_skills_allowed, project_skills_view, set_project_skills,
+    ProjectSkillLike, approved_fingerprint_from_settings, project_skills_fingerprint,
+    project_skills_of, project_skills_view, set_project_skills,
 };
 use main_core::shell::app_settings::{read_app_settings, write_agent_prefs};
 use main_core::shell::crash_log::Thrown;
 use main_core::shell::renderer_disposal::Failure;
 use shell_contract::hosts::{ContentsHost, DialogsHost, FileDialog, MainWindowHost};
 use shell_contract::ipc::{Responder, Target};
-use shell_contract::runtime::{PathName, Services};
+use shell_contract::runtime::{CancelToken, PathName, Services};
 use shell_contract::{IpcValue, ViewId};
 
 use super::codex;
@@ -116,6 +117,16 @@ pub(super) fn with_core(port: u64, run: impl FnOnce(&Rc<Inner>)) {
     if let Some(inner) = inner {
         run(&inner);
     }
+}
+
+fn reply_owner(port: u64, sender: i64, cancel: &CancelToken, reply: Responder, answer: IpcValue) {
+    let mut reply = Some(reply);
+    with_core(port, |inner| {
+        let Some(reply) = reply.take() else { return; };
+        let valid = !cancel.is_cancelled() && agent_live_owner(&inner.world.borrow().host, sender);
+        reply.reply(Ok(if valid { answer } else { IpcValue::Null }));
+    });
+    if let Some(reply) = reply { reply.reply(Ok(IpcValue::Null)); }
 }
 
 /// Runs `run` on the core thread soon, after the call that is on the stack has returned: a
@@ -672,6 +683,10 @@ pub(super) struct Host {
     sh: Rc<Shared>,
     io: Io,
     deck: Deck,
+    prefs_override: Option<AgentPrefs>,
+    pending_prefs: Option<JsonValue>,
+    project_settings: Option<main_core::shell::app_settings::Settings>,
+    project_changed: bool,
 }
 
 impl AgentWindowHost for Host {
@@ -740,14 +755,12 @@ impl AgentWindowHost for Host {
         Some(out)
     }
 
-    fn read_prefs(&self) -> AgentPrefs {
-        normalize_agent_prefs(read_app_settings(&self.sh.app_settings()).get("agent"))
+    fn read_prefs(&self) -> Option<AgentPrefs> {
+        self.prefs_override.clone()
     }
 
     fn write_prefs(&mut self, prefs: &AgentPrefs) {
-        // a file that cannot be written leaves the old choices; the handlers answer the
-        // new ones either way, as a throw here would not reach the person
-        let _ = write_agent_prefs(&self.sh.app_settings(), &prefs.to_json());
+        self.pending_prefs = Some(prefs.to_json());
     }
 
     fn parent_window(&self) -> Option<WindowState> {
@@ -775,17 +788,27 @@ impl AgentWindowHost for Host {
 
     fn read_project_prefs_override(
         &mut self,
-        _folder: &str,
+        folder: &str,
     ) -> Option<Result<AgentProjectPrefs, Failure>> {
-        None
+        Some(self.project_settings.as_ref().ok_or_else(|| Failure("Agent settings snapshot is unavailable.".into())).map(|settings| {
+            let value = main_core::shell::app_settings::read_agent_project_pref_from_settings(settings, folder);
+            AgentProjectPrefs { codex_web_search: value.codex_web_search, codex_network: value.codex_network }
+        }))
     }
 
     fn write_project_prefs_override(
         &mut self,
-        _folder: &str,
-        _patch: &AgentProjectPrefsPatch,
+        folder: &str,
+        patch: &AgentProjectPrefsPatch,
     ) -> Option<Result<AgentProjectPrefs, Failure>> {
-        None
+        let Some(settings) = self.project_settings.as_mut() else {
+            return Some(Err(Failure("Agent settings snapshot is unavailable.".into())));
+        };
+        let result = main_core::shell::app_settings::apply_agent_project_pref(settings, folder, &patch.to_json())
+            .map(|value| AgentProjectPrefs { codex_web_search: value.codex_web_search, codex_network: value.codex_network })
+            .map_err(|error| Failure(format!("{error:?}")));
+        if result.is_ok() { self.project_changed = true; }
+        Some(result)
     }
 
     fn has_project_skills(&self) -> bool {
@@ -900,7 +923,7 @@ pub(super) struct World {
     manager: AgentManager,
     shown: AgentWindowShown,
     /// starts waiting for an awaited call, with the invoke to answer
-    starts: HashMap<u64, (AgentWindowStartJob, Responder)>,
+    starts: HashMap<u64, (AgentWindowStartJob, Responder, i64, CancelToken)>,
     /// messages waiting for their program, by session, in order
     sends: HashMap<String, VecDeque<WaitingSend>>,
     next: u64,
@@ -971,6 +994,10 @@ impl Inner {
                 tokens: HashMap::new(),
             },
             deck: Deck(svc),
+            prefs_override: None,
+            pending_prefs: None,
+            project_settings: None,
+            project_changed: false,
         };
         let inner = Rc::new(Inner {
             sh,
@@ -1002,11 +1029,217 @@ impl Inner {
 
     // ---- the handlers ------------------------------------------------------------
 
+    fn initial_prefs_queued(self: &Rc<Self>, sender: i64, request: Option<JsonValue>, start: bool, cancel: CancelToken, reply: Responder) {
+        let path = self.sh.app_settings();
+        let port = self.sh.port;
+        let core = self.sh.services.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let settings = read_app_settings(&path);
+            let prefs = normalize_agent_prefs(settings.get("agent"));
+            core.post(Box::new(move || {
+                let mut pending = Some((completion, reply));
+                with_core(port, |inner| {
+                    let Some((completion, reply)) = pending.take() else { return; };
+                    if cancel.is_cancelled() { reply.reply(Ok(IpcValue::Null)); drop(completion); return; }
+                    if start {
+                        let plan = {
+                            let mut world = inner.world.borrow_mut();
+                            world.host.prefs_override = Some(prefs);
+                            world.host.project_settings = Some(settings);
+                            let plan = agent_owner_of(&world.host, sender)
+                                .map(|owner| (owner, plan_agent_start(&mut world.host, request.as_ref())));
+                            world.host.prefs_override = None;
+                            world.host.project_settings = None;
+                            plan
+                        };
+                        drop(completion);
+                        let step = {
+                            let w = &mut *inner.world.borrow_mut();
+                            match plan {
+                                Some((owner, Ok(plan))) if agent_live_owner(&w.host, owner) =>
+                                    start_agent_with_plan(&mut w.host, &mut w.manager, owner, plan, now_ms()),
+                                Some((_, Err(response))) => AgentWindowStartStep::Done(response),
+                                _ => invalid_agent_start(),
+                            }
+                        };
+                        inner.start_step(step, reply, sender, cancel);
+                    } else {
+                        drop(completion);
+                        let answer = {
+                            let mut world = inner.world.borrow_mut();
+                            world.host.prefs_override = Some(prefs);
+                            let value = agent_get_init(&world.host, sender)
+                                .map_or(IpcValue::Null, |v| from_json(&json_value_from_serde(&v)));
+                            world.host.prefs_override = None;
+                            value
+                        };
+                        reply.reply(Ok(answer));
+                    }
+                });
+                if let Some((completion, reply)) = pending {
+                    reply.reply(Err(shell_contract::IpcError { name: Some("Error".into()), message: "agent window is unavailable".into() }));
+                    drop(completion);
+                }
+            }));
+        });
+    }
+
+    fn project_prefs_queued(self: &Rc<Self>, sender: i64, folder: Option<JsonValue>, patch: Option<JsonValue>, write: bool, cancel: CancelToken, reply: Responder) {
+        let path = self.sh.app_settings();
+        let port = self.sh.port;
+        let core = self.sh.services.core.clone();
+        let workers = self.sh.services.workers.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let saved = read_app_settings(&path);
+            let post = core.clone();
+            core.post(Box::new(move || {
+                let mut pending = Some((completion, reply));
+                with_core(port, |inner| {
+                    let Some((completion, reply)) = pending.take() else { return; };
+                    if cancel.is_cancelled() { reply.reply(Ok(IpcValue::Null)); drop(completion); return; }
+                    let (answer, value) = {
+                        let mut world = inner.world.borrow_mut();
+                        world.host.project_settings = Some(saved);
+                        world.host.project_changed = false;
+                        let result = if write {
+                            agent_set_project_prefs(&mut world.host, sender, folder.as_ref(), patch.as_ref())
+                        } else {
+                            agent_get_project_prefs(&mut world.host, sender, folder.as_ref())
+                        };
+                        let answer = result.map(|value| from_json(&value.to_json())).unwrap_or(IpcValue::Null);
+                        let value = world.host.project_settings.take().and_then(|settings| {
+                            if world.host.project_changed {
+                                Some(settings.get(main_core::shell::app_settings::AGENT_PROJECT_PREFS_KEY).cloned())
+                            } else { None }
+                        });
+                        world.host.project_changed = false;
+                        (answer, value)
+                    };
+                    if let Some(value) = value {
+                        workers.spawn(Box::new(move || {
+                            let result = if cancel.is_cancelled() { None } else { Some(main_core::shell::app_settings::write_app_setting(&path, main_core::shell::app_settings::AGENT_PROJECT_PREFS_KEY, value)) };
+                            post.post(Box::new(move || {
+                                let _completion = completion;
+                                reply_owner(port, sender, &cancel, reply, if result.is_some_and(|result| result.is_ok()) { answer } else { IpcValue::Null });
+                            }));
+                        }));
+                    } else {
+                        reply.reply(Ok(answer));
+                        drop(completion);
+                    }
+                });
+                if let Some((completion, reply)) = pending {
+                    reply.reply(Err(shell_contract::IpcError { name: Some("Error".into()), message: "agent window is unavailable".into() }));
+                    drop(completion);
+                }
+            }));
+        });
+    }
+
+    fn set_prefs_queued(self: &Rc<Self>, sender: i64, update: Option<JsonValue>, cancel: CancelToken, reply: Responder) {
+        let path = self.sh.app_settings();
+        let port = self.sh.port;
+        let core = self.sh.services.core.clone();
+        let workers = self.sh.services.workers.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let saved = read_app_settings(&path);
+            let prefs = normalize_agent_prefs(saved.get("agent"));
+            let post = core.clone();
+            core.post(Box::new(move || {
+                let mut pending = Some((completion, reply));
+                with_core(port, |inner| {
+                    let Some((completion, reply)) = pending.take() else { return; };
+                    if cancel.is_cancelled() { reply.reply(Ok(IpcValue::Null)); drop(completion); return; }
+                    let (answer, write) = {
+                        let mut world = inner.world.borrow_mut();
+                        world.host.prefs_override = Some(prefs);
+                        let answer = agent_set_prefs(&mut world.host, sender, update.as_ref())
+                            .map(|value| from_json(&value.to_json())).unwrap_or(IpcValue::Null);
+                        let write = world.host.pending_prefs.take();
+                        world.host.prefs_override = None;
+                        (answer, write)
+                    };
+                    if let Some(write) = write {
+                        workers.spawn(Box::new(move || {
+                            // This handler intentionally returns the normalized choice even when persistence fails.
+                            if !cancel.is_cancelled() { let _ = write_agent_prefs(&path, &write); }
+                            post.post(Box::new(move || {
+                                let _completion = completion;
+                                reply_owner(port, sender, &cancel, reply, answer);
+                            }));
+                        }));
+                    } else {
+                        reply.reply(Ok(answer));
+                        drop(completion);
+                    }
+                });
+                if let Some((completion, reply)) = pending {
+                    reply.reply(Err(shell_contract::IpcError { name: Some("Error".into()), message: "agent window is unavailable".into() }));
+                    drop(completion);
+                }
+            }));
+        });
+    }
+
+    fn project_skills_queued(self: &Rc<Self>, sender: i64, folder: Option<JsonValue>, on: Option<JsonValue>, write: bool, cancel: CancelToken, reply: Responder) {
+        let folder = match folder {
+            Some(JsonValue::String(folder)) if jscompat::node_path::host::is_absolute(&folder) => folder,
+            _ => return reply.reply(Ok(IpcValue::Null)),
+        };
+        if cancel.is_cancelled() || !agent_live_owner(&self.world.borrow().host, sender) {
+            return reply.reply(Ok(IpcValue::Null));
+        }
+        let skills_task = match self.sh.svc.enabled_for_agent_task(&folder) {
+            Ok(task) => task,
+            Err(_) => return reply.reply(Ok(IpcValue::Null)),
+        };
+        let path = self.sh.app_settings();
+        let port = self.sh.port;
+        let core = self.sh.services.core.clone();
+        let workers = self.sh.services.workers.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let post = core.clone();
+            core.post(Box::new(move || {
+                let mut pending = Some((completion, reply));
+                with_core(port, |inner| {
+                    let Some((completion, reply)) = pending.take() else { return; };
+                    if cancel.is_cancelled() || !agent_live_owner(&inner.world.borrow().host, sender) {
+                        reply.reply(Ok(IpcValue::Null));
+                        return;
+                    }
+                    workers.spawn(Box::new(move || {
+                        let answer = if cancel.is_cancelled() { None } else { skills_task().ok().and_then(|enabled| {
+                            if cancel.is_cancelled() { return None; }
+                            let skills = project_like(&enabled);
+                            if write {
+                                set_project_skills(&path, &folder, &skills, on == Some(JsonValue::Bool(true)), PLATFORM).ok()
+                            } else {
+                                Some(project_skills_view(&path, &folder, &skills, PLATFORM))
+                            }
+                        }) };
+                        post.post(Box::new(move || {
+                            let _completion = completion;
+                            let mut reply = Some(reply);
+                            with_core(port, |inner| {
+                                let Some(reply) = reply.take() else { return; };
+                                let valid = !cancel.is_cancelled() && agent_live_owner(&inner.world.borrow().host, sender);
+                                reply.reply(Ok(if valid { answer.map(|value| from_json(&value.to_json())).unwrap_or(IpcValue::Null) } else { IpcValue::Null }));
+                            });
+                            if let Some(reply) = reply { reply.reply(Ok(IpcValue::Null)); }
+                        }));
+                    }));
+                });
+                if let Some((_completion, reply)) = pending { reply.reply(Ok(IpcValue::Null)); }
+            }));
+        });
+    }
+
     /// One `ipcMain.handle`
     pub(super) fn invoke(
         self: &Rc<Self>,
         op: Op,
         sender: ViewId,
+        cancel: CancelToken,
         args: &[IpcValue],
         reply: Responder,
     ) {
@@ -1014,13 +1247,10 @@ impl Inner {
         let given: Vec<Option<JsonValue>> = (0..6).map(|i| arg(args, i)).collect();
         let a = |i: usize| given[i].as_ref();
         match op {
-            Op::Start => {
-                let step = {
-                    let w = &mut *self.world.borrow_mut();
-                    agent_start(&mut w.host, &mut w.manager, sender, a(0), now_ms())
-                };
-                return self.start_step(step, reply);
-            }
+            Op::SetPrefs => return self.set_prefs_queued(sender, given[0].clone(), cancel, reply),
+            Op::GetProjectPrefs | Op::SetProjectPrefs => return self.project_prefs_queued(sender, given[0].clone(), given[1].clone(), op == Op::SetProjectPrefs, cancel, reply),
+            Op::Start | Op::GetInit => return self.initial_prefs_queued(sender, given[0].clone(), op == Op::Start, cancel, reply),
+            Op::GetProjectSkills | Op::SetProjectSkills => return self.project_skills_queued(sender, given[0].clone(), given[1].clone(), op == Op::SetProjectSkills, cancel, reply),
             Op::Send => {
                 let step = {
                     let w = &mut *self.world.borrow_mut();
@@ -1045,27 +1275,15 @@ impl Inner {
             let host = &mut w.host;
             let manager = &mut w.manager;
             let json = |value: serde_json::Value| from_json(&json_value_from_serde(&value));
-            let null_or =
-                |value: Option<JsonValue>| value.map_or(IpcValue::Null, |v| from_json(&v));
             match op {
-                Op::GetInit => agent_get_init(&*host, sender).map_or(IpcValue::Null, json),
+                Op::GetInit => unreachable!("handled above"),
                 Op::GetTheme => IpcValue::String(agent_get_theme(&*host)),
                 Op::PickFolder => {
                     agent_pick_folder(host, sender).map_or(IpcValue::Null, IpcValue::String)
                 }
-                Op::SetPrefs => null_or(agent_set_prefs(host, sender, a(0)).map(|p| p.to_json())),
-                Op::GetProjectPrefs => {
-                    null_or(agent_get_project_prefs(host, sender, a(0)).map(|p| p.to_json()))
-                }
-                Op::SetProjectPrefs => {
-                    null_or(agent_set_project_prefs(host, sender, a(0), a(1)).map(|p| p.to_json()))
-                }
-                Op::GetProjectSkills => {
-                    null_or(agent_get_project_skills(host, sender, a(0)).map(|v| v.to_json()))
-                }
-                Op::SetProjectSkills => {
-                    null_or(agent_set_project_skills(host, sender, a(0), a(1)).map(|v| v.to_json()))
-                }
+                Op::SetPrefs => unreachable!("handled above"),
+                Op::GetProjectPrefs | Op::SetProjectPrefs => unreachable!("handled above"),
+                Op::GetProjectSkills | Op::SetProjectSkills => unreachable!("handled above"),
                 Op::Answer => {
                     agent_answer(host, manager, sender, a(0), a(1), a(2), a(3));
                     IpcValue::Undefined
@@ -1160,19 +1378,53 @@ impl Inner {
 
     // ---- starts and sends -------------------------------------------------------------
 
-    fn start_step(self: &Rc<Self>, step: AgentWindowStartStep, reply: Responder) {
+    fn start_step(self: &Rc<Self>, step: AgentWindowStartStep, reply: Responder, sender: i64, cancel: CancelToken) {
         match step {
             AgentWindowStartStep::Done(response) => {
                 let mut answer = from_json(&json_value_from_serde(&response));
                 with_unset_skill_keys(&mut answer);
-                reply.reply(Ok(answer))
+                let prefs = self.world.borrow_mut().host.pending_prefs.take();
+                if let Some(prefs) = prefs {
+                    if cancel.is_cancelled() || !agent_live_owner(&self.world.borrow().host, sender) {
+                        return reply.reply(Ok(IpcValue::Null));
+                    }
+                    let path = self.sh.app_settings();
+                    let core = self.sh.services.core.clone();
+                    let workers = self.sh.services.workers.clone();
+                    let port = self.sh.port;
+                    main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+                        let post = core.clone();
+                        core.post(Box::new(move || {
+                            let mut pending = Some((completion, reply));
+                            with_core(port, |inner| {
+                                let Some((completion, reply)) = pending.take() else { return; };
+                                if cancel.is_cancelled() || !agent_live_owner(&inner.world.borrow().host, sender) {
+                                    reply.reply(Ok(IpcValue::Null));
+                                    return;
+                                }
+                                workers.spawn(Box::new(move || {
+                                    if !cancel.is_cancelled() { let _ = write_agent_prefs(&path, &prefs); }
+                                    post.post(Box::new(move || {
+                                        let _completion = completion;
+                                        reply_owner(port, sender, &cancel, reply, answer);
+                                    }));
+                                }));
+                            });
+                            if let Some((_completion, reply)) = pending {
+                                reply.reply(Ok(IpcValue::Null));
+                            }
+                        }));
+                    });
+                } else {
+                    reply.reply(Ok(if cancel.is_cancelled() { IpcValue::Null } else { answer }));
+                }
             }
             AgentWindowStartStep::Await { call, job } => {
                 let id = {
                     let mut w = self.world.borrow_mut();
                     let id = w.next;
                     w.next += 1;
-                    w.starts.insert(id, (job, reply));
+                    w.starts.insert(id, (job, reply, sender, cancel));
                     id
                 };
                 self.carry(id, call);
@@ -1183,14 +1435,14 @@ impl Inner {
     /// What a start's awaited call came to: the start goes on, outside any other handler
     fn finish_start(self: &Rc<Self>, id: u64, answer: AgentStartAnswer) {
         let pending = self.world.borrow_mut().starts.remove(&id);
-        let Some((job, reply)) = pending else {
+        let Some((job, reply, sender, cancel)) = pending else {
             return;
         };
         let step = {
             let w = &mut *self.world.borrow_mut();
             job.resume(&mut w.host, &mut w.manager, answer, now_ms())
         };
-        self.start_step(step, reply);
+        self.start_step(step, reply, sender, cancel);
     }
 
     /// The program took the message (or refused it): the handler of the `send` answers
@@ -1253,9 +1505,8 @@ impl Inner {
                 self.work(id, move || Fin::Relays(svc.start_relays(&session, ask)));
             }
             AgentStartCall::BuildSkills { project_root } => {
-                // `userSkills.enabledForAgent` is the skills service's, on this thread
-                let enabled = match svc.enabled_for_agent(&project_root) {
-                    Ok(enabled) => enabled,
+                let skills_task = match svc.enabled_for_agent_task(&project_root) {
+                    Ok(task) => task,
                     Err(message) => {
                         let answer =
                             AgentStartAnswer::BuildSkills(Err(thrown(&Fault::new(message))));
@@ -1267,15 +1518,33 @@ impl Inner {
                 // skills' scripts must be readable to run
                 let base = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| sh.env.tmp.clone());
                 let dir = join(&[&base, "seuoffice", "agent-skills"]);
-                self.work(id, move || {
-                    // the project's own skills only while the person has turned them on as they
-                    // are now (decision 0064), read again at the start
-                    let allowed = project_skills_allowed(
-                        &settings,
-                        &project_root,
-                        &project_like(&enabled),
-                        PLATFORM,
-                    );
+                let cancel = self.world.borrow().starts.get(&id).map(|(_, _, _, cancel)| cancel.clone());
+                let core = sh.services.core.clone();
+                main_core::shell::app_settings::queue::for_path(&settings).submit(move |completion| {
+                    let enabled = match if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+                        Err("agent request cancelled".to_owned())
+                    } else { skills_task() } {
+                        Ok(enabled) => enabled,
+                        Err(message) => {
+                            drop(completion);
+                            core.post(Box::new(move || with_core(port, |inner| {
+                                inner.finish_start(id, AgentStartAnswer::BuildSkills(Err(thrown(&Fault::new(message)))));
+                            })));
+                            return;
+                        }
+                    };
+                    let saved = read_app_settings(&settings);
+                    let approved = approved_fingerprint_from_settings(&saved, &project_root, PLATFORM);
+                    drop(completion);
+                    if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+                        core.post(Box::new(move || with_core(port, |inner| {
+                            inner.finish_start(id, AgentStartAnswer::BuildSkills(Err(thrown(&Fault::new("agent request cancelled")))));
+                        })));
+                        return;
+                    }
+                    let allowed = approved.is_some_and(|approved| {
+                        project_skills_fingerprint(&project_skills_of(&project_like(&enabled))).as_deref() == Some(approved.as_str())
+                    });
                     let chosen: Vec<JsonValue> = if allowed {
                         enabled
                     } else {
@@ -1290,7 +1559,11 @@ impl Inner {
                             })
                             .collect()
                     };
-                    Fin::Skills(svc.build_skill_bundle(&chosen, &dir))
+                    let fin = Fin::Skills(svc.build_skill_bundle(&chosen, &dir));
+                    core.post(Box::new(move || with_core(port, |inner| {
+                        let answer = inner.answer_of(fin);
+                        inner.finish_start(id, answer);
+                    })));
                 });
             }
             AgentStartCall::RunClaude { options, session } => {

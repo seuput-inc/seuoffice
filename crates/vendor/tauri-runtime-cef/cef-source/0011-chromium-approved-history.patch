@@ -1,0 +1,751 @@
+# Private pinned source patch. Native compile, generated ABI and runtime are unverified.
+diff --git a/content/public/browser/navigation_controller.h b/content/public/browser/navigation_controller.h
+--- a/content/public/browser/navigation_controller.h
++++ b/content/public/browser/navigation_controller.h
+@@ -10,8 +10,11 @@
+ #include <memory>
+ #include <optional>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
++#include "base/functional/callback.h"
++#include "content/public/browser/browser_thread.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
+ #include "content/common/content_export.h"
+@@ -76,6 +79,56 @@
+       base::RepeatingCallback<bool(content::NavigationEntry* entry)>;
+   using WeakNavigationHandleVector =
+       std::vector<base::WeakPtr<NavigationHandle>>;
++
++  enum class CefHistoryOutcome {
++    kStartedCrossDocument,
++    kSameDocumentOrNoop,
++    kCancelled,
++  };
++
++  // Browser-UI-owned command. Cloneable NavigationUIData never owns callbacks.
++  class CefHistoryCommand {
++   public:
++    CefHistoryCommand(
++        std::unique_ptr<NavigationUIData> data,
++        base::RepeatingCallback<bool()> is_current,
++        base::OnceCallback<bool(int64_t)> bind_request,
++        base::OnceCallback<void(CefHistoryOutcome)> completion)
++        : data_(std::move(data)),
++          is_current_(std::move(is_current)),
++          bind_request_(std::move(bind_request)),
++          completion_(std::move(completion)) {}
++    CefHistoryCommand(const CefHistoryCommand&) = delete;
++    CefHistoryCommand& operator=(const CefHistoryCommand&) = delete;
++    ~CefHistoryCommand() { Finish(CefHistoryOutcome::kCancelled); }
++
++    bool IsCurrent() const {
++      DCHECK_CURRENTLY_ON(BrowserThread::UI);
++      return is_current_ && is_current_.Run();
++    }
++    bool BindToRequest(int64_t navigation_id) {
++      DCHECK_CURRENTLY_ON(BrowserThread::UI);
++      return IsCurrent() && bind_request_ &&
++             std::move(bind_request_).Run(navigation_id);
++    }
++    std::unique_ptr<NavigationUIData> TakeData() {
++      DCHECK_CURRENTLY_ON(BrowserThread::UI);
++      return std::move(data_);
++    }
++    void Finish(CefHistoryOutcome outcome) {
++      DCHECK_CURRENTLY_ON(BrowserThread::UI);
++      auto completion = std::move(completion_);
++      if (completion) {
++        std::move(completion).Run(outcome);
++      }
++    }
++
++   private:
++    std::unique_ptr<NavigationUIData> data_;
++    base::RepeatingCallback<bool()> is_current_;
++    base::OnceCallback<bool(int64_t)> bind_request_;
++    base::OnceCallback<void(CefHistoryOutcome)> completion_;
++  };
+ 
+   // Load type used in LoadURLParams.
+   //
+@@ -698,6 +751,15 @@
+   virtual bool ShouldOverrideUserAgentInNextNavigation(
+       NavigationController::UserAgentOverrideOption option) = 0;
+ 
++  // Browser-only provenance, explicitly owned by this operation and its request.
++  virtual void ReloadWithCefHistoryCommand(
++      ReloadType reload_type, bool check_for_repost,
++      std::unique_ptr<CefHistoryCommand> command) = 0;
++  virtual void GoBackWithCefHistoryCommand(
++      std::unique_ptr<CefHistoryCommand> command) = 0;
++  virtual void GoForwardWithCefHistoryCommand(
++      std::unique_ptr<CefHistoryCommand> command) = 0;
++
+  private:
+   // This interface should only be implemented inside content.
+   friend class NavigationControllerImpl;
+diff --git a/content/browser/renderer_host/navigation_controller_impl.h b/content/browser/renderer_host/navigation_controller_impl.h
+--- a/content/browser/renderer_host/navigation_controller_impl.h
++++ b/content/browser/renderer_host/navigation_controller_impl.h
+@@ -154,6 +154,13 @@
+   bool IsInitialNavigation() override;
+   bool IsInitialBlankNavigation() override;
+   void Reload(ReloadType reload_type, bool check_for_repost) override;
++  void ReloadWithCefHistoryCommand(
++      ReloadType reload_type, bool check_for_repost,
++      std::unique_ptr<CefHistoryCommand> command) override;
++  void GoBackWithCefHistoryCommand(
++      std::unique_ptr<CefHistoryCommand> command) override;
++  void GoForwardWithCefHistoryCommand(
++      std::unique_ptr<CefHistoryCommand> command) override;
+   void NotifyEntryChanged(NavigationEntry* entry) override;
+   void CopyStateFrom(NavigationController* source, bool needs_reload) override;
+   bool CanPruneAllButLastCommitted() override;
+@@ -676,7 +683,8 @@
+       std::optional<blink::scheduler::TaskAttributionId>
+           soft_navigation_heuristics_task_id,
+       const std::string* navigation_api_key,
+-      base::TimeTicks actual_navigation_start);
++      base::TimeTicks actual_navigation_start,
++      std::unique_ptr<CefHistoryCommand> command = nullptr);
+ 
+   // Starts a navigation to an already existing pending NavigationEntry. Returns
+   // all the created `NavigationRequest`s. If no request was created, the
+@@ -694,7 +702,8 @@
+       std::optional<blink::scheduler::TaskAttributionId>
+           soft_navigation_heuristics_task_id,
+       const std::string* navigation_api_key,
+-      base::TimeTicks actual_navigation_start);
++      base::TimeTicks actual_navigation_start,
++      std::unique_ptr<CefHistoryCommand> command = nullptr);
+ 
+   // Helper function used by FindFramesToNavigate to determine the appropriate
+   // action to take for a particular frame while navigating to
+@@ -1202,6 +1211,7 @@
+   // If a repost is pending, its type (RELOAD or RELOAD_BYPASSING_CACHE),
+   // NO_RELOAD otherwise.
+   ReloadType pending_reload_ = ReloadType::NONE;
++  std::unique_ptr<CefHistoryCommand> pending_cef_history_reload_;
+ 
+   // Used to get timestamps for newly-created navigation entries.
+   base::RepeatingCallback<base::Time()> get_timestamp_callback_;
+diff --git a/content/browser/renderer_host/navigation_controller_impl.cc b/content/browser/renderer_host/navigation_controller_impl.cc
+--- a/content/browser/renderer_host/navigation_controller_impl.cc
++++ b/content/browser/renderer_host/navigation_controller_impl.cc
+@@ -967,6 +967,16 @@
+ 
+ void NavigationControllerImpl::Reload(ReloadType reload_type,
+                                       bool check_for_repost) {
++  ReloadWithCefHistoryCommand(reload_type, check_for_repost, nullptr);
++}
++
++void NavigationControllerImpl::ReloadWithCefHistoryCommand(
++    ReloadType reload_type, bool check_for_repost,
++    std::unique_ptr<CefHistoryCommand> command) {
++  if (command && !command->IsCurrent()) {
++    return;
++  }
++  CancelPendingReload();
+   base::TimeTicks actual_navigation_start = base::TimeTicks::Now();
+   SCOPED_CRASH_KEY_NUMBER("nav_reentrancy_caller1", "Reload_type",
+                           (int)reload_type);
+@@ -1005,6 +1015,7 @@
+   // If we are no where, then we can't reload.  TODO(darin): We should add a
+   // CanReload method.
+   if (!entry) {
++    if (command) command->Finish(CefHistoryOutcome::kSameDocumentOrNoop);
+     return;
+   }
+ 
+@@ -1015,6 +1026,7 @@
+     // legacy behavior where trying to reload when the main frame is on the
+     // initial empty document won't result in a navigation. See also
+     // https://crbug.com/1277414.
++    if (command) command->Finish(CefHistoryOutcome::kSameDocumentOrNoop);
+     return;
+   }
+ 
+@@ -1025,6 +1037,7 @@
+     delegate_->NotifyBeforeFormRepostWarningShow();
+ 
+     pending_reload_ = reload_type;
++    pending_cef_history_reload_ = std::move(command);
+     delegate_->ActivateAndShowRepostFormWarningDialog();
+     return;
+   }
+@@ -1046,10 +1059,11 @@
+       reload_type,
+       /*initiator_rfh=*/nullptr,
+       /*soft_navigation_heuristics_task_id=*/std::nullopt,
+-      /*navigation_api_key=*/nullptr, actual_navigation_start);
++      /*navigation_api_key=*/nullptr, actual_navigation_start, std::move(command));
+ }
+ 
+ void NavigationControllerImpl::CancelPendingReload() {
++  auto cancelled = std::move(pending_cef_history_reload_);
+   pending_reload_ = ReloadType::NONE;
+ }
+ 
+@@ -1059,8 +1073,10 @@
+   if (pending_reload_ == ReloadType::NONE) {
+     return;
+   }
+-  Reload(pending_reload_, false);
++  const auto reload_type = pending_reload_;
++  auto command = std::move(pending_cef_history_reload_);
+   pending_reload_ = ReloadType::NONE;
++  ReloadWithCefHistoryCommand(reload_type, false, std::move(command));
+ }
+ 
+ bool NavigationControllerImpl::IsInitialNavigation() {
+@@ -1598,6 +1614,32 @@
+   return GoToIndex(*target_index);
+ }
+ 
++void NavigationControllerImpl::GoBackWithCefHistoryCommand(
++    std::unique_ptr<CefHistoryCommand> command) {
++  if (!command || !command->IsCurrent()) return;
++  if (!CanGoBack()) {
++    command->Finish(CefHistoryOutcome::kSameDocumentOrNoop);
++    return;
++  }
++  const auto index = GetIndexForGoBack(/*performing_navigation=*/true);
++  CHECK(index.has_value());
++  GoToIndex(*index, nullptr, std::nullopt, nullptr, base::TimeTicks::Now(),
++            std::move(command));
++}
++
++void NavigationControllerImpl::GoForwardWithCefHistoryCommand(
++    std::unique_ptr<CefHistoryCommand> command) {
++  if (!command || !command->IsCurrent()) return;
++  if (!CanGoForward()) {
++    command->Finish(CefHistoryOutcome::kSameDocumentOrNoop);
++    return;
++  }
++  const auto index = GetIndexForGoForward(/*performing_navigation=*/true);
++  CHECK(index.has_value());
++  GoToIndex(*index, nullptr, std::nullopt, nullptr, base::TimeTicks::Now(),
++            std::move(command));
++}
++
+ NavigationController::WeakNavigationHandleVector
+ NavigationControllerImpl::GoToIndex(int index) {
+   std::vector<base::WeakPtr<NavigationRequest>> requests =
+@@ -1617,7 +1659,8 @@
+     std::optional<blink::scheduler::TaskAttributionId>
+         soft_navigation_heuristics_task_id,
+     const std::string* navigation_api_key,
+-    base::TimeTicks actual_navigation_start) {
++    base::TimeTicks actual_navigation_start,
++    std::unique_ptr<CefHistoryCommand> command) {
+   TRACE_EVENT0("browser,navigation,benchmark",
+                "NavigationControllerImpl::GoToIndex");
+   SCOPED_CRASH_KEY_NUMBER("nav_reentrancy_caller1", "GoToIndex_index", index);
+@@ -1634,6 +1677,7 @@
+     // legacy behavior where trying to reload when the main frame is on the
+     // initial empty document won't result in a navigation. See also
+     // https://crbug.com/1277414.
++    if (command) command->Finish(CefHistoryOutcome::kSameDocumentOrNoop);
+     return {};
+   }
+ 
+@@ -1648,7 +1692,7 @@
+       pending_entry_->GetTransitionType() | ui::PAGE_TRANSITION_FORWARD_BACK));
+   return NavigateToExistingPendingEntry(
+       ReloadType::NONE, initiator_rfh, soft_navigation_heuristics_task_id,
+-      navigation_api_key, actual_navigation_start);
++      navigation_api_key, actual_navigation_start, std::move(command));
+ }
+ 
+ void NavigationControllerImpl::GoToOffset(int offset) {
+@@ -1862,7 +1906,7 @@
+ 
+   // Any pending request to repost a form submission is no longer valid, since a
+   // different NavigationEntry is committing.
+-  pending_reload_ = ReloadType::NONE;
++  CancelPendingReload();
+ 
+   // Save the previous state before we clobber it.
+   bool overriding_user_agent_changed = false;
+@@ -3700,7 +3744,8 @@
+     std::optional<blink::scheduler::TaskAttributionId>
+         soft_navigation_heuristics_task_id,
+     const std::string* navigation_api_key,
+-    base::TimeTicks actual_navigation_start) {
++    base::TimeTicks actual_navigation_start,
++    std::unique_ptr<CefHistoryCommand> command) {
+   TRACE_EVENT0("navigation",
+                "NavigationControllerImpl::NavigateToExistingPendingEntry");
+   DCHECK(pending_entry_);
+@@ -3734,6 +3779,7 @@
+     frame_tree_->StopLoading();
+ 
+     DiscardNonCommittedEntries();
++    if (command) command->Finish(CefHistoryOutcome::kSameDocumentOrNoop);
+     return {};
+   }
+ 
+@@ -3882,6 +3928,8 @@
+       ScopedPendingEntryReentrancyGuard reentrancy_guard(
+           weak_factory_.GetSafeRef());
+ 
++      if (command && !different_document_loads.at(0)->SetCefHistoryCommandBeforeStart(
++                         std::move(command))) return {};
+       root->navigator().Navigate(std::move(different_document_loads.at(0)),
+                                  ReloadType::NONE);
+ 
+@@ -3897,6 +3945,9 @@
+           false /* is_history_navigation_in_new_child */, initiator_frame_token,
+           initiator_process_id, initiator_navigation_state,
+           actual_navigation_start);
++      if (!navigation_request) return {};
++      if (command && !navigation_request->SetCefHistoryCommandBeforeStart(
++                         std::move(command))) return {};
+       request = navigation_request->GetWeakPtr();
+ 
+       // Ensure that no re-entrant calls or discards of the pending entry occur
+@@ -4036,6 +4087,8 @@
+     FrameTreeNode* frame = item->frame_tree_node();
+     // The request could be destroyed before `navigator().Navigate()` returns.
+     base::WeakPtr<NavigationRequest> request = item->GetWeakPtr();
++    if (command && item->IsInPrimaryMainFrame() &&
++        !item->SetCefHistoryCommandBeforeStart(std::move(command))) return {};
+     frame->navigator().Navigate(std::move(item), reload_type);
+     if (request) {
+       // Can only have one primary main frame request.
+@@ -4048,6 +4101,8 @@
+   for (auto& item : different_document_loads) {
+     FrameTreeNode* frame = item->frame_tree_node();
+     base::WeakPtr<NavigationRequest> request = item->GetWeakPtr();
++    if (command && item->IsInPrimaryMainFrame() &&
++        !item->SetCefHistoryCommandBeforeStart(std::move(command))) return {};
+     frame->navigator().Navigate(std::move(item), reload_type);
+     if (request) {
+       // Can only have one primary main frame request.
+@@ -4058,6 +4113,7 @@
+     }
+   }
+ 
++  if (command) command->Finish(CefHistoryOutcome::kSameDocumentOrNoop);
+   return all_requests;
+   // `reentrancy_guard` deleted here.
+ }
+diff --git a/content/browser/renderer_host/navigation_request.h b/content/browser/renderer_host/navigation_request.h
+--- a/content/browser/renderer_host/navigation_request.h
++++ b/content/browser/renderer_host/navigation_request.h
+@@ -420,6 +420,8 @@
+   bool StartedByAd() override;
+   ui::PageTransition GetPageTransition() override;
+   NavigationUIData* GetNavigationUIData() override;
++  bool SetCefHistoryCommandBeforeStart(
++      std::unique_ptr<NavigationController::CefHistoryCommand> command);
+   bool IsExternalProtocol() override;
+   net::Error GetNetErrorCode() override;
+   int GetNetExtendedErrorCode() override;
+@@ -2832,6 +2834,7 @@
+   // is created. This can be null if the embedded did not provide a
+   // NavigationUIData at the beginning of the navigation.
+   std::unique_ptr<NavigationUIData> navigation_ui_data_;
++  std::unique_ptr<NavigationController::CefHistoryCommand> cef_history_command_;
+ 
+   // URLLoaderFactory to facilitate loading blob URLs.
+   const scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory_;
+diff --git a/content/browser/renderer_host/navigation_request.cc b/content/browser/renderer_host/navigation_request.cc
+--- a/content/browser/renderer_host/navigation_request.cc
++++ b/content/browser/renderer_host/navigation_request.cc
+@@ -2266,6 +2266,12 @@
+   // navigation has started the delegate is not expected to call Stop().
+   CHECK(is_safe_to_delete_);
+ #endif
++  if (cef_history_command_) {
++    cef_history_command_->Finish(
++        HasCommitted() && IsSameDocument()
++            ? NavigationController::CefHistoryOutcome::kSameDocumentOrNoop
++            : NavigationController::CefHistoryOutcome::kCancelled);
++  }
+ 
+   // Close "Initializing", or the last child event emitted in
+   // EnterChildTraceEvent().
+@@ -3432,6 +3438,12 @@
+       CHECK(is_safe_to_delete_);
+       base::AutoReset<bool> resetter(&is_safe_to_delete_, false);
+       base::AutoReset<bool> resetter2(&ua_change_requires_reload_, false);
++      if (cef_history_command_ && !IsSameDocument()) {
++        cef_history_command_->Finish(
++            cef_history_command_->IsCurrent()
++                ? NavigationController::CefHistoryOutcome::kStartedCrossDocument
++                : NavigationController::CefHistoryOutcome::kCancelled);
++      }
+       GetDelegate()->DidStartNavigation(this);
+     }
+ #else
+@@ -3442,6 +3454,13 @@
+     const bool saved_ua_change_requires_reload = ua_change_requires_reload_;
+     ua_change_requires_reload_ = false;
+     base::WeakPtr<NavigationRequest> weak_this = weak_factory_.GetWeakPtr();
++    if (cef_history_command_ && !IsSameDocument()) {
++      cef_history_command_->Finish(
++          cef_history_command_->IsCurrent()
++              ? NavigationController::CefHistoryOutcome::kStartedCrossDocument
++              : NavigationController::CefHistoryOutcome::kCancelled);
++      if (!weak_this) return;
++    }
+     GetDelegate()->DidStartNavigation(this);
+     if (weak_this) {
+       ua_change_requires_reload_ = saved_ua_change_requires_reload;
+@@ -9742,6 +9761,12 @@
+         GetNavigationId(), GetRenderFrameHost()->GetGlobalFrameToken(),
+         GetDocumentToken(), GetURL());
+   }
++  if (!is_error && IsServedFromBackForwardCache() && cef_history_command_ &&
++      cef_history_command_->IsCurrent()) {
++    frame_tree_node_->RememberCefReadyDocument(
++        GetNavigationId(), GetRenderFrameHost()->GetGlobalFrameToken(),
++        GetRenderFrameHost()->GetDocumentToken(), GetURL());
++  }
+   ready_to_commit_time_ = base::TimeTicks::Now();
+   RestartCommitTimeout();
+ 
+@@ -10589,6 +10614,20 @@
+ 
+ NavigationUIData* NavigationRequest::GetNavigationUIData() {
+   return navigation_ui_data_.get();
++}
++
++bool NavigationRequest::SetCefHistoryCommandBeforeStart(
++    std::unique_ptr<NavigationController::CefHistoryCommand> command) {
++  CHECK_EQ(state_, NOT_STARTED);
++  CHECK(IsInPrimaryMainFrame());
++  CHECK(!IsRendererInitiated());
++  CHECK(!cef_history_command_);
++  if (navigation_ui_data_ || !command ||
++      !command->BindToRequest(GetNavigationId())) return false;
++  navigation_ui_data_ = command->TakeData();
++  if (!navigation_ui_data_) return false;
++  cef_history_command_ = std::move(command);
++  return true;
+ }
+ 
+ net::Error NavigationRequest::GetNetErrorCode() {
+diff --git a/content/browser/renderer_host/frame_tree_node.cc b/content/browser/renderer_host/frame_tree_node.cc
+--- a/content/browser/renderer_host/frame_tree_node.cc
++++ b/content/browser/renderer_host/frame_tree_node.cc
+@@ -674,7 +674,9 @@
+   if (!navigation_request_)
+     return;
+ 
+-  auto cef_revoke = RevokeCefAdmission();
++  auto cef_revoke = !navigation_request_->IsSameDocument()
++                        ? RevokeCefAdmission()
++                        : base::ScopedClosureRunner();
+   // When resetting the NavigationRequest, any BFCache navigation restarting
+   // task should be cancelled. This is to ensure that the FrameTreeNode won't
+   // accidentally complete a navigation that should be reset.
+diff --git a/content/browser/renderer_host/navigation_controller_impl_unittest.cc b/content/browser/renderer_host/navigation_controller_impl_unittest.cc
+--- a/content/browser/renderer_host/navigation_controller_impl_unittest.cc
++++ b/content/browser/renderer_host/navigation_controller_impl_unittest.cc
+@@ -10,6 +10,7 @@
+ #include <algorithm>
+ #include <memory>
+ #include <string>
++#include <string_view>
+ #include <tuple>
+ #include <utility>
+ 
+@@ -63,6 +64,7 @@
+ #include "testing/gtest/include/gtest/gtest.h"
+ #include "third_party/blink/public/common/frame/frame_policy.h"
+ #include "third_party/blink/public/common/page_state/page_state.h"
++#include "third_party/blink/public/common/page_state/page_state_serialization.h"
+ #include "third_party/blink/public/common/tokens/tokens.h"
+ #include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom.h"
+ #include "third_party/blink/public/mojom/frame/remote_frame.mojom.h"
+@@ -3927,6 +3929,285 @@
+   EXPECT_TRUE(observer.has_navigation_ui_data());
+ }
+ 
++class ApprovedHistoryCommandTest : public NavigationControllerTest {
++ protected:
++  using Outcome = NavigationController::CefHistoryOutcome;
++  static constexpr char kPostBody[] = "post\n\0body";
++  struct Receipt {
++    bool current = true;
++    int bindings = 0;
++    std::optional<int64_t> navigation_id;
++    std::vector<Outcome> outcomes;
++  };
++
++  std::unique_ptr<NavigationController::CefHistoryCommand> Command(
++      const std::shared_ptr<Receipt>& receipt) {
++    return std::make_unique<NavigationController::CefHistoryCommand>(
++        std::make_unique<TestNavigationUIData>(),
++        base::BindRepeating([](std::shared_ptr<Receipt> receipt) {
++          return receipt->current;
++        }, receipt),
++        base::BindOnce([](std::shared_ptr<Receipt> receipt, int64_t id) {
++          ++receipt->bindings;
++          receipt->navigation_id = id;
++          return receipt->current;
++        }, receipt),
++        base::BindOnce([](std::shared_ptr<Receipt> receipt, Outcome outcome) {
++          receipt->outcomes.push_back(outcome);
++        }, receipt));
++  }
++
++  void CommitPost() {
++    const GURL url("https://approved.example/post");
++    auto navigation =
++        NavigationSimulatorImpl::CreateBrowserInitiated(url, contents());
++    NavigationController::LoadURLParams params(url);
++    params.load_type = NavigationController::LOAD_TYPE_HTTP_POST;
++    params.post_data = network::ResourceRequestBody::CreateFromCopyOfBytes(
++        base::byte_span_from_cstring(kPostBody));
++    params.post_data->set_identifier(731);
++    navigation->SetLoadURLParams(&params);
++    navigation->Start();
++    navigation->set_post_id(731);
++    navigation->Commit();
++    auto* frame = controller_impl().GetLastCommittedEntry()->GetFrameEntry(root_ftn());
++    blink::ExplodedPageState saved;
++    ASSERT_TRUE(blink::DecodePageState(frame->page_state().ToEncodedData(), &saved));
++    saved.top.http_body.request_body = params.post_data;
++    saved.top.http_body.http_content_type = u"application/octet-stream";
++    std::string encoded;
++    blink::EncodePageState(saved, &encoded);
++    frame->SetPageState(blink::PageState::CreateFromEncodedData(encoded));
++  }
++};
++
++TEST_F(ApprovedHistoryCommandTest, NoopPreservesAdmissionAndCompletesOnce) {
++  int revoked = 0;
++  auto subscription = root_ftn()->AddCefPreNavigationRevoker(
++      base::BindLambdaForTesting(
++          [&](RenderFrameHostImpl*, std::vector<base::OnceClosure>*) {
++            ++revoked;
++          }));
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().GoBackWithCefHistoryCommand(Command(receipt));
++  controller_impl().GoForwardWithCefHistoryCommand(Command(receipt));
++  controller_impl().ReloadWithCefHistoryCommand(ReloadType::NORMAL, true,
++                                               Command(receipt));
++  EXPECT_EQ(0, revoked);
++  EXPECT_EQ(0, receipt->bindings);
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kSameDocumentOrNoop,
++                                 Outcome::kSameDocumentOrNoop,
++                                 Outcome::kSameDocumentOrNoop}),
++            receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, ClonedMetadataCannotCompleteTheUiCommand) {
++  auto receipt = std::make_shared<Receipt>();
++  auto command = Command(receipt);
++  auto data = command->TakeData();
++  auto clone = data->Clone();
++  clone.reset();
++  data.reset();
++  EXPECT_TRUE(receipt->outcomes.empty());
++  command->Finish(Outcome::kSameDocumentOrNoop);
++  command->Finish(Outcome::kCancelled);
++  command.reset();
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kSameDocumentOrNoop}),
++            receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, RepostCancelDoesNotStartOrRevoke) {
++  CommitPost();
++  int revoked = 0;
++  auto subscription = root_ftn()->AddCefPreNavigationRevoker(
++      base::BindLambdaForTesting(
++          [&](RenderFrameHostImpl*, std::vector<base::OnceClosure>*) {
++            ++revoked;
++          }));
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().ReloadWithCefHistoryCommand(
++      ReloadType::BYPASSING_CACHE, true, Command(receipt));
++  EXPECT_EQ(1u, form_repost_counter_);
++  EXPECT_EQ(0, revoked);
++  EXPECT_FALSE(HasNavigationRequest());
++  EXPECT_TRUE(receipt->outcomes.empty());
++  controller_impl().CancelPendingReload();
++  controller_impl().ContinuePendingReload();
++  EXPECT_EQ(0, revoked);
++  EXPECT_FALSE(HasNavigationRequest());
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kCancelled}), receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, RepostContinuePreservesPostCacheAndIdentity) {
++  CommitPost();
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().ReloadWithCefHistoryCommand(
++      ReloadType::BYPASSING_CACHE, true, Command(receipt));
++  EXPECT_TRUE(receipt->outcomes.empty());
++  controller_impl().ContinuePendingReload();
++  ASSERT_TRUE(HasNavigationRequest());
++  auto* request = root_ftn()->navigation_request();
++  EXPECT_EQ(1, receipt->bindings);
++  EXPECT_EQ(request->GetNavigationId(), receipt->navigation_id);
++  EXPECT_NE(nullptr, request->GetNavigationUIData());
++  EXPECT_EQ("POST", request->GetRequestMethod());
++  ASSERT_TRUE(request->GetPostData());
++  EXPECT_EQ(731, request->GetPostData()->identifier());
++  ASSERT_EQ(1u, request->GetPostData()->elements()->size());
++  EXPECT_EQ(std::string_view(kPostBody, sizeof(kPostBody) - 1),
++            request->GetPostData()->elements()->front()
++                .As<network::DataElementBytes>().AsStringView());
++  EXPECT_EQ(ReloadType::BYPASSING_CACHE, request->GetReloadType());
++  auto reload = NavigationSimulator::CreateFromPending(controller_impl());
++  reload->Commit();
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kStartedCrossDocument}),
++            receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, SupersededRepostCannotBindAnotherRequest) {
++  CommitPost();
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().ReloadWithCefHistoryCommand(ReloadType::NORMAL, true,
++                                               Command(receipt));
++  receipt->current = false;
++  controller_impl().ContinuePendingReload();
++  EXPECT_EQ(0, receipt->bindings);
++  EXPECT_FALSE(HasNavigationRequest());
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kCancelled}), receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, RedirectRetainsExactRequestMetadata) {
++  NavigationSimulator::NavigateAndCommitFromBrowser(
++      contents(), GURL("https://approved.example/start"));
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().ReloadWithCefHistoryCommand(ReloadType::NORMAL, true,
++                                               Command(receipt));
++  ASSERT_TRUE(HasNavigationRequest());
++  const int64_t id = root_ftn()->navigation_request()->GetNavigationId();
++  auto* data = root_ftn()->navigation_request()->GetNavigationUIData();
++  auto reload = NavigationSimulator::CreateFromPending(controller_impl());
++  reload->Redirect(GURL("https://approved.example/redirected"));
++  ASSERT_TRUE(HasNavigationRequest());
++  EXPECT_EQ(id, root_ftn()->navigation_request()->GetNavigationId());
++  EXPECT_EQ(data, root_ftn()->navigation_request()->GetNavigationUIData());
++  reload->Commit();
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kStartedCrossDocument}),
++            receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, SameDocumentHistoryRetainsAdmission) {
++  const GURL initial("https://approved.example/page");
++  NavigationSimulator::NavigateAndCommitFromBrowser(contents(), initial);
++  auto fragment = NavigationSimulator::CreateRendererInitiated(
++      GURL("https://approved.example/page#fragment"), main_test_rfh());
++  fragment->CommitSameDocument();
++  int revoked = 0;
++  auto subscription = root_ftn()->AddCefPreNavigationRevoker(
++      base::BindLambdaForTesting(
++          [&](RenderFrameHostImpl*, std::vector<base::OnceClosure>*) {
++            ++revoked;
++          }));
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().GoBackWithCefHistoryCommand(Command(receipt));
++  auto back = NavigationSimulator::CreateFromPending(controller_impl());
++  back->CommitSameDocument();
++  EXPECT_EQ(initial, controller_impl().GetLastCommittedEntry()->GetURL());
++  EXPECT_EQ(0, revoked);
++  EXPECT_EQ(1, receipt->bindings);
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kSameDocumentOrNoop}),
++            receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, SameDocumentCancelRetainsAdmission) {
++  NavigationSimulator::NavigateAndCommitFromBrowser(
++      contents(), GURL("https://approved.example/page"));
++  auto fragment = NavigationSimulator::CreateRendererInitiated(
++      GURL("https://approved.example/page#fragment"), main_test_rfh());
++  fragment->CommitSameDocument();
++  int revoked = 0;
++  auto subscription = root_ftn()->AddCefPreNavigationRevoker(
++      base::BindLambdaForTesting(
++          [&](RenderFrameHostImpl*, std::vector<base::OnceClosure>*) {
++            ++revoked;
++          }));
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().GoBackWithCefHistoryCommand(Command(receipt));
++  EXPECT_EQ(1, receipt->bindings);
++  EXPECT_TRUE(receipt->outcomes.empty());
++  contents()->Stop();
++  EXPECT_EQ(0, revoked);
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kCancelled}), receipt->outcomes);
++}
++
++TEST_F(ApprovedHistoryCommandTest, BackAndForwardUseNativeSkippedIndices) {
++  const GURL first("https://approved.example/first");
++  const GURL middle("https://approved.example/skipped");
++  const GURL last("https://approved.example/last");
++  NavigationSimulator::NavigateAndCommitFromBrowser(contents(), first);
++  NavigationSimulator::NavigateAndCommitFromBrowser(contents(), middle);
++  NavigationSimulator::NavigateAndCommitFromBrowser(contents(), last);
++  controller_impl().GetEntryAtIndex(1)->set_should_skip_on_back_forward_ui(true);
++  auto backwards = std::make_shared<Receipt>();
++  controller_impl().GoBackWithCefHistoryCommand(Command(backwards));
++  ASSERT_TRUE(controller_impl().GetPendingEntry());
++  EXPECT_EQ(first, controller_impl().GetPendingEntry()->GetURL());
++  NavigationSimulator::CreateFromPending(controller_impl())->Commit();
++  controller_impl().GetEntryAtIndex(1)->set_should_skip_on_back_forward_ui(true);
++  auto forwards = std::make_shared<Receipt>();
++  controller_impl().GoForwardWithCefHistoryCommand(Command(forwards));
++  ASSERT_TRUE(controller_impl().GetPendingEntry());
++  EXPECT_EQ(last, controller_impl().GetPendingEntry()->GetURL());
++  NavigationSimulator::CreateFromPending(controller_impl())->Commit();
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kStartedCrossDocument}),
++            backwards->outcomes);
++  EXPECT_EQ(backwards->outcomes, forwards->outcomes);
++}
++
++class ApprovedHistoryCacheTest : public ApprovedHistoryCommandTest,
++                                 public testing::WithParamInterface<bool> {
++ public:
++  void SetUp() override {
++    features_.InitFromCommandLine(
++        GetParam() ? "BackForwardCache,SkipExtraBfcacheNavigationRequest"
++                   : "BackForwardCache",
++        GetParam() ? "" : "SkipExtraBfcacheNavigationRequest");
++    ApprovedHistoryCommandTest::SetUp();
++  }
++
++ private:
++  base::test::ScopedFeatureList features_;
++};
++
++TEST_P(ApprovedHistoryCacheTest, BindsTheActualCacheRequestAndRetainedDocument) {
++  ASSERT_TRUE(IsBackForwardCacheEnabled());
++  NavigationSimulator::NavigateAndCommitFromBrowser(
++      contents(), GURL("https://first.example/page"));
++  const auto frame = main_test_rfh()->GetGlobalFrameToken();
++  const auto document = main_test_rfh()->GetDocumentToken();
++  NavigationSimulator::NavigateAndCommitFromBrowser(
++      contents(), GURL("https://second.example/page"));
++  auto receipt = std::make_shared<Receipt>();
++  controller_impl().GoBackWithCefHistoryCommand(Command(receipt));
++  ASSERT_TRUE(HasNavigationRequest());
++  auto request = root_ftn()->navigation_request()->GetWeakPtr();
++  ASSERT_TRUE(request->IsServedFromBackForwardCache());
++  EXPECT_EQ(1, receipt->bindings);
++  EXPECT_EQ(request->GetNavigationId(), receipt->navigation_id);
++  EXPECT_NE(nullptr, request->GetNavigationUIData());
++  auto back = NavigationSimulator::CreateFromPending(controller_impl());
++  back->ReadyToCommit();
++  ASSERT_TRUE(request);
++  EXPECT_EQ(frame, request->GetRenderFrameHost()->GetGlobalFrameToken());
++  EXPECT_EQ(document, request->GetRenderFrameHost()->GetDocumentToken());
++  EXPECT_TRUE(root_ftn()->MatchesCefReadyDocument(frame, document));
++  back->Commit();
++  EXPECT_EQ((std::vector<Outcome>{Outcome::kStartedCrossDocument}),
++            receipt->outcomes);
++}
++
++INSTANTIATE_TEST_SUITE_P(BothNativeRequestPaths, ApprovedHistoryCacheTest,
++                         testing::Bool());
++
+ // Tests that ReloadType has been passed to the NavigationHandle.
+ TEST_F(NavigationControllerTest, MainFrameNavigationReloadType) {
+   LoadCommittedDetailsObserver observer(contents());

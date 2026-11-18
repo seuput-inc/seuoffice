@@ -61,7 +61,7 @@ impl OpSource {
 pub struct OpRecord<O> {
     pub op: O,
     pub slide_id: Option<String>,
-    pub created: Option<Vec<String>>,
+    pub created: Option<Vec<O>>,
 }
 
 /// One op of a journal entry: `{ op, slideId?, created? }`
@@ -69,7 +69,7 @@ pub struct OpRecord<O> {
 pub struct OpEntry<O> {
     pub op: O,
     pub slide_id: Option<String>,
-    pub created: Option<Vec<String>>,
+    pub created: Option<Vec<O>>,
 }
 
 /// `OpLogEntry`
@@ -82,12 +82,13 @@ pub struct OpLogEntry<O> {
 
 /// The live deck a session's snapshots are taken from and handed back to.
 pub trait Deck<S> {
+    type Error;
     /// `takeSnapshot(session)`: a deep copy of the deck; `meta_dirty` is the
     /// session's flag.
-    fn take_snapshot(&self, meta_dirty: bool) -> S;
+    fn take_snapshot(&self, meta_dirty: bool) -> Result<S, Self::Error>;
     /// The deck half of `restoreSnapshot`: `fresh` is already a copy of the
     /// snapshot; it becomes the live deck. Answers the snapshot's `metaDirty`.
-    fn restore_snapshot(&mut self, fresh: S) -> bool;
+    fn restore_snapshot(&mut self, fresh: S) -> Result<bool, Self::Error>;
 }
 
 /// `historyBatch`
@@ -253,7 +254,7 @@ impl<D: Deck<S>, S: Clone, O: Clone, R> Session<D, S, O, R> {
     }
 
     /// `takeSnapshot(session)`
-    pub fn take_snapshot(&self) -> S {
+    pub fn take_snapshot(&self) -> Result<S, D::Error> {
         self.deck.take_snapshot(self.meta_dirty)
     }
 
@@ -279,25 +280,32 @@ impl<D: Deck<S>, S: Clone, O: Clone, R> Session<D, S, O, R> {
     }
 
     /// `pushHistory(session)`: call before an edit operation.
-    pub fn push_history(&mut self) {
-        let snapshot = self.take_snapshot();
+    pub fn push_history(&mut self) -> Result<(), D::Error> {
+        let snapshot = self.take_snapshot()?;
+        self.push_history_snapshot(snapshot);
+        Ok(())
+    }
+
+    pub fn push_history_snapshot(&mut self, snapshot: S) {
         self.undo_stack.push(snapshot);
         trim_history(&mut self.undo_stack);
-        self.redo_stack = Vec::new();
+        self.redo_stack.clear();
         self.schedule_history_notify();
     }
 
     /// `beginHistoryBatch(session)`: a nestable transaction.
-    pub fn begin_history_batch(&mut self) {
+    pub fn begin_history_batch(&mut self) -> Result<(), D::Error> {
         if let Some(batch) = self.history_batch.as_mut() {
             batch.depth += 1;
-            return;
+            return Ok(());
         }
+        let before = self.take_snapshot()?;
         self.history_batch = Some(HistoryBatch {
             depth: 1,
             undo_start: self.undo_stack.len(),
-            before: self.take_snapshot(),
+            before,
         });
+        Ok(())
     }
 
     /// `endHistoryBatch(session)`: collapse every successful edit since begin
@@ -334,12 +342,12 @@ impl<D: Deck<S>, S: Clone, O: Clone, R> Session<D, S, O, R> {
     }
 
     /// `restoreSnapshot(session, snap)`
-    pub fn restore_snapshot(&mut self, snapshot: &S) {
+    pub fn restore_snapshot(&mut self, snapshot: &S) -> Result<(), D::Error> {
         // Clone: the live deck mutates elements in place, so handing a
         // snapshot's own arrays over would let later edits rewrite history
         // still referenced by the other stack.
         let fresh = snapshot.clone();
-        self.meta_dirty = self.deck.restore_snapshot(fresh);
+        self.meta_dirty = self.deck.restore_snapshot(fresh)?;
         // The journal cannot express a snapshot jump as ops; mark the
         // divergence so a future consumer knows to full-resync.
         if self.op_log.as_ref().is_some_and(|log| !log.is_empty()) {
@@ -356,25 +364,27 @@ impl<D: Deck<S>, S: Clone, O: Clone, R> Session<D, S, O, R> {
                 }
             }
         }
+        Ok(())
     }
 
     /// `restoreAiSnapshot(session, id)`: roll the deck back to a registered
     /// AI snapshot; the pre-rollback state becomes one undo step.
-    pub fn restore_ai_snapshot(&mut self, id: f64) -> bool {
+    pub fn restore_ai_snapshot(&mut self, id: f64) -> Result<bool, D::Error> {
         let found = self
             .ai_snapshots
             .as_ref()
             .and_then(|map| map.iter().find(|(key, _)| *key as f64 == id))
             .map(|(_, snapshot)| snapshot.clone());
         let Some(snapshot) = found else {
-            return false;
+            return Ok(false);
         };
-        self.push_history();
-        self.restore_snapshot(&snapshot);
+        let before = self.take_snapshot()?;
+        self.restore_snapshot(&snapshot)?;
+        self.push_history_snapshot(before);
         if let Some(map) = self.ai_snapshots.as_mut() {
             map.retain(|(key, _)| *key as f64 != id);
         }
-        true
+        Ok(true)
     }
 
     /// `settleStaleHistoryBatch(session)`: close a history batch that
@@ -394,11 +404,21 @@ impl<D: Deck<S>, S: Clone, O: Clone, R> Session<D, S, O, R> {
     pub fn carry_history_for_replacement(
         previous: Option<&mut Session<D, S, O, R>>,
         replacement: &mut Session<D, S, O, R>,
-    ) {
+    ) -> Result<(), D::Error> {
         let Some(previous) = previous else {
-            return;
+            return Ok(());
         };
-        previous.push_history();
+        let snapshot = previous.take_snapshot()?;
+        Self::carry_history_with_snapshot(previous, replacement, snapshot);
+        Ok(())
+    }
+
+    pub fn carry_history_with_snapshot(
+        previous: &mut Session<D, S, O, R>,
+        replacement: &mut Session<D, S, O, R>,
+        snapshot: S,
+    ) {
+        previous.push_history_snapshot(snapshot);
         replacement.undo_stack = previous.undo_stack.clone();
         replacement.redo_stack = previous.redo_stack.clone();
         replacement.history_batch = previous.history_batch.clone();
@@ -409,6 +429,7 @@ impl<D: Deck<S>, S: Clone, O: Clone, R> Session<D, S, O, R> {
             replacement.ai_run = previous.ai_run;
         }
         replacement.schedule_history_notify();
+        
     }
 
     /// The end of `buildSlideUpdate`: the transaction just queued this edit,
@@ -945,5 +966,88 @@ impl MediaRegistry {
             body = neutralize_jpeg_orientation(bytes);
         }
         Some(SlideMedia { body, mime })
+    }
+}
+
+#[cfg(test)]
+mod history_failure_tests {
+    use super::{Deck, Session};
+    use std::cell::Cell;
+
+    struct FallibleDeck {
+        value: i32,
+        fail_snapshot: Cell<bool>,
+        fail_restore: bool,
+    }
+    impl Deck<(i32, bool)> for FallibleDeck {
+        type Error = &'static str;
+        fn take_snapshot(&self, dirty: bool) -> Result<(i32, bool), Self::Error> {
+            if self.fail_snapshot.get() { Err("snapshot failed") } else { Ok((self.value, dirty)) }
+        }
+        fn restore_snapshot(&mut self, snapshot: (i32, bool)) -> Result<bool, Self::Error> {
+            if self.fail_restore { return Err("restore failed"); }
+            self.value = snapshot.0;
+            Ok(snapshot.1)
+        }
+    }
+
+    impl crate::slides::ai_proposal::SameSnapshot for (i32, bool) {
+        fn same_snapshot(&self, other: &Self) -> bool { self == other }
+    }
+
+    #[test]
+    fn failed_ai_restore_preserves_run_and_proposal_for_retry() {
+        use crate::slides::ai_proposal::{AiReview, begin_ai_run, hold_ai_run, accept_ai_proposal};
+        let deck = FallibleDeck { value: 1, fail_snapshot: Cell::new(false), fail_restore: false };
+        let mut session: Session<_, _, (), ()> = Session::new("", deck);
+        let mut review = AiReview::new();
+        assert_eq!(begin_ai_run(&mut session, &mut review, 1.0), Ok(true));
+        session.push_history().unwrap();
+        session.deck.value = 2;
+        session.deck.fail_restore = true;
+        assert_eq!(hold_ai_run(&mut session, &mut review, 1.0), Err("restore failed"));
+        assert!(review.run.is_some());
+        assert!(session.ai_run);
+        assert_eq!(session.deck.value, 2);
+        assert_eq!(session.undo_stack, vec![(1, false)]);
+        session.deck.fail_restore = false;
+        assert_eq!(hold_ai_run(&mut session, &mut review, 1.0), Ok(true));
+        assert_eq!(session.deck.value, 1);
+        let mut ids = super::SessionIds::default();
+        session.deck.fail_restore = true;
+        assert_eq!(accept_ai_proposal(&mut session, &mut review, &mut ids), Err("restore failed"));
+        assert!(review.proposal.is_some());
+        assert!(session.undo_stack.is_empty());
+        assert_eq!(session.deck.value, 1);
+        session.deck.fail_restore = false;
+        assert!(accept_ai_proposal(&mut session, &mut review, &mut ids).unwrap().is_some());
+        assert_eq!(session.deck.value, 2);
+    }
+
+    #[test]
+    fn failed_snapshot_and_restore_preserve_history_and_retry() {
+        let deck = FallibleDeck { value: 1, fail_snapshot: Cell::new(false), fail_restore: false };
+        let mut session: Session<_, _, (), ()> = Session::new("", deck);
+        session.push_history().unwrap();
+        session.deck.value = 2;
+        session.redo_stack.push((9, false));
+        session.meta_dirty = true;
+        session.deck.fail_snapshot.set(true);
+        assert_eq!(session.push_history(), Err("snapshot failed"));
+        assert_eq!(session.undo_stack, vec![(1, false)]);
+        assert_eq!(session.redo_stack, vec![(9, false)]);
+        session.deck.fail_snapshot.set(false);
+        let id = session.register_ai_snapshot(&mut super::SessionIds::default(), &(3, false));
+        session.deck.fail_restore = true;
+        assert_eq!(session.restore_ai_snapshot(id as f64), Err("restore failed"));
+        assert_eq!(session.deck.value, 2);
+        assert!(session.meta_dirty);
+        assert_eq!(session.undo_stack, vec![(1, false)]);
+        assert_eq!(session.redo_stack, vec![(9, false)]);
+        session.deck.fail_restore = false;
+        assert_eq!(session.restore_ai_snapshot(id as f64), Ok(true));
+        assert_eq!(session.deck.value, 3);
+        assert_eq!(session.undo_stack, vec![(1, false), (2, true)]);
+        assert!(session.redo_stack.is_empty());
     }
 }

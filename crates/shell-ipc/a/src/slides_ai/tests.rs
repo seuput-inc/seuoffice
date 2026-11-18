@@ -3,7 +3,7 @@
 //! tools and the download are asked, and when a call is aborted.
 
 use std::cell::RefCell;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -78,11 +78,16 @@ type ViewListener = Box<dyn Fn(ViewId) + Send + Sync>;
 struct TestViews {
     gone: Mutex<HashSet<u32>>,
     listeners: Mutex<Vec<ViewListener>>,
+    generations: Mutex<HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
 
 impl TestViews {
     fn destroy(&self, view: ViewId) {
         self.gone.lock().unwrap().insert(view.0);
+        if let Some(generation) = self.generations.lock().unwrap().remove(&view) {
+            generation.revoke();
+        }
         for listener in self.listeners.lock().unwrap().iter() {
             listener(view);
         }
@@ -102,6 +107,13 @@ impl Views for TestViews {
     }
     fn on_destroyed(&self, listener: Box<dyn Fn(ViewId) + Send + Sync>) {
         self.listeners.lock().unwrap().push(listener);
+    }
+    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+        if self.gone.lock().unwrap().contains(&view.0) { return None; }
+        Some(self.generations.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    }
+    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+        self.replacements.lock().unwrap().push(listener);
     }
 }
 
@@ -144,6 +156,9 @@ impl OsShell for NoOs {
     fn show_item_in_folder(&self, _path: &Path) {}
     fn trash_item(&self, _path: &Path) -> Result<(), String> {
         Ok(())
+    }
+    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+        admit(&mut || self.trash_item(path))
     }
 }
 
@@ -280,6 +295,10 @@ struct Rig {
     proposal: Rc<dyn SlidesAiProposal>,
 }
 
+thread_local! {
+    static ACTIVE_VIEWS: RefCell<Option<Arc<TestViews>>> = const { RefCell::new(None) };
+}
+
 fn rig(name: &str) -> Rig {
     rig_over(name, None)
 }
@@ -295,6 +314,7 @@ fn rig_over(name: &str, sessions: Option<Rc<dyn SlidesAiSessions>>) -> Rig {
     }
     let inline = Arc::new(Inline::default());
     let views = Arc::new(TestViews::default());
+    ACTIVE_VIEWS.with(|active| *active.borrow_mut() = Some(views.clone()));
     let host = Arc::new(FakeHost {
         lang: Mutex::new(Lang::En),
         statuses: jscompat::json_parse(r#"{"codex":{"state":"ready"}}"#).unwrap(),
@@ -315,7 +335,7 @@ fn rig_over(name: &str, sessions: Option<Rc<dyn SlidesAiSessions>>) -> Rig {
     hosts.insert(ui_host);
     let os: OsShellHost = Arc::new(NoOs);
     hosts.insert(os);
-    let services = Services {
+    let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
         ui: inline.clone(),
         core: inline.clone(),
         workers: inline.clone(),
@@ -323,7 +343,7 @@ fn rig_over(name: &str, sessions: Option<Rc<dyn SlidesAiSessions>>) -> Rig {
         views: views.clone(),
         paths: Arc::new(Dir(dir.clone())),
         hosts: Arc::new(hosts),
-    };
+    });
     let provided = Rc::new(Provided::default());
     PROVIDED.with(|p| *p.borrow_mut() = Some(provided.clone()));
     SCRIPTED.with(|s| *s.borrow_mut() = sessions);
@@ -359,6 +379,9 @@ fn context() -> CallContext {
         },
         request: None,
         cancel: CancelToken::default(),
+        native: ACTIVE_VIEWS.with(|active| active.borrow().as_ref()
+            .and_then(|views| views.renderer_generation(VIEW))
+            .map(|generation| shell_contract::ipc::NativeContext::with_renderer(VIEW, generation))),
     }
 }
 
@@ -981,7 +1004,9 @@ fn a_write_for_a_run_that_ended_during_the_download_is_dropped() {
     );
     // the run is held while the image downloads
     *r.host.during_fetch.lock().unwrap() = Some(Box::new(|| {
-        world().run_hold(VIEW);
+        let cx = context();
+        let owner = super::native_owner(&cx).unwrap();
+        world().run_hold(&owner).unwrap();
     }));
     let op = with(
         insert_op("https://x/a.png"),
@@ -1197,6 +1222,7 @@ struct Scripted {
     inner: Rc<World>,
     steps: RefCell<VecDeque<SettleStep>>,
     at_turn: RefCell<Option<Box<dyn Fn()>>>,
+    fail_hold: std::cell::Cell<bool>,
 }
 
 impl SlidesDocuments for Scripted {
@@ -1219,41 +1245,44 @@ impl SlidesAiSessions for Scripted {
             .pop_front()
             .unwrap_or(SettleStep::Quiet)
     }
-    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> bool {
+    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> Result<bool, shell_contract::IpcError> {
         self.inner.run_begin_finish(view, ticket, wake)
     }
-    fn run_hold(&self, view: ViewId) -> Option<IpcValue> {
-        self.inner.run_hold(view)
+    fn run_hold(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<IpcValue>, shell_contract::IpcError> {
+        if self.fail_hold.get() {
+            return Err(shell_contract::IpcError { name: Some("Error".into()), message: "snapshot failed".into() });
+        }
+        self.inner.run_hold(owner)
     }
-    fn proposal_accept(&self, view: ViewId) -> Option<(IpcValue, u64)> {
-        self.inner.proposal_accept(view)
+    fn proposal_accept(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<(IpcValue, u64)>, shell_contract::IpcError> {
+        self.inner.proposal_accept(owner)
     }
     fn proposal_reject(&self, view: ViewId) -> bool {
         self.inner.proposal_reject(view)
     }
-    fn snapshot_restore(&self, view: ViewId, id: f64) -> Option<IpcValue> {
-        self.inner.snapshot_restore(view, id)
+    fn snapshot_restore(&self, owner: &shell_contract::ipc::NativeRequestOwner, id: f64) -> Result<Option<IpcValue>, shell_contract::IpcError> {
+        self.inner.snapshot_restore(owner, id)
     }
     fn picture_begin(
         &self,
-        view: ViewId,
+        owner: &shell_contract::ipc::NativeRequestOwner,
         replace: bool,
         images: &dyn ImageDecoder,
         op: Option<&JsonValue>,
     ) -> Result<Option<PictureTicket>, main_core::slides::ai_ipc::IpcError> {
-        self.inner.picture_begin(view, replace, images, op)
+        self.inner.picture_begin(owner, replace, images, op)
     }
     fn picture_finish(
         &self,
-        view: ViewId,
+        owner: &shell_contract::ipc::NativeRequestOwner,
         replace: bool,
         images: &dyn ImageDecoder,
         op: &JsonValue,
         ticket: PictureTicket,
         downloaded: Option<Vec<u8>>,
-    ) -> Option<JsonValue> {
+    ) -> Result<Option<JsonValue>, shell_contract::IpcError> {
         self.inner
-            .picture_finish(view, replace, images, op, ticket, downloaded)
+            .picture_finish(owner, replace, images, op, ticket, downloaded)
     }
 }
 
@@ -1262,9 +1291,19 @@ fn scripted_rig(name: &str, steps: Vec<SettleStep>) -> (Rig, Rc<Scripted>) {
         inner: world(),
         steps: RefCell::new(steps.into()),
         at_turn: RefCell::new(None),
+        fail_hold: std::cell::Cell::new(false),
     });
     let sessions: Rc<dyn SlidesAiSessions> = scripted.clone();
     (rig_over(name, Some(sessions)), scripted)
+}
+
+#[test]
+fn run_hold_propagates_the_engine_failure() {
+    let (r, scripted) = scripted_rig("hold-error", vec![SettleStep::Quiet]);
+    world().open(VIEW, "", &["p1"]);
+    scripted.fail_hold.set(true);
+    let error = invoke!(r.proposal, slides_ai_run_hold).unwrap_err();
+    assert_eq!(error.message, "snapshot failed");
 }
 
 #[test]
@@ -1322,7 +1361,7 @@ fn the_shell_finds_the_sessions_d1_provides_when_a_handler_runs() {
         hosts.insert(ui);
         let os: OsShellHost = Arc::new(NoOs);
         hosts.insert(os);
-        Services {
+        shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
             ui: inline.clone(),
             core: inline.clone(),
             workers: inline,
@@ -1330,7 +1369,7 @@ fn the_shell_finds_the_sessions_d1_provides_when_a_handler_runs() {
             views: r.views.clone(),
             paths: Arc::new(Dir(r.dir.clone())),
             hosts: Arc::new(hosts),
-        }
+        })
     };
     let provided = Rc::new(Provided::default());
     let proposal = (proposal_factory().0)(&services, &provided).unwrap();

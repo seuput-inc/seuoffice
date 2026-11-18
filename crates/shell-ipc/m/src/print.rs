@@ -6,6 +6,8 @@
 
 mod slides_html;
 mod zod;
+#[cfg(test)]
+mod owned_completion_tests;
 
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -95,9 +97,11 @@ struct Env {
     host: MHostRef,
     state: MStateRef,
     contents: ContentsHost,
+    effects: Option<shell_contract::hosts::OwnedEffectsHost>,
     dialogs: DialogsHost,
     os: OsShellHost,
     workers: Arc<dyn Workers>,
+    core: Arc<dyn shell_contract::runtime::Thread>,
     paths: Arc<dyn AppPaths>,
     platform: &'static str,
 }
@@ -108,9 +112,11 @@ impl Env {
             host: cx.host.clone(),
             state: cx.state.clone(),
             contents: cx.contents.clone(),
+            effects: cx.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned(),
             dialogs: cx.dialogs.clone(),
             os: cx.os.clone(),
             workers: cx.services.workers.clone(),
+            core: cx.services.core.clone(),
             paths: cx.services.paths.clone(),
             platform,
         }
@@ -133,6 +139,28 @@ impl Env {
             surface: self.surface(&spec),
             print_extra: None,
         }
+    }
+
+    fn window_owned(&self, spec: PrintWindowSpec, grant: &shell_contract::editors::OwnedPdfGrant, additional: &[shell_contract::runtime::CancelToken]) -> Result<Win, JsError> {
+        let surface = match &grant.authority {
+            shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin) =>
+                self.host.print_window_owned(&spec, origin, &grant.destination, &grant.cancel, &grant.pending),
+            shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { selection, participants } => {
+                if selection.path() != grant.path {
+                    return Err(JsError::plain("hwp: invalid native PDF destination"));
+                }
+                let mut captured = participants.clone();
+                captured.push(grant.destination.clone());
+                self.host.print_window_existing_document(&spec, selection.binding(), &captured, &grant.cancel, &grant.pending, additional)
+            }
+        }.map_err(JsError::plain)?;
+        Ok(Win { surface: Box::new(WholeNumbers(surface)), print_extra: None })
+    }
+
+    fn window_native_invocation(&self, spec: PrintWindowSpec, native: &NativeHwpPrint) -> Result<Win, JsError> {
+        let surface = self.host.print_window_native_invocation(&spec, &native.document, &native.sender, &native.cancel, &native.pending)
+            .map_err(JsError::plain)?;
+        Ok(Win { surface: Box::new(WholeNumbers(surface)), print_extra: None })
     }
 
     fn run(&self, file: &str, args: &[String], stdin: Option<&[u8]>) -> CommandOutcome {
@@ -615,6 +643,7 @@ fn docs(registry: &mut dyn Registry, env: &Env) -> Result<(), RegisterError> {
     })?;
 
     let e = env.clone();
+    let provided = registry.provided();
     invoke_later(
         registry,
         "docs:print-pdf-buffer",
@@ -642,16 +671,47 @@ fn docs(registry: &mut dyn Registry, env: &Env) -> Result<(), RegisterError> {
             if let Some(scale) = print_scale_option(scale.as_ref()) {
                 options.insert("scale".into(), number(scale));
             }
-            e.later(reply, move |env| {
-                match env
-                    .contents
-                    .print_to_pdf(view, from_serde(&Value::Object(options)))
-                {
-                    Ok(data) => answer(json!({ "ok": true, "base64": jscompat::base64(&data) })),
-                    // `String(err)` of the Error printToPDF rejected with
-                    Err(reason) => failed(format!("Error: {reason}")),
-                }
-            });
+            let capture = match provided.all::<dyn shell_contract::hosts::DocsHeadlessPrint>().into_iter().next() {
+                Some(service) => match service.capture(call) {
+                    Ok(capture) => capture,
+                    Err(error) => return reply.reply(Err(error)),
+                },
+                None if e.host.headless() => return reply.reply(failed("The Docs headless print authority is unavailable")),
+                None => None,
+            };
+            if let Some(capture) = capture {
+                let Some(effects) = e.effects.clone() else {
+                    return reply.reply(failed("The Docs headless print authority is unavailable"));
+                };
+                let env = e.clone();
+                e.workers.spawn(Box::new(move || {
+                    let result = env.contents.print_to_pdf_native_invocation(
+                        &capture.document, &capture.owner, &capture.participants, &capture.cancel, &capture.pending,
+                        from_serde(&Value::Object(options)));
+                    let answer = match result {
+                        Ok(data) => answer(json!({ "ok": true, "base64": jscompat::base64(&data) })),
+                        Err(reason) => failed(format!("Error: {reason}")),
+                    };
+                    let mut pending_reply = Some((reply, answer));
+                    let mut terminal = None;
+                    let admitted = effects.with_native_invocation_effect(
+                        &capture.document, &capture.owner, &capture.participants,
+                        &capture.cancel, &capture.pending, &mut || {
+                            terminal = pending_reply.take();
+                            Ok(())
+                        });
+                    if let Some((reply, answer)) = terminal.or(pending_reply) {
+                        reply.reply(match admitted { Ok(()) => answer, Err(error) => failed(error) });
+                    }
+                }));
+            } else {
+                e.later(reply, move |env| {
+                    match env.contents.print_to_pdf(view, from_serde(&Value::Object(options))) {
+                        Ok(data) => answer(json!({ "ok": true, "base64": jscompat::base64(&data) })),
+                        Err(reason) => failed(format!("Error: {reason}")),
+                    }
+                });
+            }
         },
     )
 }
@@ -825,6 +885,41 @@ fn hwp_job(job: &Value) -> PrintJob {
     PrintJob { pages, images }
 }
 
+struct NativeHwpPrint {
+    document: shell_contract::ipc::NativeInvocationDocument,
+    sender: shell_contract::ipc::NativeRequestOwner,
+    cancel: shell_contract::runtime::CancelToken,
+    pending: shell_contract::runtime::CancelToken,
+    effects: shell_contract::hosts::OwnedEffectsHost,
+    commit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+impl NativeHwpPrint {
+    fn effect(&self, action: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> {
+        self.effects.with_native_invocation_effect(
+            &self.document, &self.sender, &[], &self.cancel, &self.pending, action)
+    }
+}
+
+fn pdf_grant_effect(
+    authority: &shell_contract::editors::OwnedPdfGrantAuthority,
+    destination: &shell_contract::ipc::NativeRequestOwner,
+    effects: &shell_contract::hosts::OwnedEffectsHost,
+    cancel: &shell_contract::runtime::CancelToken,
+    pending: &shell_contract::runtime::CancelToken,
+    additional: &[shell_contract::runtime::CancelToken],
+    action: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    match authority {
+        shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin) =>
+            effects.with_owned_effect_many_extra(origin, std::slice::from_ref(destination), cancel, pending, &additional.iter().collect::<Vec<_>>(), action),
+        shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { selection, participants } => {
+            let mut captured = participants.clone();
+            captured.push(destination.clone());
+            effects.with_existing_document_save_effect_extra(selection.binding(), &captured, cancel, pending, &additional.iter().collect::<Vec<_>>(), action)
+        }
+    }
+}
+
 /// The body of `hwp:print-pages` once the view is marked printing
 fn hwp_print(
     env: &Env,
@@ -834,29 +929,60 @@ fn hwp_print(
     given: Option<String>,
     current: Option<String>,
     lang: Lang,
+    owned: Option<&shell_contract::editors::OwnedPdfGrant>,
+    native: Option<&NativeHwpPrint>,
+    additional: &[shell_contract::runtime::CancelToken],
 ) -> Reply {
     let tmp = env.tmp();
     let result = (|| -> Result<Value, JsError> {
-        let mut create = || Ok(env.window(plain_spec(PrintProfile::Static)));
+        let mut create = || match (owned, native) {
+            (Some(grant), None) => env.window_owned(plain_spec(PrintProfile::Static), grant, additional),
+            (None, Some(native)) => env.window_native_invocation(plain_spec(PrintProfile::Static), native),
+            (None, None) => Ok(env.window(plain_spec(PrintProfile::Static))),
+            (Some(_), Some(_)) => Err(JsError::plain("Conflicting HWP print authorities")),
+        };
         if !pdf {
             // a cancel in the dialog is no failure either: the job is "sent"
             print_job_to_printer(job, &tmp, &mut create)?;
             return Ok(json!({ "ok": true }));
         }
-        let target = match given {
-            Some(target) => target,
-            None => match pick_pdf_target(env, view, current, lang) {
+        let target = match owned.map(|grant| &grant.authority) {
+            Some(shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { selection, .. }) =>
+                selection.path().to_str().ok_or_else(|| JsError::plain("hwp: native PDF destination is not UTF-8"))?.to_owned(),
+            _ => match given {
                 Some(target) => target,
-                None => return Ok(json!({ "ok": true, "canceled": true })),
+                None => match pick_pdf_target(env, view, current, lang) {
+                    Some(target) => target,
+                    None => return Ok(json!({ "ok": true, "canceled": true })),
+                },
             },
         };
         if target.is_empty() {
             return Ok(json!({ "ok": true, "canceled": true }));
         }
         let bytes = print_pdf(begin_print_job_to_pdf(job, &tmp, &mut create))?;
-        atomic_write_file(&target, &bytes).map_err(JsError::from)?;
+        if let Some(grant) = owned {
+            main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(&target, &bytes, &mut |effect| {
+                pdf_grant_effect(&grant.authority, &grant.destination, &grant.effects, &grant.cancel, &grant.pending, additional,
+                    &mut || { effect(); Ok(()) })
+                    .map_err(|message| main_core::node_fs::NodeError { code: None, message })
+            }).map_err(JsError::from)?;
+        } else if let Some(native) = native {
+            main_core::packages::electron_utils::atomic_write::atomic_write_file_authorized(&target, &bytes, &mut |effect| {
+                native.effect(&mut || { effect(); Ok(()) })
+                    .map_err(|message| main_core::node_fs::NodeError { code: None, message })
+            }).map_err(JsError::from)?;
+            native.effect(&mut || {
+                let commit = native.commit.lock().map_err(|_| "hwp: PDF receipt lock poisoned")?
+                    .take().ok_or("hwp: duplicate PDF commit")?;
+                commit();
+                Ok(())
+            }).map_err(JsError::plain)?;
+        } else {
+            atomic_write_file(&target, &bytes).map_err(JsError::from)?;
+        }
         // a headless export stays silent: no tab, no file manager window
-        if !env.host.headless() && !env.host.open_generated_path(&target) {
+        if owned.is_none() && native.is_none() && !env.host.headless() && !env.host.open_generated_path(&target) {
             env.os.show_item_in_folder(std::path::Path::new(&target));
         }
         Ok(json!({ "ok": true, "path": target }))
@@ -885,10 +1011,51 @@ fn hwp(registry: &mut dyn Registry, cx: &Rc<Ctx>, env: &Env) -> Result<(), Regis
             &IpcValue::Undefined
         };
         let mut given_path = None;
+        let request_token = as_str(field(options, "requestToken"));
+        let mut owned = if let Some(token) = request_token {
+            let actual = call.native.as_ref().map(|context| shell_contract::ipc::NativeRequestOwner { view, context: context.clone() });
+            let grant = call.native.as_ref().and_then(|native| native.renderer())
+                .and_then(|generation| cx.docs.take_owned_pdf_grant(view, token, generation, actual.as_ref(), &call.cancel));
+            match grant {
+                Some(grant) if pdf && as_str(given).is_some_and(|path| std::path::Path::new(path) == grant.path)
+                    && match &grant.authority {
+                        shell_contract::editors::OwnedPdfGrantAuthority::Renderer(_) => true,
+                        shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { selection, .. } =>
+                            selection.path() == grant.path && selection.binding().owner().view == view,
+                    } => Some(grant),
+                Some(grant) => {
+                    (grant.complete)(Err("hwp: this PDF path was not picked in Save As".into()));
+                    return reply.reply(failed("hwp: this PDF path was not picked in Save As"));
+                }
+                None => return reply.reply(failed("hwp: stale PDF save request")),
+            }
+        } else { None };
+        let native = if owned.is_none() {
+            let grant = match cx.docs.take_native_headless_pdf_grant(view, call.native.as_ref()) {
+                Ok(grant) => grant,
+                Err(error) => return reply.reply(failed(error)),
+            };
+            if let Some(grant) = grant {
+                if !pdf || !as_str(given).is_some_and(|path| std::path::Path::new(path) == grant.path) {
+                    return reply.reply(failed("hwp: this PDF path was not selected by the native invocation"));
+                }
+                let Some(effects) = cx.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned() else {
+                    return reply.reply(failed("hwp: native headless print authority is unavailable"));
+                };
+                let pending = grant.document.operation().shutdown().clone();
+                Some((grant.path, NativeHwpPrint { document: grant.document, sender: grant.sender, cancel: call.cancel.clone(), pending, effects, commit: Mutex::new(Some(grant.commit)) }))
+            } else { None }
+        } else { None };
         if !matches!(given, IpcValue::Undefined) {
-            let granted = match given {
-                IpcValue::String(_) if pdf => cx.docs.take_pdf_grant(view),
-                _ => None,
+            let granted = if let Some((path, _)) = &native {
+                Some(path.to_string_lossy().into_owned())
+            } else if let Some(grant) = &owned {
+                Some(grant.path.to_string_lossy().into_owned())
+            } else {
+                match given {
+                    IpcValue::String(_) if pdf => cx.docs.take_pdf_grant(view),
+                    _ => None,
+                }
             };
             match (given, granted) {
                 (IpcValue::String(given), Some(granted)) if *given == granted => {
@@ -897,18 +1064,314 @@ fn hwp(registry: &mut dyn Registry, cx: &Rc<Ctx>, env: &Env) -> Result<(), Regis
                 _ => return reply.reply(failed("hwp: this PDF path was not picked in Save As")),
             }
         }
-        if !cx.state.begin_print(true, view) {
+        let mut started = false;
+        let admitted = if let Some(grant) = &owned {
+            pdf_grant_effect(&grant.authority, &grant.destination, &grant.effects, &grant.cancel, &grant.pending, std::slice::from_ref(&call.cancel),
+                &mut || { started = cx.state.begin_print(true, view); Ok(()) })
+        } else if let Some((_, native)) = &native {
+            native.effect(&mut || { started = cx.state.begin_print(true, view); Ok(()) })
+        } else { started = cx.state.begin_print(true, view); Ok(()) };
+        if let Err(message) = admitted {
+            if let Some(grant) = owned.take() { (grant.complete)(Err(message.clone())); }
+            return reply.reply(failed(message));
+        }
+        if !started {
+            if let Some(grant) = owned.take() { (grant.complete)(Err("hwp: already printing".into())); }
             return reply.reply(failed("hwp: already printing"));
         }
         let lang = cx.state.language(&*cx.host, &cx.settings_path()).lang;
         let job = hwp_job(&job);
         let current = cx.docs.document_path(view);
-        e.later(reply, move |env| {
-            let answer = hwp_print(env, view, &job, pdf, given_path, current, lang);
-            env.state.end_print(true, view);
-            answer
-        });
+        let worker_env = e.clone();
+        let callback_cancel = call.cancel.clone();
+        e.workers.spawn(Box::new(move || {
+            let answer = hwp_print(&worker_env, view, &job, pdf, given_path, current, lang, owned.as_ref(), native.as_ref().map(|(_, native)| native), std::slice::from_ref(&callback_cancel));
+            if let Some(grant) = owned {
+                let shell_contract::editors::OwnedPdfGrant {
+                    path, request_token: _, authority, destination, cancel, pending,
+                    effects, accepted, accepted_losses, complete,
+                } = grant;
+                let completion = OwnedHwpCompletion {
+                    authority: authority.clone(), destination: destination.clone(), cancel: cancel.clone(), pending: pending.clone(),
+                    effects: effects.clone(), accepted_losses, complete, additional: vec![callback_cancel.clone()],
+                };
+                let succeeded = matches!(&answer, Ok(IpcValue::Object(fields))
+                    if fields.iter().any(|(key, value)| key == "ok" && *value == IpcValue::Bool(true))
+                        && fields.iter().any(|(key, value)| key == "path" && matches!(value, IpcValue::String(_))));
+                if succeeded && !worker_env.host.headless() {
+                    let additional = completion.additional.clone();
+                    let (wake, callback) = prepare_hwp_publication(
+                        &worker_env.state, view, completion, reply, answer, worker_env.core.clone());
+                    match &authority {
+                        shell_contract::editors::OwnedPdfGrantAuthority::Renderer(origin) =>
+                            worker_env.host.export_written_owned(path, origin.clone(), destination, cancel, pending, effects, accepted, wake, callback),
+                        shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { selection, participants } => {
+                            let mut captured = participants.clone();
+                            captured.push(destination);
+                            worker_env.host.export_written_existing_document(selection.clone(), captured, cancel, pending, effects, additional, accepted, wake, callback)
+                        }
+                    }
+                } else {
+                    drop(accepted);
+                    finish_owned_hwp_print(&worker_env.state, view, completion, reply, answer, None);
+                }
+            } else if let Some((_, native)) = native {
+                finish_native_hwp_print(&worker_env.state, view, native, reply, answer);
+            } else {
+                worker_env.state.end_print(true, view);
+                reply.reply(answer);
+            }
+        }));
     })
+}
+
+fn finish_native_hwp_print(state: &MStateRef, view: ViewId, native: NativeHwpPrint, reply: Responder, answer: Reply) {
+    let mut pending = Some((reply, answer));
+    let mut terminal = None;
+    let admitted = native.effect(&mut || {
+        terminal = Some(pending.take().ok_or("hwp: duplicate PDF completion")?);
+        state.end_print(true, view);
+        Ok(())
+    });
+    if terminal.is_none() { state.end_print(true, view); }
+    if let Some((reply, answer)) = terminal.or(pending) {
+        reply.reply(match admitted { Ok(()) => answer, Err(error) => failed(error) });
+    }
+}
+
+struct OwnedHwpCompletion {
+    authority: shell_contract::editors::OwnedPdfGrantAuthority,
+    destination: shell_contract::ipc::NativeRequestOwner,
+    cancel: shell_contract::runtime::CancelToken,
+    pending: shell_contract::runtime::CancelToken,
+    additional: Vec<shell_contract::runtime::CancelToken>,
+    effects: shell_contract::hosts::OwnedEffectsHost,
+    accepted_losses: Arc<Mutex<Option<shell_contract::ipc::AcceptedOwnerLosses>>>,
+    complete: Box<dyn FnOnce(Result<(), String>) + Send>,
+}
+
+pub(crate) struct PendingHwpPublication {
+    pub(crate) receipt: Option<Arc<dyn shell_contract::hosts::GeneratedPathPending>>,
+    pub(crate) observer: Option<(shell_contract::hosts::GeneratedPathObserver, shell_contract::hosts::GeneratedPathWake)>,
+    pub(crate) terminal: Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+    pub(crate) payload: Option<PendingHwpPayload>,
+    pub(crate) delivery: Option<shell_contract::hosts::GeneratedTerminalDelivery>,
+    pub(crate) settling: bool,
+}
+
+pub(crate) struct PendingHwpPayload {
+    grant: OwnedHwpCompletion,
+    reply: Responder,
+    answer: Reply,
+}
+
+enum HwpPublicationTerminal<'a> {
+    Opened(&'a shell_contract::hosts::CommittedGeneratedPath),
+    NotOpened,
+    Failed(&'a str),
+}
+
+fn store_hwp_delivery(
+    slot: &Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>,
+    result: Result<shell_contract::hosts::GeneratedTerminalDelivery, String>,
+) {
+    let mut result = Some(result);
+    {
+        let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
+        if slot.is_none() { *slot = result.take(); }
+    }
+    drop(result);
+}
+
+struct PreparedHwpStart {
+    prepared: Box<dyn shell_contract::hosts::PreparedGeneratedPath>,
+    state: MStateRef,
+    view: ViewId,
+    terminal: Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+    wake: shell_contract::hosts::GeneratedPathWake,
+    observer_failed: bool,
+}
+thread_local! {
+    static PREPARED_HWP: std::cell::RefCell<std::collections::HashMap<usize, PreparedHwpStart>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn retry_prepared_hwp(terminal: &Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>) {
+    let key = Arc::as_ptr(terminal) as usize;
+    let Some(mut entry) = PREPARED_HWP.with(|entries| entries.borrow_mut().remove(&key)) else { return; };
+    let task = entry.prepared.task();
+    if task.is_cancelling() {
+        let wake = entry.wake.clone();
+        drop(entry);
+        wake();
+        return;
+    }
+    if entry.observer_failed {
+        if let Err(error) = entry.state.retry_hwp_publication_observer(entry.view, &task) {
+            eprintln!("hwp: generated output observer retry failed: {error}");
+            PREPARED_HWP.with(|entries| { entries.borrow_mut().insert(key, entry); });
+            return;
+        }
+        entry.observer_failed = false;
+    }
+    if let Err(failure) = entry.prepared.start() {
+        eprintln!("hwp: generated output start failed: {}", failure.error);
+        entry.prepared = failure.prepared;
+        PREPARED_HWP.with(|entries| { entries.borrow_mut().insert(key, entry); });
+    }
+}
+
+pub fn cancel_prepared_hwp_publications() {
+    let entries = PREPARED_HWP.with(|entries| std::mem::take(&mut *entries.borrow_mut()));
+    for (_, entry) in entries {
+        let wake = entry.wake.clone();
+        drop(entry);
+        wake();
+    }
+}
+
+fn prepare_hwp_publication(
+    state: &MStateRef, view: ViewId, grant: OwnedHwpCompletion, reply: Responder, answer: Reply,
+    core: Arc<dyn shell_contract::runtime::Thread>,
+) -> (shell_contract::hosts::GeneratedPathWake, Box<dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>) + Send>) {
+    let terminal = Arc::new(Mutex::new(None));
+    state.retain_hwp_publication(view, PendingHwpPublication {
+        receipt: None, observer: None, terminal: terminal.clone(),
+        payload: Some(PendingHwpPayload { grant, reply, answer }), delivery: None, settling: false,
+    });
+    let weak_state = Arc::downgrade(state);
+    let wake_core = core.clone();
+    let wake_terminal = terminal.clone();
+    let wake: shell_contract::hosts::GeneratedPathWake = Arc::new(move || {
+        wake_hwp_publication(weak_state.clone(), view, wake_terminal.clone(), wake_core.clone());
+    });
+    let notify = wake.clone();
+    let state = state.clone();
+    let done = Box::new(move |outcome: Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>| {
+        match outcome {
+            Ok(prepared) => {
+                let receipt = prepared.task();
+                if let Err(error) = state.attach_hwp_receipt(view, &terminal, receipt.clone()) {
+                    drop(prepared);
+                    store_hwp_delivery(&terminal, Err(error));
+                    notify();
+                    return;
+                }
+                let observer_terminal = terminal.clone();
+                let observer_wake = notify.clone();
+                let observer: shell_contract::hosts::GeneratedPathObserver = Box::new(move |delivery| {
+                    store_hwp_delivery(&observer_terminal, Ok(delivery));
+                    observer_wake();
+                });
+                let observer_failed = match receipt.observe(observer, notify.clone()) {
+                    Ok(()) => false,
+                    Err(failure) => {
+                        eprintln!("hwp: generated PDF completion observer was not installed: {}", failure.error);
+                        let _ = state.retain_hwp_observer(view, &receipt, (failure.observer, failure.wake));
+                        true
+                    }
+                };
+                let key = Arc::as_ptr(&terminal) as usize;
+                PREPARED_HWP.with(|entries| { entries.borrow_mut().insert(key, PreparedHwpStart {
+                    prepared, state, view, terminal: terminal.clone(), wake: notify.clone(), observer_failed,
+                }); });
+                if !observer_failed { retry_prepared_hwp(&terminal); }
+            }
+            Err(error) => {
+                store_hwp_delivery(&terminal, Err(error));
+                notify();
+            }
+        }
+    });
+    (wake, done)
+}
+
+
+pub(crate) fn wake_hwp_publication(
+    weak_state: std::sync::Weak<crate::state::MState>, view: ViewId,
+    terminal: Arc<Mutex<Option<Result<shell_contract::hosts::GeneratedTerminalDelivery, String>>>>,
+    core: Arc<dyn shell_contract::runtime::Thread>,
+) {
+    core.post(Box::new(move || {
+        let Some(state) = weak_state.upgrade() else { return; };
+        retry_prepared_hwp(&terminal);
+        state.recover_hwp_delivery(view, &terminal);
+        let Some((payload, mut delivery)) = state.take_ready_hwp_publication(view, &terminal) else { return; };
+        if let Some(payload) = payload {
+            match &delivery {
+                Ok(delivery) => finish_hwp_publication_on_core(&state, view, payload.grant, payload.reply, payload.answer, delivery.result()),
+                Err(error) => finish_hwp_publication_on_core(&state, view, payload.grant, payload.reply, payload.answer, &Err(error.clone())),
+            }
+        }
+        let retry = match &mut delivery {
+            Ok(delivery) => match delivery.acknowledge() {
+                Ok(()) => false,
+                Err(error) => { eprintln!("hwp: generated PDF terminal acknowledgement failed: {error}"); true }
+            },
+            Err(_) => false,
+        };
+        state.finish_hwp_publication_ack(view, &terminal, if retry { delivery.ok() } else { None });
+    }));
+}
+
+fn finish_hwp_publication_on_core(
+    state: &MStateRef, view: ViewId, grant: OwnedHwpCompletion, reply: Responder, answer: Reply,
+    outcome: &Result<shell_contract::hosts::GeneratedPathOutcome, String>,
+) {
+    let terminal = match outcome {
+        Ok(shell_contract::hosts::GeneratedPathOutcome::Opened(receipt)) => HwpPublicationTerminal::Opened(receipt),
+        Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened) => HwpPublicationTerminal::NotOpened,
+        Err(error) => HwpPublicationTerminal::Failed(error),
+    };
+    finish_owned_hwp_print(state, view, grant, reply, answer, Some(terminal));
+}
+
+fn finish_owned_hwp_print(
+    state: &MStateRef, view: ViewId, grant: OwnedHwpCompletion, reply: Responder, answer: Reply,
+    opened: Option<HwpPublicationTerminal<'_>>,
+) {
+    let result = match &answer {
+        Ok(IpcValue::Object(fields)) if fields.iter().any(|(key, value)| key == "ok" && *value == IpcValue::Bool(true)) => Ok(()),
+        Ok(value) => Err(as_str(field(value, "error")).unwrap_or("hwp: PDF export failed").to_owned()),
+        Err(error) => Err(error.message.clone()),
+    };
+    let mut pending = Some((reply, answer));
+    let mut terminal = None;
+    let mut commit = || {
+        terminal = Some(pending.take().ok_or("hwp: duplicate PDF completion")?);
+        state.end_print(true, view);
+        Ok(())
+    };
+    let delivered = match opened {
+        Some(HwpPublicationTerminal::Opened(receipt)) => receipt.with_terminal_commit(&mut commit),
+        Some(HwpPublicationTerminal::NotOpened) => Err("hwp: generated PDF was not opened or revealed".into()),
+        Some(HwpPublicationTerminal::Failed(error)) => Err(error.to_owned()),
+        None => {
+            let (cancel, pending) = match &grant.authority {
+                shell_contract::editors::OwnedPdfGrantAuthority::Renderer(_) => {
+                    let losses = grant.accepted_losses.lock().unwrap_or_else(|error| error.into_inner());
+                    losses.as_ref().map_or_else(|| (grant.cancel.clone(), grant.pending.clone()),
+                        |losses| (losses.cancel().clone(), losses.pending().clone()))
+                }
+                shell_contract::editors::OwnedPdfGrantAuthority::ExistingDocument { .. } =>
+                    (grant.cancel.clone(), grant.pending.clone()),
+            };
+            pdf_grant_effect(&grant.authority, &grant.destination, &grant.effects, &cancel, &pending, &grant.additional, &mut commit)
+        }
+    };
+    if terminal.is_none() {
+        // begin_print keeps this worker's exclusive busy marker even after
+        // revocation. Rejected publication must release it without new authority.
+        state.end_print(true, view);
+    }
+    let delivered = delivered.and_then(|()| {
+        terminal.as_ref().map(|_| ()).ok_or_else(|| "hwp: missing PDF completion".to_owned())
+    });
+    if let Some((reply, answer)) = terminal.or(pending) {
+        let answer = match &delivered { Ok(()) => answer, Err(message) => failed(message.clone()) };
+        reply.reply(answer);
+    }
+    (grant.complete)(delivered.and(result));
 }
 
 // ---- markdown ----
@@ -1030,7 +1493,7 @@ fn mindmap(registry: &mut dyn Registry, env: &Env) -> Result<(), RegisterError> 
         };
         e.later(reply, move |env| {
             let mut win = env.window(PrintWindowSpec {
-                profile: PrintProfile::MindmapExport,
+                profile: PrintProfile::MindmapPrint,
                 width: Some(1123.0),
                 height: Some(794.0),
                 parent: None,
@@ -1700,6 +2163,17 @@ mod tests {
     }
 
     #[test]
+    fn headless_docs_chunk_without_native_actor_never_calls_unowned_print() {
+        let (probe, reply) = run("linux", json!({ "headless": true }), "docs:print-pdf-buffer",
+            vec![json!(11906), json!(16838)]);
+        assert_eq!(reply["ok"], false);
+        assert!(probe.take_calls().is_empty());
+        let (_, bad) = run("linux", json!({ "headless": true }), "docs:print-pdf-buffer",
+            vec![json!(143), json!(1000)]);
+        assert_eq!(bad, json!({ "ok": false, "error": "invalid page size or scale" }));
+    }
+
+    #[test]
     fn docs_print_pdf_buffer_refuses_geometry_chromium_must_not_see() {
         for args in [
             vec![json!(143), json!(1000)],
@@ -1951,6 +2425,15 @@ mod tests {
         assert_eq!(reply, json!({ "ok": true, "canceled": true }));
         let calls = probe.take_calls();
         assert_eq!(calls, vec!["saveDialog /saved/Untitled.pdf".to_owned()]);
+    }
+
+    #[test]
+    fn native_hwp_pending_refuses_unauthenticated_print_without_legacy_fallback() {
+        let (probe, reply) = run("linux",
+            json!({ "headless": true, "hwpNativePending": [1], "hwpGrants": { "1": "/fixture.pdf" } }),
+            "hwp:print-pages", vec![hwp_job("pdf"), json!({ "path": "/fixture.pdf" })]);
+        assert_eq!(reply, json!({ "ok": false, "error": "hwp: native headless request is not authenticated" }));
+        assert!(probe.take_calls().is_empty());
     }
 
     #[test]

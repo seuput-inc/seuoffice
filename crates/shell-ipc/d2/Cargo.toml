@@ -12,6 +12,11 @@ probe = []
 
 [dependencies]
 shell-contract = { path = "../../shell-contract" }
+shell-ipc-a = { path = "../a" }
 main-core.workspace = true
+file-commit.workspace = true
 jscompat.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+shell-core = { path = "../../shell-core" }

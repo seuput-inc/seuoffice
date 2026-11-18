@@ -210,6 +210,7 @@ export default function App() {
   const copierRef = useRef<RecoveryCopier | null>(null)
   /** the editor holds a restored recovery copy that has not been saved since */
   const restoredRef = useRef(false)
+  const recoveryTokenRef = useRef<string | null>(null)
   /** the app's plugin inside the editor, for the calls that change no document */
   const pluginBridge = useMemo(() => createAgentBridge(() => editorRef.current), [])
   /** the AI panel's way into the document: the same plugin, telling of each possible change */
@@ -240,8 +241,11 @@ export default function App() {
     let stopDrop: (() => void) | null = null
     void (async () => {
       try {
+        const recovery = (await window.hwpApi.consumeRecovery?.()) ?? null
+        if (recovery && !window.hwpApi.recoveryInitialized) throw new Error('HWP recovery acknowledgement is unavailable')
+        recoveryTokenRef.current = recovery?.token ?? null
         const [path, theme, lang] = await Promise.all([
-          window.hwpApi.consumePending(),
+          recovery ? Promise.resolve(recovery.path) : window.hwpApi.consumePending(),
           window.hwpApi.getTheme().catch((): UiTheme => 'system'),
           window.hwpApi.getLanguage(),
         ])
@@ -297,6 +301,17 @@ export default function App() {
       } catch (error) {
         if (disposed) return
         if (editor && isBridgeTimeout(error)) return
+        const recoveryToken = recoveryTokenRef.current
+        if (recoveryToken) {
+          recoveryTokenRef.current = null
+          try {
+            await window.hwpApi.recoveryInitialized?.(recoveryToken, { ok: false, error: detailOf(error) })
+          } catch (ackError) {
+            setPhase('failed')
+            setNotice({ tone: 'error', key: 'openFailed', detail: detailOf(ackError) })
+            return
+          }
+        }
         setPhase('failed')
         if (editor && isPdfImportCancelled(error)) {
           setNotice({ tone: 'info', key: 'pdfImportCancelled', sticky: true })
@@ -316,6 +331,17 @@ export default function App() {
       editor?.destroy()
     }
   }, [])
+
+  useEffect(() => {
+    if (phase !== 'ready') return
+    const token = recoveryTokenRef.current
+    if (!token) return
+    recoveryTokenRef.current = null
+    void window.hwpApi.recoveryInitialized?.(token, { ok: true }).catch((error: unknown) => {
+      setPhase('failed')
+      setNotice({ tone: 'error', key: 'openFailed', detail: detailOf(error) })
+    })
+  }, [phase])
 
   // a document can arrive after the load call gave up or failed (a password
   // entered late, a second try in the editor's own prompt): notice it and go on
@@ -413,10 +439,10 @@ export default function App() {
   }, [])
 
   // Save As > PDF: the PDF export, set once it exists below (it is made after the save)
-  const pdfCopyRef = useRef<(path: string) => Promise<void>>(async () => {})
+  const pdfCopyRef = useRef<(path: string, requestToken?: string) => Promise<void>>(async () => {})
 
   const save = useCallback(
-    async (mode: SaveMode, automatic = false): Promise<boolean> => {
+    async (mode: SaveMode, automatic = false, requestToken?: string): Promise<boolean> => {
       const editor = editorRef.current
       if (!editor) return false
       // a memo editor is open: its text is not in the document yet; an autosave waits quietly
@@ -440,11 +466,11 @@ export default function App() {
       savingDoneRef.current = done
       try {
         const outcome = await runSave(savePortOf(editor), window.hwpApi, mode, automatic, () =>
-          aiHold.isHeld(),
+          aiHold.isHeld(), requestToken,
         )
         if (outcome.kind === 'export') {
           // a copy, as File > Export as PDF writes it; nothing about the document changes
-          await pdfCopyRef.current(outcome.path)
+          await pdfCopyRef.current(outcome.path, requestToken)
           return false
         }
         if (outcome.kind === 'saved') {
@@ -668,7 +694,14 @@ export default function App() {
     }
     const timer = setInterval(() => void copier.tick(), RECOVERY_TICK_MS)
     const offFlush = window.hwpApi.onRecoveryFlush((token) => {
-      void copier.flush().finally(() => window.hwpApi.sendRecoveryFlushed(token))
+      void copier.flush().then(
+        (result) => window.hwpApi.sendRecoveryFlushed(
+          token,
+          result === 'written' || result === 'clean' || result === 'unchanged'
+            ? undefined : `HWP recovery copy ${result}`,
+        ),
+        (error: unknown) => window.hwpApi.sendRecoveryFlushed(token, error instanceof Error ? error.message : String(error)),
+      )
     })
     const offReset = window.hwpApi.onRecoveryReset(() => copier.reset())
     return () => {
@@ -686,16 +719,16 @@ export default function App() {
   // saves asked for by the menu, the shortcut and the close prompt
   useEffect(() => {
     const ready = () => phase === 'ready'
-    const offSave = window.hwpApi.onSaveRequest((mode) => {
+    const offSave = window.hwpApi.onSaveRequest((mode, requestToken) => {
       // a memo editor is open: do not discard its text, and tell the user why not
       if (memoBlockedRef.current) {
         showMemoBlocked()
-        window.hwpApi.abortSave()
+        window.hwpApi.abortSave(requestToken)
         return
       }
       // the main process is waiting on this request; decline it rather than leave it hanging
       if (!ready()) {
-        window.hwpApi.abortSave()
+        window.hwpApi.abortSave(requestToken)
         return
       }
       void (async () => {
@@ -709,8 +742,9 @@ export default function App() {
             .catch(() => true))
         // save() queues behind an autosave already running; the main process is answered
         // when that one (and this save) finish
-        if (dirty) await save(mode)
-        else window.hwpApi.abortSave()
+        if (dirty) {
+          if (!(await save(mode, false, requestToken))) window.hwpApi.abortSave(requestToken)
+        } else window.hwpApi.abortSave(requestToken)
       })()
     })
     const offClose = window.hwpApi.onCloseSaveRequest(() => {
@@ -749,6 +783,7 @@ export default function App() {
       onProgress: (done: number, total: number) => void = () => {},
       /** the PDF path Save As picked: no dialog then */
       path?: string,
+      requestToken?: string,
     ): Promise<PrintResult> => {
       return runPrintJob(
         aiHoldWiring.printPorts({
@@ -760,6 +795,7 @@ export default function App() {
         mode,
         onProgress,
         path,
+        requestToken,
       )
     },
     [phase, agentBridge, aiHoldWiring],
@@ -820,7 +856,7 @@ export default function App() {
 
   /** File > Export as PDF, and Save As with PDF picked (`path`: no second dialog). */
   const exportPdf = useCallback(
-    async (path?: string): Promise<void> => {
+    async (path?: string, requestToken?: string): Promise<void> => {
       const result = await runPrint(
         'pdf',
         (done, total) =>
@@ -831,6 +867,7 @@ export default function App() {
             sticky: true,
           }),
         path,
+        requestToken,
       )
       setNotice(result.ok ? null : { tone: 'error', key: 'pdfFailed', detail: result.error })
     },

@@ -45,6 +45,10 @@ use super::state::Decision;
 /// The case's log, as the probe inserts it
 type CaseLog = Arc<Mutex<Vec<Value>>>;
 
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct DeferredGuards(pub Mutex<Vec<Box<dyn FnOnce(Result<(), String>) + Send>>>);
+
 /// One view the shell made before the case's first call
 pub(super) struct OpenView {
     pub view: ViewId,
@@ -95,17 +99,25 @@ pub(super) fn insert(hosts: &mut Hosts, case: &Value) {
         Some((view_of(entry)?, path))
     });
     hosts.insert(ProbeOpen { open, headless });
+    #[cfg(test)]
+    let guards = Arc::new(DeferredGuards::default());
+    #[cfg(test)]
+    hosts.insert(guards.clone());
     let fake = Fake {
         case: case.get("diagram").cloned().unwrap_or(Value::Null),
         log: hosts.get::<CaseLog>().cloned(),
         tokens: AtomicU64::new(0),
         uuids: AtomicU64::new(0),
+        #[cfg(test)]
+        guards: guards.clone(),
     };
     hosts.insert::<DiagramEngineHost>(Arc::new(Fake {
         case: fake.case.clone(),
         log: fake.log.clone(),
         tokens: AtomicU64::new(0),
         uuids: AtomicU64::new(0),
+        #[cfg(test)]
+        guards,
     }));
     hosts.insert::<DiagramShellHost>(Arc::new(fake));
 }
@@ -117,6 +129,8 @@ struct Fake {
     tokens: AtomicU64,
     /// the question ids handed out so far: `00000000-0000-4000-8000-000000000001`, ...
     uuids: AtomicU64,
+    #[cfg(test)]
+    guards: Arc<DeferredGuards>,
 }
 
 impl Fake {
@@ -150,17 +164,24 @@ fn format_named(name: &str) -> DiagramFormat {
 }
 
 impl DiagramEngine for Fake {
-    fn open_diagram(&self, name: &str, bytes: &[u8]) -> Result<DiagramFile, OpenFailure> {
+    fn open_recovery_diagram(&self, name: &str, bytes: &[u8]) -> Result<Result<DiagramFile, OpenFailure>, String> {
+        self.open_diagram(name, bytes)
+    }
+
+    fn open_diagram(&self, name: &str, bytes: &[u8]) -> Result<Result<DiagramFile, OpenFailure>, String> {
         self.log(json!(["drawio.openDiagram", name, bytes.len()]));
         if let Some(scripted) = self.answer("openDiagram").get(name) {
+            if let Some(error) = scripted.get("error").and_then(Value::as_str) {
+                return Err(error.to_owned());
+            }
             let text = |key: &str| scripted.get(key).and_then(Value::as_str).unwrap_or("");
             if scripted.get("ok").and_then(Value::as_bool) != Some(true) {
-                return Err(OpenFailure {
+                return Ok(Err(OpenFailure {
                     reason: text("reason").to_owned(),
                     message: text("message").to_owned(),
-                });
+                }));
             }
-            return Ok(DiagramFile {
+            return Ok(Ok(DiagramFile {
                 xml: text("xml").to_owned(),
                 format: format_named(text("format")),
                 root: text("root").to_owned(),
@@ -168,7 +189,7 @@ impl DiagramEngine for Fake {
                     .get("anyPageCompressed")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
-            });
+            }));
         }
         let fail = |reason: &str| OpenFailure {
             reason: reason.to_owned(),
@@ -176,25 +197,27 @@ impl DiagramEngine for Fake {
         };
         let format = match detect_format(name) {
             Some(Detected::Format(format)) => format,
-            _ => return Err(fail("unsupported")),
+            _ => return Ok(Err(fail("unsupported"))),
         };
         if matches!(format, DiagramFormat::DrawioSvg | DiagramFormat::DrawioPng) {
-            return Err(fail("no_original"));
+            return Ok(Err(fail("no_original")));
         }
-        let xml = String::from_utf8(bytes.to_vec()).map_err(|_| fail("not_xml"))?;
+        let Ok(xml) = String::from_utf8(bytes.to_vec()) else {
+            return Ok(Err(fail("not_xml")));
+        };
         let root = if xml.contains("<mxfile") {
             "mxfile"
         } else if xml.contains("<mxGraphModel") {
             "mxGraphModel"
         } else {
-            return Err(fail("no_diagram"));
+            return Ok(Err(fail("no_diagram")));
         };
-        Ok(DiagramFile {
+        Ok(Ok(DiagramFile {
             any_page_compressed: false,
             root: root.to_owned(),
             xml,
             format,
-        })
+        }))
     }
 
     fn diagram_picture_ext_of(&self, path: &str) -> Option<DiagramFormat> {
@@ -265,8 +288,52 @@ impl DiagramShell for Fake {
             .map(str::to_owned)))
     }
 
+    fn write_new_document_owned(&self, _origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner, _cancel: &shell_contract::runtime::CancelToken,
+        _pending: &shell_contract::runtime::CancelToken, _effects: &shell_contract::hosts::OwnedEffectsHost,
+        admission: main_core::packages::electron_utils::atomic_write::owned::Admission,
+        file_name: &str, bytes: &[u8]) -> Result<Option<String>, String> {
+        let log = self.log.clone();
+        let scripted = self.answer("writeNewDocument").clone();
+        let view = destination.view;
+        let file_name = file_name.to_owned();
+        let size = bytes.len();
+        main_core::packages::electron_utils::atomic_write::owned::admitted(&admission, move || {
+            if let Some(log) = log { log.lock().unwrap().push(json!(["diagram.writeNewDocument", view.0, file_name, size])); }
+            if let Some(error) = scripted.get("error").and_then(Value::as_str) { return Err(error.to_owned()); }
+            Ok(scripted.get("path").and_then(Value::as_str).map(str::to_owned))
+        }).map_err(|error| error.message)?
+    }
+
     fn file_saved(&self, view: ViewId, path: &str) {
         self.log(json!(["diagram.fileSaved", view.0, path]));
+    }
+
+    fn file_saved_owned(&self, origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken], effects: &shell_contract::hosts::OwnedEffectsHost,
+        path: &str, done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
+        let result = effects.with_owned_effect_many_extra(origin, participants, cancel, pending, &additional.iter().collect::<Vec<_>>(), &mut || {
+            self.file_saved(destination.view, path); Ok(())
+        }).map(|()| shell_contract::hosts::SavedFile { path: path.to_owned(), session: shell_contract::hosts::SavedSessionReceipt::NoPublication });
+        done(result);
+    }
+
+    fn file_saved_existing_document(&self, revision: shell_contract::ipc::NativeSaveRevisionAuthority, expected_path: std::path::PathBuf,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+        _on_revision: std::rc::Rc<dyn Fn(&shell_contract::ipc::NativeSaveRevisionReceipt) -> Result<(), String>>,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::SavedFile<String>, String>)>) {
+        let result = (|| {
+            let snapshot = revision.snapshot()?;
+            let path = expected_path.to_str().ok_or("The saved diagram path is not Unicode")?.to_owned();
+            effects.with_native_save_revision_snapshot_effect(&snapshot, &participants, &cancel, &pending, &additional.iter().collect::<Vec<_>>(), &mut || {
+                if snapshot.selection().path() != expected_path { return Err("The native save destination changed".into()); }
+                self.file_saved(snapshot.selection().binding().owner().view, &path); Ok(())
+            })?;
+            Ok(shell_contract::hosts::SavedFile { path, session: shell_contract::hosts::SavedSessionReceipt::NoPublication })
+        })();
+        done(result);
     }
 
     fn recovery_title(&self, view: ViewId) -> Option<String> {
@@ -274,8 +341,14 @@ impl DiagramShell for Fake {
         self.answer("recoveryTitle").as_str().map(str::to_owned)
     }
 
-    fn help(&self, view: ViewId) {
-        self.log(json!(["diagram.help", view.0]));
+    fn help_owned(&self, origin: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost, done: Box<dyn FnOnce(Result<(), String>)>) {
+        let result = effects.with_owned_effect(&origin, &origin, &cancel, &pending, &mut || {
+            self.log(json!(["diagram.help", origin.view.0]));
+            Ok(())
+        });
+        done(result);
     }
 
     fn open_failed(&self, view: ViewId, message: &str) -> bool {
@@ -286,6 +359,9 @@ impl DiagramShell for Fake {
     fn provisional_title(&self, view: ViewId, title: &str) {
         self.log(json!(["diagram.provisionalTitle", view.0, title]));
     }
+    fn reload_view(&self, view: ViewId) {
+        self.log(json!(["diagram.reload", view.0]));
+    }
 
     fn is_path_open_elsewhere(&self, path: &str) -> bool {
         self.log(json!(["electronUtils.isPathOpenElsewhere", path]));
@@ -294,12 +370,18 @@ impl DiagramShell for Fake {
             .is_some_and(|paths| paths.iter().any(|p| p.as_str() == Some(path)))
     }
 
-    fn assert_file_saved(&self, path: &str) -> Result<(), String> {
+    fn assert_file_saved(&self, path: String, then: Box<dyn FnOnce(Result<(), String>) + Send>) {
         self.log(json!(["electronUtils.assertFileSaved", path]));
-        match self.text("unsaved", &name_of(path)) {
+        #[cfg(test)]
+        if self.answer("deferSaveGuard").as_bool() == Some(true) {
+            self.guards.0.lock().unwrap().push(then);
+            return;
+        }
+        let result = match self.text("unsaved", &name_of(&path)) {
             Some(message) => Err(message.to_owned()),
             None => Ok(()),
-        }
+        };
+        then(result);
     }
 
     fn is_headless(&self) -> bool {

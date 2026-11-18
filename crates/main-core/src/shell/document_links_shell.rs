@@ -186,9 +186,13 @@ impl<H: DocumentLinksShellHost, D: DocumentLinksDeps> DocumentLinksShell<H, D> {
 
     /// the listeners of `links.onChange`, for each change since the last call
     fn flush_changes(&mut self) {
+        self.flush_changes_with(&mut |host, kind| host.apply_menu(kind));
+    }
+
+    fn flush_changes_with(&mut self, apply: &mut dyn FnMut(&mut H, TabKind)) {
         while self.changes.get() > 0 {
             self.changes.set(self.changes.get() - 1);
-            self.refresh_document_link_menu();
+            self.refresh_document_link_menu_with(apply);
         }
     }
 
@@ -236,6 +240,29 @@ impl<H: DocumentLinksShellHost, D: DocumentLinksDeps> DocumentLinksShell<H, D> {
         Ok(())
     }
 
+    /// Captures the original join inputs without performing IO or delivering menus.
+    pub fn capture_saved_snapshot(&mut self) -> Option<(crate::shell::document_links::DocumentLinksSnapshot, Vec<crate::shell::document_links::MakeEvent>)> {
+        let links = self.links.as_mut()?;
+        Some((links.snapshot(), links.capture_events()))
+    }
+
+    /// The caller holds its short native admission while acknowledging this state.
+    pub fn apply_saved_snapshot(
+        &mut self, expected_revision: u64,
+        prepared: crate::shell::document_links::DocumentLinksSnapshot,
+    ) -> Result<u64, crate::shell::document_links::DocumentLinksSnapshot> {
+        match self.links.as_mut() {
+            Some(links) => links.apply_snapshot(expected_revision,prepared),
+            None => Err(prepared),
+        }
+    }
+
+    /// Runs only after real persistence has completed and admission gates dropped.
+    pub fn publish_saved_snapshot_with(&mut self, commits: u64, apply: &mut dyn FnMut(TabKind)) {
+        if let Some(links) = self.links.as_mut() { links.publish_snapshot_changes(commits); }
+        self.flush_changes_with(&mut |_, kind| apply(kind));
+    }
+
     /// `documentLinkFileMoved(oldPath, newPath)`: the in-app rename/move notification
     pub fn document_link_file_moved(&mut self, old_path: &str, new_path: &str) {
         if let Some(links) = self.links.as_mut() {
@@ -265,6 +292,15 @@ impl<H: DocumentLinksShellHost, D: DocumentLinksDeps> DocumentLinksShell<H, D> {
     /// `makeFromDocument(contents)`: "make another document from this one"
     /// for the document behind this webContents
     pub fn make_from_document(&mut self, contents: &H::Contents) {
+        self.make_from_document_with(contents, |host, request| host.open_generate_window_for_document(request))
+    }
+
+    /// Preserve the request algorithm while the caller binds its captured authority.
+    pub fn make_from_document_with(
+        &mut self,
+        contents: &H::Contents,
+        open: impl FnOnce(&mut H, GenerateWindowRequest<H::Window>),
+    ) {
         let Some(host) = self.deps.as_mut() else {
             return;
         };
@@ -275,7 +311,7 @@ impl<H: DocumentLinksShellHost, D: DocumentLinksDeps> DocumentLinksShell<H, D> {
             return;
         };
         let parent = host.parent_for(contents);
-        host.open_generate_window_for_document(GenerateWindowRequest {
+        open(host, GenerateWindowRequest {
             web_contents_id: contents.id(),
             file_path: doc.file_path.filter(|path| !path.is_empty()),
             title: doc.title,
@@ -338,6 +374,16 @@ impl<H: DocumentLinksShellHost, D: DocumentLinksDeps> DocumentLinksShell<H, D> {
     /// its File-menu entries would show changed: another document, a new
     /// path, or other records.
     pub fn refresh_document_link_menu(&mut self) {
+        self.refresh_document_link_menu_with(&mut |host, kind| host.apply_menu(kind));
+    }
+
+    pub fn saved_menu_kind(&mut self)->Option<TabKind> {
+        let mut kind = None;
+        self.refresh_document_link_menu_with(&mut |_,next| kind = Some(next));
+        kind
+    }
+
+    fn refresh_document_link_menu_with(&mut self, apply: &mut dyn FnMut(&mut H, TabKind)) {
         let Some(host) = self.deps.as_mut() else {
             return;
         };
@@ -351,6 +397,6 @@ impl<H: DocumentLinksShellHost, D: DocumentLinksDeps> DocumentLinksShell<H, D> {
         if signature(kind, doc.as_ref(), self.links.as_ref()) == self.shown_signature {
             return;
         }
-        host.apply_menu(kind);
+        apply(host, kind);
     }
 }

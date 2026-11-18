@@ -182,6 +182,14 @@ pub struct LookupAddress {
 /// `dns.lookup(host, { all: true })`; an `Err` is a rejected lookup.
 pub trait Resolver {
     fn lookup_all(&mut self, host: &str) -> Result<Vec<LookupAddress>, FetchError>;
+    /// Implementations with asynchronous DNS may stop waiting when the
+    /// signal aborts. Synchronous resolvers still have their result checked.
+    fn lookup_all_abort(&mut self, host: &str, signal: &dyn AbortSignal) -> Result<Vec<LookupAddress>, FetchError> {
+        if signal.aborted() { return Err(FetchError("This operation was aborted".into())); }
+        let result = self.lookup_all(host);
+        if signal.aborted() { return Err(FetchError("This operation was aborted".into())); }
+        result
+    }
 }
 
 /// An `AbortSignal`: what the TypeScript reads is `signal.aborted`.
@@ -189,9 +197,7 @@ pub trait AbortSignal {
     fn aborted(&self) -> bool;
 }
 
-/// `lookupBeforeAbort`: the lookup, or none as soon as `signal` aborts. The
-/// resolver call is blocking, so an abort raised while it runs is seen when it
-/// returns; a lookup that rejects is none as well.
+/// `lookupBeforeAbort`: abortable DNS lookup, or none on abort or failure.
 fn lookup_before_abort(
     resolver: &mut dyn Resolver,
     host: &str,
@@ -203,7 +209,7 @@ fn lookup_before_abort(
     if signal.aborted() {
         return None;
     }
-    let found = resolver.lookup_all(host);
+    let found = resolver.lookup_all_abort(host, signal);
     if signal.aborted() {
         return None;
     }
@@ -413,11 +419,11 @@ pub fn hop_rides_proxy(dispatcher: &GlobalDispatcher, url: &str) -> bool {
 }
 
 /// What a hop's request carries besides its URL (the `init` of `fetch`).
-pub struct FetchInit<'a> {
+pub struct FetchInit<'a, 'signal> {
     /// `headers`, absent rather than empty when none
     pub headers: Option<&'a [(String, String)]>,
-    /// a signal rides along
-    pub signal: bool,
+    /// The original abort signal, retained by the response through body reads.
+    pub signal: Option<&'signal dyn AbortSignal>,
     /// the per-hop `Agent` whose `lookup` hands back exactly these addresses
     /// (`new undici.Agent({ connect: { lookup: pinnedLookup(target) } })`);
     /// `redirect: 'manual'` goes with every hop
@@ -429,12 +435,12 @@ pub trait Fetcher {
     /// `undici.getGlobalDispatcher()`
     fn global_dispatcher(&mut self) -> GlobalDispatcher;
     /// The request of one hop. An `Err` is a thrown error.
-    fn fetch(&mut self, url: &str, init: &FetchInit<'_>) -> Result<Box<dyn Response>, FetchError>;
+    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError>;
     /// `dispatcher.close()` of the hop's pinned agent: graceful, in-flight
     /// bodies keep streaming, only new dispatches are refused
     fn close_dispatcher(&mut self);
-    /// `await new Promise((r) => setTimeout(r, ms))`
-    fn sleep(&mut self, ms: f64);
+    /// Retry delay, interruptible by the original signal when present.
+    fn sleep(&mut self, ms: f64, signal: Option<&dyn AbortSignal>);
 }
 
 type HeaderList = Vec<(String, String)>;
@@ -464,12 +470,12 @@ fn aborted(signal: Option<&dyn AbortSignal>) -> bool {
 /// to the validated addresses, following redirects manually. `Ok(None)` when
 /// any hop fails validation, a redirect lacks a usable Location, the hop
 /// budget is exhausted, or the caller aborts; `Err` where the transport threw.
-pub fn fetch_with_ssrf_guard(
+pub fn fetch_with_ssrf_guard<'signal>(
     resolver: &mut dyn Resolver,
     fetcher: &mut dyn Fetcher,
     raw_url: &str,
-    options: &mut FetchWithSsrfGuardOptions<'_>,
-) -> Result<Option<Box<dyn Response>>, FetchError> {
+    options: &mut FetchWithSsrfGuardOptions<'signal>,
+) -> Result<Option<Box<dyn Response + 'signal>>, FetchError> {
     let max_redirects = options.max_redirects.unwrap_or(5.0);
     let signal = options.signal;
     // maxRedirects arrives from callers: an Infinity value would follow
@@ -504,7 +510,7 @@ pub fn fetch_with_ssrf_guard(
             };
         let init = FetchInit {
             headers: hop_headers.as_deref(),
-            signal: signal.is_some(),
+            signal,
             pinned,
         };
         let answer = fetcher.fetch(&current, &init);
@@ -547,4 +553,56 @@ pub fn fetch_with_ssrf_guard(
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    struct Signal(Cell<bool>);
+    impl AbortSignal for Signal {
+        fn aborted(&self) -> bool { self.0.get() }
+    }
+    struct NoDns;
+    impl Resolver for NoDns {
+        fn lookup_all(&mut self, _: &str) -> Result<Vec<LookupAddress>, FetchError> {
+            panic!("literal URL must not resolve DNS")
+        }
+    }
+    struct Body<'a>(Option<&'a dyn AbortSignal>);
+    impl Response for Body<'_> {
+        fn status(&self) -> u16 { 200 }
+        fn header(&self, _: &str) -> Option<String> { None }
+        fn has_body(&self) -> bool { true }
+        fn cancel_body(&mut self) {}
+        fn read_chunk(&mut self) -> Result<Option<Vec<u8>>, FetchError> {
+            if self.0.is_some_and(AbortSignal::aborted) {
+                Err(FetchError("aborted".into()))
+            } else {
+                Ok(Some(b"data".to_vec()))
+            }
+        }
+        fn array_buffer(&mut self) -> Result<Vec<u8>, FetchError> {
+            Ok(self.read_chunk()?.unwrap_or_default())
+        }
+    }
+    struct Transport;
+    impl Fetcher for Transport {
+        fn global_dispatcher(&mut self) -> GlobalDispatcher { GlobalDispatcher::NotAnObject }
+        fn fetch<'a>(&mut self, _: &str, init: &FetchInit<'_, 'a>) -> Result<Box<dyn Response + 'a>, FetchError> {
+            Ok(Box::new(Body(init.signal)))
+        }
+        fn close_dispatcher(&mut self) {}
+        fn sleep(&mut self, _: f64, _: Option<&dyn AbortSignal>) {}
+    }
+    #[test]
+    fn response_observes_abort_after_headers() {
+        let signal = Signal(Cell::new(false));
+        let mut options = FetchWithSsrfGuardOptions { signal: Some(&signal), ..Default::default() };
+        let mut response = fetch_with_ssrf_guard(&mut NoDns, &mut Transport, "https://1.1.1.1/", &mut options)
+            .unwrap().unwrap();
+        signal.0.set(true);
+        assert!(response.read_chunk().is_err());
+    }
 }

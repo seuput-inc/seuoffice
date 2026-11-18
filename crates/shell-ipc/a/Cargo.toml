@@ -13,10 +13,12 @@ probe = []
 [dependencies]
 shell-contract = { path = "../../shell-contract" }
 main-core.workspace = true
+file-commit.workspace = true
 jscompat.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
+sha2.workspace = true
 # Chromium OSCrypt v10 values, as Electron's safeStorage writes them
 aes = "0.8"
 aes-gcm = "0.10"
@@ -34,7 +36,7 @@ libc.workspace = true
 security-framework = "3"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [dev-dependencies]
 # the tests register the batch over its probe fakes

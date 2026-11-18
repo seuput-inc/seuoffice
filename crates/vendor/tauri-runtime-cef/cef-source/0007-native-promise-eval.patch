@@ -1,0 +1,277 @@
+diff --git a/libcef/renderer/native_context_evaluator.h b/libcef/renderer/native_context_evaluator.h
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_context_evaluator.h
+@@ -0,0 +1,32 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_EVALUATOR_H_
++#define CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_EVALUATOR_H_
++
++#include <memory>
++#include <string>
++
++#include "base/functional/callback.h"
++#include "v8/include/v8.h"
++
++// Renderer-thread-only. One instance belongs to one captured V8 context.
++class CefNativeContextEvaluator final {
++ public:
++  using Reply = base::OnceCallback<void(std::string, std::string, std::string)>;
++
++  CefNativeContextEvaluator(v8::Isolate* isolate, v8::Local<v8::Context> context);
++  ~CefNativeContextEvaluator();
++  CefNativeContextEvaluator(const CefNativeContextEvaluator&) = delete;
++  CefNativeContextEvaluator& operator=(const CefNativeContextEvaluator&) = delete;
++
++  // Nonce is a canonical decimal nonzero ordinal increasing on this pipe.
++  void Evaluate(std::string nonce, std::string source, Reply reply);
++  void Cancel(const std::string& nonce);
++  void Release();
++
++ private:
++  class State;
++  std::shared_ptr<State> state_;
++};
++
++#endif  // CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_EVALUATOR_H_
+diff --git a/libcef/renderer/native_context_evaluator.cc b/libcef/renderer/native_context_evaluator.cc
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_context_evaluator.cc
+@@ -0,0 +1,225 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++
++#include "cef/libcef/renderer/native_context_evaluator.h"
++
++#include <cstdint>
++#include <map>
++#include <utility>
++#include <vector>
++
++#include "base/no_destructor.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/unguessable_token.h"
++#include "cef/libcef/renderer/blink_glue.h"
++#include "third_party/blink/public/platform/web_string.h"
++
++class CefNativeContextEvaluator::State
++    : public std::enable_shared_from_this<CefNativeContextEvaluator::State> {
++ public:
++  State(v8::Isolate* isolate, v8::Local<v8::Context> context)
++      : isolate_(isolate), context_(isolate, context) {}
++
++  struct Pending {
++    std::string token;
++    Reply reply;
++    v8::Global<v8::Promise> promise;
++    bool claimed = false;
++  };
++
++  struct Reaction {
++    std::weak_ptr<State> state;
++    std::string nonce;
++  };
++
++  static std::map<std::string, Reaction>& Reactions() {
++    static base::NoDestructor<std::map<std::string, Reaction>> reactions;
++    return *reactions;
++  }
++
++  bool Live(const std::string& nonce, const std::string& token) const {
++    const auto it = pending_.find(nonce);
++    return !retired_ && it != pending_.end() && it->second.token == token;
++  }
++
++  void Finish(const std::string& nonce, const std::string& token,
++              std::string code, std::string value) {
++    auto it = pending_.find(nonce);
++    if (it == pending_.end() || it->second.token != token) return;
++    Reactions().erase(token);
++    auto reply = std::move(it->second.reply);
++    pending_.erase(it);
++    std::move(reply).Run(nonce, std::move(code), std::move(value));
++  }
++
++  void Release() {
++    if (retired_) return;
++    retired_ = true;
++    context_.Reset();
++    std::vector<std::pair<std::string, Reply>> replies;
++    for (auto& [nonce, request] : pending_) {
++      Reactions().erase(request.token);
++      request.promise.Reset();
++      replies.emplace_back(nonce, std::move(request.reply));
++    }
++    pending_.clear();
++    for (auto& [nonce, reply] : replies)
++      std::move(reply).Run(std::move(nonce), "stale_context", "Context released");
++  }
++
++  void Cancel(const std::string& nonce) {
++    auto it = pending_.find(nonce);
++    if (it != pending_.end())
++      Finish(nonce, it->second.token, "cancelled", "Evaluation cancelled");
++  }
++
++  static void Fulfilled(const v8::FunctionCallbackInfo<v8::Value>& args) {
++    React(args, false);
++  }
++  static void Rejected(const v8::FunctionCallbackInfo<v8::Value>& args) {
++    React(args, true);
++  }
++
++  static void React(const v8::FunctionCallbackInfo<v8::Value>& args, bool rejected) {
++    if (!args.Data()->IsString()) return;
++    v8::String::Utf8Value token_utf8(args.GetIsolate(), args.Data());
++    if (!*token_utf8) return;
++    std::string token(*token_utf8, token_utf8.length());
++    auto it = Reactions().find(token);
++    if (it == Reactions().end()) return;
++    auto state = it->second.state.lock();
++    const std::string nonce = it->second.nonce;
++    if (!state || !state->Live(nonce, token)) return;
++    auto pending = state->pending_.find(nonce);
++    if (pending->second.claimed) return;
++    pending->second.claimed = true;
++    v8::Isolate* isolate = args.GetIsolate();
++    v8::HandleScope scope(isolate);
++    auto context = state->context_.Get(isolate);
++    v8::Context::Scope context_scope(context);
++    v8::TryCatch caught(isolate);
++    v8::Local<v8::Value> value = args.Length() ? args[0] : v8::Undefined(isolate).As<v8::Value>();
++    v8::Local<v8::String> text;
++    bool ok = rejected ? value->ToString(context).ToLocal(&text)
++                       : v8::JSON::Stringify(context, value).ToLocal(&text);
++    if (!state->Live(nonce, token)) return;
++    if (!ok) {
++      state->Finish(nonce, token, rejected ? "javascript" : "serialization",
++                    rejected ? "Promise rejected" : "Value is not JSON serializable");
++      return;
++    }
++    v8::String::Utf8Value utf8(isolate, text);
++    if (!*utf8) {
++      state->Finish(nonce, token, "serialization", "UTF-8 conversion failed");
++      return;
++    }
++    state->Finish(nonce, token, rejected ? "javascript" : "",
++                  std::string(*utf8, utf8.length()));
++  }
++
++  void Evaluate(std::string nonce, std::string source, Reply reply) {
++    auto keep_alive = shared_from_this();
++    if (retired_) {
++      std::move(reply).Run(std::move(nonce), "stale_context", "Context released");
++      return;
++    }
++    uint64_t ordinal = 0;
++    if (!base::StringToUint64(nonce, &ordinal) || ordinal == 0 ||
++        base::NumberToString(ordinal) != nonce) {
++      std::move(reply).Run(std::move(nonce), "internal", "Invalid request ordinal");
++      return;
++    }
++    if (ordinal <= last_ordinal_) {
++      std::move(reply).Run(std::move(nonce), "duplicate_request", "Request ordinal already used");
++      return;
++    }
++    last_ordinal_ = ordinal;
++    const std::string token = base::UnguessableToken::Create().ToString();
++    Pending request;
++    request.token = token;
++    request.reply = std::move(reply);
++    pending_.emplace(nonce, std::move(request));
++    Reactions().emplace(token, Reaction{weak_from_this(), nonce});
++    v8::HandleScope scope(isolate_);
++    auto context = context_.Get(isolate_);
++    v8::Context::Scope context_scope(context);
++    v8::MicrotasksScope microtasks(isolate_, context->GetMicrotaskQueue(),
++                                   v8::MicrotasksScope::kRunMicrotasks);
++    v8::TryCatch caught(isolate_);
++    auto script = blink::WebString::FromUtf8(source);
++    if (script.IsNull() && !source.empty()) {
++      Finish(nonce, token, "javascript", "Source is not valid UTF-8");
++      return;
++    }
++    auto result = blink_glue::ExecuteV8ScriptAndReturnValue(
++        script, blink::WebString(), 1, context, caught, isolate_);
++    if (!Live(nonce, token)) return;
++    if (result.IsEmpty()) {
++      std::string message = "JavaScript evaluation failed";
++      if (caught.HasCaught() && !caught.Message().IsEmpty()) {
++        v8::String::Utf8Value text(isolate_, caught.Message()->Get());
++        if (*text) message.assign(*text, text.length());
++      }
++      Finish(nonce, token, "javascript", std::move(message));
++      return;
++    }
++    v8::Local<v8::Promise::Resolver> resolver;
++    if (!v8::Promise::Resolver::New(context).ToLocal(&resolver)) {
++      if (Live(nonce, token)) Finish(nonce, token, "internal", "Promise creation failed");
++      return;
++    }
++    if (!Live(nonce, token)) return;
++    auto promise = resolver->GetPromise();
++    v8::Local<v8::String> data;
++    if (!v8::String::NewFromUtf8(isolate_, token.c_str()).ToLocal(&data)) {
++      Finish(nonce, token, "internal", "Reaction identity creation failed");
++      return;
++    }
++    v8::Local<v8::Function> fulfilled, rejected;
++    if (!v8::Function::New(context, Fulfilled, data).ToLocal(&fulfilled)) {
++      if (Live(nonce, token)) Finish(nonce, token, "internal", "Reaction creation failed");
++      return;
++    }
++    if (!Live(nonce, token)) return;
++    if (!v8::Function::New(context, Rejected, data).ToLocal(&rejected)) {
++      if (Live(nonce, token)) Finish(nonce, token, "internal", "Reaction creation failed");
++      return;
++    }
++    if (!Live(nonce, token)) return;
++    v8::Local<v8::Promise> chain;
++    if (!promise->Then(context, fulfilled, rejected).ToLocal(&chain)) {
++      if (Live(nonce, token)) Finish(nonce, token, "internal", "Reaction registration failed");
++      return;
++    }
++    if (!Live(nonce, token)) return;
++    pending_.find(nonce)->second.promise.Reset(isolate_, promise);
++    auto resolved = resolver->Resolve(context, result);
++    if (!Live(nonce, token)) return;
++    if (resolved.IsNothing() || !resolved.FromJust())
++      Finish(nonce, token, "javascript", "Promise resolution failed");
++  }
++
++ private:
++  v8::Isolate* const isolate_;
++  v8::Global<v8::Context> context_;
++  bool retired_ = false;
++  uint64_t last_ordinal_ = 0;
++  std::map<std::string, Pending> pending_;
++};
++
++CefNativeContextEvaluator::CefNativeContextEvaluator(
++    v8::Isolate* isolate, v8::Local<v8::Context> context)
++    : state_(std::make_shared<State>(isolate, context)) {}
++CefNativeContextEvaluator::~CefNativeContextEvaluator() { Release(); }
++void CefNativeContextEvaluator::Evaluate(std::string nonce, std::string source, Reply reply) {
++  auto state = state_;
++  state->Evaluate(std::move(nonce), std::move(source), std::move(reply));
++}
++void CefNativeContextEvaluator::Cancel(const std::string& nonce) {
++  auto state = state_;
++  state->Cancel(nonce);
++}
++void CefNativeContextEvaluator::Release() {
++  auto state = state_;
++  state->Release();
++}
+diff --git a/BUILD.gn b/BUILD.gn
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -906,4 +906,6 @@
+     "libcef/renderer/frame_impl.h",
++    "libcef/renderer/native_context_evaluator.cc",
++    "libcef/renderer/native_context_evaluator.h",
+     "libcef/renderer/render_frame_observer.cc",
+     "libcef/renderer/render_frame_observer.h",
+     "libcef/renderer/render_frame_util.cc",

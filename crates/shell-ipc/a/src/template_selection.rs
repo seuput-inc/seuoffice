@@ -166,6 +166,119 @@ impl SlidesTemplateSelectionHooks for SlidesTemplateSelectionPort {
     fn moved(&self, old_path: &str, new_path: &str) {
         self.memory().borrow_mut().moved(old_path, new_path)
     }
+    fn prepare_moved_owned(
+        &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
+        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
+        effects:&shell_contract::hosts::OwnedEffectsHost,
+    )->Result<shell_contract::slides::OwnedTemplateMove,String> {
+        self.prepare_moved_many_owned(origin,destination,&[],cancel,pending,effects)
+    }
+
+    fn prepare_moved_many_owned(
+        &self,origin:&shell_contract::ipc::NativeRequestOwner,destination:&shell_contract::ipc::NativeRequestOwner,
+        participants:&[shell_contract::ipc::NativeRequestOwner],
+        cancel:&shell_contract::runtime::CancelToken,pending:&shell_contract::runtime::CancelToken,
+        effects:&shell_contract::hosts::OwnedEffectsHost,
+    )->Result<shell_contract::slides::OwnedTemplateMove,String> {
+        self.prepare_moved_many_owned_extra(origin, destination, participants, cancel, pending, &[], effects)
+    }
+
+    fn prepare_moved_many_owned_extra(
+        &self, origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner,
+        participants: &[shell_contract::ipc::NativeRequestOwner], cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<shell_contract::slides::OwnedTemplateMove, String> {
+        let mut targets = participants.to_vec();
+        targets.push(destination.clone());
+        effects.with_owned_effect_many_extra(origin,&targets,cancel,pending,&additional.iter().collect::<Vec<_>>(),&mut || Ok(()))?;
+        let plan = self.memory().borrow().store.move_plan();
+        let clock = self.clock.clone();
+        let (origin,cancel,pending,additional,effects) = (origin.clone(),cancel.clone(),pending.clone(),additional.to_vec(),effects.clone());
+        Ok(Box::new(move |old,new,done| {
+            let path = plan.file_path().to_owned();
+            main_core::shell::recent_files::metadata::submit(&path,move || {
+                let mut refusal = None;
+                let mut admit = |effect:&mut dyn FnMut()| effects.with_owned_effect_many_extra(&origin,&targets,&cancel,&pending,&additional.iter().collect::<Vec<_>>(),&mut || {
+                    effect(); Ok(())
+                }).map_err(|error| {
+                    refusal = Some(error.clone());
+                    main_core::node_fs::NodeError { code:None,message:error }
+                });
+                let mut write = |path:&str,value:&JsonValue|
+                    main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(path,value,&mut admit);
+                let now = clock.map(|RuntimeClock(clock)| Box::new(move || clock()) as Box<dyn Fn()->f64>);
+                let result = plan.apply(&old,&new,now,&mut write);
+                if let Some(error) = refusal { return Ok(Err(error)); }
+                if let Err(error) = result {
+                    // The original guarded memory does not fail a save for lost template metadata.
+                    eprintln!("[slides] template selection did not move: {}",error.message);
+                }
+                Ok(Ok(()))
+            },move |result| done(result.map_err(|error| error.message).and_then(|result| result)));
+        }))
+    }
+    fn prepare_moved_recovery(
+        &self, receipt: &shell_contract::ipc::RecoverySeedReceipt, snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot, receiver: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<shell_contract::slides::OwnedTemplateMove, String> {
+        let mut targets = participants.to_vec(); targets.push(destination.clone());
+        let snapshot = snapshot.clone();
+        effects.with_recovery_open_snapshot(receipt, &snapshot, receiver, &targets, cancel, pending, &mut || Ok(()))?;
+        let plan = self.memory().borrow().store.move_plan();
+        let clock = self.clock.clone();
+        let (receipt, receiver, cancel, pending, effects) = (receipt.clone(), receiver.clone(), cancel.clone(), pending.clone(), effects.clone());
+        Ok(Box::new(move |old, new, done| {
+            let path = plan.file_path().to_owned();
+            main_core::shell::recent_files::metadata::submit(&path, move || {
+                let mut refusal = None;
+                let mut admit = |effect: &mut dyn FnMut()| effects.with_recovery_open_snapshot(&receipt, &snapshot, &receiver, &targets, &cancel, &pending, &mut || {
+                    effect(); Ok(())
+                }).map_err(|error| {
+                    refusal = Some(error.clone());
+                    main_core::node_fs::NodeError { code: None, message: error }
+                });
+                let mut write = |path: &str, value: &JsonValue|
+                    main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(path, value, &mut admit);
+                let now = clock.map(|RuntimeClock(clock)| Box::new(move || clock()) as Box<dyn Fn() -> f64>);
+                let result = plan.apply(&old, &new, now, &mut write);
+                if let Some(error) = refusal { return Ok(Err(error)); }
+                if let Err(error) = result { eprintln!("[slides] template selection did not move: {}", error.message); }
+                Ok(Ok(()))
+            }, move |result| done(result.map_err(|error| error.message).and_then(|result| result)));
+        }))
+    }
+    fn prepare_moved_existing_document(
+        &self, binding: &shell_contract::ipc::NativeExistingDocumentBinding, participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken, additional: &[shell_contract::runtime::CancelToken],
+        effects: &shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<shell_contract::slides::OwnedTemplateMove, String> {
+        effects.with_existing_document_save_effect_extra(binding, participants, cancel, pending, &additional.iter().collect::<Vec<_>>(), &mut || Ok(()))?;
+        let plan = self.memory().borrow().store.move_plan();
+        let clock = self.clock.clone();
+        let (binding, participants, cancel, pending, additional, effects) = (binding.clone(), participants.to_vec(), cancel.clone(), pending.clone(), additional.to_vec(), effects.clone());
+        Ok(Box::new(move |old, new, done| {
+            let path = plan.file_path().to_owned();
+            main_core::shell::recent_files::metadata::submit(&path, move || {
+                let mut refusal = None;
+                let mut admit = |effect: &mut dyn FnMut()| effects.with_existing_document_save_effect_extra(&binding, &participants, &cancel, &pending, &additional.iter().collect::<Vec<_>>(), &mut || {
+                    effect(); Ok(())
+                }).map_err(|error| {
+                    refusal = Some(error.clone());
+                    main_core::node_fs::NodeError { code: None, message: error }
+                });
+                let mut write = |path: &str, value: &JsonValue|
+                    main_core::packages::electron_utils::atomic_write::write_json_atomic_authorized(path, value, &mut admit);
+                let now = clock.map(|RuntimeClock(clock)| Box::new(move || clock()) as Box<dyn Fn() -> f64>);
+                let result = plan.apply(&old, &new, now, &mut write);
+                if let Some(error) = refusal { return Ok(Err(error)); }
+                if let Err(error) = result { eprintln!("[slides] template selection did not move: {}", error.message); }
+                Ok(Ok(()))
+            }, move |result| done(result.map_err(|error| error.message).and_then(|result| result)));
+        }))
+    }
 }
 
 /// The host the shell inserts for this port; it also provides the hooks
@@ -234,6 +347,7 @@ mod tests {
             },
             request: None,
             cancel: CancelToken::default(),
+            native: None,
         };
         let out = Arc::new(Mutex::new(None));
         let slot = out.clone();

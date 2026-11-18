@@ -9,7 +9,7 @@
 //! crate frees it. A call that registered no slot 0 is refused: [`HostError`]
 //! with the name `HostUnavailable`.
 //!
-//! A native build has no such host: every step answers `HostUnavailable`.
+//! A native host may register a process-wide callback before making calls.
 
 use serde_json::Value;
 
@@ -27,6 +27,38 @@ impl std::fmt::Display for HostError {
 }
 
 impl std::error::Error for HostError {}
+
+#[cfg(not(target_arch = "wasm32"))]
+type NativeHost = dyn Fn(&str, &Value) -> Result<Value, HostError> + Send + Sync + 'static;
+
+#[cfg(not(target_arch = "wasm32"))]
+static NATIVE_HOST: std::sync::OnceLock<Box<NativeHost>> = std::sync::OnceLock::new();
+
+/// Installs the native host once for all threads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_native_host(
+    host: impl Fn(&str, &Value) -> Result<Value, HostError> + Send + Sync + 'static,
+) -> Result<(), HostError> {
+    NATIVE_HOST.set(Box::new(host)).map_err(|_| HostError {
+        name: "HostAlreadyRegistered".to_owned(),
+        message: "a native host is already registered".to_owned(),
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    static ACTIVE_NAMES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct ActiveName;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ActiveName {
+    fn drop(&mut self) {
+        ACTIVE_NAMES.with(|active| { active.borrow_mut().pop(); });
+    }
+}
 
 /// Runs the host's step `name` on `input`.
 pub fn call(name: &str, input: &Value) -> Result<Value, HostError> {
@@ -94,9 +126,50 @@ fn raw_call(name: &str, input: &str) -> Result<String, HostError> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn raw_call(name: &str, _input: &str) -> Result<String, HostError> {
-    Err(HostError {
+fn raw_call(name: &str, input: &str) -> Result<String, HostError> {
+    let host = NATIVE_HOST.get().ok_or_else(|| HostError {
         name: "HostUnavailable".to_owned(),
         message: format!("{name} is a step of the host, and a native build has none"),
-    })
+    })?;
+    if name.is_empty() {
+        return Err(HostError { name: "HostProtocolError".into(), message: "empty host step name".into() });
+    }
+    let recursive = ACTIVE_NAMES.with(|active| {
+        let mut active = active.borrow_mut();
+        if active.iter().any(|item| item == name) {
+            true
+        } else {
+            active.push(name.to_owned());
+            false
+        }
+    });
+    if recursive {
+        return Err(HostError { name: "HostRecursion".into(), message: format!("recursive host step: {name}") });
+    }
+    let _active = ActiveName;
+    let input = serde_json::from_str(input).map_err(|error| HostError {
+        name: "HostProtocolError".into(), message: format!("invalid host input: {error}"),
+    })?;
+    let value = host(name, &input)?;
+    Ok(serde_json::json!({ "ok": value }).to_string())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_callback_is_shared_and_rejects_duplicates_and_recursion() {
+        assert_eq!(call("test", &Value::Null).unwrap_err().name, "HostUnavailable");
+        register_native_host(|name, value| match name {
+            "echo" => Ok(value.clone()),
+            "recurse" => call("recurse", value),
+            _ => Err(HostError { name: "UnknownHostStep".into(), message: name.into() }),
+        }).unwrap();
+        assert_eq!(register_native_host(|_, _| Ok(Value::Null)).unwrap_err().name, "HostAlreadyRegistered");
+        assert_eq!(std::thread::spawn(|| call("echo", &serde_json::json!(42))).join().unwrap().unwrap(), serde_json::json!(42));
+        assert_eq!(call("recurse", &Value::Null).unwrap_err().name, "HostRecursion");
+        assert_eq!(call("unknown", &Value::Null).unwrap_err().name, "UnknownHostStep");
+        assert_eq!(call("", &Value::Null).unwrap_err().name, "HostProtocolError");
+    }
 }

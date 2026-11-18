@@ -90,21 +90,28 @@ pub trait HomeApp: Send + Sync {
     /// `app.getLocale()`
     fn locale(&self) -> String;
     /// `os.release()`
-    fn os_release(&self) -> String;
+    fn os_release(&self) -> Result<String, String>;
     /// `Date.now()`
     fn now_ms(&self) -> f64;
     /// THIRD-PARTY-NOTICES.txt: in the resources folder when packaged, else under the app's `build`
     fn third_party_notices_path(&self) -> PathBuf;
     /// the tab manager's `openHelpTab(topic)`
-    fn open_help(&self, topic: Option<&str>);
+    fn open_help_owned(
+        &self, topic:Option<String>, origin:shell_contract::ipc::NativeRequestOwner,
+        cancel:shell_contract::runtime::CancelToken, pending:shell_contract::runtime::CancelToken,
+        done:Box<dyn FnOnce(Result<(),String>)+Send>,
+    );
     /// the updater reads the toggle (`autoUpdateCheckEnabled`) after this
     fn auto_update_check_changed(&self, on: bool);
     /// `setDelimitedImportLimit(bytes)`
     fn delimited_import_limit_changed(&self, bytes: f64);
     /// the home menu and the Dock menu list the new-document kinds (`applyMenuFor('home')`, `installDockMenu()`)
     fn home_kinds_changed(&self);
+    /// Fence asset vault permits across the save-directory settings write.
+    fn begin_save_dir_change(&self) -> Result<(), String>;
+    fn end_save_dir_change(&self) -> Result<(), String>;
     /// `ensureFolderWatchers()`: the save folder moved
-    fn folder_watchers_changed(&self);
+    fn folder_watchers_changed(&self, done: Box<dyn FnOnce(Result<(), IpcError>) + Send>);
     /// the safeStorage codec of the keys in the search settings; `None` where this PC cannot seal
     fn secrets(&self) -> Option<&dyn AiSecretCodec>;
     /// `evaluate(...)` of the decision client against `settings`: the error code it throws
@@ -634,12 +641,15 @@ impl Ctx {
         read_app_settings(&self.settings_path)
     }
 
-    fn write(&self, key: &str, value: JsonValue) -> Result<(), IpcError> {
-        write_app_setting(&self.settings_path, key, Some(value)).map_err(node_error)
-    }
 
-    fn write_all(&self, updates: &[(&str, Option<JsonValue>)]) -> Result<(), IpcError> {
-        write_app_settings(&self.settings_path, updates).map_err(node_error)
+    fn write_later(&self, updates: Vec<(&'static str, Option<JsonValue>)>, done: impl FnOnce(Result<(), IpcError>) + Send + 'static) {
+        let path = self.settings_path.clone();
+        let queue = main_core::shell::app_settings::queue::for_path(&path);
+        let core = self.services.core.clone();
+        queue.submit(move |completion| {
+            let result = write_app_settings(&path, &updates).map_err(node_error);
+            core.post(Box::new(move || { let _completion = completion; done(result); }));
+        });
     }
 
     fn paths(&self) -> PathsOf {
@@ -654,15 +664,6 @@ impl Ctx {
         install_lang(self.settings().get("language"), Some(&self.app.locale()))
     }
 
-    /// `defaultSaveDir()`
-    fn save_dir(&self) -> Result<String, IpcError> {
-        configured_default_save_dir(
-            &self.paths(),
-            &mut self.save_dir_state.lock().unwrap(),
-            self.app.now_ms(),
-        )
-        .map_err(|Thrown(message)| error(message))
-    }
 
     /// `readFileSearchSettings()`
     fn file_search(&self) -> FileSearchSettings {
@@ -671,20 +672,6 @@ impl Ctx {
         normalize_file_search(Some(&opened))
     }
 
-    /// `currentMcpSettings()`
-    fn mcp_settings(&self) -> McpSettings {
-        let saved = self.settings();
-        McpSettings {
-            enabled: flag(saved.get("mcpEnabled")) == Some(true),
-            port: match saved.get("mcpPort") {
-                Some(JsonValue::Number(n)) => valid_port(*n),
-                _ => None,
-            }
-            .unwrap_or(DEFAULT_MCP_PORT),
-            background: flag(saved.get("mcpBackground")) == Some(true),
-            logging: flag(saved.get("mcpLogging")) == Some(true),
-        }
-    }
 
     /// `currentAutoSaveDefault()`: read once, then kept
     fn auto_save_default(&self) -> (bool, f64) {
@@ -849,19 +836,24 @@ fn flags(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterError>
         })?;
     }
     let c = cx.clone();
-    invoke(registry, "home:set-onboarding-seen", move |_, _| {
-        Ok(IpcValue::Bool(
-            c.write("onboardingSeen", JsonValue::Bool(true)).is_ok(),
-        ))
+    handle_later(registry, "home:set-onboarding-seen", move |_, _, reply| {
+        c.write_later(vec![("onboardingSeen", Some(JsonValue::Bool(true)))], move |result| {
+            reply.reply(Ok(IpcValue::Bool(result.is_ok())));
+        });
     })?;
     let c = cx.clone();
-    invoke(registry, "home:set-auto-update-check", move |_, args| {
+    handle_later(registry, "home:set-auto-update-check", move |_, args, reply| {
         let Some(IpcValue::Bool(on)) = args.first() else {
-            return Ok(IpcValue::Undefined);
+            return reply.reply(Ok(IpcValue::Undefined));
         };
-        c.write("autoUpdateCheck", JsonValue::Bool(*on))?;
-        c.app.auto_update_check_changed(*on);
-        Ok(IpcValue::Undefined)
+        let on = *on;
+        let app = c.app.clone();
+        c.write_later(vec![("autoUpdateCheck", Some(JsonValue::Bool(on)))], move |result| {
+            reply.reply(result.map(|()| {
+                app.auto_update_check_changed(on);
+                IpcValue::Undefined
+            }));
+        });
     })?;
     let c = cx.clone();
     invoke(registry, "home:get-app-version", move |_, _| {
@@ -875,26 +867,25 @@ fn auto_save(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterEr
         Ok(auto_save_ipc(c.auto_save_default()))
     })?;
     let c = cx.clone();
-    invoke(registry, "home:set-auto-save-default", move |_, args| {
+    handle_later(registry, "home:set-auto-save-default", move |_, args, reply| {
         let Some(IpcValue::Bool(on)) = args.first() else {
-            return Ok(IpcValue::Undefined);
+            return reply.reply(Ok(IpcValue::Undefined));
         };
         if *on == c.auto_save_default().0 {
-            return Ok(IpcValue::Undefined);
+            return reply.reply(Ok(IpcValue::Undefined));
         }
         let next = (*on, c.app.now_ms());
-        // the TypeScript keeps the new value before it writes: a failed write leaves it in memory
         *c.auto_save.borrow_mut() = Some(next);
-        c.write_all(&[
+        let events = c.services.events.clone();
+        c.write_later(vec![
             ("autoSaveDefault", Some(JsonValue::Bool(next.0))),
             ("autoSaveDefaultUpdatedAt", Some(JsonValue::Number(next.1))),
-        ])?;
-        c.services.events.emit(
-            Target::All,
-            "app:auto-save-default-changed",
-            vec![auto_save_ipc(next)],
-        );
-        Ok(IpcValue::Undefined)
+        ], move |result| {
+            reply.reply(result.map(|()| {
+                events.emit(Target::All, "app:auto-save-default-changed", vec![auto_save_ipc(next)]);
+                IpcValue::Undefined
+            }));
+        });
     })
 }
 
@@ -904,64 +895,112 @@ fn csv_limit(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterEr
         Ok(IpcValue::Number(csv_import_limit_mb(&c.settings())))
     })?;
     let c = cx.clone();
-    invoke(registry, "home:set-csv-import-limit", move |_, args| {
+    handle_later(registry, "home:set-csv-import-limit", move |_, args, reply| {
         let Some(IpcValue::Number(mb)) = args.first() else {
-            return Ok(IpcValue::Undefined);
+            return reply.reply(Ok(IpcValue::Undefined));
         };
         let mb = *mb;
         if !(mb.is_finite() && mb.fract() == 0.0) || !CSV_IMPORT_LIMIT_CHOICES_MB.contains(&mb) {
-            return Ok(IpcValue::Undefined);
+            return reply.reply(Ok(IpcValue::Undefined));
         }
-        if mb == csv_import_limit_mb(&c.settings()) {
-            return Ok(IpcValue::Undefined);
-        }
-        c.write_all(&[("csvImportLimitMb", Some(JsonValue::Number(mb)))])?;
-        c.app.delimited_import_limit_changed(mb * 1024.0 * 1024.0);
-        Ok(IpcValue::Undefined)
+        let path = c.settings_path.clone();
+        let queue = main_core::shell::app_settings::queue::for_path(&path);
+        let app = c.app.clone();
+        let core = c.services.core.clone();
+        queue.submit(move |completion| {
+            let result = if mb == csv_import_limit_mb(&read_app_settings(&path)) {
+                Ok(false)
+            } else {
+                write_app_setting(&path, "csvImportLimitMb", Some(JsonValue::Number(mb))).map(|()| true).map_err(node_error)
+            };
+            core.post(Box::new(move || {
+                let _completion = completion;
+                reply.reply(result.map(|changed| {
+                    if changed { app.delimited_import_limit_changed(mb * 1024.0 * 1024.0); }
+                    IpcValue::Undefined
+                }));
+            }));
+        });
     })
 }
 
 /// the default save folder: where it is, and choosing another
 fn save_dir(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterError> {
     let c = cx.clone();
-    invoke(registry, "home:get-default-save-dir", move |_, _| {
-        c.save_dir().map(IpcValue::String)
+    handle_later(registry, "home:get-default-save-dir", move |_, _, reply| {
+        let paths = c.services.paths.clone();
+        let state = c.save_dir_state.clone();
+        let app = c.app.clone();
+        let core = c.services.core.clone();
+        c.services.workers.spawn(Box::new(move || {
+            let result = configured_default_save_dir(&PathsOf(paths), &mut state.lock().unwrap(), app.now_ms())
+                .map(IpcValue::String).map_err(|Thrown(message)| error(message));
+            core.post(Box::new(move || reply.reply(result)));
+        }));
     })?;
     let c = cx.clone();
-    invoke(registry, "home:pick-default-save-dir", move |_, _| {
-        let lang = c.lang();
+    handle_later(registry, "home:pick-default-save-dir", move |_, _, reply| {
+        let paths = c.services.paths.clone();
+        let state = c.save_dir_state.clone();
+        let app = c.app.clone();
+        let dialogs = c.dialogs.clone();
         let parent = c.main_window.window();
-        let picked = c.dialogs.open(
-            parent,
-            &FileDialog {
-                title: Some(pick_dir_title(lang).to_owned()),
-                default_path: Some(PathBuf::from(c.save_dir()?)),
-                properties: vec!["openDirectory".into(), "createDirectory".into()],
-                ..FileDialog::default()
-            },
-        );
-        let Some(picked) = picked.and_then(|paths| paths.into_iter().next()) else {
-            return Ok(IpcValue::Null);
-        };
-        let picked = picked.to_string_lossy().into_owned();
-        if picked.is_empty() {
-            return Ok(IpcValue::Null);
-        }
-        if !is_usable_save_dir(&picked) {
-            c.dialogs.message(
-                parent,
-                &MessageBox {
-                    kind: Some("error".into()),
-                    message: save_dir_unusable(lang).to_owned(),
-                    detail: Some(picked),
-                    ..MessageBox::default()
-                },
-            );
-            return Ok(IpcValue::Null);
-        }
-        c.write(DEFAULT_SAVE_DIR_KEY, JsonValue::String(picked.clone()))?;
-        c.app.folder_watchers_changed();
-        Ok(IpcValue::String(picked))
+        let settings_path = c.settings_path.clone();
+        let core = c.services.core.clone();
+        c.services.workers.spawn(Box::new(move || {
+            let result = (|| -> Result<Option<String>, IpcError> {
+                let lang = match std::env::var("SEUOFFICE_LANG") {
+                    Ok(env) => normalize_lang(Some(&env)),
+                    Err(_) => install_lang(read_app_settings(&settings_path).get("language"), Some(&app.locale())),
+                };
+                let default_dir = configured_default_save_dir(&PathsOf(paths), &mut state.lock().unwrap(), app.now_ms())
+                    .map_err(|Thrown(message)| error(message))?;
+                let picked = dialogs.open(parent, &FileDialog {
+                    title: Some(pick_dir_title(lang).to_owned()),
+                    default_path: Some(PathBuf::from(default_dir)),
+                    properties: vec!["openDirectory".into(), "createDirectory".into()],
+                    ..FileDialog::default()
+                });
+                let Some(picked) = picked.and_then(|paths| paths.into_iter().next()) else { return Ok(None) };
+                let picked = picked.to_string_lossy().into_owned();
+                if picked.is_empty() { return Ok(None); }
+                if !is_usable_save_dir(&picked) {
+                    dialogs.message(parent, &MessageBox {
+                        kind: Some("error".into()),
+                        message: save_dir_unusable(lang).to_owned(),
+                        detail: Some(picked),
+                        ..MessageBox::default()
+                    });
+                    return Ok(None);
+                }
+                Ok(Some(picked))
+            })();
+            match result {
+                Ok(Some(picked)) => {
+                    let queue = main_core::shell::app_settings::queue::for_path(&settings_path);
+                    queue.submit(move |completion| {
+                        let result = (|| -> Result<(), IpcError> {
+                            app.begin_save_dir_change().map_err(error)?;
+                            let written = write_app_setting(&settings_path, DEFAULT_SAVE_DIR_KEY, Some(JsonValue::String(picked.clone()))).map_err(node_error);
+                            let ended = app.end_save_dir_change().map_err(error);
+                            written?;
+                            ended
+                        })();
+                        core.post(Box::new(move || {
+                            drop(completion);
+                            match result {
+                                Ok(()) => app.folder_watchers_changed(Box::new(move |result| {
+                                    reply.reply(result.map(|()| IpcValue::String(picked)));
+                                })),
+                                Err(error) => reply.reply(Err(error)),
+                            }
+                        }));
+                    });
+                }
+                Ok(None) => core.post(Box::new(move || reply.reply(Ok(IpcValue::Null)))),
+                Err(error) => core.post(Box::new(move || reply.reply(Err(error)))),
+            }
+        }));
     })
 }
 
@@ -981,31 +1020,29 @@ fn formats(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterErro
         Ok(format_text(read_hwp_default_format(&c.paths())))
     })?;
     let c = cx.clone();
-    invoke(registry, "home:set-hwp-default-format", move |_, args| {
+    handle_later(registry, "home:set-hwp-default-format", move |_, args, reply| {
         let value = args.first().and_then(ipc_to_json);
         let next = normalize_hwp_default_format(value.as_ref());
-        c.write(
-            HWP_DEFAULT_FORMAT_KEY,
-            JsonValue::String(
-                match next {
-                    HwpDefaultFormat::Hwp => "hwp",
-                    HwpDefaultFormat::Hwpx => "hwpx",
-                }
-                .into(),
-            ),
-        )?;
-        Ok(format_text(next))
+        let value = match next { HwpDefaultFormat::Hwp => "hwp", HwpDefaultFormat::Hwpx => "hwpx" };
+        c.write_later(vec![(HWP_DEFAULT_FORMAT_KEY, Some(JsonValue::String(value.into())))], move |result| {
+            reply.reply(result.map(|()| IpcValue::String(value.into())));
+        });
     })?;
     let c = cx.clone();
     invoke(registry, "home:get-legacy-import-prompt", move |_, _| {
         Ok(IpcValue::Bool(read_legacy_import_prompt(&c.settings_path)))
     })?;
     let c = cx.clone();
-    invoke(registry, "home:set-legacy-import-prompt", move |_, args| {
-        // `prompt !== false`
+    handle_later(registry, "home:set-legacy-import-prompt", move |_, args, reply| {
         let prompt = !matches!(args.first(), Some(IpcValue::Bool(false)));
-        write_legacy_import_prompt(&c.settings_path, prompt).map_err(node_error)?;
-        Ok(IpcValue::Bool(read_legacy_import_prompt(&c.settings_path)))
+        let path = c.settings_path.clone();
+        let queue = main_core::shell::app_settings::queue::for_path(&path);
+        let core = c.services.core.clone();
+        queue.submit(move |completion| {
+            let result = write_legacy_import_prompt(&path, prompt).map_err(node_error)
+                .map(|()| IpcValue::Bool(read_legacy_import_prompt(&path)));
+            core.post(Box::new(move || { let _completion = completion; reply.reply(result); }));
+        });
     })
 }
 
@@ -1015,45 +1052,39 @@ fn file_search(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), Register
         Ok(json_to_ipc(&c.file_search().to_json()))
     })?;
     let c = cx.clone();
-    invoke(registry, "home:set-file-search-settings", move |_, args| {
-        let current = c.file_search();
-        // `{ ...current, ...p, keys: { ...current.keys, ...(p.keys ?? {}) } }`: a key the
-        // patch holds as `undefined` reads as missing, which `normalize` turns to its default
-        let patch = args.first().filter(|p| is_object(p));
-        let patch_entries: &[(String, IpcValue)] = match patch {
-            Some(IpcValue::Object(entries)) => entries,
-            _ => &[],
-        };
-        let mut merged = match current.to_json() {
-            JsonValue::Object(o) => o,
-            _ => JsObject::new(),
-        };
-        for (key, value) in patch_entries {
-            merged = match ipc_to_json(value) {
-                Some(v) => {
-                    merged.set(key.as_str(), v);
-                    merged
-                }
-                None => without_key(&merged, key),
-            };
-        }
-        let mut keys = current.keys_json();
-        if let Some(IpcValue::Object(entries)) = patch.and_then(|p| field(p, "keys")) {
-            for (id, value) in entries {
-                keys = match ipc_to_json(value) {
-                    Some(v) => {
-                        keys.set(id.as_str(), v);
-                        keys
-                    }
-                    None => without_key(&keys, id),
+    handle_later(registry, "home:set-file-search-settings", move |_, args, reply| {
+        let path = c.settings_path.clone();
+        let app = c.app.clone();
+        let core = c.services.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let stored = read_app_settings(&path).get("fileSearch").cloned().unwrap_or(JsonValue::Null);
+            let opened = open_file_search_keys(app.secrets(), &stored);
+            let current = normalize_file_search(Some(&opened));
+            let patch = args.first().filter(|p| is_object(p));
+            let entries = match patch { Some(IpcValue::Object(entries)) => entries.as_slice(), _ => &[] };
+            let mut merged = match current.to_json() { JsonValue::Object(o) => o, _ => JsObject::new() };
+            for (key, value) in entries {
+                merged = match ipc_to_json(value) {
+                    Some(v) => { merged.set(key.as_str(), v); merged }
+                    None => without_key(&merged, key),
                 };
             }
-        }
-        merged.set("keys", JsonValue::Object(keys));
-        let next = normalize_file_search(Some(&JsonValue::Object(merged)));
-        let sealed = seal_file_search_keys(c.app.secrets(), &next.to_json());
-        c.write("fileSearch", sealed)?;
-        Ok(json_to_ipc(&next.to_json()))
+            let mut keys = current.keys_json();
+            if let Some(IpcValue::Object(entries)) = patch.and_then(|p| field(p, "keys")) {
+                for (id, value) in entries {
+                    keys = match ipc_to_json(value) {
+                        Some(v) => { keys.set(id.as_str(), v); keys }
+                        None => without_key(&keys, id),
+                    };
+                }
+            }
+            merged.set("keys", JsonValue::Object(keys));
+            let next = normalize_file_search(Some(&JsonValue::Object(merged)));
+            let sealed = seal_file_search_keys(app.secrets(), &next.to_json());
+            let result = write_app_setting(&path, "fileSearch", Some(sealed)).map_err(node_error)
+                .map(|()| json_to_ipc(&next.to_json()));
+            core.post(Box::new(move || { let _completion = completion; reply.reply(result); }));
+        });
     })?;
     let c = cx.clone();
     handle_later(
@@ -1092,15 +1123,19 @@ fn home_kinds(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterE
         Ok(read(&c).to_ipc())
     })?;
     let c = cx.clone();
-    invoke(registry, "home:set-home-kinds", move |_, args| {
+    handle_later(registry, "home:set-home-kinds", move |_, args, reply| {
         let raw = args.first().and_then(ipc_to_json);
-        c.write("homeKinds", normalize_home_kinds(raw.as_ref()).stored())?;
-        let next = read(&c).to_ipc();
-        c.app.home_kinds_changed();
-        c.services
-            .events
-            .emit(Target::All, "home:home-kinds-changed", vec![next.clone()]);
-        Ok(next)
+        let normalized = normalize_home_kinds(raw.as_ref());
+        let next = normalized.to_ipc();
+        let app = c.app.clone();
+        let events = c.services.events.clone();
+        c.write_later(vec![("homeKinds", Some(normalized.stored()))], move |result| {
+            reply.reply(result.map(|()| {
+                app.home_kinds_changed();
+                events.emit(Target::All, "home:home-kinds-changed", vec![next.clone()]);
+                next
+            }));
+        });
     })
 }
 
@@ -1115,40 +1150,49 @@ fn mcp(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterError> {
         let Some(patch) = args.first().filter(|p| is_object(p)) else {
             return reply.reply(Ok(status(&c)));
         };
-        let current = c.mcp_settings();
-        let flag_of = |key: &str, current: bool| match field(patch, key) {
-            Some(IpcValue::Bool(b)) => *b,
-            _ => current,
-        };
-        let next = McpSettings {
-            enabled: flag_of("enabled", current.enabled),
-            port: match field(patch, "port") {
-                Some(IpcValue::Number(n)) => valid_port(*n),
-                _ => None,
-            }
-            .unwrap_or(current.port),
-            background: flag_of("background", current.background),
-            logging: flag_of("logging", current.logging),
-        };
-        if let Err(e) = c.write_all(&[
-            ("mcpEnabled", Some(JsonValue::Bool(next.enabled))),
-            ("mcpPort", Some(JsonValue::Number(f64::from(next.port)))),
-            ("mcpBackground", Some(JsonValue::Bool(next.background))),
-            ("mcpLogging", Some(JsonValue::Bool(next.logging))),
-        ]) {
-            return reply.reply(Err(e));
-        }
+        let patch = patch.clone();
+        let path = c.settings_path.clone();
         let app = c.app.clone();
-        c.services.workers.spawn(Box::new(move || {
-            reply.reply(Ok(match app.mcp_apply(next) {
-                Ok(applied) => IpcValue::Object(mcp_status_ipc(&applied)),
-                Err(message) => {
-                    let mut with_error = mcp_status_ipc(&app.mcp_status());
-                    with_error.push(("error".into(), IpcValue::String(message)));
-                    IpcValue::Object(with_error)
-                }
-            }))
-        }));
+        let workers = c.services.workers.clone();
+        let core = c.services.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let saved = read_app_settings(&path);
+            let current = McpSettings {
+                enabled: flag(saved.get("mcpEnabled")) == Some(true),
+                port: match saved.get("mcpPort") { Some(JsonValue::Number(n)) => valid_port(*n), _ => None }.unwrap_or(DEFAULT_MCP_PORT),
+                background: flag(saved.get("mcpBackground")) == Some(true),
+                logging: flag(saved.get("mcpLogging")) == Some(true),
+            };
+            let flag_of = |key: &str, current: bool| match field(&patch, key) {
+                Some(IpcValue::Bool(b)) => *b,
+                _ => current,
+            };
+            let next = McpSettings {
+                enabled: flag_of("enabled", current.enabled),
+                port: match field(&patch, "port") { Some(IpcValue::Number(n)) => valid_port(*n), _ => None }.unwrap_or(current.port),
+                background: flag_of("background", current.background),
+                logging: flag_of("logging", current.logging),
+            };
+            let result = write_app_settings(&path, &[
+                ("mcpEnabled", Some(JsonValue::Bool(next.enabled))),
+                ("mcpPort", Some(JsonValue::Number(f64::from(next.port)))),
+                ("mcpBackground", Some(JsonValue::Bool(next.background))),
+                ("mcpLogging", Some(JsonValue::Bool(next.logging))),
+            ]).map_err(node_error);
+            core.post(Box::new(move || { let _completion = completion; match result {
+                Err(error) => reply.reply(Err(error)),
+                Ok(()) => workers.spawn(Box::new(move || {
+                    reply.reply(Ok(match app.mcp_apply(next) {
+                        Ok(applied) => IpcValue::Object(mcp_status_ipc(&applied)),
+                        Err(message) => {
+                            let mut with_error = mcp_status_ipc(&app.mcp_status());
+                            with_error.push(("error".into(), IpcValue::String(message)));
+                            IpcValue::Object(with_error)
+                        }
+                    }));
+                })),
+            }}));
+        });
     })?;
     let c = cx.clone();
     invoke(registry, "home:get-mcp-logs", move |_, _| {
@@ -1238,14 +1282,18 @@ fn result_store(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), Registe
 /// help, the repository, the survey and the notices
 fn links(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterError> {
     let c = cx.clone();
-    invoke(registry, "home:open-help", move |_, args| {
-        // the tab manager keeps only an id-shaped topic; anything else opens as F1
+    handle_later(registry, "home:open-help", move |cx, args, reply| {
         let topic = match args.first() {
-            Some(IpcValue::String(topic)) => Some(topic.as_str()),
+            Some(IpcValue::String(topic)) => Some(topic.clone()),
             _ => None,
         };
-        c.app.open_help(topic);
-        Ok(IpcValue::Undefined)
+        let Some(context)=cx.native.clone() else {
+            return reply.reply(Err(IpcError { name:Some("Error".into()),message:"Authenticated help request owner is unavailable".into() }));
+        };
+        let origin=shell_contract::ipc::NativeRequestOwner { view:cx.sender.view,context };
+        c.app.open_help_owned(topic,origin,cx.cancel.clone(),shell_contract::runtime::CancelToken::new(),
+            Box::new(move |result| reply.reply(result.map(|()|IpcValue::Undefined)
+                .map_err(|message|IpcError { name:Some("Error".into()),message }))));
     })?;
     let c = cx.clone();
     invoke(registry, "home:open-github-repo", move |_, _| {
@@ -1265,7 +1313,7 @@ fn links(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), RegisterError>
             lang,
             &FeedbackEnvironment {
                 version: c.app.version(),
-                os: format!("{} {}", platform_label(node_platform()), c.app.os_release()),
+                os: format!("{} {}", platform_label(node_platform()), c.app.os_release().map_err(error)?),
                 language: lang.as_str().to_owned(),
             },
         );
@@ -1349,8 +1397,8 @@ mod probe {
             "ko".into()
         }
 
-        fn os_release(&self) -> String {
-            self.text("osRelease", "")
+        fn os_release(&self) -> Result<String, String> {
+            Ok(self.text("osRelease", ""))
         }
 
         fn now_ms(&self) -> f64 {
@@ -1361,15 +1409,20 @@ mod probe {
             PathBuf::from(self.text("noticesPath", ""))
         }
 
-        fn open_help(&self, _: Option<&str>) {}
+        fn open_help_owned(&self, _:Option<String>, _:shell_contract::ipc::NativeRequestOwner,
+            _:shell_contract::runtime::CancelToken, _:shell_contract::runtime::CancelToken,
+            done:Box<dyn FnOnce(Result<(),String>)+Send>) { done(Ok(())); }
 
         fn auto_update_check_changed(&self, _: bool) {}
 
         fn delimited_import_limit_changed(&self, _: f64) {}
 
         fn home_kinds_changed(&self) {}
+        fn begin_save_dir_change(&self) -> Result<(), String> { Ok(()) }
+        fn end_save_dir_change(&self) -> Result<(), String> { Ok(()) }
 
-        fn folder_watchers_changed(&self) {}
+
+        fn folder_watchers_changed(&self, done: Box<dyn FnOnce(Result<(), IpcError>) + Send>) { done(Ok(())); }
 
         fn secrets(&self) -> Option<&dyn AiSecretCodec> {
             None

@@ -1,0 +1,65 @@
+# Pinned Chromium source-only patch. Generated ABI and native execution are unverified.
+diff --git a/content/browser/renderer_host/frame_tree_node.h b/content/browser/renderer_host/frame_tree_node.h
+--- a/content/browser/renderer_host/frame_tree_node.h
++++ b/content/browser/renderer_host/frame_tree_node.h
+@@ -1,4 +1,17 @@
+   [[nodiscard]] base::CallbackListSubscription AddCefPreProcessLossObserver(
+       base::RepeatingCallback<void(RenderFrameHostImpl*, std::vector<base::OnceClosure>*)> callback) {
+     return cef_pre_process_loss_observers_.Add(std::move(callback));
++  }
++  // Unlike the admission revoker, this fires only at actual document
++  // retirement, not when an unrelated or cancelled navigation starts.
++  [[nodiscard]] base::CallbackListSubscription AddCefDocumentRetirementObserver(
++      base::RepeatingCallback<void(RenderFrameHostImpl*, std::vector<base::OnceClosure>*)> callback) {
++    return cef_document_retirement_observers_.Add(std::move(callback));
++  }
++  void NotifyCefDocumentRetirement(RenderFrameHostImpl* host) {
++    std::vector<base::OnceClosure> completions;
++    cef_document_retirement_observers_.Notify(host, &completions);
++    for (auto& completion : completions) {
++      DeferCefAdmissionCompletion(std::move(completion));
++    }
+   }
+@@ -1,3 +1,5 @@
+   base::RepeatingCallbackList<void(RenderFrameHostImpl*, std::vector<base::OnceClosure>*)>
+       cef_pre_process_loss_observers_;
++  base::RepeatingCallbackList<void(RenderFrameHostImpl*, std::vector<base::OnceClosure>*)>
++      cef_document_retirement_observers_;
+   std::optional<int64_t> cef_latest_navigation_id_;
+diff --git a/content/browser/renderer_host/frame_tree_node.cc b/content/browser/renderer_host/frame_tree_node.cc
+--- a/content/browser/renderer_host/frame_tree_node.cc
++++ b/content/browser/renderer_host/frame_tree_node.cc
+@@ -1,3 +1,4 @@
+ FrameTreeNode::~FrameTreeNode() {
+   cef_teardown_mutation_ = RevokeCefAdmission();
++  NotifyCefDocumentRetirement(nullptr);
+   TRACE_EVENT("navigation", "FrameTreeNode::~FrameTreeNode");
+diff --git a/content/browser/renderer_host/render_frame_host_impl.cc b/content/browser/renderer_host/render_frame_host_impl.cc
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -1,4 +1,5 @@
+ RenderFrameHostImpl::~RenderFrameHostImpl() {
+   cef_teardown_mutation_ =
+       frame_tree_node() ? frame_tree_node()->RevokeCefAdmission(this)
+                         : FrameTreeNode::BeginCefAdmissionMutation();
++  if (frame_tree_node()) frame_tree_node()->NotifyCefDocumentRetirement(this);
+@@ -1,4 +1,5 @@
+   auto cef_revoke = frame_tree_node()
+                         ? frame_tree_node()->RevokeCefAdmission(this)
+                         : base::ScopedClosureRunner();
++  if (frame_tree_node()) frame_tree_node()->NotifyCefDocumentRetirement(this);
+   bool was_created = is_render_frame_created();
+@@ -1,2 +1,6 @@
+     if (ShouldResetDocumentAssociatedDataAtCommit()) {
++      auto cef_document_retirement = FrameTreeNode::BeginCefAdmissionMutation();
++      if (frame_tree_node()) {
++        frame_tree_node()->NotifyCefDocumentRetirement(this);
++      }
+       CHECK_NE(lifecycle_state(), LifecycleStateImpl::kSpeculative);
+@@ -1,4 +1,6 @@
+   auto cef_revoke = frame_tree_node() && (retires_active || restores_inactive)
+                         ? frame_tree_node()->RevokeCefAdmission(this)
+                         : base::ScopedClosureRunner();
++  if (retires_active && frame_tree_node())
++    frame_tree_node()->NotifyCefDocumentRetirement(this);
+   TRACE_EVENT2("content", "RenderFrameHostImpl::SetLifecycleState",

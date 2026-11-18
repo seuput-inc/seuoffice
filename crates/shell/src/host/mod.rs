@@ -12,18 +12,44 @@ use std::sync::{Arc, Mutex};
 use main_core::packages::electron_utils::recovery_store::SharedRecoveryState;
 use shell_contract::Hosts;
 use shell_contract::runtime::Thread;
-use tauri::{AppHandle, RunEvent};
+use tauri::{AppHandle, Manager, RunEvent};
 
 use crate::views::ViewTable;
 
+pub(crate) mod app_mcp;
+pub(crate) mod app_mcp_dispatch;
+pub(crate) mod asset_protocol;
 pub mod clipboard;
+pub(crate) mod cli;
 pub mod contents;
 pub mod dialog;
+pub(crate) mod document_password;
+pub(crate) mod document_assets;
+pub(crate) mod saved_recovery;
+pub(crate) mod headless_cleanup;
+pub(crate) mod committed_writer;
+pub(crate) mod drawio_assets;
 pub mod message_box;
 pub mod os_shell;
+pub(crate) mod pdf;
 pub(crate) mod shell_tabs;
+pub(crate) mod recovery_openers;
+pub(crate) mod recovery_manager;
+pub(crate) mod recovery_launch;
+pub(crate) mod recovery_editors;
+pub(crate) mod native_commands;
+pub(crate) mod renderer_disposal;
+pub(crate) mod pptx_ops;
+pub(crate) mod quit;
+pub(crate) mod system_info;
+pub(crate) mod vault_watch;
 pub mod unbuilt;
 pub mod w;
+pub(crate) mod w_tabs;
+pub(crate) mod w_files;
+pub(crate) mod w_preview;
+pub(crate) mod w_home;
+pub(crate) mod w_projects;
 pub mod window;
 pub(crate) mod window_open;
 
@@ -45,6 +71,9 @@ pub struct HostContext {
     pub ui: Arc<dyn Thread>,
     pub views: Arc<ViewTable>,
     pub windows: Arc<window::Windows>,
+    /// Admitted cleanup survives ExitRequested and ends only at actual Exit.
+    pub(crate) cleanup_shutdown: shell_contract::runtime::CancelToken,
+    pub(crate) headless_cleanup: Arc<headless_cleanup::Supervisor>,
 }
 
 /// The state TypeScript kept once per process, one instance each, shared by
@@ -61,29 +90,45 @@ pub fn install_process_state(hosts: &mut Hosts) {
 }
 
 /// Every host the shell has; the batches' `register` read them with `Hosts::need`
-pub fn install(hosts: &mut Hosts, cx: &HostContext) {
+pub fn install(hosts: &mut Hosts, cx: &HostContext) -> Result<(), String> {
+    hosts.insert(cx.clone());
+    let retirements: shell_contract::runtime::NativeViewRetirementsHost = cx.views.clone();
+    hosts.insert(retirements);
     dialog::install(hosts, cx);
     os_shell::install(hosts, cx);
     clipboard::install(hosts, cx);
     contents::install(hosts, cx);
     window::install(hosts, cx);
+    document_password::install(hosts, cx);
     install_process_state(hosts);
     w::install(hosts, cx);
+    w_tabs::install(hosts, cx);
+    d1::install_workbook(hosts, cx)?;
+    w_files::install(hosts, cx);
+    w_preview::install(hosts, cx);
+    w_projects::install(hosts, cx);
+    // Home's application services share the MCP runtime installed by batch A.
 
     crash::install(hosts, cx);
-    d1::install(hosts, cx);
-    d2::install(hosts, cx);
+    d1::install(hosts, cx)?;
+    d2::install(hosts, cx)?;
     menu::install(hosts, cx);
     net::install(hosts, cx);
+    let mcp = Arc::new(app_mcp::AppMcp::new(cx, hosts));
+    cx.app.manage(mcp.clone());
+    hosts.insert(mcp);
+    w_home::install(hosts, cx);
     os::install(hosts, cx);
     print::install(hosts, cx);
     secrets::install(hosts, cx);
     update::install(hosts, cx);
+    Ok(())
 }
 
 /// Every event of the event loop, for the batches that answer one (U: files
 /// opened from the OS, the updater's quit)
 pub fn on_run_event(app: &AppHandle, event: &RunEvent) {
+    d1::on_run_event(app, event);
     os::on_run_event(app, event);
     update::on_run_event(app, event);
 }

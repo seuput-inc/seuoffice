@@ -15,7 +15,7 @@ use std::time::Duration;
 use shell_contract::ViewId;
 
 use shell_contract::ipc::{CallContext, ChannelKind, Handler, Reply, Responder};
-use shell_contract::runtime::Services;
+use shell_contract::runtime::{RendererGeneration, Services};
 use shell_contract::{BytesKind, IpcError, IpcValue};
 
 /// One channel's handler as `register` hands it to the registry
@@ -367,13 +367,106 @@ thread_local! {
     static WAITING: RefCell<HashMap<u64, Continuation>> = RefCell::new(HashMap::new());
     static NEXT: Cell<u64> = const { Cell::new(0) };
 }
+pub type ReplayDone = Box<dyn FnOnce(Result<(), String>) + Send>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplayState { Idle, Queued, Running, Finished, Cancelled }
+
+struct ReplayInner {
+    id: u64,
+    core: std::sync::Arc<dyn shell_contract::runtime::Thread>,
+    state: std::sync::Mutex<ReplayState>,
+}
+
+impl Drop for ReplayInner {
+    fn drop(&mut self) {
+        let id = self.id;
+        self.core.post(Box::new(move || {
+            let callback = WAITING.with(|waiting| waiting.borrow_mut().remove(&id));
+            drop(callback);
+        }));
+    }
+}
+
+/// A core-owned one-shot continuation whose queued delivery can be retried
+/// after the core rejects or drops a posted task.
+#[derive(Clone)]
+pub struct CoreReplay(std::sync::Arc<ReplayInner>);
+
+struct ReplayDelivery {
+    inner: std::sync::Arc<ReplayInner>,
+    done: Option<ReplayDone>,
+    started: bool,
+}
+
+impl Drop for ReplayDelivery {
+    fn drop(&mut self) {
+        if !self.started {
+            let mut state = self.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+            if *state == ReplayState::Queued { *state = ReplayState::Idle; }
+            drop(state);
+            if let Some(done) = self.done.take() { done(Err("The core continuation was discarded".into())); }
+        }
+    }
+}
+
+impl CoreReplay {
+    pub fn post(&self, done: ReplayDone) {
+        let mut state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
+        if *state != ReplayState::Idle {
+            drop(state);
+            done(Err("The core continuation is not available for retry".into()));
+            return;
+        }
+        *state = ReplayState::Queued;
+        drop(state);
+        let mut delivery = ReplayDelivery { inner: self.0.clone(), done: Some(done), started: false };
+        self.0.core.post(Box::new(move || {
+            let mut state = delivery.inner.state.lock().unwrap_or_else(|error| error.into_inner());
+            if *state != ReplayState::Queued { return; }
+            *state = ReplayState::Running;
+            drop(state);
+            delivery.started = true;
+            let callback = WAITING.with(|waiting| waiting.borrow_mut().remove(&delivery.inner.id));
+            let result = catch_unwind(AssertUnwindSafe(|| match callback {
+                Some(callback) => { callback(Box::new(())); Ok(()) }
+                None => Err("The core continuation is unavailable".to_owned()),
+            }));
+            *delivery.inner.state.lock().unwrap_or_else(|error| error.into_inner()) = ReplayState::Finished;
+            if let Some(done) = delivery.done.take() {
+                done(match &result { Ok(result) => result.clone(), Err(_) => Err("The core continuation panicked".into()) });
+            }
+            if let Err(panic) = result { std::panic::resume_unwind(panic); }
+        }));
+    }
+
+    pub fn cancel(&self) {
+        let mut state = self.0.state.lock().unwrap_or_else(|error| error.into_inner());
+        if matches!(*state, ReplayState::Running | ReplayState::Finished | ReplayState::Cancelled) { return; }
+        *state = ReplayState::Cancelled;
+        drop(state);
+        let id = self.0.id;
+        self.0.core.post(Box::new(move || {
+            let callback = WAITING.with(|waiting| waiting.borrow_mut().remove(&id));
+            drop(callback);
+        }));
+    }
+}
+
+pub fn replay_on_core(services: &Services, then: impl FnOnce() + 'static) -> CoreReplay {
+    assert!(services.core.is_current(), "replay_on_core off the core thread");
+    let id = NEXT.with(|next| { let id = next.get(); next.set(id + 1); id });
+    WAITING.with(|waiting| { waiting.borrow_mut().insert(id, Box::new(move |_| then())); });
+    CoreReplay(std::sync::Arc::new(ReplayInner { id, core: services.core.clone(), state: std::sync::Mutex::new(ReplayState::Idle) }))
+}
+
 
 /// A callback any thread may call once: it posts the value to the core
 /// thread and runs `then` there with it. Dropping it uncalled (a worker that
 /// panicked, a host that never answers and lets go) drops `then` on the core
 /// thread, with the responder it holds, so the shell answers the invoke with
 /// an error instead of leaving it pending. Make it on the core thread.
-pub(crate) fn back_on_core<R: Send + 'static>(
+pub fn back_on_core<R: Send + 'static>(
     services: &Services,
     then: impl FnOnce(R) + 'static,
 ) -> Box<dyn FnOnce(R) + Send> {
@@ -455,9 +548,11 @@ pub(crate) fn on_worker<R: Send + 'static>(
 
 /// The view-destroyed hooks still alive, by registration
 type DestroyHooks = HashMap<u64, Weak<dyn Fn(ViewId)>>;
+type ReplacementHooks = HashMap<u64, Weak<dyn Fn(ViewId, RendererGeneration)>>;
 
 thread_local! {
     static ON_DESTROYED: RefCell<DestroyHooks> = RefCell::new(HashMap::new());
+    static ON_REPLACED: RefCell<ReplacementHooks> = RefCell::new(HashMap::new());
 }
 
 fn next_id() -> u64 {
@@ -494,6 +589,25 @@ pub(crate) fn on_view_destroyed(
     hook
 }
 
+pub(crate) fn on_renderer_replaced(
+    services: &Services,
+    f: impl Fn(ViewId, RendererGeneration) + 'static,
+) -> Rc<dyn Fn(ViewId, RendererGeneration)> {
+    let hook: Rc<dyn Fn(ViewId, RendererGeneration)> = Rc::new(f);
+    let id = next_id();
+    ON_REPLACED.with(|hooks| hooks.borrow_mut().insert(id, Rc::downgrade(&hook)));
+    services.views.on_renderer_replaced(Box::new(move |view, generation| {
+        let hook = ON_REPLACED.with(|hooks| {
+            let mut hooks = hooks.borrow_mut();
+            let hook = hooks.get(&id).and_then(Weak::upgrade);
+            if hook.is_none() { hooks.remove(&id); }
+            hook
+        });
+        if let Some(hook) = hook { hook(view, generation); }
+    }));
+    hook
+}
+
 /// State kept per view, as the TypeScript's `Map<number, T>` keyed by
 /// `webContents.id`, and dropped when the view is destroyed. Cloning shares it.
 pub(crate) struct ViewMap<T> {
@@ -526,6 +640,10 @@ impl<T: 'static> ViewMap<T> {
 }
 
 impl<T> ViewMap<T> {
+    pub fn reserve(&self, additional: usize) {
+        self.map.borrow_mut().reserve(additional);
+    }
+
     pub fn insert(&self, view: ViewId, value: T) -> Option<T> {
         self.map.borrow_mut().insert(view, value)
     }
@@ -679,5 +797,40 @@ mod tests {
             gone.load(std::sync::atomic::Ordering::SeqCst),
             "the responder is still held"
         );
+    }
+
+    #[test]
+    fn discarded_core_delivery_can_retry_exact_continuation() {
+        #[derive(Default)]
+        struct Queue(std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+        impl shell_contract::runtime::Thread for Queue {
+            fn post(&self, job: Box<dyn FnOnce() + Send>) { self.0.lock().unwrap().push(job); }
+            fn is_current(&self) -> bool { true }
+        }
+        let core = std::sync::Arc::new(Queue::default());
+        let ran = Rc::new(Cell::new(0));
+        let captured = ran.clone();
+        let id = NEXT.with(|next| { let id = next.get(); next.set(id + 1); id });
+        WAITING.with(|waiting| { waiting.borrow_mut().insert(id, Box::new(move |_| captured.set(captured.get() + 1))); });
+        let handle = CoreReplay(std::sync::Arc::new(ReplayInner {
+            id, core: core.clone(), state: std::sync::Mutex::new(ReplayState::Idle),
+        }));
+        let answers = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let first = answers.clone();
+        handle.post(Box::new(move |result| first.lock().unwrap().push(result)));
+        let discarded = core.0.lock().unwrap().pop().unwrap();
+        drop(discarded);
+        assert!(answers.lock().unwrap()[0].is_err());
+        assert_eq!(ran.get(), 0);
+        let second = answers.clone();
+        handle.post(Box::new(move |result| second.lock().unwrap().push(result)));
+        let delivered = core.0.lock().unwrap().pop().unwrap();
+        delivered();
+        assert_eq!(ran.get(), 1);
+        assert!(answers.lock().unwrap()[1].is_ok());
+        let third = answers.clone();
+        handle.post(Box::new(move |result| third.lock().unwrap().push(result)));
+        assert!(answers.lock().unwrap()[2].is_err());
+        assert_eq!(ran.get(), 1);
     }
 }

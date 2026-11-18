@@ -34,6 +34,108 @@ use crate::state::{MState, MStateRef};
 /// The case's host log, shared with the other batches' fakes
 pub type ProbeLog = Arc<Mutex<Vec<Value>>>;
 
+struct SyntheticGeneratedState {
+    observer: Option<shell_contract::hosts::GeneratedPathObserver>,
+    wake: Option<shell_contract::hosts::GeneratedPathWake>,
+    restored: Option<Result<shell_contract::hosts::GeneratedPathOutcome, String>>,
+    observed: bool,
+    acknowledged: bool,
+    cancelling: bool,
+}
+struct SyntheticGeneratedTask {
+    this: std::sync::Weak<SyntheticGeneratedTask>,
+    state: Mutex<SyntheticGeneratedState>,
+}
+impl SyntheticGeneratedTask {
+    fn new() -> Arc<Self> {
+        Arc::new_cyclic(|this| Self { this: this.clone(), state: Mutex::new(SyntheticGeneratedState {
+            observer: None, wake: None, restored: None, observed: false, acknowledged: false, cancelling: false,
+        }) })
+    }
+    fn deliver(&self, result: Result<shell_contract::hosts::GeneratedPathOutcome, String>) {
+        let (observer, wake) = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            (state.observer.take(), state.wake.clone())
+        };
+        if let (Some(observer), Some(task)) = (observer, self.this.upgrade()) {
+            observer(shell_contract::hosts::GeneratedTerminalDelivery::new(result, task));
+        } else {
+            shell_contract::hosts::GeneratedTerminalAck::restore(self, result);
+        }
+        if let Some(wake) = wake { wake(); }
+    }
+}
+impl shell_contract::hosts::GeneratedTerminalAck for SyntheticGeneratedTask {
+    fn complete(&self) -> Result<(), String> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.acknowledged { return Err("The synthetic generated output was already acknowledged".into()); }
+        state.acknowledged = true;
+        Ok(())
+    }
+    fn restore(&self, result: Result<shell_contract::hosts::GeneratedPathOutcome, String>) {
+        let wake = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.restored = Some(result);
+            state.wake.clone()
+        };
+        if let Some(wake) = wake { wake(); }
+    }
+}
+impl shell_contract::hosts::GeneratedPathPending for SyntheticGeneratedTask {
+    fn observe(&self, observer: shell_contract::hosts::GeneratedPathObserver, wake: shell_contract::hosts::GeneratedPathWake)
+        -> Result<(), shell_contract::hosts::GeneratedObserveFailure> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if state.observed {
+            return Err(shell_contract::hosts::GeneratedObserveFailure { error: "The synthetic observer is already installed".into(), observer, wake });
+        }
+        state.observed = true;
+        state.observer = Some(observer);
+        state.wake = Some(wake);
+        Ok(())
+    }
+    fn wake_observer(&self) -> Result<(), String> {
+        let wake = self.state.lock().unwrap_or_else(|error| error.into_inner()).wake.clone().ok_or("The synthetic observer is unavailable")?;
+        wake();
+        Ok(())
+    }
+    fn take_redelivery(&self) -> Result<Option<shell_contract::hosts::GeneratedTerminalDelivery>, String> {
+        let result = self.state.lock().unwrap_or_else(|error| error.into_inner()).restored.take();
+        let task = self.this.upgrade().ok_or("The synthetic task is unavailable")?;
+        Ok(result.map(|result| shell_contract::hosts::GeneratedTerminalDelivery::new(result, task)))
+    }
+    fn is_cancelling(&self) -> bool { self.state.lock().unwrap_or_else(|error| error.into_inner()).cancelling }
+    fn retry(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) { done(Err("No synthetic retry is pending".into())); }
+    fn cancel_and_drain(&self, done: Box<dyn FnOnce(Result<(), String>) + Send>) {
+        let (wake, acknowledged) = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.cancelling = true;
+            (state.wake.clone(), state.acknowledged)
+        };
+        if let Some(wake) = wake { wake(); }
+        done(if acknowledged { Ok(()) } else { Err("The synthetic output has not been acknowledged".into()) });
+    }
+}
+struct SyntheticGeneratedPrepared {
+    task: Arc<SyntheticGeneratedTask>,
+    action: Option<Box<dyn FnOnce() -> Result<shell_contract::hosts::GeneratedPathOutcome, String>>>,
+}
+impl shell_contract::hosts::PreparedGeneratedPath for SyntheticGeneratedPrepared {
+    fn task(&self) -> Arc<dyn shell_contract::hosts::GeneratedPathPending> { self.task.clone() }
+    fn start(mut self: Box<Self>) -> Result<(), shell_contract::hosts::GeneratedStartFailure> {
+        let observed = self.task.state.lock().unwrap_or_else(|error| error.into_inner()).observed;
+        if !observed {
+            return Err(shell_contract::hosts::GeneratedStartFailure { error: "The synthetic observer is not installed".into(), prepared: self });
+        }
+        if let Some(action) = self.action.take() { self.task.deliver(action()); }
+        Ok(())
+    }
+}
+impl Drop for SyntheticGeneratedPrepared {
+    fn drop(&mut self) {
+        if self.action.take().is_some() { self.task.deliver(Err("The synthetic generated output was cancelled".into())); }
+    }
+}
+
 pub struct Fake {
     config: Value,
     log: ProbeLog,
@@ -142,6 +244,44 @@ impl MHost for Fake {
         self.log(json!(["openGeneratedPath", path]));
         self.bool_or("openGenerated", false)
     }
+    fn export_written_owned(
+        &self, _path: std::path::PathBuf, _origin: shell_contract::ipc::NativeRequestOwner,
+        _destination: shell_contract::ipc::NativeRequestOwner,
+        _cancel: shell_contract::runtime::CancelToken, _pending: shell_contract::runtime::CancelToken,
+        _effects: shell_contract::hosts::OwnedEffectsHost, _accepted: shell_contract::hosts::PdfReloadAccepted,
+        _wake: shell_contract::hosts::GeneratedPathWake,
+        done: Box<dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>) + Send>,
+    ) {
+        done(Err("No generated-path native receipt was scripted".into()));
+    }
+    fn export_written_existing_document(
+        &self, selection: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        _effects: shell_contract::hosts::OwnedEffectsHost, additional: Vec<shell_contract::runtime::CancelToken>,
+        _accepted: shell_contract::hosts::PdfReloadAccepted,
+        _wake: shell_contract::hosts::GeneratedPathWake,
+        done: Box<dyn FnOnce(Result<Box<dyn shell_contract::hosts::PreparedGeneratedPath>, String>) + Send>,
+    ) {
+        let log = self.log.clone();
+        let should_open = self.bool_or("openGenerated", false);
+        let task = SyntheticGeneratedTask::new();
+        let action = Box::new(move || {
+            let mut opened = None;
+            shell_contract::hosts::synthetic::with_existing_document_save_extra(selection.binding(), &participants, &cancel, &pending,
+                &additional.iter().collect::<Vec<_>>(), &mut || {
+                    log.lock().unwrap().push(json!(["openGeneratedPath", selection.path().to_string_lossy()]));
+                    opened = Some(should_open);
+                    Ok(())
+                })?;
+            match opened {
+                Some(false) => Ok(shell_contract::hosts::GeneratedPathOutcome::NotOpened),
+                Some(true) => Err("No generated-path native receipt was scripted".into()),
+                None => Err("Synthetic generated path was not admitted".into()),
+            }
+        });
+        done(Ok(Box::new(SyntheticGeneratedPrepared { task, action: Some(action) })));
+    }
 
     fn default_save_dir(&self) -> String {
         self.str_or("defaultSaveDir", "/docs")
@@ -216,6 +356,7 @@ impl MHost for Fake {
             PrintProfile::Static => "static",
             PrintProfile::Diagram => "diagram",
             PrintProfile::MindmapExport => "mindmap-export",
+            PrintProfile::MindmapPrint => "mindmap-export",
         };
         self.log(json!(["new BrowserWindow", profile]));
         Box::new(FakeSurface {
@@ -223,6 +364,42 @@ impl MHost for Fake {
             log: self.log.clone(),
             destroyed: false,
         })
+    }
+
+    fn print_window_owned(
+        &self, spec: &PrintWindowSpec,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Box<dyn PrintSurface>, String> {
+        let source = origin.context.renderer().ok_or("missing fake print origin")?;
+        let target = destination.context.renderer().ok_or("missing fake print destination")?;
+        source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending)], || self.print_window(spec)))
+            .flatten().ok_or_else(|| "print request expired".into())
+    }
+
+    fn print_window_native_invocation(
+        &self, _spec: &PrintWindowSpec, _document: &shell_contract::ipc::NativeInvocationDocument,
+        _sender: &shell_contract::ipc::NativeRequestOwner,
+        _cancel: &shell_contract::runtime::CancelToken, _pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Box<dyn PrintSurface>, String> {
+        Err("No native invocation print surface was scripted".into())
+    }
+
+    fn print_window_existing_document(
+        &self, spec: &PrintWindowSpec, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+    ) -> Result<Box<dyn PrintSurface>, String> {
+        let mut surface = None;
+        shell_contract::hosts::synthetic::with_existing_document_save_extra(binding, participants, cancel, pending,
+            &additional.iter().collect::<Vec<_>>(), &mut || { surface = Some(self.print_window(spec)); Ok(()) })?;
+        Ok(Box::new(SyntheticOwnedSurface {
+            surface: surface.ok_or("Synthetic print window was not admitted")?, binding: binding.clone(),
+            participants: participants.to_vec(), cancel: cancel.clone(), pending: pending.clone(), additional: additional.to_vec(),
+        }))
     }
 
     fn run_command(&self, file: &str, args: &[String], stdin: Option<&[u8]>) -> CommandOutcome {
@@ -241,6 +418,40 @@ impl MHost for Fake {
             None => CommandOutcome::Failed(format!("spawn {file} ENOENT")),
         }
     }
+}
+
+struct SyntheticOwnedSurface {
+    surface: Box<dyn PrintSurface>,
+    binding: shell_contract::ipc::NativeExistingDocumentBinding,
+    participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+    cancel: shell_contract::runtime::CancelToken,
+    pending: shell_contract::runtime::CancelToken,
+    additional: Vec<shell_contract::runtime::CancelToken>,
+}
+
+impl SyntheticOwnedSurface {
+    fn run<T>(&mut self, action: impl FnOnce(&mut dyn PrintSurface) -> T) -> Result<T, String> {
+        let mut action = Some(action);
+        let mut result = None;
+        shell_contract::hosts::synthetic::with_existing_document_save_extra(&self.binding, &self.participants, &self.cancel, &self.pending,
+            &self.additional.iter().collect::<Vec<_>>(), &mut || { result = Some(action.take().ok_or("Synthetic print called twice")?(&mut *self.surface)); Ok(()) })?;
+        result.ok_or_else(|| "Synthetic print was not admitted".into())
+    }
+}
+impl PrintSurface for SyntheticOwnedSurface {
+    fn load_file(&mut self, path: &str) -> Result<(), String> { self.run(|surface| surface.load_file(path))? }
+    fn load_url(&mut self, url: &str) -> Result<(), String> { self.run(|surface| surface.load_url(url))? }
+    fn execute_javascript(&mut self, script: &str, gesture: bool, race_ms: Option<f64>) -> ExecOutcome {
+        self.run(|surface| surface.execute_javascript(script, gesture, race_ms)).unwrap_or_else(ExecOutcome::Throws)
+    }
+    fn print(&mut self, options: &Value) -> PrintReport {
+        self.run(|surface| surface.print(options)).unwrap_or_else(|failure_reason| PrintReport { success: false, failure_reason })
+    }
+    fn print_to_pdf(&mut self, options: &Value) -> Result<Vec<u8>, String> { self.run(|surface| surface.print_to_pdf(options))? }
+    fn show(&mut self) { let _ = self.run(|surface| surface.show()); }
+    fn focus(&mut self) { let _ = self.run(|surface| surface.focus()); }
+    fn is_destroyed(&self) -> bool { self.surface.is_destroyed() }
+    fn destroy(&mut self) { self.surface.destroy(); }
 }
 
 /// A hidden print window. Paths are logged by file name: the folder they sit

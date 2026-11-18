@@ -45,7 +45,7 @@ fn written(paths: Vec<String>) -> IpcValue {
 }
 
 /// `looksLike(format, bytes)`: whether bytes a renderer sent are a picture of that format
-fn looks_like(format: &str, bytes: &[u8]) -> bool {
+pub fn looks_like(format: &str, bytes: &[u8]) -> bool {
     if format == "png" {
         return bytes.starts_with(&PNG_SIGNATURE);
     }
@@ -61,7 +61,7 @@ fn safe_integer(value: &IpcValue) -> Option<f64> {
 }
 
 /// `printPagesOf(value)`: a non-empty list of pages that can be printed
-fn print_pages_of(value: &IpcValue) -> Option<Vec<PrintPage>> {
+pub fn print_pages_of(value: &IpcValue) -> Option<Vec<PrintPage>> {
     let IpcValue::Array(items) = value else {
         return None;
     };

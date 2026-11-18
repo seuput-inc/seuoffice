@@ -13,12 +13,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use main_core::mindmap::save_as_formats::MapSaveAsKind;
 use main_core::packages::electron_utils::message_box::{
     MessageBox as MessageBoxTrait, MessageBoxOptions, ParentWindow,
-};
-use main_core::packages::electron_utils::recovery_contract::{
-    RecoveryOpenFileRequest, RecoveryOpenUntitledRequest,
 };
 use main_core::packages::electron_utils::recovery_store::{RecoveryIdentity, SharedRecoveryState};
 use main_core::packages::electron_utils::save_conflict::ProbeThrew;
@@ -118,6 +114,8 @@ impl Ask {
 #[derive(Clone, Copy, Debug)]
 pub(super) enum TimerJob {
     SaveWait(ViewId, u64),
+    OwnedSaveWait(u64),
+    OwnedDropHold(u64),
     CloseWait(ViewId, u64),
     CopyNow(ViewId, u64),
     DropHold(ViewId, u64),
@@ -155,7 +153,7 @@ impl WaitTable {
 }
 
 /// a copy-now wait: the generation of its timer and what finishing it resumes
-pub(super) type CopyNowWaiter = (u64, Box<dyn FnOnce()>);
+pub(super) type CopyNowWaiter = (u64, Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>);
 
 pub(super) struct PendingAsk {
     gen_id: u64,
@@ -177,14 +175,25 @@ pub(super) struct State {
     pub dirty: HashSet<ViewId>,
     /// every live map view
     pub live: HashSet<ViewId>,
+    pub documents: HashMap<ViewId, shell_contract::runtime::RendererGeneration>,
+    pub revisions: HashMap<ViewId, u64>,
+    pub owned_saves: HashMap<u64, super::owned_save::PendingSave>,
+    pub owned_seeds: HashMap<ViewId, super::owned_seed::OwnedSeed>,
+    pub owned_seed_versions: HashMap<ViewId, std::rc::Rc<()>>,
+    pub recovery_preparing: HashMap<ViewId, super::recovery_open::PendingRecovery>,
+    pub recovery_seeds: HashMap<ViewId, super::recovery_open::RecoverySeed>,
+    pub recovery_applying: HashMap<ViewId, super::recovery_open::RecoveryApplying>,
+    pub saved_loads: HashMap<ViewId, super::saved_open::SavedLoad>,
+    pub saved_reservations: usize,
+    pub owned_renames: HashMap<u64, shell_contract::editors::Then<()>>,
+    pub owned_closes: HashMap<u64, super::owned_save::PendingClose>,
+    pub owned_holds: HashMap<u64, shell_contract::ipc::NativeRequestOwner>,
     pub close_waiters: WaitTable,
     pub save_waiters: WaitTable,
     /// copies asked for at the OS session end
     pub copy_now: HashMap<ViewId, CopyNowWaiter>,
     /// the disk state of every read and write, per view and path
     pub disk_states: HashMap<ViewId, HashMap<String, SaveDiskState>>,
-    /// paths Save As picked for an export, per view
-    pub save_as_grants: HashMap<ViewId, (MapSaveAsKind, String)>,
     pub recovery: HashMap<ViewId, ViewRecovery>,
     pub seeds: HashMap<ViewId, Seed>,
     pub taken_handoff: HashMap<ViewId, String>,
@@ -377,13 +386,15 @@ impl MindmapApp {
                         waiter(Wait::Timeout);
                     }
                 }
+                TimerJob::OwnedSaveWait(id) => self.finish_owned_save(id, Err(crate::value::thrown("Timed out saving the map"))),
+                TimerJob::OwnedDropHold(id) => self.owned_hold_ended(id),
                 TimerJob::CloseWait(view, gen_id) => {
                     let waiter = self.0.state.borrow_mut().close_waiters.expire(view, gen_id);
                     if let Some(waiter) = waiter {
                         waiter(Wait::Timeout);
                     }
                 }
-                TimerJob::CopyNow(view, gen_id) => self.finish_copy_now(view, Some(gen_id)),
+                TimerJob::CopyNow(view, gen_id) => self.finish_copy_now(view, Some(gen_id), Err(main_core::shell::renderer_disposal::Failure("Timed out writing the mindmap recovery copy".into()))),
                 TimerJob::DropHold(view, gen_id) => self.drop_hold_ended(view, gen_id),
                 TimerJob::Resend(kind, view, gen_id) => self.resend(kind, view, gen_id),
                 TimerJob::AskTimeout(kind, view, gen_id) => self.settle_ask(
@@ -523,7 +534,10 @@ impl MindmapApp {
     /// the renderer process dies.
     pub fn create_view(&self, view: ViewId, open_path: Option<&str>) {
         let mut state = self.0.state.borrow_mut();
+        if state.live.contains(&view) { return; }
         state.live.insert(view);
+        state.documents.insert(view, shell_contract::runtime::RendererGeneration::new());
+        state.revisions.insert(view, 0);
         if let Some(path) = open_path.filter(|p| !p.is_empty() && PathBuf::from(p).exists()) {
             state.open_path.insert(view, path.to_owned());
             state.allowed.insert(view, HashSet::from([path.to_owned()]));
@@ -723,50 +737,64 @@ impl MindmapApp {
     /// `writeMindmapCopiesNow`: the OS is ending the session, every map view
     /// with unsaved changes writes a copy now. `done` runs when each has
     /// answered or `timeout` ran out.
-    pub fn write_copies_now(&self, timeout: Duration, done: Box<dyn FnOnce()>) {
+    pub fn write_copies_now(&self, timeout: Duration, done: Box<dyn FnOnce(Result<(), main_core::shell::renderer_disposal::Failure>)>) {
         let views: Vec<ViewId> = {
             let state = self.0.state.borrow();
             let mut views: Vec<ViewId> = state.live.iter().copied().collect();
             views.sort();
             views
         };
+        let mut unavailable = false;
         let views: Vec<ViewId> = views
             .into_iter()
-            .filter(|view| self.is_alive(*view) && self.is_dirty(*view) && self.may_write(*view))
+            .filter(|view| self.is_dirty(*view) && self.may_write(*view))
+            .filter(|view| {
+                let alive = self.is_alive(*view);
+                unavailable |= !alive;
+                alive
+            })
             .collect();
+        let initial_failure = unavailable.then(|| main_core::shell::renderer_disposal::Failure("The mindmap view was closed".into()));
         if views.is_empty() {
-            return done();
+            return done(initial_failure.map_or(Ok(()), Err));
         }
         let left = Rc::new(std::cell::Cell::new(views.len()));
         let done = Rc::new(RefCell::new(Some(done)));
+        let failure = Rc::new(RefCell::new(initial_failure));
         for view in views {
-            // the earlier waiter of this view is finished first
-            self.finish_copy_now(view, None);
             let gen_id = self.new_gen();
             let left = left.clone();
             let done = done.clone();
-            self.0.state.borrow_mut().copy_now.insert(
+            let failure = failure.clone();
+            let previous = self.0.state.borrow_mut().copy_now.insert(
                 view,
                 (
                     gen_id,
-                    Box::new(move || {
+                    Box::new(move |result| {
+                        if let Err(error) = result {
+                            let mut first = failure.borrow_mut();
+                            if first.is_none() { *first = Some(error); }
+                        }
                         left.set(left.get() - 1);
-                        if left.get() == 0
-                            && let Some(done) = done.borrow_mut().take()
-                        {
-                            done()
+                        if left.get() == 0 {
+                            let callback = done.borrow_mut().take();
+                            let result = failure.borrow_mut().take().map_or(Ok(()), Err);
+                            if let Some(done) = callback { done(result); }
                         }
                     }),
                 ),
             );
+            if let Some((_, finish)) = previous {
+                finish(Err(main_core::shell::renderer_disposal::Failure("Mindmap recovery request was replaced".into())));
+            }
             self.schedule(timeout, TimerJob::CopyNow(view, gen_id));
-            self.emit(view, "mindmap:recovery-copy-now", vec![]);
+            self.emit(view, "mindmap:recovery-copy-now", vec![crate::value::num(gen_id as f64)]);
         }
     }
 
     /// resolves the view's copy-now waiter: the renderer reported, the view
     /// ended or its time ran out (`only` the waiter of that timer)
-    pub(super) fn finish_copy_now(&self, view: ViewId, only: Option<u64>) {
+    pub(super) fn finish_copy_now(&self, view: ViewId, only: Option<u64>, result: Result<(), main_core::shell::renderer_disposal::Failure>) {
         let finish = {
             let mut state = self.0.state.borrow_mut();
             match state.copy_now.get(&view) {
@@ -777,40 +805,10 @@ impl MindmapApp {
             }
         };
         if let Some(finish) = finish {
-            finish();
+            finish(result);
         }
     }
 
-    /// `openMindmapFileWithDecision`: open `request.file_path` in a map view
-    /// the shell made, the recovery question already answered. Returns true
-    /// when the view was pointed at another file and the shell must reload
-    /// it (`contents.reload()`); call it in the tick the view is made with
-    /// `create_view(view, Some(path))`.
-    pub fn open_file_with_decision(&self, view: ViewId, request: &RecoveryOpenFileRequest) -> bool {
-        self.set_view_open_decision(view, request.decision);
-        let mut state = self.0.state.borrow_mut();
-        if state.open_path.get(&view) == Some(&request.file_path) {
-            return false;
-        }
-        state.open_path.insert(view, request.file_path.clone());
-        state
-            .allowed
-            .insert(view, HashSet::from([request.file_path.clone()]));
-        state.unopened.insert(view, Unopened::Pending);
-        state.save_path.remove(&view);
-        state.dirty.remove(&view);
-        drop(state);
-        self.is_alive(view)
-    }
-
-    /// `openMindmapUntitledCopy`: load a recovery copy into an untitled map
-    /// view the shell made (call it in the tick the view is made with
-    /// `create_view(view, None)`): the map opens unsaved
-    pub fn open_untitled_copy(&self, view: ViewId, request: &RecoveryOpenUntitledRequest) {
-        if let Some(bytes) = self.take_untitled_copy(view, request) {
-            self.queue_seed(view, Seed::Copy(bytes));
-        }
-    }
 
     /// `sendMindmapMenuCommand`
     pub fn send_menu_command(&self, view: ViewId, command: &str) {
@@ -829,6 +827,7 @@ impl MindmapApp {
     /// `render-process-gone`: a crashed view's recovery copies outlive it
     pub fn view_crashed(&self, view: ViewId) {
         self.recovery_of(view).crashed = true;
+        self.finish_copy_now(view, None, Err(main_core::shell::renderer_disposal::Failure("The mindmap renderer crashed".into())));
     }
 
     /// `mindmapReadOutline`: the map as outline text, unsaved edits included
@@ -938,10 +937,16 @@ impl MindmapApp {
 
     /// the view's end (`wc.once('destroyed')`)
     pub(super) fn view_gone(&self, view: ViewId) {
+        self.cancel_recovery_open(view);
+        let saved_target = self.0.state.borrow().saved_loads.get(&view).map(|slot| slot.target.clone());
+        if let Some(target) = saved_target { super::saved_open::fail(self, &target, "The mindmap view was closed"); }
+        self.0.state.borrow_mut().saved_loads.remove(&view);
         let dirty = self.is_dirty(view);
         self.recovery_view_gone(view, dirty);
         self.0.state.borrow_mut().live.remove(&view);
-        self.finish_copy_now(view, None);
+        let document = self.0.state.borrow_mut().documents.remove(&view);
+        if let Some(document) = document { document.revoke(); }
+        self.finish_copy_now(view, None, Err(main_core::shell::renderer_disposal::Failure("The mindmap view was closed".into())));
         {
             let mut state = self.0.state.borrow_mut();
             state.open_path.remove(&view);
@@ -951,8 +956,13 @@ impl MindmapApp {
             state.imported.remove(&view);
             state.dirty.remove(&view);
             state.disk_states.remove(&view);
-            state.save_as_grants.remove(&view);
             state.seeds.remove(&view);
+            let version = std::rc::Rc::new(());
+            if let Some(seed) = state.owned_seeds.remove(&view) {
+                *seed.removed_version.borrow_mut() = Some(version.clone());
+            }
+            state.owned_seed_versions.insert(view, version);
+            state.revisions.remove(&view);
         }
         let close = self.0.state.borrow_mut().close_waiters.take(view);
         if let Some(waiter) = close {

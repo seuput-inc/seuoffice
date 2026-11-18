@@ -810,6 +810,7 @@ const visualObjectSchema = z
 export const workbookFileSchema = z
   .object({
     sessionId: z.string().uuid(),
+    savedLoadId: z.string().min(1).optional(),
     name: z.string().min(1),
     /// Absolute on-disk path; feeds CELL("filename"). Absent for sessions
     /// that never touched disk.
@@ -2134,6 +2135,7 @@ export const workbookSaveRequestSchema = z
   .object({
     sessionId: z.string().uuid(),
     mode: z.enum(['save', 'save-as']),
+    ownedSaveRequestId: z.string().uuid().optional(),
     /// MCP explicit-path save (planning/mcp-server.md): write to this absolute
     /// path with no dialog. Skips the Save-As dialog entirely; overwrite policy
     /// is enforced here, not in the renderer.
@@ -2454,6 +2456,7 @@ export const workbookSaveRequestSchema = z
 export const workbookExportOdsRequestSchema = z
   .object({
     sessionId: z.string().uuid(),
+    ownedSaveRequestId: z.string().uuid().optional(),
     /// Write straight to this path (from the Save As dialog's ODS pick).
     targetPath: z.string().min(1).max(4096).optional(),
     /// The pending edits, as a save request for the same session: the main
@@ -3210,6 +3213,7 @@ const pdfPageVariantSchema = z
 export const workbookExportPdfRequestSchema = z
   .object({
     fileName: z.string().min(1).max(255),
+    ownedSaveRequestId: z.string().uuid().optional(),
     html: z.string().min(1).max(20_000_000),
     landscape: z.boolean(),
     pageSize: z.union([
@@ -3290,6 +3294,7 @@ export type WorkbookPrintResult = z.infer<typeof workbookPrintResultSchema>
 export const workbookExportCsvRequestSchema = z
   .object({
     fileName: z.string().min(1).max(255),
+    ownedSaveRequestId: z.string().uuid().optional(),
     content: z.string().max(MAX_CSV_EXPORT_CHARS),
     /// The exported sheet carries formulas — CSV keeps their values only, so
     /// the main process offers Save As .xlsx first (Excel's warning flow).
@@ -3515,6 +3520,7 @@ export interface DesktopApi {
    */
   onChromePressed(handler: () => void): () => void
   selectWorkbook(): Promise<WorkbookFile | null>
+  savedOpenResult?(id: string, ok: boolean, error?: string): Promise<void>
   /** How far a delimited import is: 'read' parses the text, 'write' builds the
    *  workbook. The fraction is 0..1 within the phase. `null` means the import
    *  is over — the bar belongs to one import and must not outlive it. */
@@ -3614,12 +3620,12 @@ export interface DesktopApi {
   /// Export the whole workbook as an ODS copy; the session stays .xlsx.
   exportOds(request: WorkbookExportOdsRequest): Promise<WorkbookExportOdsResult>
   /// First Save of a CSV session: native "keep this format?" dialog.
-  confirmCsvSave(): Promise<'csv' | 'xlsx' | 'cancel'>
+  confirmCsvSave(ownedSaveRequestId?: string): Promise<'csv' | 'xlsx' | 'cancel'>
   /// A CSV or PDF copy of a workbook that hides cells from the AI cannot keep
   /// the marks: native dialog offering Save as .xlsx, Export without the marks
   /// (the real values; the marks are gone from that file) or Cancel.
   /// Nothing is written by the dialog itself.
-  askWithheldExport(format: WithheldExportFormat): Promise<'xlsx' | 'export' | 'cancel'>
+  askWithheldExport(format: WithheldExportFormat, ownedSaveRequestId?: string): Promise<'xlsx' | 'export' | 'cancel'>
   /// AI create_document: write a new standalone file into the default save
   /// folder (no dialog) and open it in a new tab.
   createDocument(request: WorkbookCreateDocumentRequest): Promise<WorkbookCreateDocumentResult>
@@ -3633,8 +3639,12 @@ export interface DesktopApi {
   /// Mirrors the pending-edit badge to the main process for the close guard.
   notifyPendingEdits(count: number): void
   /// Main asks the renderer to save before closing; reply via reportCloseSaveResult.
-  onCloseSaveRequest(callback: () => void): () => void
-  reportCloseSaveResult(ok: boolean): void
+  onCloseSaveRequest(callback: (request?: {
+    requestId: string
+    mode: 'save' | 'save-as'
+    targetPath?: string
+  }) => void): () => void
+  reportCloseSaveResult(ok: boolean, requestId?: string, error?: string): void
   /// The workbook just opened in this tab keeps no recovery copy (password
   /// protected): main sends the localized notice once per tab.
   onRecoveryNotice(callback: (text: string) => void): () => void

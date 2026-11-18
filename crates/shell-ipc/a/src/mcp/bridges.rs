@@ -36,14 +36,14 @@ use crate::value::{arg, from_json};
 /// and its twins of the shell entry). Called on the core thread.
 pub trait McpTabs: Send + Sync {
     /// `openBlankDocsTabForMcp()`: a fresh blank docs tab; its view
-    fn open_blank_docs_tab(&self) -> ViewId;
+    fn open_blank_docs_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>);
     /// `authorizeMcpDocWrite(wcId, filePath)`
     fn authorize_docs_save(&self, view: ViewId, path: &str);
     /// `abandonBlankTabForMcp(docsTabs, wcId)`
     fn abandon_blank_docs_tab(&self, view: ViewId);
     /// `openBlankSheetsTabForMcp()`: a fresh blank sheets tab with its
     /// backing workbook file; its view, or the message it rejects with
-    fn open_blank_sheets_tab(&self) -> Result<ViewId, String>;
+    fn open_blank_sheets_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>);
     /// `authorizeMcpSheetWrite(wcId, filePath)`
     fn authorize_sheets_save(&self, view: ViewId, path: &str);
     /// `abandonBlankSheetsTabForMcp(wcId)`: close the tab and delete its empty workbook
@@ -187,9 +187,6 @@ impl DocsBridgeHost for FamilyHost {
         std::path::Path::new(path).exists()
     }
 
-    fn open_blank_tab(&mut self) -> i64 {
-        i64::from(self.common.tabs.open_blank_docs_tab().0)
-    }
 
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         if let Some(view) = view_of(wc_id) {
@@ -240,12 +237,6 @@ impl SheetsBridgeHost for FamilyHost {
         std::path::Path::new(path).exists()
     }
 
-    fn open_blank_tab(&mut self) -> Result<i64, String> {
-        self.common
-            .tabs
-            .open_blank_sheets_tab()
-            .map(|view| i64::from(view.0))
-    }
 
     fn authorize_save(&mut self, wc_id: i64, file_path: &str) {
         if let Some(view) = view_of(wc_id) {
@@ -433,8 +424,11 @@ impl McpDocumentBridges for BridgesPort {
 
 impl McpBridgeControl for BridgesPort {
     fn docs_open_blank_tab(&self, then: Then<Option<JsonValue>>) {
-        let submitted = self.bridges.docs.borrow_mut().open_blank_tab();
-        self.bridges.submit(Kind::Docs, submitted, then);
+        let bridges = self.bridges.clone();
+        self.bridges.common.tabs.open_blank_docs_tab(Box::new(move |opened| {
+            let submitted = bridges.docs.borrow_mut().open_attached_tab(opened.map(|view| i64::from(view.0)));
+            bridges.submit(Kind::Docs, submitted, then);
+        }));
     }
 
     fn docs_run_command(
@@ -453,8 +447,11 @@ impl McpBridgeControl for BridgesPort {
     }
 
     fn sheets_open_blank_tab(&self, then: Then<Option<JsonValue>>) {
-        let submitted = self.bridges.sheets.borrow_mut().open_blank_tab();
-        self.bridges.submit(Kind::Sheets, submitted, then);
+        let bridges = self.bridges.clone();
+        self.bridges.common.tabs.open_blank_sheets_tab(Box::new(move |opened| {
+            let submitted = bridges.sheets.borrow_mut().open_attached_tab(opened.map(|view| i64::from(view.0)));
+            bridges.submit(Kind::Sheets, submitted, then);
+        }));
     }
 
     fn sheets_run_command(
@@ -504,9 +501,12 @@ mod tests {
     }
 
     impl McpTabs for Tabs {
-        fn open_blank_docs_tab(&self) -> ViewId {
+        fn open_blank_docs_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
             self.log.lock().unwrap().push("open docs".into());
-            self.open.lock().unwrap().remove(0)
+            let mut open = self.open.lock().unwrap();
+            let result = if open.is_empty() { Err("no more tabs".to_owned()) } else { Ok(open.remove(0)) };
+            drop(open);
+            done(result);
         }
         fn authorize_docs_save(&self, view: ViewId, path: &str) {
             self.log
@@ -520,13 +520,10 @@ mod tests {
                 .unwrap()
                 .push(format!("abandon docs {}", view.0));
         }
-        fn open_blank_sheets_tab(&self) -> Result<ViewId, String> {
+        fn open_blank_sheets_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
             self.log.lock().unwrap().push("open sheets".into());
-            self.open
-                .lock()
-                .unwrap()
-                .pop()
-                .ok_or_else(|| "no more tabs".to_owned())
+            let result = self.open.lock().unwrap().pop().ok_or_else(|| "no more tabs".to_owned());
+            done(result);
         }
         fn authorize_sheets_save(&self, view: ViewId, path: &str) {
             self.log
@@ -560,6 +557,50 @@ mod tests {
             let sink = sink.clone();
             Box::new(move |outcome| sink.borrow_mut().push(outcome))
         })
+    }
+    thread_local! {
+        static PENDING_OPEN: RefCell<Option<Box<dyn FnOnce(Result<ViewId, String>)>>> = RefCell::new(None);
+    }
+
+    struct DeferredTabs(Tabs);
+    impl McpTabs for DeferredTabs {
+        fn open_blank_docs_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
+            PENDING_OPEN.with(|slot| *slot.borrow_mut() = Some(done));
+        }
+        fn open_blank_sheets_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
+            self.0.open_blank_sheets_tab(done);
+        }
+        fn authorize_docs_save(&self, view: ViewId, path: &str) { self.0.authorize_docs_save(view, path); }
+        fn abandon_blank_docs_tab(&self, view: ViewId) { self.0.abandon_blank_docs_tab(view); }
+        fn authorize_sheets_save(&self, view: ViewId, path: &str) { self.0.authorize_sheets_save(view, path); }
+        fn abandon_blank_sheets_tab(&self, view: ViewId) { self.0.abandon_blank_sheets_tab(view); }
+    }
+
+    #[test]
+    fn blank_open_waits_for_attached_and_renderer_ready() {
+        let rig = Rig::new(&[7]);
+        let tabs = Arc::new(DeferredTabs(Tabs { log: Mutex::default(), open: Mutex::default() }));
+        let port = BridgesPort::new(&rig.services, tabs);
+        let (results, then) = collect();
+        port.docs_open_blank_tab(then());
+        assert!(results.borrow().is_empty());
+        PENDING_OPEN.with(|slot| slot.borrow_mut().take().unwrap()(Ok(ViewId(7))));
+        assert!(results.borrow().is_empty());
+        let (reply, _) = rig.responder();
+        port.docs_mcp_ready(&cx(7), vec![], reply);
+        assert_eq!(*results.borrow(), vec![Ok(Some(JsonValue::Number(7.0)))]);
+    }
+
+    #[test]
+    fn blank_open_propagates_creation_failure() {
+        let rig = Rig::new(&[7]);
+        let tabs = Arc::new(DeferredTabs(Tabs { log: Mutex::default(), open: Mutex::default() }));
+        let port = BridgesPort::new(&rig.services, tabs);
+        let (results, then) = collect();
+        port.docs_open_blank_tab(then());
+        PENDING_OPEN.with(|slot| slot.borrow_mut().take().unwrap()(Err("creation failed".into())));
+        assert_eq!(results.borrow().len(), 1);
+        assert_eq!(results.borrow()[0].as_ref().unwrap_err().message, "creation failed");
     }
 
     #[test]
@@ -710,6 +751,20 @@ mod tests {
             "the document tab was closed"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn docs_blank_creation_failure_rejects_without_waiting() {
+        let rig = Rig::new(&[]);
+        let tabs = Arc::new(Tabs {
+            log: Mutex::default(),
+            open: Mutex::default(),
+        });
+        let port = BridgesPort::new(&rig.services, tabs);
+        let (results, then) = collect();
+        port.docs_open_blank_tab(then());
+        assert_eq!(results.borrow().len(), 1);
+        assert_eq!(results.borrow()[0].as_ref().unwrap_err().message, "no more tabs");
     }
 
     #[test]

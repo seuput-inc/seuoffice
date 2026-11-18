@@ -99,6 +99,8 @@ type Listener = Box<dyn Fn(ViewId) + Send + Sync>;
 struct TestViews {
     alive: Mutex<Vec<u32>>,
     listeners: Mutex<Vec<Listener>>,
+    generations: Mutex<std::collections::HashMap<ViewId, shell_contract::runtime::RendererGeneration>>,
+    replacements: Mutex<Vec<Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>>>,
 }
 
 impl Views for TestViews {
@@ -129,6 +131,15 @@ impl Views for TestViews {
 
     fn on_destroyed(&self, listener: Listener) {
         self.listeners.lock().unwrap().push(listener);
+    }
+
+    fn renderer_generation(&self, view: ViewId) -> Option<shell_contract::runtime::RendererGeneration> {
+        if !self.alive.lock().unwrap().contains(&view.0) { return None; }
+        Some(self.generations.lock().unwrap().entry(view).or_insert_with(shell_contract::runtime::RendererGeneration::new).clone())
+    }
+
+    fn on_renderer_replaced(&self, listener: Box<dyn Fn(ViewId, shell_contract::runtime::RendererGeneration) + Send + Sync>) {
+        self.replacements.lock().unwrap().push(listener);
     }
 }
 
@@ -174,7 +185,7 @@ impl Rig {
         *test_views.alive.lock().unwrap() = views.to_vec();
         let mut table = Hosts::default();
         hosts(&mut table);
-        let services = Services {
+        let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
             ui: core.clone(),
             core: core.clone(),
             workers: Arc::new(Spawn),
@@ -182,7 +193,7 @@ impl Rig {
             views: test_views.clone(),
             paths: Arc::new(Dir(dir.clone())),
             hosts: Arc::new(table),
-        };
+        });
         Rig {
             services,
             core,
@@ -209,6 +220,7 @@ impl Rig {
     /// A view goes away: the listeners the ports gave `Views::on_destroyed` run
     pub fn destroy_view(&self, view: u32) {
         self.views.alive.lock().unwrap().retain(|v| *v != view);
+        if let Some(generation) = self.views.generations.lock().unwrap().remove(&ViewId(view)) { generation.revoke(); }
         let listeners = self.views.listeners.lock().unwrap();
         for listener in listeners.iter() {
             listener(ViewId(view));
@@ -225,6 +237,7 @@ pub fn call_cx(sender: Sender) -> CallContext {
         sender,
         request: None,
         cancel: CancelToken::default(),
+        native: None,
     }
 }
 
@@ -281,6 +294,9 @@ impl OsShell for Os {
     fn show_item_in_folder(&self, _: &std::path::Path) {}
     fn trash_item(&self, _: &std::path::Path) -> Result<(), String> {
         Ok(())
+    }
+    fn trash_item_authorized(&self, path: &std::path::Path, admit: &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>) -> Result<(), String> {
+        admit(&mut || self.trash_item(path))
     }
 }
 

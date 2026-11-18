@@ -15,11 +15,11 @@
 mod app;
 mod cef_ops;
 mod context;
-mod doc_links;
+pub(crate) mod doc_links;
 mod dock;
 mod fonts;
 
-pub(crate) use app::{app_menu_activate, app_menu_popup};
+pub(crate) use app::{app_menu_activate, app_menu_popup, prepare_activation_menu};
 // what batch A and the editors' hosts call for the document links
 #[allow(unused_imports)]
 pub(crate) use doc_links::{
@@ -30,7 +30,10 @@ pub(crate) use doc_links::{
 #[allow(unused_imports)]
 pub(crate) use app::{
     DocsViewState, rebuild_docs_menu, set_docs_view_state_source, set_menu_item_checked,
-    set_menu_item_enabled,
+    set_menu_item_enabled, SavedMenu, prepare_docs_menu_refresh_owned, prepare_docs_menu_refresh_many_owned,
+    prepare_docs_menu_refresh_recovery, prepare_docs_menu_refresh_native, prepare_docs_menu_refresh_many_owned_extra,
+    RecoverySavedMenu, ExistingDocumentSavedMenu, prepare_docs_menu_refresh_existing_document,
+    SavedDocumentMenu, prepare_docs_menu_refresh_saved_document,
 };
 
 pub(crate) use cef_ops::{host_of, print_preview};
@@ -137,6 +140,8 @@ struct ShellM {
     ui: Arc<dyn Thread>,
     windows: Arc<Windows>,
     views: Arc<ViewTable>,
+    cleanup_shutdown: shell_contract::runtime::CancelToken,
+    headless_cleanup: Arc<super::headless_cleanup::Supervisor>,
     paths: ShellPaths,
     tray: Option<QuickLookHost>,
     /// the process's one default-save-folder state (`host::install_process_state`)
@@ -157,6 +162,8 @@ pub fn install(hosts: &mut Hosts, cx: &HostContext) {
         ui: cx.ui.clone(),
         windows: cx.windows.clone(),
         views: cx.views.clone(),
+        cleanup_shutdown: cx.cleanup_shutdown.clone(),
+        headless_cleanup: cx.headless_cleanup.clone(),
         paths: ShellPaths::new(),
         tray: hosts.get::<QuickLookHost>().cloned(),
         save_dir: hosts
@@ -265,7 +272,7 @@ pub(crate) fn install_dock_menu(app: &AppHandle) {
 
 /// The first language of the profile's accept languages: the locale Chromium
 /// runs the app in, which is what Electron's `app.getLocale()` reported
-fn first_accept_language(ui: &Arc<dyn Thread>) -> Option<String> {
+pub(super) fn first_accept_language(ui: &Arc<dyn Thread>) -> Option<String> {
     on_ui(ui, || {
         cef_ops::string_list_preference("intl.accept_languages")
     })
@@ -402,15 +409,61 @@ impl MHost for ShellM {
             .unwrap_or_default()
     }
 
-    /// The shell has no headless export mode: that runs in the command-line tool
     fn headless(&self) -> bool {
-        false
+        crate::headless::is_headless()
     }
 
     fn open_generated_path(&self, path: &str) -> bool {
         let path = path.to_owned();
         on_core(move |provided| shell_tabs(provided).is_some_and(|tabs| tabs.open_path(&path)))
             .unwrap_or(false)
+    }
+
+    fn export_written_owned(
+        &self, path: std::path::PathBuf, origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost, accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send>,
+    ) {
+        let callback = Arc::new(std::sync::Mutex::new(Some(done)));
+        let on_core = callback.clone();
+        crate::host::w::post_core_checked(move |provided, _| {
+            let done = on_core.lock().unwrap_or_else(|error| error.into_inner()).take();
+            let Some(done) = done else { return; };
+            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+                return done(Err("The tab manager is unavailable".into()));
+            };
+            tabs.export_written_owned(path, "pdf", origin, destination, cancel, pending, effects, accepted, done);
+        }, move || {
+            let done = callback.lock().unwrap_or_else(|error| error.into_inner()).take();
+            if let Some(done) = done { done(Err("The shell core is unavailable".into())); }
+        });
+    }
+
+    fn export_written_existing_document(
+        &self, selection: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        effects: shell_contract::hosts::OwnedEffectsHost, additional: Vec<shell_contract::runtime::CancelToken>,
+        accepted: shell_contract::hosts::PdfReloadAccepted,
+        wake: shell_contract::hosts::GeneratedPathWake,
+        done: Box<dyn FnOnce(Result<shell_contract::hosts::GeneratedPathDispatchOutcome, String>) + Send>,
+    ) {
+        let callback = Arc::new(std::sync::Mutex::new(Some(done)));
+        let on_core = callback.clone();
+        crate::host::w::post_core_checked(move |provided, _| {
+            let Some(done) = on_core.lock().unwrap_or_else(|error| error.into_inner()).take() else { return; };
+            let Some(tabs) = provided.all::<shell_ipc_w::tabs::TabsState>().into_iter().next() else {
+                return done(Err("The tab manager is unavailable".into()));
+            };
+            tabs.export_written_existing_document(selection, "pdf", participants, cancel, pending, additional, effects, accepted, done);
+        }, move || {
+            if let Some(done) = callback.lock().unwrap_or_else(|error| error.into_inner()).take() {
+                done(Err("The shell core is unavailable".into()));
+            }
+        });
     }
 
     fn default_save_dir(&self) -> String {
@@ -487,6 +540,25 @@ impl MHost for ShellM {
         print::printers()
     }
 
+    fn print_window_native_invocation(
+        &self, spec: &PrintWindowSpec, document: &shell_contract::ipc::NativeInvocationDocument,
+        sender: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Box<dyn PrintSurface>, String> {
+        let cx = HostContext { app: self.app.clone(), ui: self.ui.clone(), views: self.views.clone(), windows: self.windows.clone(), cleanup_shutdown: self.cleanup_shutdown.clone(), headless_cleanup: self.headless_cleanup.clone() };
+        print::window_native_invocation(&cx, spec.clone(), document.target(), sender, cancel, pending)
+    }
+
+    fn print_window_existing_document(
+        &self, spec: &PrintWindowSpec, binding: &shell_contract::ipc::NativeExistingDocumentBinding,
+        participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        additional: &[shell_contract::runtime::CancelToken],
+    ) -> Result<Box<dyn PrintSurface>, String> {
+        let cx = HostContext { app: self.app.clone(), ui: self.ui.clone(), views: self.views.clone(), windows: self.windows.clone(), cleanup_shutdown: self.cleanup_shutdown.clone(), headless_cleanup: self.headless_cleanup.clone() };
+        print::window_existing_document(&cx, spec.clone(), binding, participants, cancel, pending, additional)
+    }
+
     fn print_window(&self, spec: &PrintWindowSpec) -> Box<dyn PrintSurface> {
         print::window(
             self.app.clone(),
@@ -494,6 +566,17 @@ impl MHost for ShellM {
             self.views.clone(),
             spec.clone(),
         )
+    }
+
+    fn print_window_owned(
+        &self, spec: &PrintWindowSpec,
+        origin: &shell_contract::ipc::NativeRequestOwner,
+        destination: &shell_contract::ipc::NativeRequestOwner,
+        cancel: &shell_contract::runtime::CancelToken,
+        pending: &shell_contract::runtime::CancelToken,
+    ) -> Result<Box<dyn PrintSurface>, String> {
+        let cx = HostContext { app: self.app.clone(), ui: self.ui.clone(), views: self.views.clone(), windows: self.windows.clone(), cleanup_shutdown: self.cleanup_shutdown.clone(), headless_cleanup: self.headless_cleanup.clone() };
+        print::window_owned(&cx, spec.clone(), origin, destination, cancel, pending)
     }
 
     fn run_command(&self, file: &str, args: &[String], stdin: Option<&[u8]>) -> CommandOutcome {

@@ -6,8 +6,7 @@
 //!
 //! - macOS: `NSAlert` ([`mac`]).
 //! - Windows: `TaskDialogIndirect`, as Electron's ([`win`]).
-//! - elsewhere: `rfd`, which has one to three buttons and no checkbox; a box
-//!   outside that is answered as its cancel button and logged.
+//! - Linux: a cancellable GTK dialog with custom buttons and checkbox.
 //!
 //! What is the same on every OS is here and tested: the buttons of a box when
 //! it names none, which button is the default, which one Escape chooses.
@@ -17,10 +16,10 @@ use tauri::Window;
 
 #[cfg(target_os = "macos")]
 mod mac;
-#[cfg(not(any(target_os = "macos", windows)))]
-mod other;
 #[cfg(windows)]
 mod win;
+#[cfg(target_os = "linux")]
+pub(crate) mod cancellable;
 
 /// `type` of the options: the icon
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,15 +103,15 @@ pub fn cancel_index(buttons: &[String], cancel_id: Option<usize>) -> usize {
         .unwrap_or(0)
 }
 
-/// Shows the box and waits for its answer. On the UI thread.
-pub fn show(options: &MessageBox, parent: Option<&Window>) -> MessageBoxAnswer {
+
+pub(crate) fn show_owned(options: &MessageBox, parent: Option<&Window>, session: &std::sync::Arc<crate::host::dialog::owned::Session>) -> Result<MessageBoxAnswer, String> {
     let spec = Spec::of(options);
     #[cfg(target_os = "macos")]
-    return mac::show(&spec, parent);
+    { mac::show_owned(&spec, parent, session) }
     #[cfg(windows)]
-    return win::show(&spec, parent);
-    #[cfg(not(any(target_os = "macos", windows)))]
-    return other::show(&spec, parent);
+    { win::show_owned(&spec, parent, session) }
+    #[cfg(target_os = "linux")]
+    { crate::host::dialog::owned::linux::message(&spec, parent, session) }
 }
 
 #[cfg(test)]

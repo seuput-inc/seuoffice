@@ -276,7 +276,7 @@ impl Fetcher for Recording<'_> {
         self.inner.global_dispatcher()
     }
 
-    fn fetch(&mut self, url: &str, init: &FetchInit<'_>) -> Result<Box<dyn Response>, FetchError> {
+    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
         self.last_url = url.to_owned();
         self.inner.fetch(url, init)
     }
@@ -285,8 +285,8 @@ impl Fetcher for Recording<'_> {
         self.inner.close_dispatcher()
     }
 
-    fn sleep(&mut self, ms: f64) {
-        self.inner.sleep(ms)
+    fn sleep(&mut self, ms: f64, signal: Option<&dyn AbortSignal>) {
+        self.inner.sleep(ms, signal)
     }
 }
 

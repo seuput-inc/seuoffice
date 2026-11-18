@@ -96,10 +96,11 @@ fn pages_for(
         Ok(_) if accept == "encrypted" => Err("not-encrypted".into()),
         Ok(pages) => Ok(pages),
         Err(p) if p == "encrypted" && accept == "encrypted" => {
-            Ok(engine.encrypted_page_count(bytes))
+            engine.encrypted_page_count(bytes).map_err(|_| "unreadable".into())
         }
         Err(p) if p == "unreadable" && accept == "damaged" => Ok(0.0),
-        Err(p) => Err(p),
+        Err(p) if p == "encrypted" || p == "unreadable" => Err(p),
+        Err(_) => Err("unreadable".into()),
     }
 }
 
@@ -400,22 +401,24 @@ impl Window {
                 let Some((page_count, candidates)) = tools::found_blank_pages(&value) else {
                     return r.reply(Ok(failed("failed")));
                 };
-                me.s.borrow_mut()
-                    .blank_found
-                    .insert(input.id, candidates.iter().map(|c| c.page as u64).collect());
+                let found = candidates.iter().map(|c| c.page as u64).collect();
                 let candidates = candidates
                     .into_iter()
                     .map(|c| {
-                        let thumb = c
-                            .thumb
-                            .map(|(w, h, bgra)| me.ctx.engine.png_data_url(w, h, &bgra));
-                        obj([
+                        let thumb = c.thumb
+                            .map(|(w, h, bgra)| me.ctx.engine.png_data_url(w, h, &bgra))
+                            .transpose()?;
+                        Ok(obj([
                             ("page", c.page.into_ipc()),
                             ("reason", c.reason.into_ipc()),
                             ("thumb", thumb.into_ipc()),
-                        ])
+                        ]))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, String>>();
+                let Ok(candidates) = candidates else {
+                    return r.reply(Ok(failed("failed")));
+                };
+                me.s.borrow_mut().blank_found.insert(input.id, found);
                 r.reply(Ok(obj([
                     ("ok", true.into_ipc()),
                     ("pageCount", page_count.into_ipc()),
@@ -905,6 +908,15 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_count_transport_failure_is_not_a_zero_page_pdf() {
+        let engine = super::super::hosts::fake::Fake::new(&json!({
+            "inspect_pdf": { "problem": "encrypted" },
+            "encrypted_page_count": { "error": "engine closed" }
+        }), None);
+        assert_eq!(super::pages_for(&engine, b"pdf", "pdf", "encrypted"), Err("unreadable".into()));
+    }
+
+    #[test]
     fn only_the_shell_window_opens_the_tools_and_only_they_are_answered() {
         let mut t = tools(json!({ "lang": "ko" }));
         let other = t.pdf_view(5);
@@ -1078,6 +1090,26 @@ mod tests {
         t.rt.script().save.push_back(Some(t.rt.dir.join("o.pdf")));
         let done = j(&t.call("pdf-tools:run", win, vec![v(json!({ "tool": "blankPages", "inputIds": [id], "options": { "removePages": "2,3" } }))]));
         assert_eq!(done["ok"], json!(true));
+    }
+
+    #[test]
+    fn failed_thumbnail_does_not_authorize_blank_page_removal() {
+        let mut t = tools(json!({
+            "run_job": { "value": { "pageCount": 4, "candidates": [
+                { "page": 2, "reason": "empty", "thumb": { "width": 1, "height": 1, "bgra": { "$u8": [0, 0, 0, 0] } } }
+            ] } },
+            "png_data_url": { "error": "encoding failed" },
+            "inspect_pdf": { "pages": 4 }
+        }));
+        let win = open(&mut t);
+        let a = t.file("a.pdf", b"a");
+        let id = pick(&mut t, win, &[&a], vec![])["inputs"][0]["id"].clone();
+        let found = j(&t.call("pdf-tools:find-blank-pages", win, vec![id.as_str().unwrap().into_ipc()]));
+        assert_eq!(found, json!({ "ok": false, "error": "failed" }));
+        let run = j(&t.call("pdf-tools:run", win, vec![v(json!({
+            "tool": "blankPages", "inputIds": [id], "options": { "removePages": "2" }
+        }))]));
+        assert_eq!(run["error"], json!("not-found"));
     }
 
     #[test]

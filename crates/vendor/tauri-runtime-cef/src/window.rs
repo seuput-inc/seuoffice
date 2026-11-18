@@ -323,6 +323,7 @@ pub(crate) enum WindowMessage {
   InnerSize(Sender<Result<PhysicalSize<u32>>>),
   OuterSize(Sender<Result<PhysicalSize<u32>>>),
   IsFullscreen(Sender<Result<bool>>),
+  IsSimpleFullscreen(Sender<Result<bool>>),
   IsMinimized(Sender<Result<bool>>),
   IsMaximized(Sender<Result<bool>>),
   IsFocused(Sender<Result<bool>>),
@@ -465,8 +466,232 @@ mod native_window_identity_tests {
 /// before assuming it is never going to be mapped.
 const PENDING_ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
+struct NativeWindowEntry {
+  window: std::sync::Weak<dyn WinitWindow>,
+  close: Option<crate::NativeWindowClose>,
+}
+#[derive(Clone, Default)]
+pub(crate) struct NativeWindows(
+  Arc<std::sync::Mutex<std::collections::HashMap<WindowId, NativeWindowEntry>>>,
+);
+
+pub(crate) struct NativeWindowLease {
+  id: WindowId,
+  window: Arc<dyn WinitWindow>,
+  close: Option<crate::NativeWindowClose>,
+  _effect: Option<crate::native_window_close::NativeWindowEffect>,
+}
+impl std::ops::Deref for NativeWindowLease {
+  type Target = dyn WinitWindow;
+  fn deref(&self) -> &Self::Target { self.window.as_ref() }
+}
+impl AsRef<dyn WinitWindow> for NativeWindowLease {
+  fn as_ref(&self) -> &(dyn WinitWindow + 'static) { self.window.as_ref() }
+}
+impl NativeWindowLease {
+  pub(crate) fn handle(&self) -> NativeWindowHandle {
+    NativeWindowHandle::new(self.id, &self.window, self.close.clone())
+  }
+}
+
+pub(crate) struct NativeWindowOrigin {
+  window: Option<std::sync::Weak<dyn WinitWindow>>,
+  close: Option<crate::NativeWindowClose>,
+}
+impl NativeWindowOrigin {
+  pub(crate) fn admit(&self) -> Option<Option<crate::native_window_close::NativeWindowEffect>> {
+    match &self.close { Some(close) => Some(Some(close.admit()?)), None => Some(None) }
+  }
+  pub(crate) fn close(&self) -> Option<crate::NativeWindowClose> { self.close.clone() }
+  pub(crate) fn is_open(&self) -> bool {
+    self.close.as_ref().is_none_or(|close| close.is_open())
+      && self.window.as_ref().is_none_or(|window| window.upgrade().is_some())
+  }
+}
+
+/// Creation-bound, non-owning native window access. Cloning this handle does
+/// not retain the native window or count as an active operation.
+#[derive(Clone)]
+pub struct NativeWindowHandle {
+  pub(crate) id: WindowId,
+  window: std::sync::Weak<dyn WinitWindow>,
+  close: Option<crate::NativeWindowClose>,
+  thread: std::thread::ThreadId,
+}
+impl NativeWindowHandle {
+  pub(crate) fn new(id: WindowId, window: &Arc<dyn WinitWindow>, close: Option<crate::NativeWindowClose>) -> Self {
+    Self { id, window: Arc::downgrade(window), close, thread: std::thread::current().id() }
+  }
+
+  pub(crate) fn is_same(&self, other: &Self) -> bool {
+    self.window.ptr_eq(&other.window)
+      && match (&self.close, &other.close) {
+        (Some(left), Some(right)) => left.same(right),
+        (None, None) => true,
+        _ => false,
+      }
+  }
+
+  pub(crate) fn is_retired(&self) -> bool {
+    self.close.as_ref().is_some_and(|close| !close.is_open()) || self.window.upgrade().is_none()
+  }
+
+  #[cfg(target_os = "macos")]
+  pub(crate) fn begin_native_preclose(&self) -> Option<Option<crate::NativeWindowEffect>> {
+    if std::thread::current().id() != self.thread { return None; }
+    match &self.close {
+      Some(close) => Some(Some(close.admit_native_preclose()?)),
+      None => Some(None),
+    }
+  }
+
+  #[cfg(target_os = "macos")]
+  pub(crate) fn complete_native_preclose(&self, success: bool) {
+    if let Some(close) = &self.close { close.complete_native_preclose(success); }
+  }
+
+  pub(crate) fn origin(&self) -> NativeWindowOrigin {
+    NativeWindowOrigin { window: Some(self.window.clone()), close: self.close.clone() }
+  }
+
+  pub fn with_window<R>(&self, effect: impl FnOnce(&dyn WinitWindow) -> R) -> Result<R> {
+    if std::thread::current().id() != self.thread { return Err(Error::FailedToSendMessage); }
+    let _effect = match &self.close {
+      Some(close) => Some(close.admit().ok_or(Error::FailedToSendMessage)?),
+      None => None,
+    };
+    let window = self.window.upgrade().ok_or(Error::FailedToReceiveMessage)?;
+    Ok(effect(window.as_ref()))
+  }
+
+  #[cfg(target_os = "macos")]
+  pub fn with_ns_window<R>(&self, effect: impl FnOnce(&objc2_app_kit::NSWindow) -> R) -> Result<R> {
+    self.with_window(|window| {
+      let native = crate::platform::macos::nswindow(window);
+      effect(&native)
+    })
+  }
+
+  #[cfg(windows)]
+  pub fn with_hwnd<R>(&self, effect: impl FnOnce(windows::Win32::Foundation::HWND) -> R) -> Result<R> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    self.with_window(|window| {
+      let handle = window.window_handle().map_err(|_| Error::FailedToReceiveMessage)?;
+      let RawWindowHandle::Win32(handle) = handle.as_raw() else { return Err(Error::FailedToReceiveMessage) };
+      let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut _);
+      if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(hwnd)) }.as_bool() {
+        return Err(Error::FailedToReceiveMessage);
+      }
+      Ok(effect(hwnd))
+    })?
+  }
+
+  #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+  pub fn with_gtk_window<R>(&self, effect: impl FnOnce(&gtk::ApplicationWindow) -> R) -> Result<R> {
+    use winit::platform::gtk4::WindowExtGtk4;
+    self.with_window(|window| {
+      let native = window.gtk_window().ok_or(Error::FailedToReceiveMessage)?;
+      Ok(effect(&native))
+    })?
+  }
+}
+
+pub(crate) struct NativeWindowAccess {
+  windows: NativeWindows,
+  id: WindowId,
+  window: std::sync::Weak<dyn WinitWindow>,
+}
+
+impl NativeWindows {
+  #[cfg(target_os = "macos")]
+  pub(crate) fn key_window_on_ui(&self) -> Result<Option<NativeWindowHandle>> {
+    let main = objc2::MainThreadMarker::new().ok_or(Error::FailedToSendMessage)?;
+    let Some(key) = objc2_app_kit::NSApplication::sharedApplication(main).keyWindow() else {
+      return Ok(None);
+    };
+    let entries = {
+      let windows = self.0.lock().map_err(|_| Error::FailedToReceiveMessage)?;
+      windows.iter().filter_map(|(id, entry)| {
+        Some((*id, entry.window.upgrade()?, entry.close.clone()?))
+      }).collect::<Vec<_>>()
+    };
+    let mut found = None;
+    for (id, window, close) in entries {
+      let Some(_effect) = close.admit() else { continue };
+      let native = crate::platform::macos::nswindow(window.as_ref());
+      if std::ptr::eq(&*native, &*key) {
+        if found.is_some() { return Err(Error::FailedToReceiveMessage); }
+        found = Some(NativeWindowHandle::new(id, &window, Some(close)));
+      }
+    }
+    found.map(Some).ok_or(Error::FailedToReceiveMessage)
+  }
+
+  fn insert(&self, id: WindowId, window: &Arc<dyn WinitWindow>, close: Option<crate::NativeWindowClose>) -> NativeWindowAccess {
+    let original = Arc::downgrade(window);
+    self.0.lock().unwrap_or_else(|error| error.into_inner()).insert(id, NativeWindowEntry {
+      window: original.clone(), close,
+    });
+    NativeWindowAccess { windows: self.clone(), id, window: original }
+  }
+
+  fn get(&self, id: WindowId, expected: Option<&crate::NativeWindowClose>) -> Option<NativeWindowLease> {
+    let (window, close) = {
+      let windows = self.0.lock().ok()?;
+      let entry = windows.get(&id)?;
+      if let Some(expected) = expected {
+        if !entry.close.as_ref().is_some_and(|close| close.same(expected)) { return None; }
+      }
+      (entry.window.upgrade()?, entry.close.clone())
+    };
+    let effect = match &close { Some(close) => Some(close.admit()?), None => None };
+    Some(NativeWindowLease { id, window, close, _effect: effect })
+  }
+
+  pub(crate) fn matches(&self, id: WindowId, expected: &crate::NativeWindowClose) -> bool {
+    self.0.lock().is_ok_and(|windows| windows.get(&id)
+      .and_then(|entry| entry.close.as_ref()).is_some_and(|close| close.same(expected)))
+  }
+
+  pub(crate) fn capture(&self, id: WindowId, fallback: Option<&crate::NativeWindowClose>, allow_missing: bool) -> Option<NativeWindowOrigin> {
+    let windows = self.0.lock().ok()?;
+    match windows.get(&id) {
+      Some(entry) => {
+        if fallback.is_some_and(|expected| entry.close.as_ref().is_none_or(|actual| !expected.same(actual))) {
+          return None;
+        }
+        Some(NativeWindowOrigin { window: Some(entry.window.clone()), close: entry.close.clone() })
+      }
+      None if allow_missing => Some(NativeWindowOrigin { window: None, close: fallback.cloned() }),
+      None => None,
+    }
+  }
+
+  pub(crate) fn matches_origin(&self, id: WindowId, origin: &NativeWindowOrigin) -> bool {
+    self.0.lock().is_ok_and(|windows| {
+      let Some(entry) = windows.get(&id) else { return false };
+      origin.window.as_ref().is_none_or(|window| entry.window.ptr_eq(window))
+        && match (&origin.close, &entry.close) {
+          (Some(expected), Some(actual)) => expected.same(actual),
+          (None, None) => true,
+          _ => false,
+        }
+    })
+  }
+}
+
+impl Drop for NativeWindowAccess {
+  fn drop(&mut self) {
+    let mut windows = self.windows.0.lock().unwrap_or_else(|error| error.into_inner());
+    if windows.get(&self.id).is_some_and(|entry| entry.window.ptr_eq(&self.window)) {
+      windows.remove(&self.id);
+    }
+  }
+}
+
 pub(crate) struct AppWindow {
   pub(crate) lifetime: NativeWindowToken,
+  _native_access: NativeWindowAccess,
   #[allow(unused)]
   pub(crate) id: WindowId,
   pub(crate) label: String,
@@ -500,6 +725,7 @@ pub(crate) struct AppWindow {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AppWindowAttrs {
   pub(crate) inner: WindowAttributes,
+  pub(crate) window_submission: Option<crate::native_window_close::NativeWindowSubmission>,
   pub(crate) center: bool,
   pub(crate) background_color: Option<Color>,
   pub(crate) prevent_overflow: Option<Size>,
@@ -760,6 +986,18 @@ impl AppWindow {
   }
 }
 
+fn pending_window_reservation<T: UserEvent>(pending: &PendingWindow<T, CefRuntime<T>>) -> Result<Option<crate::NativeWindowClose>> {
+  let window = pending.window_builder.attrs.window_submission.as_ref().map(|submission| submission.close());
+  let webview = pending.webview.as_ref()
+    .and_then(|view| view.runtime_specific_attributes.window_submission.as_ref())
+    .map(|submission| submission.close());
+  match (window, webview) {
+    (Some(window), Some(webview)) if !window.same(&webview) => Err(Error::FailedToSendMessage),
+    (Some(window), _) => Ok(Some(window)),
+    (None, webview) => Ok(webview),
+  }
+}
+
 impl<T: UserEvent> WinitCefApp<T> {
   pub(crate) fn create_window(
     &mut self,
@@ -769,6 +1007,10 @@ impl<T: UserEvent> WinitCefApp<T> {
     pending: Box<PendingWindow<T, CefRuntime<T>>>,
     _after_window_creation: Option<AfterWindowCreationCallback>,
   ) -> Result<()> {
+    let native_close = pending_window_reservation(&pending)?;
+    if native_close.as_ref().is_some_and(|close| !close.claim()) {
+      return Err(Error::FailedToSendMessage);
+    }
     let mut attrs = pending.window_builder.attrs.clone();
     if attrs.inner.preferred_theme.is_none() {
       attrs.inner.preferred_theme =
@@ -776,9 +1018,31 @@ impl<T: UserEvent> WinitCefApp<T> {
     }
     prepare_window_attributes(event_loop, &mut attrs);
 
-    let window = event_loop
-      .create_window(attrs.inner.clone())
-      .map_err(|e| Error::CreateWindow(Box::new(e)))?;
+    let window = match event_loop.create_window(attrs.inner.clone()) {
+      Ok(window) => window,
+      Err(error) => {
+        if let Some(close) = &native_close { close.not_created(); }
+        return Err(Error::CreateWindow(Box::new(error)));
+      }
+    };
+    if let Some(close) = &native_close {
+      if !close.allocated() { return Err(Error::FailedToSendMessage); }
+      #[cfg(target_os = "macos")]
+      close.require_native_preclose();
+      let native_id = window.id();
+      if let Some(existing) = self.state.native_window_watches.get_mut(&native_id) {
+        existing.ambiguous = true;
+        return Err(Error::FailedToSendMessage);
+      }
+      let context = self.context.clone();
+      let original = close.clone();
+      let subscription = close.when_closed(move |_| {
+        let _ = context.enqueue_message(Message::NativeWindowTerminal(native_id, original));
+      }).map_err(|_| Error::FailedToSendMessage)?;
+      self.state.native_window_watches.insert(native_id, crate::runtime::NativeWindowWatch {
+        close: close.clone(), _subscription: subscription, ambiguous: false,
+      });
+    }
 
     #[cfg(any(
       target_os = "linux",
@@ -796,7 +1060,8 @@ impl<T: UserEvent> WinitCefApp<T> {
       .then(|| Instant::now() + PENDING_ACTIVATION_TIMEOUT);
     #[cfg(target_os = "macos")]
     let fullscreen_transition = {
-      let context = self.context.clone();
+      let mut context = self.context.clone();
+      context.window_scope = native_close.clone().map(|close| (window_id, close));
       crate::platform::macos::FullscreenTransition::observe(
         &crate::platform::macos::nswindow(window.as_ref()),
         move || {
@@ -807,13 +1072,42 @@ impl<T: UserEvent> WinitCefApp<T> {
         },
       )
     };
+    let window: Arc<dyn WinitWindow> = Arc::from(window);
+    let native_access = self.context.native_windows.insert(window_id, &window, native_close.clone());
+    #[cfg(target_os = "macos")]
+    {
+      if self.state.mac_preclose_observers.contains_key(&winit_id) {
+        if let Some(watch) = self.state.native_window_watches.get_mut(&winit_id) { watch.ambiguous = true; }
+        return Err(Error::FailedToSendMessage);
+      }
+      let original = NativeWindowHandle::new(window_id, &window, native_close.clone());
+      let callback_window = original.clone();
+      let callback_label = pending.label.clone();
+      let context = self.context.clone();
+      let nswindow = crate::platform::macos::nswindow(window.as_ref());
+      let observer = crate::platform::macos::PrecloseObserver::observe(&nswindow, move |native| {
+        let (effect, success) = match callback_window.begin_native_preclose() {
+          Some(effect) => {
+            let success = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+              native.is_some_and(|native| crate::modal_window::will_close_macos(&callback_label, &callback_window, native))
+            })).unwrap_or(false);
+            (effect, success)
+          }
+          None => return,
+        };
+        if !success { log::error!("AppKit native pre-close cleanup failed; close receipt remains pending"); }
+        let _ = context.enqueue_message(Message::NativeWindowPrecloseCompleted(winit_id, callback_window.clone(), effect, success));
+      });
+      self.state.mac_preclose_observers.insert(winit_id, (original, observer));
+    }
     let mut appwindow = AppWindow {
       lifetime: NativeWindowToken::new(),
+      _native_access: native_access,
       id: window_id,
       label: pending.label.clone(),
       #[cfg(windows)]
       background_surface: None,
-      window: Arc::from(window),
+      window,
       attrs,
       children: Vec::new(),
       native_drag_drop: None,
@@ -899,15 +1193,19 @@ impl<T: UserEvent> WinitCefApp<T> {
     // creation failure surfaces to the caller without leaving the window in
     // state to roll back.
     if let (Some(webview_id), Some(webview)) = (webview_id, pending.webview) {
-      Self::build_and_attach_webview(
+      if let Err(error) = Self::build_and_attach_webview(
         &self.context,
         &self.scheme_registry,
-        &mut self.state.live_browsers,
         &mut appwindow,
         webview_id,
         browser_client::DragDropEventTarget::Window,
         webview,
-      )?;
+      ) {
+        if self.context.browser_lifetimes.contains(webview_id) {
+          self.state.creating_windows.insert(webview_id, appwindow);
+        }
+        return Err(error);
+      }
     }
 
     self
@@ -936,9 +1234,14 @@ impl<T: UserEvent> WinitCefApp<T> {
   /// pop to the front minutes later.
   pub(crate) fn apply_pending_activations(&mut self) {
     let now = Instant::now();
+    let watches = &self.state.native_window_watches;
     for appwindow in self.state.windows.values_mut() {
       let Some(deadline) = appwindow.pending_activation else {
         continue;
+      };
+      let _effect = match watches.get(&appwindow.window.id()) {
+        Some(watch) => match watch.close.admit() { Some(effect) => Some(effect), None => continue },
+        None => None,
       };
 
       if appwindow.window.is_visible() == Some(false) {
@@ -969,7 +1272,12 @@ impl<T: UserEvent> WinitCefApp<T> {
     target_os = "openbsd"
   ))]
   pub(crate) fn apply_pending_host_layouts(&mut self) {
+    let watches = &self.state.native_window_watches;
     for appwindow in self.state.windows.values() {
+      let _effect = match watches.get(&appwindow.window.id()) {
+        Some(watch) => match watch.close.admit() { Some(effect) => Some(effect), None => continue },
+        None => None,
+      };
       if appwindow.cef_host.take_needs_relayout() {
         crate::webview::layout_app_window(appwindow);
       }
@@ -1006,6 +1314,15 @@ impl<T: UserEvent> WinitCefApp<T> {
       WindowMessage::InnerSize(tx) => _ = tx.send(Ok(window.surface_size())),
       WindowMessage::OuterSize(tx) => _ = tx.send(Ok(window.outer_size())),
       WindowMessage::IsFullscreen(tx) => _ = tx.send(Ok(window.fullscreen().is_some())),
+      WindowMessage::IsSimpleFullscreen(tx) => {
+        #[cfg(target_os = "macos")]
+        {
+          use winit::platform::macos::WindowExtMacOS;
+          let _ = tx.send(Ok(window.simple_fullscreen()));
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = tx.send(Err(Error::RuntimeTypeMismatch("simple fullscreen is an AppKit operation".into())));
+      }
       WindowMessage::IsMinimized(tx) => _ = tx.send(Ok(window.is_minimized().unwrap_or(false))),
       WindowMessage::IsMaximized(tx) => _ = tx.send(Ok(window.is_maximized())),
       WindowMessage::IsFocused(tx) => _ = tx.send(Ok(window.has_focus())),
@@ -1331,6 +1648,27 @@ macro_rules! window_getter {
       rx,
     )
   }};
+}
+
+impl<T: UserEvent> CefWindowDispatcher<T> {
+  pub(crate) fn is_simple_fullscreen(&self) -> Result<bool> {
+    if self.context.is_main_thread() {
+      #[cfg(target_os = "macos")]
+      {
+        use winit::platform::macos::WindowExtMacOS;
+        return Ok(self.native_window_on_ui()?.simple_fullscreen());
+      }
+      #[cfg(not(target_os = "macos"))]
+      return Err(Error::RuntimeTypeMismatch("simple fullscreen is an AppKit operation".into()));
+    }
+    window_getter!(self, IsSimpleFullscreen)
+  }
+
+  pub(crate) fn native_window_on_ui(&self) -> Result<NativeWindowLease> {
+    if !self.context.is_main_thread() { return Err(Error::FailedToSendMessage); }
+    let expected = self.context.window_scope.as_ref().map(|(_, close)| close);
+    self.context.native_windows.get(self.window_id, expected).ok_or(Error::FailedToReceiveMessage)
+  }
 }
 
 impl<T: UserEvent> WindowDispatch<T> for CefWindowDispatcher<T> {
@@ -1842,6 +2180,7 @@ where
 {
   let label = pending.label.clone();
   let window_id = context.next_window_id();
+  let native_window_close = pending_window_reservation(&pending)?;
   let (webview_id, use_https_scheme, devtools) = pending
     .webview
     .as_ref()
@@ -1853,30 +2192,70 @@ where
       )
     })
     .unwrap_or((None, false, None));
+  let browser_close = if let Some(id) = webview_id {
+    let supplied = pending.webview.as_ref()
+      .and_then(|view| view.runtime_specific_attributes.browser_submission.as_ref())
+      .map(|submission| submission.close()).unwrap_or_default();
+    supplied.claim().map_err(|_| Error::FailedToSendMessage)?;
+    let Some(close) = context.browser_lifetimes.reserve_with_close(id, window_id, supplied.clone()) else {
+      supplied.complete(crate::NativeBrowserCloseOutcome::NotCreated);
+      return Err(Error::FailedToSendMessage);
+    };
+    let weak = close.weak();
+    let dispatch = context.clone();
+    if close.bind_request(Arc::new(move || {
+      let Some(close) = weak() else { return Ok(()) };
+      dispatch.enqueue_message(Message::RequestBrowserClose { webview_id: id, close })
+        .map_err(|error| error.to_string())
+    })).is_err() {
+      context.browser_lifetimes.abort(id);
+      return Err(Error::FailedToSendMessage);
+    }
+    Some(close)
+  } else { None };
 
   let (result_tx, result_rx) = mpsc::channel();
-  context.send_message(Message::CreateWindow {
+  if let Err(error) = context.send_message(Message::CreateWindow {
     window_id,
     webview_id,
     pending: Box::new(pending),
     after_window_creation: after_window_creation.map(|f| Box::new(f) as _),
     result_tx,
-  })?;
+  }) {
+    if let Some(id) = webview_id { context.browser_lifetimes.abort(id); }
+    return Err(error);
+  }
   // Wait until the event loop has created the window so a creation failure is
   // surfaced to the caller instead of leaving a detached, dead window.
-  context.wait_for_creation(result_rx)?;
+  if let Err(error) = context.wait_for_creation(result_rx) {
+    if let Some(close) = &browser_close { let _ = close.request_close(); }
+    return Err(error);
+  }
+  let position = match (webview_id, browser_close.as_ref()) {
+    (Some(id), Some(close)) => Some(context.browser_lifetimes.position(id, close).ok_or(Error::FailedToReceiveMessage)?),
+    _ => None,
+  };
 
-  let webview = webview_id.map(|webview_id| DetachedWindowWebview {
-    webview: DetachedWebview {
-      label: label.clone(),
-      dispatcher: CefWebviewDispatcher {
-        window_id: Arc::new(Mutex::new(window_id)),
-        webview_id,
-        context: context.clone(),
+  let webview = webview_id.map(|webview_id| {
+    let position = position.expect("reserved browser position");
+    DetachedWindowWebview {
+      webview: DetachedWebview {
+        label: label.clone(),
+        dispatcher: CefWebviewDispatcher {
+          window_id: position.clone(),
+          webview_id,
+          context: {
+            let mut scoped = context.clone();
+            scoped.webview_scope = Some((webview_id, browser_close.clone().expect("reserved native browser close receipt"),
+              position, native_window_close.clone().map(|close| (window_id, close))));
+            scoped
+          },
+          browser_close: browser_close.clone().expect("reserved native browser close receipt"),
+        },
       },
-    },
-    use_https_scheme,
-    devtools,
+      use_https_scheme,
+      devtools,
+    }
   });
 
   Ok(DetachedWindow {
@@ -1884,7 +2263,11 @@ where
     label,
     dispatcher: CefWindowDispatcher {
       window_id,
-      context: context.clone(),
+      context: {
+        let mut scoped = context.clone();
+        scoped.window_scope = native_window_close.map(|close| (window_id, close));
+        scoped
+      },
     },
     webview,
   })

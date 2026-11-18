@@ -12,9 +12,7 @@
 //!   `menuCommand {command}`, `exportRequest {format}`, `readOutline`,
 //!   `readBytes`, `copiesNow`
 
-use main_core::packages::electron_utils::recovery_contract::{
-    RecoveryOpenDecision, RecoveryOpenFileRequest,
-};
+use main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision;
 use serde_json::Value;
 use shell_contract::ViewId;
 
@@ -119,14 +117,8 @@ impl ProbeOpen {
     pub(super) fn apply(&self, app: &MindmapApp) {
         for entry in &self.open {
             app.create_view(entry.view, entry.path.as_deref());
-            if let (Some(decision), Some(path)) = (entry.decision, &entry.path) {
-                app.open_file_with_decision(
-                    entry.view,
-                    &RecoveryOpenFileRequest {
-                        file_path: path.clone(),
-                        decision,
-                    },
-                );
+            if let (Some(decision), Some(_)) = (entry.decision, &entry.path) {
+                app.set_view_open_decision(entry.view, decision);
             }
             if let Some(seed) = &entry.seed {
                 app.queue_seed(entry.view, seed.clone());
@@ -155,7 +147,7 @@ impl ProbeOpen {
                 Startup::ReadOutline(view) => app.read_outline(*view, Box::new(|_| {})),
                 Startup::ReadBytes(view) => app.read_bytes(*view, Box::new(|_| {})),
                 Startup::CopiesNow => {
-                    app.write_copies_now(super::app::COPY_NOW_WAIT, Box::new(|| {}))
+                    app.write_copies_now(super::app::COPY_NOW_WAIT, Box::new(|_| {}))
                 }
             }
         }

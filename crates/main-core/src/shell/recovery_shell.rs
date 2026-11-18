@@ -11,26 +11,28 @@
 //! `deps` ([`LaunchDeps`]). The plan types and `planLaunch` and
 //! `resolveLaunchDecisions` are those of [`crate::shell::launch_recovery`].
 //! The module-level `plannedUntitled` map is a [`RecoveryShell`] the caller
-//! owns. The launch list's answer arrives later:
-//! [`run_launch_recovery`] hands back a [`PendingLaunchList`] whose
-//! [`PendingLaunchList::answer`] is the callback the gate would run.
+//! owns. [`LaunchMachine`] returns owned requests and resumes only on their
+//! actual completion, including the launch list's answer.
 
 use std::collections::HashMap;
+
+#[path = "recovery_shell_async.rs"]
+mod async_launch;
+pub use async_launch::{LaunchMachine, LaunchNeed, LaunchReply, LaunchStep};
 
 use crate::node_fs::NodeError;
 use crate::packages::electron_utils::recovery_contract::RecoveryOpenUntitledRequest;
 use crate::packages::electron_utils::recovery_store::{
-    RecoveryFileIdentity, RecoveryIdentity, RecoveryOpenPlan, RecoveryStore,
+    RecoveryFileIdentity, RecoveryIdentity, RecoveryLaunchDecision, RecoveryOpenPlan, RecoveryStore,
     RecoveryUntitledIdentity, is_recovery_editor_kind, is_untitled_identity,
 };
 use crate::shell::launch_recovery::{
-    LaunchJudgment, LaunchOutcome, LaunchPlan, PlannedOpen, PlannedTab, RecoveryListItem,
-    RecoveryListResult, plan_launch, resolve_launch_decisions,
+    LaunchJudgment, LaunchPlan, PlannedOpen, PlannedTab, plan_launch,
 };
 use crate::shell::renderer_disposal::Failure;
 use crate::shell::session_record::{
-    SessionRecordProcess, SessionRecorderEnv, SessionRecorderOptions, SessionUntitledCopy,
-    judge_previous_exit,
+    SessionRecordProcess, SessionRecordReadResult, SessionRecorderEnv, SessionRecorderOptions,
+    SessionUntitledCopy, judge_previous_exit,
 };
 
 /// the part of a `WebContents` this module reads
@@ -66,38 +68,17 @@ pub trait RecoveryEditors {
     fn hwp_discard_recovery_copy(&self, contents: &Self::Contents);
     fn discard_diagram_recovery(&self, contents: &Self::Contents);
 
-    /// `createPdfView()`
-    fn create_pdf_view(&self) -> Result<Self::View, Failure>;
-    /// `createSheetsView({ includeAiHandlers, openingWorkbook })`
-    fn create_sheets_view(
-        &self,
-        include_ai_handlers: bool,
-        opening_workbook: bool,
-    ) -> Result<Self::View, Failure>;
-    /// `createPlainEditorView(kind, filePath?)`
-    fn create_plain_editor_view(
-        &self,
-        kind: &str,
-        file_path: Option<&str>,
-    ) -> Result<Self::View, Failure>;
+    /// Opens and fully initializes the selected recovered view before completion.
+    fn open_recovered_view(
+        &self, kind: &str, title: &str, file_path: Option<&str>,
+        copy: Option<&RecoveryOpenUntitledRequest>,
+        done: Box<dyn FnOnce(Result<Self::View, Failure>)>,
+    );
 
-    /// `isRecoveryEditorKind(kind) ? recoveryEditor(kind) : null` is not null
     fn has_recovery_editor(&self, kind: &str) -> bool;
-    /// `contract.openUntitledCopy(view.webContents, request)`, started and not
-    /// waited for (`void Promise.resolve(..).catch(warn)`): the caller must
-    /// not block on the copy being opened. `Err` is its synchronous throw;
-    /// a rejection later is the host's own `warn` with the same prefix
-    fn open_untitled_copy(
-        &self,
-        kind: &str,
-        view: &Self::View,
-        request: &RecoveryOpenUntitledRequest,
-    ) -> Result<(), Failure>;
 
     /// `console.warn(prefix, detail)`
     fn warn(&self, prefix: &str, detail: &str);
-    /// `migrateSheetsLegacyRecovery()`
-    fn migrate_sheets_legacy_recovery(&self);
     /// `setImmediate(() => deps.afterSheetsOpen())`
     fn after_sheets_open_soon(&self);
     /// `setMarkdownRecoveryTitleSource(titleOf)`, `setHtmlRecoveryTitleSource`,
@@ -159,24 +140,9 @@ pub struct ListedTab {
 /// the part of the `TabManager` this module drives
 pub trait LaunchManager {
     type Contents;
-    /// every method that changes the strip may throw
-    fn add_unloaded_tab(&mut self, spec: UnloadedTabSpec) -> Result<String, Failure>;
-    fn activate_tab(&mut self, id: &str) -> Result<(), Failure>;
-    fn hydrate_session(&mut self, tabs: Vec<UnloadedTabSpec>) -> Result<Vec<String>, Failure>;
-    fn close_tab_without_prompt(&mut self, id: &str) -> Result<(), Failure>;
-    fn list(&self) -> Vec<ListedTab>;
-    fn reorder_tab(&mut self, id: &str, slot: usize) -> Result<(), Failure>;
-    fn begin_split(
-        &mut self,
-        a: &str,
-        b: &str,
-        orientation: &str,
-        ratio: f64,
-        focus: &str,
-    ) -> Result<(), Failure>;
+    fn list(&self) -> Result<Vec<ListedTab>, Failure>;
     /// `manager.splitState()` is set
-    fn split_state(&self) -> bool;
-    fn open_home_tab(&mut self) -> Result<(), Failure>;
+    fn split_state(&self) -> Result<bool, Failure>;
     fn web_contents_for_tab(&self, id: &str) -> Option<Self::Contents>;
 }
 
@@ -187,22 +153,8 @@ pub trait LaunchDeps {
     fn gate_blocking(&self) -> bool;
     /// `deps.gate.publishNone()`
     fn gate_publish_none(&mut self);
-    /// `deps.gate.publish(items, apply)`: the answer comes to [`PendingLaunchList::answer`]
-    fn gate_publish(&mut self, items: &[RecoveryListItem]);
     /// `deps.manager()`
     fn manager(&mut self) -> &mut Self::Manager;
-    fn user_data_dir(&self) -> String;
-    fn launch_paths(&self) -> Vec<String>;
-    /// `deps.openLaunchPaths(paths)`; an `Err` is a throw
-    fn open_launch_paths(&mut self, paths: &[String]) -> Result<(), Failure>;
-    /// an `Err` is a throw
-    fn restore_split_memory_or_home(&mut self) -> Result<(), Failure>;
-    /// `deps.settled()`; an `Err` is a throw
-    fn settled(&mut self) -> Result<(), Failure>;
-    /// `deps.sessionChanged()`; an `Err` is a throw
-    fn session_changed(&mut self) -> Result<(), Failure>;
-    /// `deps.reopenedByInstaller === true`
-    fn reopened_by_installer(&self) -> bool;
 }
 
 /// `asSessionCopy`
@@ -310,15 +262,12 @@ impl RecoveryShell {
         }
     }
 
-    /// `reopenUntitledCopy`: reopen an untitled document from its copy in a new tab
-    pub fn reopen_untitled_copy<M: LaunchManager>(
-        &mut self,
-        manager: &mut M,
-        kind: &str,
-        title: &str,
-        copy: &RecoveryUntitledIdentity,
-    ) -> Result<(), Failure> {
-        let planned = PlannedTab {
+    /// Prepare the immutable unloaded tab; the caller adds and activates it
+    /// through the actual asynchronous tab host and notes the returned id.
+    pub fn reopen_untitled_copy_plan(
+        kind: &str, title: &str, copy: &RecoveryUntitledIdentity,
+    ) -> PlannedTab {
+        PlannedTab {
             key: "crash".to_owned(),
             kind: kind.to_owned(),
             title: title.to_owned(),
@@ -327,46 +276,19 @@ impl RecoveryShell {
                 save_as_default_path: None,
             },
             file_path: None,
-        };
-        let id = manager.add_unloaded_tab(tab_spec(&planned))?;
-        self.note_planned(&id, &planned);
-        manager.activate_tab(&id)
+        }
     }
 }
 
-/// `createUntitledEditorView`: a fresh editor view with no document, to load an
-/// untitled copy into
-fn create_untitled_editor_view<E: RecoveryEditors>(
-    editors: &E,
-    kind: &str,
-) -> Result<E::View, Failure> {
-    if kind == "pdf" {
-        return editors.create_pdf_view();
-    }
-    if kind == "sheets" {
-        return editors.create_sheets_view(false, true);
-    }
-    editors.create_plain_editor_view(kind, None)
-}
-
-/// `openUntitledCopyView`: a new editor view with a copy queued as an untitled
-/// document; the contract runs in the same tick as the view is made
+/// Completes only after the selected copy has actually been initialized.
 pub fn open_untitled_copy_view<E: RecoveryEditors>(
-    editors: &E,
-    kind: &str,
-    request: &RecoveryOpenUntitledRequest,
-) -> Result<E::View, Failure> {
-    let has_contract = is_recovery_editor_kind(kind) && editors.has_recovery_editor(kind);
-    if !has_contract {
-        return Err(Failure(format!(
-            "the {kind} editor cannot open a recovery copy"
-        )));
+    editors: &E, kind: &str, request: &RecoveryOpenUntitledRequest,
+    done: Box<dyn FnOnce(Result<E::View, Failure>)>,
+) {
+    if !is_recovery_editor_kind(kind) || !editors.has_recovery_editor(kind) {
+        return done(Err(Failure(format!("the {kind} editor cannot open a recovery copy"))));
     }
-    let view = create_untitled_editor_view(editors, kind)?;
-    if let Err(error) = editors.open_untitled_copy(kind, &view, request) {
-        editors.warn("[recovery] the copy could not be opened:", &error.0);
-    }
-    Ok(view)
+    editors.open_recovered_view(kind, &request.title, None, Some(request), done);
 }
 
 /// `restoredTabOpener`
@@ -386,43 +308,21 @@ pub fn restored_tab_opener(planned: &PlannedTab) -> RestoredTabOpener {
 impl RestoredTabOpener {
     /// `opener.open(context)`: the view the tab loads through
     pub fn open<E: RecoveryEditors>(
-        &self,
-        editors: &E,
-        deps: &dyn RestoredTabOpenerDeps,
-        context: &OpenContext,
-    ) -> Result<E::View, Failure> {
-        const NOT_ANSWERED: &str = "the launch recovery list is not answered yet";
+        &self, editors: &E, deps: &dyn RestoredTabOpenerDeps, context: &OpenContext,
+        done: Box<dyn FnOnce(Result<E::View, Failure>)>,
+    ) {
+        if deps.blocked() {
+            return done(Err(Failure("the launch recovery list is not answered yet".to_owned())));
+        }
         match self {
-            RestoredTabOpener::UntitledCopy {
-                copy,
-                save_as_default_path,
-            } => {
-                if deps.blocked() {
-                    return Err(Failure(NOT_ANSWERED.to_owned()));
-                }
-                open_untitled_copy_view(
-                    editors,
-                    &context.kind,
-                    &RecoveryOpenUntitledRequest {
-                        copy: copy.clone(),
-                        title: context.title.clone(),
-                        save_as_default_path: save_as_default_path
-                            .clone()
-                            .filter(|path| !path.is_empty()),
-                    },
-                )
+            RestoredTabOpener::UntitledCopy { copy, save_as_default_path } => {
+                let request = RecoveryOpenUntitledRequest {
+                    copy:copy.clone(),title:context.title.clone(),
+                    save_as_default_path:save_as_default_path.clone().filter(|path|!path.is_empty()),
+                };
+                open_untitled_copy_view(editors,&context.kind,&request,done);
             }
-            RestoredTabOpener::File => {
-                if deps.blocked() {
-                    return Err(Failure(NOT_ANSWERED.to_owned()));
-                }
-                let view = editors
-                    .create_plain_editor_view(&context.kind, context.file_path.as_deref())?;
-                if context.kind == "sheets" {
-                    editors.after_sheets_open_soon();
-                }
-                Ok(view)
-            }
+            RestoredTabOpener::File => editors.open_recovered_view(&context.kind, &context.title, context.file_path.as_deref(), None, done),
         }
     }
 
@@ -500,12 +400,12 @@ pub fn install_recovery_title_sources<E: RecoveryEditors>(editors: &E) {
 }
 
 /// `pushHwpRecoveryTitles`: hwp is told its untitled tabs' titles (it does not ask)
-pub fn push_hwp_recovery_titles<E, M>(editors: &E, manager: &M)
+pub fn push_hwp_recovery_titles<E, M>(editors: &E, manager: &M) -> Result<(), Failure>
 where
     E: RecoveryEditors,
     M: LaunchManager<Contents = E::Contents>,
 {
-    for tab in manager.list() {
+    for tab in manager.list()? {
         if tab.kind != "hwp" || tab.file_path.as_deref().is_some_and(|p| !p.is_empty()) {
             continue;
         }
@@ -515,250 +415,74 @@ where
             editors.set_hwp_recovery_title(&contents, &tab.title);
         }
     }
-}
-
-/// the launch list is up: [`PendingLaunchList::answer`] is the callback the
-/// gate runs with the person's answer
-pub struct PendingLaunchList {
-    plan: LaunchPlan,
-    ids: HashMap<String, String>,
-}
-
-/// `runLaunchRecovery`: the whole launch (spec 4, 5.1, 5.2, 5.3, 6). `None`
-/// once the launch settled; `Some` while it waits for the launch list.
-pub fn run_launch_recovery<E, D>(
-    shell: &mut RecoveryShell,
-    editors: &E,
-    store: &RecoveryStore<'_>,
-    session: &mut SessionRecordProcess,
-    session_env: &mut dyn SessionRecorderEnv,
-    deps: &mut D,
-) -> Result<Option<PendingLaunchList>, Failure>
-where
-    E: RecoveryEditors,
-    D: LaunchDeps + RestoredTabOpenerDeps,
-{
-    let launch_paths = deps.launch_paths();
-    // pruneStaleCopies answers a count and never throws
-    store.prune_stale_copies(None);
-    editors.migrate_sheets_legacy_recovery();
-
-    let mut ids: HashMap<String, String> = HashMap::new();
-    let plan: Option<LaunchPlan> = (|| -> Result<LaunchPlan, Failure> {
-        let recorder = session.init_session_record(&SessionRecorderOptions {
-            user_data_dir: deps.user_data_dir(),
-            write_delay_ms: None,
-            crash_loop_window_ms: None,
-        });
-        let mut unresolved_error: Option<NodeError> = None;
-        let judgment = judge_previous_exit(
-            &recorder.previous,
-            &mut || match store.has_unresolved_copies() {
-                Ok(unresolved) => unresolved,
-                Err(e) => {
-                    unresolved_error = Some(e);
-                    false
-                }
-            },
-            deps.reopened_by_installer(),
-        );
-        if let Some(e) = unresolved_error {
-            return Err(Failure(e.message));
-        }
-        let plan = plan_launch(
-            &LaunchJudgment::from(&judgment),
-            &recorder.previous,
-            store,
-            &launch_paths,
-        )?;
-        recorder.start_run(session_env, plan.restore_run);
-        if !plan.plain_launch {
-            let tabs = plan.tabs.clone();
-            let tab_ids = deps
-                .manager()
-                .hydrate_session(tabs.iter().map(tab_spec).collect())?;
-            for (index, tab) in tabs.iter().enumerate() {
-                if let Some(id) = tab_ids.get(index) {
-                    ids.insert(tab.key.clone(), id.clone());
-                }
-            }
-            for (index, tab) in tabs.iter().enumerate() {
-                if let Some(id) = tab_ids.get(index) {
-                    shell.note_planned(id, tab);
-                }
-            }
-            // the strip's change notice went out before the untitled copies were noted
-            if let Err(error) = deps.session_changed() {
-                editors.warn(
-                    "[recovery] the session record could not be updated:",
-                    &error.0,
-                );
-            }
-        }
-        Ok(plan)
-    })()
-    .map_err(|error| {
-        editors.warn(
-            "[recovery] the launch could not restore the previous session:",
-            &error.0,
-        );
-    })
-    .ok();
-
-    let Some(plan) = plan.filter(|plan| !plan.plain_launch) else {
-        deps.gate_publish_none();
-        if !launch_paths.is_empty() {
-            deps.open_launch_paths(&launch_paths)?;
-        } else {
-            deps.restore_split_memory_or_home()?;
-        }
-        deps.settled()?;
-        return Ok(None);
-    };
-
-    if plan.items.is_empty() {
-        deps.gate_publish_none();
-        let outcome = resolve_launch_decisions(&plan, None);
-        finish_launch(shell, editors, deps, &mut ids, &outcome);
-        return Ok(None);
-    }
-    // Home stays in front while the list is up: an editor view would cover it,
-    // and what a restored tab loads depends on the answer
-    deps.manager().open_home_tab()?;
-    deps.gate_publish(&plan.items);
-    Ok(Some(PendingLaunchList { plan, ids }))
-}
-
-impl PendingLaunchList {
-    /// the gate's `apply(result)` callback
-    pub fn answer<E, D>(
-        mut self,
-        shell: &mut RecoveryShell,
-        editors: &E,
-        store: &RecoveryStore<'_>,
-        deps: &mut D,
-        result: &RecoveryListResult,
-    ) where
-        E: RecoveryEditors,
-        D: LaunchDeps + RestoredTabOpenerDeps,
-    {
-        let outcome = resolve_launch_decisions(&self.plan, Some(result));
-        for (identity, decision) in &outcome.store_decisions {
-            if let Err(error) = store.apply_launch_decision(identity, *decision) {
-                editors.warn(
-                    "[recovery] a launch decision could not be recorded:",
-                    &error.message,
-                );
-            }
-        }
-        finish_launch(shell, editors, deps, &mut self.ids, &outcome);
-    }
-}
-
-/// `finish`: carry out the outcome. A failure while laying out the tabs never
-/// escapes: Home comes to the front and the launch settles anyway.
-fn finish_launch<E, D>(
-    shell: &mut RecoveryShell,
-    editors: &E,
-    deps: &mut D,
-    ids: &mut HashMap<String, String>,
-    outcome: &LaunchOutcome,
-) where
-    E: RecoveryEditors,
-    D: LaunchDeps + RestoredTabOpenerDeps,
-{
-    if let Err(error) = lay_out(shell, deps, ids, outcome) {
-        editors.warn(
-            "[recovery] the restored session could not be laid out:",
-            &error.0,
-        );
-        if let Err(home_error) = deps.manager().open_home_tab() {
-            editors.warn("[recovery] Home could not be shown:", &home_error.0);
-        }
-    }
-    if let Err(error) = deps.settled() {
-        editors.warn(
-            "[recovery] the files that arrived during the launch could not open:",
-            &error.0,
-        );
-    }
-}
-
-/// `layOut`
-fn lay_out<D>(
-    shell: &mut RecoveryShell,
-    deps: &mut D,
-    ids: &mut HashMap<String, String>,
-    outcome: &LaunchOutcome,
-) -> Result<(), Failure>
-where
-    D: LaunchDeps + RestoredTabOpenerDeps,
-{
-    for key in &outcome.remove {
-        if let Some(id) = ids.get(key).filter(|id| !id.is_empty()).cloned() {
-            deps.manager().close_tab_without_prompt(&id)?;
-        }
-        ids.remove(key);
-    }
-    for planned in &outcome.replace {
-        let old_id = ids.get(&planned.key).cloned();
-        let manager = deps.manager();
-        let slot = manager
-            .list()
-            .iter()
-            .position(|tab| Some(&tab.id) == old_id.as_ref());
-        let new_id = manager.add_unloaded_tab(tab_spec(planned))?;
-        shell.note_planned(&new_id, planned);
-        if let Some(slot) = slot.filter(|slot| *slot > 0) {
-            manager.reorder_tab(&new_id, slot)?;
-        }
-        if let Some(old_id) = old_id.filter(|id| !id.is_empty()) {
-            manager.close_tab_without_prompt(&old_id)?;
-        }
-        ids.insert(planned.key.clone(), new_id);
-    }
-    for planned in &outcome.append {
-        let id = deps.manager().add_unloaded_tab(tab_spec(planned))?;
-        shell.note_planned(&id, planned);
-        ids.insert(planned.key.clone(), id);
-    }
-    let front = outcome
-        .front
-        .as_ref()
-        .and_then(|key| ids.get(key))
-        .filter(|id| !id.is_empty())
-        .cloned();
-    let split = outcome.split.as_ref();
-    let a = split
-        .and_then(|s| ids.get(&s.a))
-        .filter(|id| !id.is_empty())
-        .cloned();
-    let b = split
-        .and_then(|s| ids.get(&s.b))
-        .filter(|id| !id.is_empty())
-        .cloned();
-    if let (Some(split), Some(a), Some(b)) = (split, a, b) {
-        let focus = if outcome.front.as_deref() == Some(split.a.as_str()) {
-            "a"
-        } else if outcome.front.as_deref() == Some(split.b.as_str()) {
-            "b"
-        } else {
-            split.focus.as_str()
-        };
-        deps.manager()
-            .begin_split(&a, &b, &split.orientation, split.ratio, focus)?;
-    }
-    if !deps.manager().split_state()
-        && let Some(front) = &front
-    {
-        deps.manager().activate_tab(front)?;
-    }
-    if !outcome.launch_paths.is_empty() {
-        deps.open_launch_paths(&outcome.launch_paths)?;
-    } else if outcome.split_memory_or_home {
-        deps.restore_split_memory_or_home()?;
-    } else if front.is_none() && !deps.manager().split_state() {
-        deps.manager().open_home_tab()?;
-    }
     Ok(())
 }
+
+
+/// Store operations used by launch. Implementations release any store lock
+/// before returning, so editor and tab callbacks can safely use the same store.
+pub trait LaunchRecoveryStore {
+    fn prune_stale_copies(&self);
+    fn has_unresolved_copies(&self) -> Result<bool, Failure>;
+    fn plan(&self, judgment: &LaunchJudgment, previous: &SessionRecordReadResult, paths: &[String]) -> Result<LaunchPlan, Failure>;
+    fn apply_decision(&self, identity: &RecoveryIdentity, decision: RecoveryLaunchDecision) -> Result<(), Failure>;
+}
+
+impl LaunchRecoveryStore for RecoveryStore<'_> {
+    fn prune_stale_copies(&self) { RecoveryStore::prune_stale_copies(self, None); }
+    fn has_unresolved_copies(&self) -> Result<bool, Failure> {
+        RecoveryStore::has_unresolved_copies(self).map_err(|error| Failure(error.message))
+    }
+    fn plan(&self, judgment: &LaunchJudgment, previous: &SessionRecordReadResult, paths: &[String]) -> Result<LaunchPlan, Failure> {
+        plan_launch(judgment, previous, self, paths)
+    }
+    fn apply_decision(&self, identity: &RecoveryIdentity, decision: RecoveryLaunchDecision) -> Result<(), Failure> {
+        self.apply_launch_decision(identity, decision).map(|_| ()).map_err(|error| Failure(error.message))
+    }
+}
+
+/// Filesystem preparation for one launch. Run on a worker with the retained
+/// session process and store; migration must perform the original legacy move.
+pub fn prepare_launch(
+    store: &dyn LaunchRecoveryStore, session: &mut SessionRecordProcess,
+    session_env: &mut dyn SessionRecorderEnv, user_data_dir: String,
+    launch_paths: &[String], reopened_by_installer: bool, migrate: impl FnOnce(),
+    check: impl Fn() -> Result<(), Failure>,
+) -> Result<LaunchPlan, Failure> {
+    let (plan, write) = prepare_launch_staged(store, session, || session_env.now(), user_data_dir, launch_paths, reopened_by_installer, migrate, check)?;
+    if let Some(write) = write {
+        let result = session_env.write_json(&write.file_path, &write.record);
+        if let Some(recorder) = session.session_recorder() { recorder.complete_write(&write, result, session_env); }
+    }
+    Ok(plan)
+}
+
+pub fn prepare_launch_staged(
+    store: &dyn LaunchRecoveryStore, session: &mut SessionRecordProcess, now: impl FnOnce() -> f64,
+    user_data_dir: String, launch_paths: &[String], reopened_by_installer: bool,
+    migrate: impl FnOnce(), check: impl Fn() -> Result<(), Failure>,
+) -> Result<(LaunchPlan, Option<super::session_record::SessionWritePlan>), Failure> {
+    check()?;
+    store.prune_stale_copies();
+    check()?;
+    migrate();
+    check()?;
+    let recorder = session.init_session_record(&SessionRecorderOptions {
+        user_data_dir, write_delay_ms: None, crash_loop_window_ms: None,
+    });
+    let mut unresolved_error = None;
+    let judgment = judge_previous_exit(&recorder.previous, &mut || {
+        if let Err(error) = check() { unresolved_error = Some(error); return false; }
+        match store.has_unresolved_copies() {
+            Ok(unresolved) => unresolved,
+            Err(error) => { unresolved_error = Some(error); false }
+        }
+    }, reopened_by_installer);
+    if let Some(error) = unresolved_error { return Err(error); }
+    check()?;
+    let plan = store.plan(&LaunchJudgment::from(&judgment), &recorder.previous, launch_paths)?;
+    check()?;
+    let write = recorder.prepare_start_run(now(), plan.restore_run);
+    Ok((plan, write))
+}
+

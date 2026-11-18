@@ -84,49 +84,74 @@ impl App {
     /// open for `path`, the original or its recovery copy
     pub fn recovered_open_bytes(
         &self,
+        view: ViewId,
         path: &str,
         original: Vec<u8>,
         password: Option<&str>,
-    ) -> RecoveredOpen {
+    ) -> Result<RecoveredOpen, shell_contract::IpcError> {
         if self.shell.is_headless() {
-            return RecoveredOpen {
+            return Ok(RecoveredOpen {
                 bytes: original,
                 recovered: false,
-            };
+            });
         }
         let identity = file_recovery_id(path);
-        let parent = self.shell.dialog_parent().map(Parent);
-        let lang = self.lang();
-        let answer = self.with_recovery_store(|store| {
-            resolve_recovery_on_open(&ResolveRecoveryOnOpenOptions {
-                store,
-                identity: &identity,
-                dialog: &BoxOver(&*self.dialogs),
-                parent: parent.as_ref(),
-                lang: lang.as_str(),
-                document_name: None,
-            })
-        });
+        let forced = {
+            let mut state = self.state.borrow_mut();
+            let matches = state.recovery_open_decisions.get(&view).is_some_and(|request| {
+                matches!((std::path::absolute(&request.file_path), std::path::absolute(path)), (Ok(left), Ok(right)) if left == right)
+            });
+            if matches { state.recovery_open_decisions.remove(&view) } else { None }
+        };
+        let answer = match forced {
+            Some(request) => match request.decision {
+                main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision::Original => None,
+                main_core::packages::electron_utils::recovery_contract::RecoveryOpenDecision::Restore => {
+                    self.with_recovery_store(|store| {
+                        let copy = store.read_copy(&identity);
+                        if copy.is_some() { let _ = store.mark_copy_loaded(&identity); }
+                        copy
+                    })
+                }
+            },
+            None => {
+                let parent = self.shell.dialog_parent().map(Parent);
+                let lang = self.lang();
+                self.with_recovery_store(|store| {
+                    match resolve_recovery_on_open(&ResolveRecoveryOnOpenOptions {
+                        store,
+                        identity: &identity,
+                        dialog: &BoxOver(&*self.dialogs),
+                        parent: parent.as_ref(),
+                        lang: lang.as_str(),
+                        document_name: None,
+                    }) {
+                        Ok(RecoveryOpenResult::Restore { bytes, .. }) => Some(bytes),
+                        _ => None,
+                    }
+                })
+            }
+        };
         let copy = match answer {
-            Ok(RecoveryOpenResult::Restore { bytes, .. }) => bytes,
+            Some(bytes) => bytes,
             _ => {
-                return RecoveredOpen {
+                return Ok(RecoveredOpen {
                     bytes: original,
                     recovered: false,
-                };
+                });
             }
         };
         // an encrypted deck's copy is encrypted with the same password (a
         // copy the current password cannot open is left alone, not opened)
-        if self.engine.is_encrypted_ooxml(&copy) {
+        if self.engine.is_encrypted_ooxml(&copy).map_err(|error| crate::value::thrown(error.0))? {
             let Some(password) = password else {
                 self.copy_not_opened(&identity);
-                return RecoveredOpen {
+                return Ok(RecoveredOpen {
                     bytes: original,
                     recovered: false,
-                };
+                });
             };
-            return match self.engine.decrypt_office_file(&copy, password) {
+            return Ok(match self.engine.decrypt_office_file(&copy, password) {
                 Ok(bytes) => RecoveredOpen {
                     bytes,
                     recovered: true,
@@ -138,12 +163,12 @@ impl App {
                         recovered: false,
                     }
                 }
-            };
+            });
         }
-        RecoveredOpen {
+        Ok(RecoveredOpen {
             bytes: copy,
             recovered: true,
-        }
+        })
     }
 
     /// `deleteSessionCopies(session, reason)`: every copy the session's
@@ -199,8 +224,13 @@ impl App {
         let Some(session) = state.slot(slot) else {
             return;
         };
-        if self.session_dirty(session) {
-            return;
+        match self.session_dirty(session) {
+            Ok(false) => {}
+            Ok(true) => return,
+            Err(error) => {
+                eprintln!("[slides] recovery cleanup dirty check failed: {}", error.0);
+                return;
+            }
         }
         if state.attached_ids(slot).iter().any(|other| *other != view) {
             return;
@@ -247,14 +277,7 @@ impl App {
         if self.shell.is_headless() {
             return;
         }
-        let current = self.read_recent();
-        let mut next = vec![path.to_owned()];
-        next.extend(current.into_iter().filter(|p| p != path));
-        next.truncate(10);
-        if let Ok(text) = serde_json::to_string(&next) {
-            // best-effort
-            let _ = std::fs::write(self.recent_path(), text);
-        }
+        super::recent::push_unowned(self.recent_path(), path.to_owned());
     }
 }
 
@@ -270,8 +293,8 @@ const AUTOSAVE_BACKOFF_TICKS: u32 = 10;
 /// are tried too. Called by the shell on the core thread.
 pub fn run_recovery_pass(ignore_backoff: bool) {
     let app = super::APPS.with(|apps| apps.borrow().last().cloned());
-    if let Some(app) = app {
-        app.run_recovery_pass(ignore_backoff);
+    if let Some(app) = app && let Err(error) = app.run_recovery_pass(ignore_backoff) {
+        eprintln!("[slides] recovery copy failed: {error}");
     }
 }
 
@@ -290,18 +313,20 @@ impl App {
     /// Starts the recovery interval
     pub fn schedule_recovery_tick(&self) {
         self.after(RECOVERY_TICK, |app| {
-            app.run_recovery_pass(false);
+            if let Err(error) = app.run_recovery_pass(false) {
+                eprintln!("[slides] recovery copy failed: {error}");
+            }
             app.schedule_recovery_tick();
         });
     }
 
-    fn content_mark(&self, s: &SlideSession) -> CopyMark {
+    fn content_mark(&self, s: &SlideSession) -> Result<CopyMark, String> {
         let top = |stack: &[super::engine::Snapshot]| {
             stack
                 .last()
                 .map_or(0, |snap| std::rc::Rc::as_ptr(&snap.0) as *const () as usize)
         };
-        CopyMark {
+        Ok(CopyMark {
             op_seq: s.core.op_seq.unwrap_or(0),
             meta_rev: s.core.meta_rev.unwrap_or(0),
             meta_dirty: s.core.meta_dirty,
@@ -309,13 +334,13 @@ impl App {
             undo_top: top(&s.core.undo_stack),
             redo_len: s.core.redo_stack.len(),
             redo_top: top(&s.core.redo_stack),
-            slide_count: self.engine.slide_paths(s.deck()).len(),
-        }
+            slide_count: self.engine.slide_paths(s.deck()).map_err(|error| error.0)?.len(),
+        })
     }
 
     /// `recoveryIdentityOf(session)`: its file's slot, else its own
     /// untitled slot (made on first use)
-    fn recovery_identity_of(&self, s: &mut SlideSession) -> RecoveryIdentity {
+    pub(super) fn recovery_identity_of(&self, s: &mut SlideSession) -> RecoveryIdentity {
         if !s.path().is_empty() {
             return file_recovery_id(s.path());
         }
@@ -353,15 +378,15 @@ impl App {
     }
 
     /// `writeSessionCopy(session, ignoreBackoff)`
-    pub fn write_session_copy(&self, slot: usize, ignore_backoff: bool) {
+    pub fn write_session_copy(&self, slot: usize, ignore_backoff: bool) -> Result<(), String> {
         let mut state = self.state.borrow_mut();
         let Some(s) = state.slot_mut(slot) else {
-            return;
+            return Err("The presentation session was closed".into());
         };
-        let mark = self.content_mark(s);
+        let mark = self.content_mark(s)?;
         // the deck holds an AI run's unaccepted edits: no copy until it is reverted or accepted
         if s.core.ai_run {
-            return;
+            return Err("The presentation has unaccepted AI changes".into());
         }
         let identity = self.recovery_identity_of(s);
         let title = matches!(identity, RecoveryIdentity::Untitled(_))
@@ -370,26 +395,22 @@ impl App {
         let engine = self.engine.clone();
         let password = s.password.clone();
         self.with_recovery_store(|store| {
-            if store.is_discarded(&identity).unwrap_or(false) {
-                return;
+            if store.is_discarded(&identity).map_err(|error| error.message)? {
+                return Err("The presentation recovery copy was discarded".into());
             }
-            let Ok(key) = store.copy_path(&identity) else {
-                return;
-            };
+            let key = store.copy_path(&identity).map_err(|error| error.message)?;
             let skip = self.backoff.borrow().get(&key).copied().unwrap_or(0);
             if skip > 0 && !ignore_backoff {
                 self.backoff.borrow_mut().insert(key, skip - 1);
-                return;
+                return Ok(());
             }
             if s.copy_mark.get() == Some(mark) && matches!(store.copy_info(&identity), Ok(Some(_)))
             {
-                return;
+                return Ok(());
             }
             // the ticket comes before serializing: a save or Don't Save that
             // lands meanwhile wins
-            let Ok(ticket) = store.begin_write(&identity) else {
-                return;
-            };
+            let ticket = store.begin_write(&identity).map_err(|error| error.message)?;
             let options = RecoveryWriteOptions {
                 ticket: Some(ticket),
                 title,
@@ -412,37 +433,58 @@ impl App {
                     .and_then(|bytes| store.write_copy(&identity, &bytes, &options)),
             };
             match result {
-                Ok(written) => {
+                Ok(RecoveryWriteResult::Written) => {
                     self.backoff.borrow_mut().remove(&key);
-                    if written == RecoveryWriteResult::Written {
-                        s.copy_mark.set(Some(mark));
-                    }
+                    s.copy_mark.set(Some(mark));
+                    Ok(())
                 }
-                Err(_) => {
+                Ok(RecoveryWriteResult::Superseded) => Err("The presentation recovery copy was superseded".into()),
+                Err(error) => {
                     // a run that began while the copy was starting is not a failing slot
                     if !s.core.ai_run {
                         self.backoff
                             .borrow_mut()
                             .insert(key, AUTOSAVE_BACKOFF_TICKS);
                     }
+                    Err(error.message)
                 }
             }
-        });
+        })
     }
 
     /// `writeDirtyCopies(ignoreBackoff)`
-    pub fn run_recovery_pass(&self, ignore_backoff: bool) {
+    pub fn run_recovery_pass(&self, ignore_backoff: bool) -> Result<(), String> {
         let slots = self.state.borrow().live_slots();
+        let mut first_failure = None;
         for slot in slots {
-            let skip = {
+            let (dirty, master_edit) = {
                 let state = self.state.borrow();
-                state
-                    .slot(slot)
-                    .is_none_or(|s| s.master_edit.is_some() || !self.session_dirty(s))
+                match state.slot(slot) {
+                    Some(s) => match self.session_dirty(s) {
+                        Ok(dirty) => (dirty, s.master_edit.is_some()),
+                        Err(error) => {
+                            if first_failure.is_none() { first_failure = Some(error.0); }
+                            continue;
+                        }
+                    },
+                    None => (false, false),
+                }
             };
-            if !skip {
-                self.write_session_copy(slot, ignore_backoff);
+            if !dirty { continue; }
+            if master_edit {
+                if ignore_backoff && first_failure.is_none() {
+                    first_failure = Some("The presentation is editing its master slide".to_owned());
+                }
+                continue;
+            }
+            if let Err(error) = self.write_session_copy(slot, ignore_backoff) && first_failure.is_none() {
+                first_failure = Some(error);
             }
         }
+        first_failure.map_or(Ok(()), Err)
     }
 }
+
+#[path = "recovery_open.rs"]
+mod opening;
+pub(super) use opening::{PreparedRecovery, RecoveryApplying, abandon as abandon_recovery, consume as consume_prepared, initialized as recovery_initialized};

@@ -24,7 +24,7 @@ use jscompat::JsonValue;
 use main_core::slides::ai_ipc::{ImageDecoder, IpcError as CoreError, PictureTicket};
 use main_core::slides::ai_proposal::{RunBeginTicket, RunBeginWake, SettleStep};
 use shell_contract::slides::SlidesDocuments;
-use shell_contract::{IpcValue, ViewId};
+use shell_contract::{IpcError, IpcValue, ViewId};
 
 /// D1 provides it (`Rc<dyn SlidesAiSessions>`); it is also the session's
 /// [`SlidesDocuments`], so the document's id and path come from the same
@@ -40,26 +40,26 @@ pub trait SlidesAiSessions: SlidesDocuments {
     /// `slides:ai-run-begin`, second half: `beginAiRun(session, sender.id)`
     /// once the wait ended (`run_begin_finish`); `false` for a view without a
     /// session
-    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> bool;
+    fn run_begin_finish(&self, view: ViewId, ticket: RunBeginTicket, wake: RunBeginWake) -> Result<bool, IpcError>;
     /// `slides:ai-run-hold`: `holdAiRun(session, sender.id)` and, when it held
     /// something, `buildAllRenderSlides(...)` as an array; `None` for `null`
-    fn run_hold(&self, view: ViewId) -> Option<IpcValue>;
+    fn run_hold(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<IpcValue>, IpcError>;
     /// `slides:ai-proposal-accept`: `acceptAiProposal(session)`: the render
     /// slides and the snapshot id; `None` for `null`
-    fn proposal_accept(&self, view: ViewId) -> Option<(IpcValue, u64)>;
+    fn proposal_accept(&self, owner: &shell_contract::ipc::NativeRequestOwner) -> Result<Option<(IpcValue, u64)>, IpcError>;
     /// `slides:ai-proposal-reject`: `rejectAiProposal(session)`; `false` without a session
     fn proposal_reject(&self, view: ViewId) -> bool;
     /// `slides:ai-snapshot-restore`: nothing while the deck is in master view
     /// or inside a history batch, else `restoreAiSnapshot(session, id)` and
     /// `scheduleDeckBroadcast`, answering `buildAllRenderSlides(...)`; `None`
     /// for `null`. `id` is the renderer's argument (NaN for a non-number)
-    fn snapshot_restore(&self, view: ViewId, id: f64) -> Option<IpcValue>;
+    fn snapshot_restore(&self, owner: &shell_contract::ipc::NativeRequestOwner, id: f64) -> Result<Option<IpcValue>, IpcError>;
     /// `ai:insert-image-url` (`replace` false) or `ai:replace-picture-url`,
     /// up to the download (`insert_image_begin`, `replace_picture_begin`);
     /// `Ok(None)` answers `null` (no session included)
     fn picture_begin(
         &self,
-        view: ViewId,
+        owner: &shell_contract::ipc::NativeRequestOwner,
         replace: bool,
         images: &dyn ImageDecoder,
         op: Option<&JsonValue>,
@@ -69,13 +69,13 @@ pub trait SlidesAiSessions: SlidesDocuments {
     /// `null`
     fn picture_finish(
         &self,
-        view: ViewId,
+        owner: &shell_contract::ipc::NativeRequestOwner,
         replace: bool,
         images: &dyn ImageDecoder,
         op: &JsonValue,
         ticket: PictureTicket,
         downloaded: Option<Vec<u8>>,
-    ) -> Option<JsonValue>;
+    ) -> Result<Option<JsonValue>, IpcError>;
 }
 
 /// `new Set<AbortController>()` per window of `media-call-abort.ts`, which

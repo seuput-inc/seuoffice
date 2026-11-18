@@ -356,7 +356,7 @@ pub trait AgentWindowHost {
     fn statuses(&self) -> JsObject<SubscriptionStatus>;
     /// `deps.aiSettings().meteredAccepted`
     fn metered_accepted(&self) -> Option<JsObject<bool>>;
-    fn read_prefs(&self) -> AgentPrefs;
+    fn read_prefs(&self) -> Option<AgentPrefs>;
     fn write_prefs(&mut self, prefs: &AgentPrefs);
     /// `deps.parentWindow()`
     fn parent_window(&self) -> Option<WindowState>;
@@ -704,7 +704,7 @@ pub fn plan_agent_start(
     if AGENT_BLOCKED_PROVIDERS.contains(&provider) {
         return Err(failed(&AgentStartFailure::ProviderBlocked));
     }
-    let prefs = host.read_prefs();
+    let Some(prefs) = host.read_prefs() else { return Err(failed(&AgentStartFailure::InvalidRequest)); };
     // the warning is a precondition the main process checks, not only the window
     if prefs.warning_accepted < AGENT_WARNING_VERSION {
         return Err(failed(&AgentStartFailure::NotAccepted));
@@ -876,6 +876,17 @@ pub fn start_agent_for_window(
         Ok(plan) => plan,
         Err(response) => return AgentWindowStartStep::Done(response),
     };
+    start_agent_with_plan(host, manager, owner, plan, now_ms)
+}
+
+/// Start a previously validated plan after releasing any settings transaction.
+pub fn start_agent_with_plan(
+    host: &mut dyn AgentWindowHost,
+    manager: &mut AgentManager,
+    owner: i64,
+    plan: AgentWindowStartPlan,
+    now_ms: f64,
+) -> AgentWindowStartStep {
     let step = manager.start_begin(host.agent(), owner, plan.request());
     window_start_step(host, plan, step, now_ms)
 }
@@ -888,7 +899,7 @@ pub fn agent_get_init(host: &dyn AgentWindowHost, sender: i64) -> Option<Value> 
         return None;
     }
     let lang = host.lang();
-    let prefs = json_value_to_serde(&host.read_prefs().to_json());
+    let prefs = json_value_to_serde(&host.read_prefs()?.to_json());
     let connections = agent_connections(
         &host.statuses(),
         host.metered_accepted().as_ref(),
@@ -949,7 +960,7 @@ pub fn agent_set_prefs(
     if agent_owner_of(host, sender).is_none() || !host.has_deps() {
         return None;
     }
-    let current = host.read_prefs();
+    let current = host.read_prefs()?;
     let JsonValue::Object(mut merged) = current.to_json() else {
         return None;
     };
@@ -1028,6 +1039,11 @@ pub fn agent_set_project_skills(
         .ok()
 }
 
+/// The start response for a sender which is no longer the agent-window owner.
+pub fn invalid_agent_start() -> AgentWindowStartStep {
+    AgentWindowStartStep::Done(failed(&AgentStartFailure::InvalidRequest))
+}
+
 /// the `start` handler
 pub fn agent_start(
     host: &mut dyn AgentWindowHost,
@@ -1038,7 +1054,7 @@ pub fn agent_start(
 ) -> AgentWindowStartStep {
     let owner = agent_owner_of(host, sender);
     let Some(owner) = owner.filter(|_| host.has_deps() && host.has_manager()) else {
-        return AgentWindowStartStep::Done(failed(&AgentStartFailure::InvalidRequest));
+        return invalid_agent_start();
     };
     start_agent_for_window(host, manager, owner, request, now_ms)
 }

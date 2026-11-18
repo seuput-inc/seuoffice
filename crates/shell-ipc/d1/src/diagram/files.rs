@@ -21,7 +21,7 @@ use shell_contract::{IpcError, IpcValue, ViewId, WindowId};
 use super::DiagramViews;
 use super::formats::{
     Detected, DiagramFormat, SAVE_AS_FORMATS, detect_format, diagram_base_name, filter_extension,
-    format_for_save_path, format_of_path, is_compressed_file, openable_link, safe_file_name_base,
+    format_for_save_path, format_of_path, is_compressed_file, openable_link,
     with_format_extension,
 };
 use super::recovery::{BoxDialog, Parent};
@@ -93,6 +93,7 @@ impl DiagramViews {
             let entry = state.view(view);
             entry.unopened = Some(Unopened::Failed);
             entry.save_path = None;
+            entry.advance_save_revision();
             entry.dirty = false;
         });
     }
@@ -165,12 +166,12 @@ impl DiagramViews {
     /// `askSavePath(contents, current, defaultName)`: the save dialog, the
     /// file's own format first, then the others; a new diagram proposes
     /// `.drawio`. `Err` is what the TypeScript threw.
-    fn ask_save_path(
+    pub(super) fn save_options(
         &self,
         view: ViewId,
         current: Option<&str>,
         default_name: Option<&str>,
-    ) -> Result<Option<(String, DiagramFormat)>, String> {
+    ) -> Result<(JsObject<JsonValue>, DiagramFormat), String> {
         let current_format = current.map_or(DiagramFormat::Drawio, format_of_path);
         let imported: Option<Import> =
             self.with_state(|state| state.views.get(&view).and_then(|v| v.import.clone()));
@@ -225,10 +226,12 @@ impl DiagramViews {
         options.set("title", JsonValue::String(self.tm("dlgSaveTitle")));
         options.set("defaultPath", JsonValue::String(default_path));
         options.set("filters", json_filters(filters));
-        let picked = self.save_dialog(view, &options);
-        let Some(picked) = picked else {
-            return Ok(None);
-        };
+        Ok((options, current_format))
+    }
+
+    fn ask_save_path(&self, view: ViewId, current: Option<&str>, default_name: Option<&str>) -> Result<Option<(String, DiagramFormat)>, String> {
+        let (options, current_format) = self.save_options(view, current, default_name)?;
+        let Some(picked) = self.save_dialog(view, &options) else { return Ok(None); };
         let format = format_for_save_path(&picked, current_format);
         Ok(Some((with_format_extension(&picked, format), format)))
     }
@@ -262,6 +265,7 @@ impl DiagramViews {
         self.with_state(|state| {
             let entry = state.view(view);
             entry.save_path = Some(target.to_owned());
+            entry.advance_save_revision();
             entry.open_path = Some(target.to_owned());
             entry
                 .allowed
@@ -319,6 +323,7 @@ impl DiagramViews {
     // ---- handlers ----
 
     pub(super) fn consume_pending(&self, cx: &CallContext, _args: Args) -> Reply {
+        if let Some(path) = self.recovery_pending_path(cx)? { return Ok(path); }
         let path = self.with_state(|state| {
             state
                 .views
@@ -329,6 +334,8 @@ impl DiagramViews {
     }
 
     pub(super) fn open_file(&self, cx: &CallContext, args: Args) -> Reply {
+        if let Some(response) = self.take_recovery_input(cx, args.str(0))? { return Ok(response); }
+        self.replace_save_document(cx.sender.view);
         let view = cx.sender.view;
         let granted = args.str(0).filter(|path| {
             self.with_state(|state| {
@@ -357,6 +364,7 @@ impl DiagramViews {
                 let entry = state.view(view);
                 entry.unopened = None;
                 entry.save_path = None;
+                entry.advance_save_revision();
                 entry.import = Some(Import {
                     path: path.to_owned(),
                     title: title.clone(),
@@ -372,18 +380,21 @@ impl DiagramViews {
         let name = basename(path, None);
         let restored = self.resolve_view_open(view, path, Some(cx.sender.window));
         let bytes = std::fs::read(path).ok();
-        if let Some(restored) = restored
-            && let Ok(copy) = self.0.engine.open_diagram(&name, &restored)
-        {
+        let copy = match restored {
+            Some(restored) => self.0.engine.open_diagram(&name, &restored).map_err(thrown)?.ok(),
+            None => None,
+        };
+        if let Some(copy) = copy {
+            let file_still_opens = match bytes.as_ref() {
+                Some(bytes) => self.0.engine.open_diagram(&name, bytes).map_err(thrown)?.is_ok(),
+                None => false,
+            };
             self.with_state(|state| state.view(view).unopened = None);
-            let file_still_opens = bytes
-                .as_ref()
-                .is_some_and(|bytes| self.0.engine.open_diagram(&name, bytes).is_ok());
             if file_still_opens {
-                self.with_state(|state| state.view(view).save_path = Some(path.to_owned()));
+                self.with_state(|state| { let entry = state.view(view); entry.save_path = Some(path.to_owned()); entry.advance_save_revision(); });
                 self.remember_disk_state(view, path);
             } else {
-                self.with_state(|state| state.view(view).save_path = None);
+                self.with_state(|state| { let entry = state.view(view); entry.save_path = None; entry.advance_save_revision(); });
                 self.view_restored_untitled(view, path);
             }
             let compressed = is_compressed_file(&copy.root, copy.any_page_compressed, &copy.xml);
@@ -402,7 +413,7 @@ impl DiagramViews {
             self.refuse_writes(view);
             return Ok(status("unreadable"));
         };
-        let opened = match self.0.engine.open_diagram(&name, &bytes) {
+        let opened = match self.0.engine.open_diagram(&name, &bytes).map_err(thrown)? {
             Ok(opened) => opened,
             Err(failure) => {
                 self.refuse_writes(view);
@@ -413,6 +424,7 @@ impl DiagramViews {
             let entry = state.view(view);
             entry.unopened = None;
             entry.save_path = Some(path.to_owned());
+            entry.advance_save_revision();
             entry.clean_path = Some(path.to_owned());
         });
         self.remember_disk_state(view, path);
@@ -426,6 +438,9 @@ impl DiagramViews {
     }
 
     pub(super) fn save_target(&self, cx: &CallContext, args: Args) -> Reply {
+        if matches!(field(args.get(0), "requestId"), IpcValue::String(_)) {
+            return self.owned_save_target(cx, &args);
+        }
         let view = cx.sender.view;
         if !self.may_write(view) {
             return Ok(failure("diagram: the file did not open"));
@@ -467,17 +482,17 @@ impl DiagramViews {
         let waiter = self.with_state(|state| state.view(view).save.take());
         let result = self.save_result(cx, &args);
         if let Some(waiter) = waiter {
-            let ok = matches!(field(&result, "ok"), IpcValue::Bool(true));
+            let ok = result.as_ref().is_ok_and(|value| matches!(field(value, "ok"), IpcValue::Bool(true)));
             (waiter.resume)(WaitEnd::Answer(ok));
         }
-        Ok(result)
+        result
     }
 
     /// The body of `diagram:save`, without the waiter of the save request
-    fn save_result(&self, cx: &CallContext, args: &Args) -> IpcValue {
+    fn save_result(&self, cx: &CallContext, args: &Args) -> Reply {
         let view = cx.sender.view;
         if !self.may_write(view) {
-            return failure("diagram: the file did not open, nothing is written");
+            return Ok(failure("diagram: the file did not open, nothing is written"));
         }
         let request = args.get(0);
         let token = match field(request, "token") {
@@ -487,10 +502,10 @@ impl DiagramViews {
         let target =
             token.and_then(|token| self.with_state(|state| state.view(view).targets.remove(token)));
         let Some(target) = target else {
-            return failure("diagram: unknown save target");
+            return Ok(failure("diagram: unknown save target"));
         };
         let Some(bytes) = as_bytes(field(request, "bytes")) else {
-            return failure("diagram: bad save request");
+            return Ok(failure("diagram: bad save request"));
         };
         let (current, clean_path, dirty) = self.with_state(|state| {
             let entry = state.view(view);
@@ -502,79 +517,36 @@ impl DiagramViews {
         });
         // nothing changed and the file on disk is the diagram: nothing is written (spec 3.2)
         if Some(&target.path) == clean_path.as_ref() && !dirty {
-            return obj([("ok", IpcValue::Bool(true)), ("path", string(&target.path))]);
+            return Ok(obj([("ok", IpcValue::Bool(true)), ("path", string(&target.path))]));
         }
         // The bytes come from a renderer: they replace a file only when they open as a diagram of the target's format.
         if let Err(check) = self
             .0
             .engine
             .open_diagram(&basename(&target.path, None), bytes)
+            .map_err(thrown)?
         {
-            return failure(format!(
+            return Ok(failure(format!(
                 "diagram: refusing to write a file that would not open ({})",
                 check.reason
-            ));
+            )));
         }
         let auto = matches!(field(request, "auto"), IpcValue::Bool(true));
         if let Some(current) = &current
             && *current == target.path
             && self.conflict_stops_save(view, current, auto)
         {
-            return failure("external-modified");
+            return Ok(failure("external-modified"));
         }
-        match atomic_write_file(&target.path, bytes) {
+        Ok(match atomic_write_file(&target.path, bytes) {
             Ok(()) => {
                 self.adopt_written_path(view, &target.path, current.as_deref());
                 obj([("ok", IpcValue::Bool(true)), ("path", string(&target.path))])
             }
             Err(err) => failure(err.message),
-        }
+        })
     }
 
-    pub(super) fn save_into_project(&self, cx: &CallContext, args: Args) -> Reply {
-        let view = cx.sender.view;
-        let skipped = || {
-            obj([
-                ("ok", IpcValue::Bool(false)),
-                ("skipped", IpcValue::Bool(true)),
-            ])
-        };
-        if !self.0.shell.has_new_document_writer()
-            || !self.may_write(view)
-            || self.file_path(view).is_some()
-        {
-            return Ok(skipped());
-        }
-        let request = args.get(0);
-        let Some(bytes) = as_bytes(field(request, "bytes")) else {
-            return Ok(failure("diagram: bad save request"));
-        };
-        let default_name = match field(request, "defaultName") {
-            IpcValue::String(name) => Some(name.as_str()),
-            _ => None,
-        };
-        let mut base = safe_file_name_base(default_name);
-        if base.is_empty() {
-            base = self.tm("untitled");
-        }
-        let file_name = format!("{base}{}", DiagramFormat::Drawio.extension());
-        if self.0.engine.open_diagram(&file_name, bytes).is_err() {
-            return Ok(failure(
-                "diagram: refusing to write a diagram that would not open",
-            ));
-        }
-        match self.0.shell.write_new_document(view, &file_name, bytes) {
-            Some(Ok(Some(written))) if self.file_path(view).is_none() => {
-                self.adopt_written_path(view, &written, None);
-                Ok(obj([
-                    ("ok", IpcValue::Bool(true)),
-                    ("path", string(written)),
-                ]))
-            }
-            Some(Err(message)) => Ok(failure(message)),
-            _ => Ok(skipped()),
-        }
-    }
 
     pub(super) fn open_link(&self, _cx: &CallContext, args: Args) -> Reply {
         let Some(target) = openable_link(args.str(0)) else {
@@ -586,7 +558,13 @@ impl DiagramViews {
     }
 
     pub(super) fn open_help(&self, cx: &CallContext, _args: Args) -> Result<(), IpcError> {
-        self.0.shell.help(cx.sender.view);
+        let context = cx.native.clone().ok_or_else(|| thrown("The diagram help request has no native document"))?;
+        let origin = shell_contract::ipc::NativeRequestOwner { view: cx.sender.view, context };
+        let effects = self.0.services.hosts.get::<shell_contract::hosts::OwnedEffectsHost>().cloned()
+            .ok_or_else(|| thrown("Native help effects are unavailable"))?;
+        self.0.shell.help_owned(origin, cx.cancel.clone(), cx.cancel.clone(), effects, Box::new(|result| {
+            if let Err(error) = result { eprintln!("[diagram] could not open help: {error}"); }
+        }));
         Ok(())
     }
 
@@ -615,7 +593,8 @@ impl DiagramViews {
         let dirty = args.bool(0) == Some(true) && self.may_write(view);
         self.with_state(|state| {
             if dirty {
-                state.view(view).dirty = true;
+                let entry = state.view(view);
+                entry.dirty = true;
             } else if let Some(entry) = state.views.get_mut(&view) {
                 entry.dirty = false;
             }
@@ -637,6 +616,9 @@ impl DiagramViews {
     }
 
     pub(super) fn save_request_ack(&self, cx: &CallContext, args: Args) -> Result<(), IpcError> {
+        if let Some(id) = args.str(1) {
+            return self.owned_save_ack(cx, id, args.bool(0) == Some(true));
+        }
         let waiter = self.with_state(|state| {
             state
                 .views
@@ -673,21 +655,30 @@ impl DiagramViews {
     pub(super) fn recovery_copy_now_done(
         &self,
         cx: &CallContext,
-        _args: Args,
+        args: Args,
     ) -> Result<(), IpcError> {
+        let Some(generation) = args.num(0) else { return Ok(()) };
+        let result = match args.get(1) {
+            IpcValue::Null => Ok(()),
+            IpcValue::String(message) => Err(main_core::shell::renderer_disposal::Failure(message.clone())),
+            _ => return Ok(()),
+        };
         let waiter = self.with_state(|state| {
-            state
-                .views
-                .get_mut(&cx.sender.view)
-                .and_then(|v| v.copy_now.take())
+            let entry = state.views.get_mut(&cx.sender.view)?;
+            if entry.copy_now.as_ref().is_some_and(|w| w.generation as f64 == generation) {
+                entry.copy_now.take()
+            } else {
+                None
+            }
         });
         if let Some(waiter) = waiter {
-            (waiter.finish)();
+            (waiter.finish)(result);
         }
         Ok(())
     }
 
     pub(super) fn seed_take(&self, cx: &CallContext, _args: Args) -> Reply {
+        if let Some(seed) = self.take_recovery_input(cx, None)? { return Ok(seed); }
         let seed = self.with_state(|state| {
             let entry = state.views.get_mut(&cx.sender.view)?;
             if entry.open_path.is_some() {

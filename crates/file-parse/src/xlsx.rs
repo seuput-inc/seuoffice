@@ -1111,6 +1111,7 @@ struct RedactionMark {
     start_column: f64,
     end_column: f64,
     label: String,
+    previous_fill: Option<Value>,
 }
 
 struct SheetRedactionState {
@@ -1135,61 +1136,57 @@ fn non_negative_integer(value: Option<&Value>) -> Result<f64, Unreadable> {
     }
 }
 
-fn non_empty_string(value: Option<&Value>) -> Result<String, Unreadable> {
-    match value {
-        Some(Value::String(text)) if !text.is_empty() => Ok(text.clone()),
-        _ => Err(Unreadable),
-    }
-}
-
 /// `parseRedactionPart` of the gateway.
-fn parse_redaction_part(text: &str) -> Result<Vec<SheetRedactionState>, Unreadable> {
-    let parsed: Value = serde_json::from_str(text).map_err(|_| Unreadable)?;
+fn parse_redaction_part_detailed(text: &str) -> Result<Vec<SheetRedactionState>, String> {
+    let parsed = jscompat::json_parse(text).map_err(|error| format!(
+        "{REDACTION_PART_PATH} is not valid JSON — refusing to save, because reading it as \"no withheld cells\" would reveal the values it records. ({})",
+        error.message()
+    ))?;
+    let parsed = jscompat::json_value_to_serde(&parsed);
     let Value::Object(root) = parsed else {
-        return Err(Unreadable);
+        return Err(format!("{REDACTION_PART_PATH} must hold an object."));
     };
     if root.get("version").and_then(Value::as_f64) != Some(1.0) {
-        return Err(Unreadable);
+        let version = root.get("version").map(|v| jscompat::json_stringify(&jscompat::json_value_from_serde(v))).unwrap_or_else(|| "undefined".to_owned());
+        return Err(format!("{REDACTION_PART_PATH} has version {version}, but this version of SeuOffice only understands 1. Refusing to save."));
     }
-    let Some(Value::Array(sheets)) = root.get("sheets") else {
-        return Err(Unreadable);
-    };
-    sheets
-        .iter()
-        .map(|entry| {
-            let Value::Object(sheet) = entry else {
-                return Err(Unreadable);
-            };
-            let sheet_name = non_empty_string(sheet.get("name"))?;
-            let Some(Value::Array(marks)) = sheet.get("marks") else {
-                return Err(Unreadable);
-            };
-            let marks = marks
-                .iter()
-                .map(|mark| {
-                    let Value::Object(record) = mark else {
-                        return Err(Unreadable);
-                    };
-                    let start_row = non_negative_integer(record.get("startRow"))?;
-                    let end_row = non_negative_integer(record.get("endRow"))?;
-                    let start_column = non_negative_integer(record.get("startColumn"))?;
-                    let end_column = non_negative_integer(record.get("endColumn"))?;
-                    if end_row < start_row || end_column < start_column {
-                        return Err(Unreadable);
-                    }
-                    let label = non_empty_string(record.get("label"))?;
-                    Ok(RedactionMark {
-                        start_row,
-                        end_row,
-                        start_column,
-                        end_column,
-                        label,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(SheetRedactionState { sheet_name, marks })
-        })
-        .collect()
+    let sheets = root.get("sheets").and_then(Value::as_array)
+        .ok_or_else(|| format!("{REDACTION_PART_PATH} has no \"sheets\" array."))?;
+    sheets.iter().enumerate().map(|(sheet_index, sheet)| {
+        if !sheet.is_object() && !sheet.is_array() {
+            return Err(format!("{REDACTION_PART_PATH} sheets[{sheet_index}] is not an object."));
+        }
+        let sheet_name = sheet.get("name").and_then(Value::as_str).filter(|name| !name.is_empty())
+            .ok_or_else(|| format!("{REDACTION_PART_PATH} sheets[{sheet_index}] has no sheet name."))?;
+        let marks = sheet.get("marks").and_then(Value::as_array)
+            .ok_or_else(|| format!("{REDACTION_PART_PATH} sheet \"{sheet_name}\" has no \"marks\" array."))?;
+        let marks = marks.iter().enumerate().map(|(index, record)| {
+            let location = format!("{REDACTION_PART_PATH} sheet \"{sheet_name}\" marks[{index}]");
+            if !record.is_object() && !record.is_array() {
+                return Err(format!("{location} is not an object."));
+            }
+            let number = |key: &str| non_negative_integer(record.get(key))
+                .map_err(|_| format!("{location} has an invalid \"{key}\"."));
+            let start_row = number("startRow")?;
+            let end_row = number("endRow")?;
+            let start_column = number("startColumn")?;
+            let end_column = number("endColumn")?;
+            if end_row < start_row || end_column < start_column {
+                return Err(format!("{location} ends before it starts."));
+            }
+            let label = record.get("label").and_then(Value::as_str).filter(|label| !label.is_empty())
+                .ok_or_else(|| format!("{location} has no label. The label is what the model reads."))?;
+            Ok(RedactionMark {
+                start_row, end_row, start_column, end_column, label: label.to_owned(),
+                previous_fill: record.get("previousFill").filter(|value| value.is_string() || value.is_null()).cloned(),
+            })
+        }).collect::<Result<Vec<_>, String>>()?;
+        Ok(SheetRedactionState { sheet_name: sheet_name.to_owned(), marks })
+    }).collect()
+}
+
+fn parse_redaction_part(text: &str) -> Result<Vec<SheetRedactionState>, Unreadable> {
+    parse_redaction_part_detailed(text).map_err(|_| Unreadable)
 }
 
 /// `unmirrorFormula`
@@ -1202,76 +1199,60 @@ fn unmirror_formula(body: &str) -> String {
     }
 }
 
-fn mirror_cell(value: Option<&Value>) -> Result<(f64, f64), Unreadable> {
+fn mirror_cell(value: Option<&Value>, location: &str) -> Result<(f64, f64), String> {
     match value {
-        Some(Value::Array(corner)) if corner.len() == 2 => Ok((
-            non_negative_integer(corner.first())?,
-            non_negative_integer(corner.get(1))?,
-        )),
-        _ => Err(Unreadable),
+        Some(Value::Array(corner)) if corner.len() == 2 => {
+            let first = non_negative_integer(corner.first()).map_err(|_| format!("{location} is not a cell corner."))?;
+            let second = non_negative_integer(corner.get(1)).map_err(|_| format!("{location} is not a cell corner."))?;
+            Ok((first, second))
+        }
+        _ => Err(format!("{location} is not a cell corner.")),
     }
 }
 
 /// `mirrorMarkOf`: the sheet comes from the payload's position.
-fn mirror_mark_of(
-    payload: &Value,
-    sheet_order: &[String],
-) -> Result<(String, RedactionMark), Unreadable> {
-    let Value::Object(record) = payload else {
-        return Err(Unreadable);
-    };
+fn mirror_mark_of(name: &str, payload: &Value, sheet_order: &[String]) -> Result<(String, RedactionMark), String> {
+    let location = format!("Defined name \"{name}\"");
+    let Value::Object(record) = payload else { return Err(format!("{location} does not hold a redaction mirror.")); };
     if record.get("v").and_then(Value::as_f64) != Some(1.0) {
-        return Err(Unreadable);
+        let version = record.get("v").map(|v| jscompat::json_stringify(&jscompat::json_value_from_serde(v))).unwrap_or_else(|| "undefined".to_owned());
+        return Err(format!("{location} holds mirror version {version}, but this version of SeuOffice only understands 1. Refusing to open the workbook."));
     }
-    let sheet = non_negative_integer(record.get("sheet"))?;
-    let sheet_name = (sheet < sheet_order.len() as f64)
-        .then(|| sheet_order[sheet as usize].clone())
-        .ok_or(Unreadable)?;
-    let from = mirror_cell(record.get("from"))?;
-    let to = mirror_cell(record.get("to"))?;
-    if to.0 < from.0 || to.1 < from.1 {
-        return Err(Unreadable);
-    }
-    let label = non_empty_string(record.get("label"))?;
-    Ok((
-        sheet_name,
-        RedactionMark {
-            start_row: from.0,
-            start_column: from.1,
-            end_row: to.0,
-            end_column: to.1,
-            label,
-        },
-    ))
+    let sheet = non_negative_integer(record.get("sheet")).map_err(|_| format!("{location} has no sheet position."))?;
+    let sheet_name = (sheet < sheet_order.len() as f64).then(|| sheet_order[sheet as usize].clone())
+        .ok_or_else(|| format!("{location} names sheet position {}, but the workbook has {} sheet(s) — the mirror and the file disagree about their shape.", number_to_string(sheet), sheet_order.len()))?;
+    let from = mirror_cell(record.get("from"), &format!("{location} \"from\""))?;
+    let to = mirror_cell(record.get("to"), &format!("{location} \"to\""))?;
+    if to.0 < from.0 || to.1 < from.1 { return Err(format!("{location} ends before it starts.")); }
+    let label = record.get("label").and_then(Value::as_str).filter(|label| !label.is_empty())
+        .ok_or_else(|| format!("{location} has no label. The label is what the model reads."))?;
+    Ok((sheet_name, RedactionMark {
+        start_row: from.0, start_column: from.1, end_row: to.0, end_column: to.1,
+        label: label.to_owned(), previous_fill: None,
+    }))
 }
 
-/// `parseRedactionNameMirror` of the gateway: the marks in the hidden
-/// `_gxRedaction_N` defined names, grouped by sheet in first-seen order.
-fn parse_redaction_name_mirror(
-    workbook_xml: &str,
-    sheet_order: &[String],
-) -> Result<Vec<SheetRedactionState>, Unreadable> {
+/// `parseRedactionNameMirror` of the gateway, preserving diagnostics.
+fn parse_redaction_name_mirror_detailed(workbook_xml: &str, sheet_order: &[String]) -> Result<Vec<SheetRedactionState>, String> {
     let mut by_sheet: Vec<SheetRedactionState> = Vec::new();
     for element in root_namespace_elements(workbook_xml, "definedName") {
-        if !js_regex!(r"^_gxRedaction_\d+$").test(element.attribute("name").unwrap_or_default()) {
-            continue;
-        }
-        let payload: Value =
-            serde_json::from_str(&unmirror_formula(&element_text(workbook_xml, &element)))
-                .map_err(|_| Unreadable)?;
-        let (sheet_name, mark) = mirror_mark_of(&payload, sheet_order)?;
-        match by_sheet
-            .iter_mut()
-            .find(|state| state.sheet_name == sheet_name)
-        {
+        let name = element.attribute("name").unwrap_or_default();
+        if !js_regex!(r"^_gxRedaction_\d+$").test(name) { continue; }
+        let body = unmirror_formula(&element_text(workbook_xml, &element));
+        let payload = jscompat::json_parse(&body).map_err(|error| format!(
+            "Defined name \"{name}\" does not hold a redaction mirror this version can read — refusing to open the workbook as if nothing were withheld. ({})", error.message()
+        ))?;
+        let (sheet_name, mark) = mirror_mark_of(name, &jscompat::json_value_to_serde(&payload), sheet_order)?;
+        match by_sheet.iter_mut().find(|state| state.sheet_name == sheet_name) {
             Some(state) => state.marks.push(mark),
-            None => by_sheet.push(SheetRedactionState {
-                sheet_name,
-                marks: vec![mark],
-            }),
+            None => by_sheet.push(SheetRedactionState { sheet_name, marks: vec![mark] }),
         }
     }
     Ok(by_sheet)
+}
+
+fn parse_redaction_name_mirror(workbook_xml: &str, sheet_order: &[String]) -> Result<Vec<SheetRedactionState>, Unreadable> {
+    parse_redaction_name_mirror_detailed(workbook_xml, sheet_order).map_err(|_| Unreadable)
 }
 
 /// The names `parseSheetElements` reads, in workbook order.
@@ -1280,6 +1261,45 @@ fn sheet_element_names(workbook_xml: &str) -> Vec<String> {
         .iter()
         .filter_map(|element| element.attribute("name").map(str::to_owned))
         .collect()
+}
+
+/// Decode workbook XML entities with the gateway scanner's rules.
+pub fn workbook_decode_xml_entities(input: &str) -> String {
+    crate::xlsx_xml_scan::decode_xml_entities(input)
+}
+
+/// Decoded attributes of workbook sheet elements in document order.
+pub fn workbook_sheet_elements(workbook_xml: &str) -> Vec<Vec<(String, String)>> {
+    root_namespace_elements(workbook_xml, "sheet")
+        .into_iter()
+        .map(|element| element.attributes().to_vec())
+        .collect()
+}
+
+fn redaction_states_json(states: Vec<SheetRedactionState>) -> Value {
+    Value::Array(states.into_iter().map(|state| {
+        let marks: Vec<Value> = state.marks.into_iter().map(|mark| {
+            let mut value = serde_json::json!({
+                "startRow": mark.start_row, "endRow": mark.end_row,
+                "startColumn": mark.start_column, "endColumn": mark.end_column,
+                "label": mark.label,
+            });
+            if let Some(fill) = mark.previous_fill { value["previousFill"] = fill; }
+            value
+        }).collect();
+        serde_json::json!({ "sheetName": state.sheet_name, "marks": marks })
+    }).collect())
+}
+
+/// Parse a redaction part using the same fail-closed validator as file extraction.
+pub fn workbook_redaction_part(text: &str) -> Result<Value, String> {
+    parse_redaction_part_detailed(text).map(redaction_states_json)
+}
+
+/// Parse the defined-name mirror using the same workbook scanner as file extraction.
+pub fn workbook_redaction_mirror(workbook_xml: &str) -> Result<Value, String> {
+    parse_redaction_name_mirror_detailed(workbook_xml, &sheet_element_names(workbook_xml))
+        .map(redaction_states_json)
 }
 
 /// `readRedactionRecord` of the gateway: the part when it parses, the copy in
@@ -1856,5 +1876,21 @@ mod tests {
     fn marker_falls_back_to_private() {
         assert_eq!(marker("*/"), "{{private}}");
         assert_eq!(marker("Pay roll"), "{{Pay roll}}");
+    }
+
+    #[test]
+    fn redaction_reader_keeps_previous_fill_and_rejects_invalid_marks() {
+        let part = r##"{"version":1,"sheets":[{"name":"Sheet1","marks":[{"startRow":0,"endRow":1,"startColumn":2,"endColumn":3,"label":"secret","previousFill":"#abc"}]}]}"##;
+        let states = workbook_redaction_part(part).unwrap();
+        assert_eq!(states[0]["sheetName"], "Sheet1");
+        assert_eq!(states[0]["marks"][0]["previousFill"], "#abc");
+        let invalid = r#"{"version":1,"sheets":[{"name":"Sheet1","marks":[{"startRow":-1}]}]}"#;
+        assert_eq!(workbook_redaction_part(invalid).unwrap_err(), "xl/gxRedactions.json sheet \"Sheet1\" marks[0] has an invalid \"startRow\".");
+    }
+
+    #[test]
+    fn redaction_mirror_rejects_out_of_range_sheet() {
+        let xml = r#"<workbook><sheets><sheet name="Sheet1"/></sheets><definedNames><definedName name="_gxRedaction_1">"{""v"":1,""sheet"":2,""from"":[0,0],""to"":[0,0],""label"":""private""}"</definedName></definedNames></workbook>"#;
+        assert!(workbook_redaction_mirror(xml).unwrap_err().contains("names sheet position 2, but the workbook has 1 sheet(s)"));
     }
 }

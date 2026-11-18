@@ -504,7 +504,7 @@ pub fn build_agent_mcp_tools<'h>(
             version: deps.version.clone(),
             default_save_dir: Rc::clone(&deps.default_save_dir),
             background: Some(false),
-            open_in_tab: None,
+            open_in_tab: false,
             docs: deps.docs_control,
             extra_formats: None,
             cli: deps.cli.clone(),

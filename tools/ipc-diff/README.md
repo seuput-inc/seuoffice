@@ -5,6 +5,12 @@ channel's Rust handler (`crates/shell-ipc/<batch>`, run by `crates/ipc-probe` th
 own dispatch in `crates/shell-core`) against the TypeScript `ipcMain` handler it replaces, run on
 `tools/main-diff`'s fake Electron.
 
+The source-loaded handlers use the document engines too. On a hosted runner, prepare the
+pinned RHWP source with `node tools/build-rhwp-core.mjs --source-only`, then run
+`npm run build:wasm` before this gate or its fault probes. The gate starts that real WASM
+through `@seuoffice/engine-wasm/node` before loading any group. `SEUOFFICE_WASM` can name
+the exact prepared build. Native builds and comparisons stay on hosted runners.
+
 ```sh
 npm --prefix tools/ipc-diff run gate                       # every group, each in a process of its own
 npm --prefix tools/ipc-diff run gate -- --group w/quick-look --show 20
@@ -89,6 +95,16 @@ invoke (or the trigger) `defer: true`, then the renderer's answering call, then
 `{deferred: true}`; the await step's answer is the invoke's reply (`{timeout: true}` after 20 s);
 every step records its events as a call does.
 
+When the renderer's reply must echo a request identity, use `eventArg(step, channel, view, arg,
+occurrence)` from `event-refs.ts` as an argument in the later call. Each side captures its own
+actual emitted wire value and supplies it to its handler; a missing event or argument fails the
+case. Only that referenced identity is normalized in the comparison, including its type. Use a
+call's `capture: [eventArg(...)]` when an emitted identity must be compared but is deliberately
+not acknowledged, such as a timeout or destroyed view. Keep all other event fields and stale or
+wrong-view replies in the comparison.
+Set `expectAnswer` on a call or await step when parity alone cannot prove correctness. The gate
+requires that exact wire-form answer on each side, so matching incorrect successes still fail.
+
 ### What is compared
 
 For every call: the answer (`{value, buffers}`, `{error}` with Electron's
@@ -100,9 +116,49 @@ write is written `.$PID.$UUID.tmp`.
 
 ### Coverage (`--require <batch>`)
 
-Every invoke, send and sendSync channel of the batch is called by some case; every one called with
-arguments gave two distinct answers (or is in `single`); every event channel of the batch was
-emitted by some call.
+Every Electron-derived invoke, send and sendSync channel of the batch is called by some case;
+every one called with arguments gave two distinct answers (or is in `single`); every
+Electron-derived event channel of the batch was emitted by some call.
+
+### Native-only contracts
+
+`tools/shell-inventory/native-channels.ts` is the explicit native-only overlay. Its rows are
+generated as `native_spec` in the same Rust `CHANNELS` table as the original `spec` rows.
+Both remain subject to actual handler registration, required-batch completeness and permitted
+surface checks. The namespace does not grant access.
+
+`docs:owned-print-pdf-buffer` belongs to D2/Docs and resolves an existing closing-export save
+request. The original `docs:print-pdf-buffer` stays in M and in the Electron comparison set.
+The native route has no Electron oracle. A differential group that calls it is rejected rather
+than supplied a fake TypeScript handler or a coverage waiver.
+
+A full gate writes `native-contracts.json` separately from the unchanged Electron group reports.
+Missing receipts are **pending**, including when regression source exists. Synthetic behavior
+does not prove native ownership, navigation, platform effects or the installed ABI. The full
+gate stays non-green until every declared native contract has separate successful synthetic
+and actual native-host evidence for all required scenarios. `--group` remains a scoped
+Electron comparison, not an overall native-contract verdict.
+
+`--native-evidence <file>` accepts a JSON array of current executed-evidence receipts:
+
+```json
+[
+  {
+    "channel": "docs:owned-print-pdf-buffer",
+    "kind": "synthetic",
+    "status": "passed",
+    "scenarios": ["missing-token", "foreign-token"],
+    "artifact": "path/to/downloaded-hosted-regression-log"
+  }
+]
+```
+
+This illustrates the receipt format, not executed evidence. `kind` is `synthetic` or
+`native-host`; `status` is `passed` or `failed`. Artifacts must exist relative to the repository
+(absolute paths are also accepted). Receipts name executed behavior, not source inspection.
+The gate validates receipt metadata and required scenario coverage; it does not independently
+attest an artifact's contents. Evidence producers and reviewers own that provenance. A failed
+receipt remains a failure; supply receipts for the current run rather than an accumulated history.
 
 ## Hosts in the probe
 

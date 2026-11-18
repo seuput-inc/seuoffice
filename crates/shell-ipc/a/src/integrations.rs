@@ -21,7 +21,7 @@ use main_core::shell::cli_link::{is_ephemeral_install, launcher_file_name};
 use main_core::shell::skill_target::is_installable_skill_dir;
 use shell_contract::hosts::{ClipboardHost, DialogsHost, FileDialog, FileFilter, MainWindowHost};
 use shell_contract::ipc::{CallContext, Responder};
-use shell_contract::runtime::{AppPaths, PathName};
+use shell_contract::runtime::{AppPaths, PathName, Thread};
 use shell_contract::{IpcError, IpcValue};
 
 use crate::ports::Integrations;
@@ -190,6 +190,7 @@ pub struct IntegrationsPort {
     clipboard: ClipboardHost,
     main_window: MainWindowHost,
     skills: AgentSkillsHost,
+    core: Arc<dyn Thread>,
     /// `pickedSkillDir`: the only non-agent folder `install-skill` may write
     /// to is the one the person just picked
     picked: RefCell<Option<String>>,
@@ -202,15 +203,39 @@ impl IntegrationsPort {
         clipboard: ClipboardHost,
         main_window: MainWindowHost,
         skills: AgentSkillsHost,
+        core: Arc<dyn Thread>,
     ) -> Self {
         IntegrationsPort {
             paths,
             dialogs,
             clipboard,
             main_window,
+            core,
             skills,
             picked: RefCell::new(None),
         }
+    }
+
+    fn snapshot(&self) -> Self {
+        Self {
+            paths: self.paths.clone(), dialogs: self.dialogs.clone(), clipboard: self.clipboard.clone(),
+            main_window: self.main_window.clone(), skills: self.skills.clone(), core: self.core.clone(),
+            picked: RefCell::new(self.picked.borrow().clone()),
+        }
+    }
+
+    fn queued(&self, reply: Responder, work: impl FnOnce(Self) -> Result<IpcValue, IpcError> + Send + 'static) {
+        let snapshot = self.snapshot();
+        let path = snapshot.settings_path();
+        let core = self.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(snapshot)))
+                .unwrap_or_else(|_| Err(plain_error("integration settings operation failed")));
+            core.post(Box::new(move || {
+                let _completion = completion;
+                reply.reply(result);
+            }));
+        });
     }
 
     /// `deps.settingsPath()`
@@ -460,10 +485,8 @@ impl Integrations for IntegrationsPort {
     }
 
     fn integrations_install_skill(&self, _cx: &CallContext, args: Vec<IpcValue>, reply: Responder) {
-        reply.reply(
-            self.install(arg(&args, 0).as_ref())
-                .map(|state| from_json(&state.to_json())),
-        )
+        let target = arg(&args, 0);
+        self.queued(reply, move |port| port.install(target.as_ref()).map(|state| from_json(&state.to_json())));
     }
 
     fn integrations_pick_skill_dir(
@@ -485,7 +508,7 @@ impl Integrations for IntegrationsPort {
     }
 
     fn integrations_status(&self, _cx: &CallContext, _args: Vec<IpcValue>, reply: Responder) {
-        reply.reply(self.status().map(|status| from_json(&status)))
+        self.queued(reply, |port| port.status().map(|status| from_json(&status)));
     }
 
     fn integrations_uninstall_skill(
@@ -494,10 +517,8 @@ impl Integrations for IntegrationsPort {
         args: Vec<IpcValue>,
         reply: Responder,
     ) {
-        reply.reply(
-            self.uninstall(arg(&args, 0).as_ref())
-                .map(|state| from_json(&state.to_json())),
-        )
+        let agent_id = arg(&args, 0);
+        self.queued(reply, move |port| port.uninstall(agent_id.as_ref()).map(|state| from_json(&state.to_json())));
     }
 }
 
@@ -512,6 +533,7 @@ pub fn factory() -> crate::Factory<dyn Integrations> {
             hosts.need::<ClipboardHost>(batch)?,
             hosts.need::<MainWindowHost>(batch)?,
             hosts.need::<AgentSkillsHost>(batch)?,
+            services.core.clone(),
         ));
         Ok(port)
     })
@@ -531,6 +553,18 @@ mod tests {
 
     const SKILL: &str =
         "---\nname: seuoffice\nversion: 2.0.0\nmetadata:\n  cli: '>=1.4.0'\n---\nbody\n";
+
+    struct TestCore;
+    impl Thread for TestCore {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) { job(); }
+        fn is_current(&self) -> bool { true }
+    }
+
+    struct ManualCore(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>);
+    impl Thread for ManualCore {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) { self.0.send(job).unwrap(); }
+        fn is_current(&self) -> bool { true }
+    }
 
     struct Dir {
         user_data: PathBuf,
@@ -553,7 +587,34 @@ mod tests {
         seen_save: Mutex<Vec<FileDialog>>,
         clip: Mutex<Vec<String>>,
     }
+    fn synthetic_owned_dialog_admit(origin: &shell_contract::ipc::NativeRequestOwner, destination: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken) -> Result<(), String> {
+        let source = origin.context.renderer().ok_or("synthetic dialog source is unbound")?;
+        let target = destination.context.renderer().ok_or("synthetic dialog destination is unbound")?;
+        let source_loss = origin.loss_token();
+        let target_loss = destination.loss_token();
+        source.with_active_pair(target, || shell_contract::runtime::CancelToken::with_active_all([Some(cancel), Some(pending), source_loss.as_ref(), target_loss.as_ref()], || ()))
+            .flatten().ok_or_else(|| "Renderer document is no longer available.".into())
+    }
+
     impl Dialogs for Pc {
+        shell_contract::synthetic_recovery_dialog_methods!();
+        fn message_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::MessageBox, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<shell_contract::hosts::MessageBoxAnswer, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_dialog(&target, &snapshot, || self.message(parent, &options))); }
+        fn save_prepared(&self, parent: Option<shell_contract::WindowId>, options: shell_contract::hosts::FileDialog, target: shell_contract::ipc::RecoveryOpenTarget, snapshot: shell_contract::ipc::RecoveryAuthoritySnapshot, done: Box<dyn FnOnce(Result<Option<shell_contract::ipc::RecoveryPreparedDestination>, String>) + Send>) { done(shell_contract::hosts::synthetic::recovery_save(&target, &snapshot, || self.save(parent, &options))); }
+        fn open_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<Vec<std::path::PathBuf>>, String>) + Send>) {
+            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.open(parent, &options)));
+        }
+        fn save_owned(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
+            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.save(parent, &options)));
+        }
+        fn message_owned(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
+            done(synthetic_owned_dialog_admit(&origin, &destination, &cancel, &pending).map(|()| self.message(parent, &options)));
+        }
+        fn save_owned_many(&self, parent: Option<WindowId>, options: FileDialog, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<Option<std::path::PathBuf>, String>) + Send>) {
+            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.save(parent, &options)));
+        }
+        fn message_owned_many(&self, parent: Option<WindowId>, options: MessageBox, origin: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, done: Box<dyn FnOnce(Result<MessageBoxAnswer, String>) + Send>) {
+            done(shell_contract::hosts::synthetic::admit_many(&origin, &participants, &cancel, &pending, || self.message(parent, &options)));
+        }
         fn open(&self, parent: Option<WindowId>, options: &FileDialog) -> Option<Vec<PathBuf>> {
             self.seen_open
                 .lock()
@@ -795,6 +856,7 @@ mod tests {
                 packaged,
                 resources: resources.into(),
             }),
+            Arc::new(TestCore),
         );
         Rig { dir, pc, port }
     }
@@ -817,14 +879,11 @@ mod tests {
             },
             request: None,
             cancel: CancelToken::default(),
+            native: None,
         };
-        let out = Arc::new(Mutex::new(None));
-        let slot = out.clone();
-        f(
-            &cx,
-            Responder::new(move |r| *slot.lock().unwrap() = Some(r)),
-        );
-        out.lock().unwrap().take().expect("answered")
+        let (send, receive) = std::sync::mpsc::channel();
+        f(&cx, Responder::new(move |result| { let _ = send.send(result); }));
+        receive.recv_timeout(std::time::Duration::from_secs(5)).expect("answered")
     }
 
     fn obj(entries: &[(&str, IpcValue)]) -> IpcValue {
@@ -878,6 +937,37 @@ mod tests {
 
     fn message(result: Result<IpcValue, IpcError>) -> String {
         result.expect_err("rejected").message
+    }
+
+    #[test]
+    fn install_holds_shared_settings_queue_through_core_reply() {
+        let mut r = rig("install-queued");
+        let (post, core_jobs) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        r.port.core = Arc::new(ManualCore(post));
+        let settings_path = r.port.settings_path();
+        let queue = main_core::shell::app_settings::queue::for_path(&settings_path);
+        let cx = CallContext {
+            sender: Sender { view: ViewId(5), window: WindowId(2), surface: Surface::Docs },
+            request: None, cancel: CancelToken::default(), native: None,
+        };
+        let (answered, answer) = std::sync::mpsc::channel();
+        r.port.integrations_install_skill(&cx, vec![obj(&[("agentId", s("claude-code"))])],
+            Responder::new(move |result| { answered.send(result).unwrap(); }));
+        let install_completion = core_jobs.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let (written, written_rx) = std::sync::mpsc::channel();
+        queue.submit(move |completion| {
+            write_app_setting(&settings_path, "theme", Some(JsonValue::String("dark".into()))).unwrap();
+            written.send(()).unwrap();
+            drop(completion);
+        });
+        assert!(written_rx.try_recv().is_err());
+        assert!(answer.try_recv().is_err());
+        install_completion();
+        assert!(answer.recv_timeout(std::time::Duration::from_secs(5)).unwrap().is_ok());
+        written_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        let settings = read_app_settings(&r.port.settings_path());
+        assert_eq!(settings.get("theme"), Some(&JsonValue::String("dark".into())));
+        assert!(!r.port.ledger().entries().is_empty());
     }
 
     #[test]

@@ -118,8 +118,6 @@ numberAgentUuids()
 
 // ---- the window of the case ----------------------------------------------------------
 
-type Fn = (...args: unknown[]) => unknown
-
 /** `new BrowserWindow(...)`: the case's agent view as a window; every call but its id does nothing */
 function browserWindowOf(cx: LoadContext, world: World): unknown {
   const view = (cx.case.views ?? []).find((v) => v.view === world.window)

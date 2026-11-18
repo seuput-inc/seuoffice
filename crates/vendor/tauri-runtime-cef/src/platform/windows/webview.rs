@@ -6,18 +6,23 @@ use cef::ImplBrowserHost;
 use tauri_runtime::dpi::{PhysicalPosition, PhysicalSize, Rect};
 use tauri_utils::config::Color;
 use windows::Win32::{
-  Foundation::{ERROR_SUCCESS, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WPARAM},
+  Foundation::{ERROR_SUCCESS, GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, SetLastError, WPARAM},
   Graphics::Gdi::MapWindowPoints,
   UI::Shell::{DefSubclassProc, SetWindowSubclass},
   UI::WindowsAndMessaging::{
     DestroyWindow, GWL_STYLE, GetParent, GetWindowLongPtrW, GetWindowRect, HWND_TOP, IsWindow,
     IsWindowVisible, SW_HIDE, SW_SHOW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, WINDOW_STYLE, WINDOWPOS,
-    WM_WINDOWPOSCHANGING, WS_CLIPSIBLINGS,
+    WM_WINDOWPOSCHANGING, WS_CLIPSIBLINGS, WS_VISIBLE,
   },
 };
 
 use crate::{webview::AppWebview, window::AppWindow};
+
+pub(crate) fn destroy_browser_host_window(host: &cef::BrowserHost) {
+  let hwnd = HWND(host.window_handle().0 as _);
+  let _ = unsafe { DestroyWindow(hwnd) };
+}
 
 impl AppWebview {
   pub(crate) fn native_parent_matches(&self, parent: &AppWindow) -> Option<bool> {
@@ -46,6 +51,17 @@ impl AppWebview {
       IsWindow(Some(hwnd))
         .as_bool()
         .then(|| IsWindowVisible(hwnd).as_bool())
+    }
+  }
+
+  pub(crate) fn native_explicit_visible(&self) -> Option<bool> {
+    let hwnd = self.hwnd();
+    unsafe {
+      if !IsWindow(Some(hwnd)).as_bool() { return None; }
+      SetLastError(ERROR_SUCCESS);
+      let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+      if style == 0 && GetLastError() != ERROR_SUCCESS { return None; }
+      Some((style as u32 & WS_VISIBLE.0) != 0)
     }
   }
 
@@ -147,12 +163,6 @@ impl AppWebview {
     let _ = unsafe { ShowWindow(self.hwnd(), if visible { SW_SHOW } else { SW_HIDE }) };
   }
 
-  /// Destroys CEF's own window for this browser, completing a close that
-  /// `do_close` took over. CEF's browser window procedure reports
-  /// `WindowDestroyed` back to CEF on `WM_NCDESTROY`.
-  pub(crate) fn destroy_host_window(&self) {
-    let _ = unsafe { DestroyWindow(self.hwnd()) };
-  }
 
   const PIN_Z_ORDER_SUBCLASS_ID: usize = 124;
   /// `dwRefData` of the pin subclass: whether it is currently vetoing.

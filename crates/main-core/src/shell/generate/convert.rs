@@ -18,6 +18,7 @@ use super::generate_api::{ConvertKind, ConvertProblem, convert_target};
 use super::materials::{FileParser, FileStat};
 use crate::packages::electron_utils::generate_handoff::GenerateConvertTarget;
 use crate::shell::renderer_disposal::Failure;
+use std::sync::{Arc, Mutex};
 
 /// What a conversion hands to the new tab.
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +199,19 @@ pub fn convert_source<E: ConvertEngines>(
     }
 }
 
+#[derive(Debug)]
+pub struct ConversionJob {
+    pub kind: ConvertKind,
+    pub path: String,
+    pub untitled: String,
+}
+
+impl ConversionJob {
+    pub fn execute<E: ConvertEngines>(self, engines: &mut E) -> ConvertResult {
+        convert_source(engines, self.kind, &self.path, &self.untitled)
+    }
+}
+
 // ---- map to PPT skeleton ----
 
 /// The outline as the map editor's outline text, back into a tree with the
@@ -327,9 +341,9 @@ fn decode_text(bytes: &[u8]) -> Option<String> {
 }
 
 /// yes/no answers by path + size + mtime; never text
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct NoticeCache {
-    entries: Vec<(String, bool)>,
+    entries: Arc<Mutex<Vec<(String, bool)>>>,
 }
 
 const NOTICE_CACHE_MAX: usize = 32;
@@ -346,6 +360,20 @@ pub trait NoticeHost: FileParser {
     fn read_bytes(&mut self, path: &str) -> Result<Vec<u8>, Failure>;
     /// `deps.parse` or `deps.readBytes` was given: the cache is not used
     fn injected_reader(&self) -> bool;
+}
+
+#[derive(Debug)]
+pub struct MarkdownNoticeJob {
+    pub path: String,
+    cache: NoticeCache,
+}
+
+impl MarkdownNoticeJob {
+    pub fn new(path: String, cache: NoticeCache) -> Self { Self { path, cache } }
+
+    pub fn execute<H: NoticeHost>(mut self, host: &mut H) -> bool {
+        markdown_redaction_notice(host, &mut self.cache, &self.path)
+    }
 }
 
 /// Whether converting this markdown file carries withheld spans over as their
@@ -371,9 +399,9 @@ pub fn markdown_redaction_notice<H: NoticeHost>(
             }
             Err(_) => return false,
         }
-        if let Some((_, cached)) = cache.entries.iter().find(|(k, _)| Some(k) == key.as_ref()) {
-            return *cached;
-        }
+        let cached = cache.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter().find(|(k, _)| Some(k) == key.as_ref()).map(|(_, value)| *value);
+        if let Some(cached) = cached { return cached; }
     }
     let parsed = match host.parse_file_to_text(path) {
         Ok(parsed) => parsed,
@@ -388,9 +416,10 @@ pub fn markdown_redaction_notice<H: NoticeHost>(
     };
     let notice = text != own;
     if let Some(key) = key {
-        cache.entries.push((key, notice));
-        if cache.entries.len() > NOTICE_CACHE_MAX {
-            cache.entries.remove(0);
+        let mut entries = cache.entries.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        entries.push((key, notice));
+        if entries.len() > NOTICE_CACHE_MAX {
+            entries.remove(0);
         }
     }
     notice

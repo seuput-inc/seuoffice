@@ -19,11 +19,17 @@ wrap_keyboard_handler! {
   impl KeyboardHandler {
     fn on_pre_key_event(
       &self,
-      _browser: Option<&mut Browser>,
+      browser: Option<&mut Browser>,
       event: Option<&KeyEvent>,
       _os_event: CefOsEvent<'_>,
       _is_keyboard_shortcut: Option<&mut ::std::os::raw::c_int>,
     ) -> ::std::os::raw::c_int {
+      #[cfg(target_os = "linux")]
+      if browser.and_then(|browser| browser.host()).is_some_and(|host| crate::platform::linux::modal_blocks(host.window_handle() as _)) {
+        return 1;
+      }
+      #[cfg(not(target_os = "linux"))]
+      let _ = browser;
       // If devtools is disabled, block devtools keyboard shortcuts.
       if !self.devtools_enabled {
         let Some(event) = event else {

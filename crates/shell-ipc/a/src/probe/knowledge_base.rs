@@ -13,7 +13,7 @@
 //! | `index`          | `{hits: [{path, name, ext, snippet?: [text]}], stale: [path]}`; absent: no file index                |
 //! | `unsaved`        | paths open with unsaved changes (the open-files list holds them, dirty)                            |
 //! | `parsed`         | `[{path, ok, kind, text, error}]` the parser's answer; a path left out is `{ok: false}`             |
-//! | `projects`       | `{"<id>": {available, visible: [path prefix] or absent (null), read: [{path, ...ProjectReadResult}]}}` |
+//! | `projects`       | `{"<id>": {available, visible: [path prefix] or absent (null), read: [{path, ...ProjectReadResult} or {path, throws}]}}` |
 //! | `placement`      | `{projectId, root, dir}`, `{error}` for a throw, or absent (no project)                             |
 //! | `writeError`     | the project folder's write guard refuses with this message                                        |
 //! | `defaultSaveDir` | the folder, or `{error}`; absent throws                                                            |
@@ -114,22 +114,18 @@ impl FakeKb {
 }
 
 impl KbServices for FakeKb {
-    fn has_file_index(&self) -> bool {
-        !self.index().is_null()
+    fn has_file_index(&self) -> Result<bool, Thrown> {
+        Ok(!self.index().is_null())
     }
 
     fn refresh_file_index_if_stale(&self, max_age_ms: u64) {
         self.log(json!(["fileIndexer.refreshIfStale", max_age_ms]));
     }
 
-    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Vec<String> {
+    fn paths_indexed_as_on_disk(&self, paths: &[String]) -> Result<Vec<String>, Thrown> {
         self.log(json!(["fileIndexStore.pathsIndexedAsOnDisk", paths]));
         let stale = strings(&self.index()["stale"]);
-        paths
-            .iter()
-            .filter(|path| !stale.contains(path))
-            .cloned()
-            .collect()
+        Ok(paths.iter().filter(|path| !stale.contains(path)).cloned().collect())
     }
 
     fn index_search(
@@ -191,19 +187,19 @@ impl KbServices for FakeKb {
         })
     }
 
-    fn project_available(&self, project_id: &str) -> bool {
+    fn project_available(&self, project_id: &str) -> Result<bool, Thrown> {
         self.log(json!(["projectFolderTools.isAvailable", project_id]));
-        self.project(project_id)["available"].as_bool() == Some(true)
+        Ok(self.project(project_id)["available"].as_bool() == Some(true))
     }
 
-    fn project_visible_test(&self, project_id: &str) -> Option<VisibleTest> {
+    fn project_visible_test(&self, project_id: &str) -> Result<Option<VisibleTest>, Thrown> {
         self.log(json!(["projectFolderTools.visibleTest", project_id]));
         let prefixes = strings(&self.project(project_id)["visible"]);
-        self.project(project_id)["visible"].is_array().then(|| {
+        Ok(self.project(project_id)["visible"].is_array().then(|| {
             let test: VisibleTest =
-                Arc::new(move |path| prefixes.iter().any(|prefix| path.starts_with(prefix)));
+                Arc::new(move |path| Ok(prefixes.iter().any(|prefix| path.starts_with(prefix))));
             test
-        })
+        }))
     }
 
     fn project_read(
@@ -212,7 +208,7 @@ impl KbServices for FakeKb {
         project_id: &str,
         path: &str,
         offset: f64,
-    ) -> ProjectReadResult {
+    ) -> Result<ProjectReadResult, Thrown> {
         self.log(json!([
             "projectFolderTools.readPath",
             owner.0,
@@ -224,8 +220,11 @@ impl KbServices for FakeKb {
         let read = self
             .entry(&self.project(project_id)["read"], path)
             .unwrap_or(&none);
+        if let Some(error) = read["throws"].as_str() {
+            return Err(Thrown(error.to_owned()));
+        }
         let refused = |reason| ProjectReadResult::Refused { reason };
-        match read["status"].as_str() {
+        Ok(match read["status"].as_str() {
             Some("ok") => ProjectReadResult::Ok {
                 text: read["text"].as_str().unwrap_or_default().to_owned(),
                 total_chars: read["totalChars"].as_u64().unwrap_or_default(),
@@ -242,7 +241,7 @@ impl KbServices for FakeKb {
                 _ => ProjectReadRefusal::Outside,
             }),
             _ => refused(ProjectReadRefusal::Outside),
-        }
+        })
     }
 
     fn new_document_placement(&self, owner: ViewId) -> Result<Option<Placement>, String> {

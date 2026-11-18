@@ -127,6 +127,14 @@ impl DocPickerWindow for Window {
         }
         self.view
     }
+    fn renderer_ready(&self, view: ViewId) {
+        if view == self.view {
+            if let Some(control) = self.control.lock().expect("the control").as_ref() {
+                control.window_ready(view);
+            }
+        }
+    }
+
 
     fn show(&self) {
         push(&self.log, json!(["BrowserWindow.show"]));
@@ -156,8 +164,8 @@ struct Sources {
 }
 
 impl DocListDeps for Sources {
-    fn open_documents(&self) -> Vec<OpenDocumentEntry> {
-        self.open.clone()
+    fn open_documents(&self) -> Result<Vec<OpenDocumentEntry>, String> {
+        Ok(self.open.clone())
     }
 
     fn recent(&self) -> Vec<RecentDocumentEntry> {

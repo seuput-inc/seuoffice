@@ -191,6 +191,7 @@ export default function App(): React.JSX.Element {
 
   const phaseRef = useRef(phase)
   phaseRef.current = phase
+  const pendingRecoveryRef = useRef<{ receipt: string; phase: Phase } | null>(null)
   const prefsRef = useRef(prefs)
   prefsRef.current = prefs
   const shownRef = useRef(shown)
@@ -384,48 +385,71 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     let alive = true
     void (async () => {
-      const path = await api.consumePending().catch(() => null)
+      const pending = await api.consumePending().catch(() => null)
       if (!alive) return
-      if (!path) {
-        setPhase({ kind: 'no-book' })
-        return
-      }
-      setFilePath(path)
-      const opened = await api
-        .openFile(path)
-        .catch((): EpubOpenFileResult => ({ status: 'refused', reason: 'unreadable' }))
-      if (!alive) return
-      if (opened.status === 'refused') {
-        setPhase({ kind: 'refused', reason: opened.reason })
-        return
-      }
-      const state = await api.getReadingState().catch(() => null)
-      if (!alive) return
-      if (state) setPrefs(state.viewPrefs)
-      const next: Phase = {
-        kind: 'open',
-        book: opened.book,
-        assetBase: opened.assetBase,
-        readOnly: opened.readOnly,
-      }
-      phaseRef.current = next
-      setPhase(next)
-      editor.setBookReadOnly(opened.readOnly !== null)
-      const spine = opened.book.spine
-      const remembered = state?.position
-      if (remembered && remembered.spineIndex < spine.length) {
-        void goTo(
-          remembered.spineIndex,
-          remembered.blockId ? { kind: 'block', id: remembered.blockId } : { kind: 'start' },
-        )
-      } else if (spine.length > 0) {
-        void goTo(firstReadingIndex(spine), { kind: 'start' })
+      const receipt = typeof pending === 'object' && pending !== null ? pending.receipt : null
+      const path = typeof pending === 'string' ? pending : pending?.path
+      try {
+        if (!path) {
+          setPhase({ kind: 'no-book' })
+          if (receipt) await api.recoveryInitialized(receipt, false, 'The EPUB path is missing')
+          return
+        }
+        setFilePath(path)
+        const opened = await api
+          .openFile(path)
+          .catch((): EpubOpenFileResult => ({ status: 'refused', reason: 'unreadable' }))
+        if (!alive) return
+        if (opened.status === 'refused') {
+          setPhase({ kind: 'refused', reason: opened.reason })
+          if (receipt) await api.recoveryInitialized(receipt, false, opened.reason)
+          return
+        }
+        const state = await api.getReadingState().catch(() => null)
+        if (!alive) return
+        if (state) setPrefs(state.viewPrefs)
+        const next: Phase = {
+          kind: 'open',
+          book: opened.book,
+          assetBase: opened.assetBase,
+          readOnly: opened.readOnly,
+        }
+        phaseRef.current = next
+        editor.setBookReadOnly(opened.readOnly !== null)
+        if (receipt) pendingRecoveryRef.current = { receipt, phase: next }
+        setPhase(next)
+        const spine = opened.book.spine
+        const remembered = state?.position
+        if (remembered && remembered.spineIndex < spine.length) {
+          void goTo(
+            remembered.spineIndex,
+            remembered.blockId ? { kind: 'block', id: remembered.blockId } : { kind: 'start' },
+          )
+        } else if (spine.length > 0) {
+          void goTo(firstReadingIndex(spine), { kind: 'start' })
+        }
+      } catch (error) {
+        if (receipt && alive) {
+          const message = error instanceof Error ? error.message : String(error)
+          await api.recoveryInitialized(receipt, false, message).catch((failure: unknown) => {
+            console.error('EPUB recovery acknowledgement failed', failure)
+          })
+        }
       }
     })()
     return () => {
       alive = false
     }
   }, [api, goTo, editor])
+
+  useEffect(() => {
+    const pending = pendingRecoveryRef.current
+    if (!pending || pending.phase !== phase) return
+    pendingRecoveryRef.current = null
+    void api.recoveryInitialized(pending.receipt, true).catch((error: unknown) => {
+      console.error('EPUB recovery acknowledgement failed', error)
+    })
+  }, [api, phase])
 
   // ---- view settings ----
 
@@ -581,15 +605,15 @@ export default function App(): React.JSX.Element {
   // ---- saving (the editing screen sends its pending edits before these) ----
 
   const save = useCallback(
-    async (mode: SaveMode, auto = false): Promise<boolean> => {
+    async (mode: SaveMode, auto = false, requestId?: string): Promise<boolean> => {
       if (phaseRef.current.kind !== 'open') return false
       savingRef.current = true
       if (!auto) flash({ key: 'saving' })
       try {
         // what was typed goes into the book before it is written
-        await editor.flush()
+        await editor.flush(requestId)
         const mark = editor.saveMark()
-        const result = await api.save(auto ? { mode, auto } : { mode })
+        const result = await api.save({ mode, ...(auto ? { auto } : {}), ...(requestId ? { requestId } : {}) })
         if (!result.ok) {
           // an automatic save that defers to another pane of the same book says nothing
           if (!(auto && result.error === 'external-modified')) {
@@ -617,14 +641,14 @@ export default function App(): React.JSX.Element {
 
   useEffect(
     () =>
-      api.onSaveRequest((mode) => {
+      api.onSaveRequest((mode, requestId) => {
         if (phaseRef.current.kind !== 'open') {
-          api.sendSaveRequestAck(false)
+          api.sendSaveRequestAck(false, requestId)
           return
         }
-        void save(mode).then((saved) => {
+        void save(mode, false, requestId).then((saved) => {
           // a save that ended before reaching the main process still has someone waiting
-          if (!saved) api.sendSaveRequestAck(false)
+          if (!saved) api.sendSaveRequestAck(false, requestId)
         })
       }),
     [api, save],

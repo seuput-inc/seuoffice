@@ -19,10 +19,24 @@ use shell_contract::runtime::{AppPaths, PathName, Services};
 use shell_contract::{Batch, ViewId, WindowId};
 
 type GoneListener = Rc<dyn Fn(ViewId)>;
+type TerminalListener = Rc<dyn Fn(shell_contract::runtime::NativeViewTerminal) -> Result<(), String>>;
+
+pub struct NativeTerminalRegistration {
+    slot: usize,
+    _subscription: shell_contract::runtime::NativeViewRetirementSubscription,
+}
+impl Drop for NativeTerminalRegistration {
+    fn drop(&mut self) {
+        TERMINALS.with(|listeners| {
+            if let Some(slot) = listeners.borrow_mut().get_mut(self.slot) { *slot = None; }
+        });
+    }
+}
 
 thread_local! {
     /// the core thread's view-gone listeners; see [`on_view_gone`]
     static GONE: RefCell<Vec<GoneListener>> = const { RefCell::new(Vec::new()) };
+    static TERMINALS: RefCell<Vec<Option<TerminalListener>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// `webContents.once('destroyed', …)` for state that is not `Send` (an
@@ -42,6 +56,24 @@ pub fn on_view_gone(services: &Services, listener: impl Fn(ViewId) + 'static) {
             listener(view)
         }
     }));
+}
+
+/// Subscribe on core before the original browser is constructed. Disposal
+/// unregisters the listener; queued observations retain their native receipt.
+pub fn on_native_view_terminal(
+    services: &Services, listener: impl Fn(shell_contract::runtime::NativeViewTerminal) -> Result<(), String> + 'static,
+) -> Result<NativeTerminalRegistration, RegisterError> {
+    let host = services.hosts.need::<shell_contract::runtime::NativeViewRetirementsHost>(Batch::D1)?;
+    let slot = TERMINALS.with(|listeners| {
+        let mut listeners = listeners.borrow_mut();
+        listeners.push(Some(Rc::new(listener)));
+        listeners.len() - 1
+    });
+    let subscription = host.on_native_terminal(Box::new(move |event| {
+        let listener = TERMINALS.with(|listeners| listeners.borrow().get(slot).and_then(|entry| entry.clone()));
+        if let Some(listener) = listener { listener(event) } else { Ok(()) }
+    }));
+    Ok(NativeTerminalRegistration { slot, _subscription: subscription })
 }
 
 /// `getUiLang()` of `@seuoffice/i18n`: the app-wide UI language, which batch

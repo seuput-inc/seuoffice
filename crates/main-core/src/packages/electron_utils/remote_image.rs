@@ -7,7 +7,7 @@ use jscompat::{math_round, number_to_string, to_number};
 
 use super::generated_images::read_generated_image;
 use super::safe_remote_url::{
-    FetchWithSsrfGuardOptions, Fetcher, Resolver, Response, fetch_with_ssrf_guard,
+    AbortSignal, FetchWithSsrfGuardOptions, Fetcher, Resolver, Response, fetch_with_ssrf_guard,
 };
 
 const RETRY_DELAYS_MS: [f64; 2] = [500.0, 1500.0];
@@ -152,14 +152,16 @@ impl Response for MemoryResponse {
 /// SSRF-blocked URL still returns none immediately. `tmpdir` is
 /// `os.tmpdir()`, where the generated-image store lives; `retry_delays_ms` is
 /// `None` for the default.
-pub fn fetch_remote_image(
+pub fn fetch_remote_image<'signal>(
     resolver: &mut dyn Resolver,
     fetcher: &mut dyn Fetcher,
     tmpdir: &str,
     raw_url: &str,
     retry_delays_ms: Option<&[f64]>,
-) -> Option<Box<dyn Response>> {
+    signal: Option<&'signal dyn AbortSignal>,
+) -> Option<Box<dyn Response + 'signal>> {
     let retry_delays_ms = retry_delays_ms.unwrap_or(&RETRY_DELAYS_MS);
+    if signal.is_some_and(AbortSignal::aborted) { return None; }
     // BYOK-generated images live in the local store; only its own files resolve
     if raw_url.starts_with("file:") {
         let local = read_generated_image(tmpdir, raw_url)?;
@@ -176,8 +178,10 @@ pub fn fetch_remote_image(
     let headers = remote_image_headers();
     let mut attempt = 0usize;
     loop {
+        if signal.is_some_and(AbortSignal::aborted) { return None; }
         let mut options = FetchWithSsrfGuardOptions {
             headers: Some(headers.clone()),
+            signal,
             ..FetchWithSsrfGuardOptions::default()
         };
         let (resp, threw) = match fetch_with_ssrf_guard(resolver, fetcher, raw_url, &mut options) {
@@ -199,7 +203,7 @@ pub fn fetch_remote_image(
         let Some(delay) = delay.filter(|_| transient) else {
             return resp;
         };
-        fetcher.sleep(delay);
+        fetcher.sleep(delay, signal);
         attempt += 1;
     }
 }

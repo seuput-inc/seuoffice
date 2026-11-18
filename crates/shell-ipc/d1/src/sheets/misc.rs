@@ -181,8 +181,13 @@ pub fn pick_cancel(core: &Core, view: ViewId, input: &IpcValue) -> Result<IpcVal
 
 /// `failHeadlessExport`: end a headless run early
 impl Core {
-    pub fn fail_headless_export(&self, view: ViewId, message: &str) {
-        let waiter = self.state.borrow_mut().headless_waiters.remove(&view);
+    pub fn fail_headless_export(&self, view: ViewId, expected: Option<&shell_contract::runtime::RendererGeneration>, message: &str) {
+        let mut state = self.state.borrow_mut();
+        if let Some(created) = state.tab(view).and_then(|tab| tab.headless_target.as_ref()).map(|target| target.created()) {
+            if !expected.is_some_and(|actual| actual.same_generation(created)) { return; }
+        }
+        let waiter = state.headless_waiters.remove(&view);
+        drop(state);
         if let Some(settle) = waiter {
             settle(HeadlessReport {
                 ok: false,
@@ -190,21 +195,6 @@ impl Core {
             });
         }
     }
-}
-
-/// `sheets:headless-export-done`
-pub fn headless_export_done(core: &Core, view: ViewId, result: &IpcValue) {
-    let waiter = core.state.borrow_mut().headless_waiters.remove(&view);
-    let Some(settle) = waiter else {
-        return;
-    };
-    settle(HeadlessReport {
-        ok: matches!(field(result, "ok"), IpcValue::Bool(true)),
-        error: match field(result, "error") {
-            IpcValue::String(error) => Some(error.clone()),
-            _ => None,
-        },
-    });
 }
 
 /// `workbook:pending-edits`: the renderer mirrors its pending-save count here
@@ -229,15 +219,22 @@ pub fn close_save_result(core: &Core, view: ViewId, ok: &IpcValue) {
 }
 
 /// `workbook:recovery-write-now-done`
-pub fn recovery_write_now_done(core: &Core, view: ViewId, nonce: &IpcValue) {
-    if core.state.borrow().tab(view).is_none() {
-        return;
-    }
-    if let IpcValue::String(nonce) = nonce {
-        let waiter = core.state.borrow_mut().write_now_waiters.remove(nonce);
-        if let Some(done) = waiter {
-            done();
+pub fn recovery_write_now_done(core: &Core, view: ViewId, nonce: &IpcValue, outcome: &IpcValue) {
+    let IpcValue::String(nonce) = nonce else { return };
+    let result = match outcome {
+        IpcValue::Null => Ok(()),
+        IpcValue::String(message) => Err(main_core::shell::renderer_disposal::Failure(message.clone())),
+        _ => return,
+    };
+    let waiter = {
+        let mut state = core.state.borrow_mut();
+        if !state.write_now_waiters.get(nonce).is_some_and(|(owner, _)| *owner == view) {
+            return;
         }
+        state.write_now_waiters.remove(nonce)
+    };
+    if let Some((_, done)) = waiter {
+        done(result);
     }
 }
 
@@ -485,7 +482,7 @@ fn floor_or(value: &IpcValue, fallback: f64) -> f64 {
 /// `extractAttachmentText`
 fn extract_attachment_text(env: &Env, path: &str) -> Result<String, IpcError> {
     // a file open with unsaved changes is not read: a withholding mark only reaches the file on save
-    env.shell.assert_file_saved(path).map_err(thrown)?;
+    env.assert_file_saved(path).map_err(thrown)?;
     let meta = fs::metadata(path).map_err(|e| io_err(e, "stat", path))?;
     let mtime = meta
         .modified()
@@ -661,12 +658,18 @@ pub fn files_read_image(
 // ---- screen capture ----
 
 /// `sheets:capture-screen-sources`
-pub fn capture_screen_sources(env: &Env, view: ViewId) -> Result<IpcValue, IpcError> {
+pub fn capture_screen_sources(
+    env: &Env, view: ViewId,
+    origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+) -> Result<IpcValue, IpcError> {
     env.core(move |core| core.require_tab(view))?;
-    Ok(capture_screen_sources_of(env, view))
+    capture_screen_sources_of(env, view, origin, cancel)
 }
 
-fn capture_screen_sources_of(env: &Env, view: ViewId) -> IpcValue {
+fn capture_screen_sources_of(
+    env: &Env, view: ViewId,
+    origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
+) -> Result<IpcValue, IpcError> {
     let denied = || {
         obj([
             ("status", string("denied")),
@@ -677,16 +680,16 @@ fn capture_screen_sources_of(env: &Env, view: ViewId) -> IpcValue {
     // returns black frames instead of failing; elsewhere there is no gate
     let gated = cfg!(target_os = "macos");
     if gated {
-        let status = env.screen.media_access_status();
+        let status = env.screen.media_access_status(origin, cancel).map_err(thrown)?;
         if status != "granted" && status != "not-determined" {
-            return denied();
+            return Ok(denied());
         }
     }
-    let sources = env.screen.list_sources(dialog_parent(env, view));
-    if gated && env.screen.media_access_status() != "granted" {
-        return denied();
+    let sources = env.screen.list_sources(origin, cancel, dialog_parent(env, view)).map_err(thrown)?;
+    if gated && env.screen.media_access_status(origin, cancel).map_err(thrown)? != "granted" {
+        return Ok(denied());
     }
-    obj([
+    Ok(obj([
         ("status", string("ok")),
         (
             "sources",
@@ -709,7 +712,7 @@ fn capture_screen_sources_of(env: &Env, view: ViewId) -> IpcValue {
                     .collect(),
             ),
         ),
-    ])
+    ]))
 }
 
 /// `sheets:capture-screen-source`
@@ -717,6 +720,7 @@ pub fn capture_screen_source(
     env: &Env,
     view: ViewId,
     input: &IpcValue,
+    origin: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken,
 ) -> Result<IpcValue, IpcError> {
     env.core(move |core| core.require_tab(view))?;
     schema::parse(
@@ -727,7 +731,7 @@ pub fn capture_screen_source(
         IpcValue::String(id) => id.clone(),
         _ => String::new(),
     };
-    Ok(match env.screen.capture(&id) {
+    Ok(match env.screen.capture(origin, cancel, &id).map_err(thrown)? {
         None => IpcValue::Null,
         Some(image) => obj([
             ("mediaType", string("image/png")),

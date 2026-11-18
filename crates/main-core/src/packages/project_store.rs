@@ -1,5 +1,7 @@
 //! `packages/project-store/src/folder-api.ts`: what the main process calls.
 
+pub mod native_store;
+
 use jscompat::{JsNum, JsObject, JsRegex, js_regex};
 use serde::{Deserialize, Serialize};
 

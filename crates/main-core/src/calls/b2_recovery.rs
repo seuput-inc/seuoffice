@@ -219,13 +219,13 @@ struct FakeEditor {
     kind: String,
 }
 
-impl RecoveryEditorContract<()> for FakeEditor {
+impl RecoveryEditorContract<(), ()> for FakeEditor {
     fn kind(&self) -> &str {
         &self.kind
     }
-    fn write_copies_now(&self) {}
-    fn open_file_with_decision(&self, _: &(), _: &RecoveryOpenFileRequest) {}
-    fn open_untitled_copy(&self, _: &(), _: &RecoveryOpenUntitledRequest) {}
+    fn write_copies_now(&self, done: Box<dyn FnOnce(Result<(), crate::shell::renderer_disposal::Failure>)>) { done(Ok(())); }
+    fn open_file_with_decision(&self, _: &(), _: &RecoveryOpenFileRequest, _: &(), done: crate::packages::electron_utils::recovery_contract::RecoveryOpenDone) { done(Ok(())); }
+    fn open_untitled_copy(&self, _: &(), _: &RecoveryOpenUntitledRequest, _: &(), done: crate::packages::electron_utils::recovery_contract::RecoveryOpenDone) { done(Ok(())); }
     fn is_unprotectable(&self, _: &()) -> bool {
         false
     }
@@ -238,10 +238,10 @@ fn registry_call(args: &[Value]) -> Answer {
     let steps = arg(args, 0)
         .and_then(Value::as_array)
         .ok_or_else(|| bad("steps"))?;
-    let mut registry: RecoveryRegistry<()> = RecoveryRegistry::new();
+    let mut registry: RecoveryRegistry<(), ()> = RecoveryRegistry::new();
     let mut made: HashMap<String, Rc<FakeEditor>> = HashMap::new();
     let mut every: Vec<Rc<FakeEditor>> = Vec::new();
-    let mut tokens: HashMap<String, RecoveryRegistration<()>> = HashMap::new();
+    let mut tokens: HashMap<String, RecoveryRegistration<(), ()>> = HashMap::new();
     let mut out = Vec::new();
     for step in steps {
         let op = need_str(step, "op")?;
@@ -288,11 +288,11 @@ fn registry_call(args: &[Value]) -> Answer {
 }
 
 /// the label of the fake a registry handed back (found by identity)
-fn label_of(every: &[Rc<FakeEditor>], found: &Rc<dyn RecoveryEditorContract<()>>) -> String {
+fn label_of(every: &[Rc<FakeEditor>], found: &Rc<dyn RecoveryEditorContract<(), ()>>) -> String {
     every
         .iter()
         .find(|fake| {
-            let as_dyn: Rc<dyn RecoveryEditorContract<()>> = Rc::<FakeEditor>::clone(fake);
+            let as_dyn: Rc<dyn RecoveryEditorContract<(), ()>> = Rc::<FakeEditor>::clone(fake);
             Rc::ptr_eq(&as_dyn, found)
         })
         .map_or_else(String::new, |fake| fake.label.clone())

@@ -1,0 +1,183 @@
+diff --git a/content/browser/renderer_host/render_frame_host_impl.h b/content/browser/renderer_host/render_frame_host_impl.h
+--- a/content/browser/renderer_host/render_frame_host_impl.h
++++ b/content/browser/renderer_host/render_frame_host_impl.h
+@@ -1173,6 +1173,14 @@ class CONTENT_EXPORT RenderFrameHostImpl
+   // all the RenderFrameHosts for that FrameTreeNode.
+   bool HasPendingCommitForCrossDocumentNavigation() const;
+ 
++  // Match an exact browser-owned pending or committed document on this RFH.
++  // This is not an authorization decision: the caller must obtain this RFH
++  // from the actual renderer-bound receiver and enforce navigation activation,
++  // cancellation and context lifetime. Reject ambiguity rather than choosing
++  // a navigation by arrival order.
++  bool MatchesLatestDocumentForCef(
++      const blink::DocumentToken& document_token) const;
++
+   // Helper for recording metrics when another NavigationRequest is blocked by
+   // navigation queueing, i.e. because this NavigationRequest is in the process
+   // of committing a navigation in a kPendingCommit RenderFrameHost.
+diff --git a/content/browser/renderer_host/render_frame_host_impl.cc b/content/browser/renderer_host/render_frame_host_impl.cc
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -6818,5 +6818,40 @@ bool RenderFrameHostImpl::HasPendingCommitForCrossDocumentNavigation() const {
+   return !navigation_requests_.empty();
+ }
+ 
++bool RenderFrameHostImpl::MatchesLatestDocumentForCef(
++    const blink::DocumentToken& document_token) const {
++  DCHECK_CURRENTLY_ON(BrowserThread::UI);
++  if (IsPendingDeletion() || IsInBackForwardCache() ||
++      !frame_tree_node() || frame_tree_node()->navigation_request()) {
++    return false;
++  }
++  auto* manager = frame_tree_node()->render_manager();
++  auto* current = manager->current_frame_host();
++  auto* speculative = manager->speculative_frame_host();
++  if (this != current && this != speculative) {
++    return false;
++  }
++  auto* other = this == current ? speculative : current;
++  if (other && other->HasPendingCommitForCrossDocumentNavigation()) {
++    return false;
++  }
++  if (navigation_requests_.empty()) {
++    return this == current && IsActive() && IsRenderFrameLive() &&
++           frame_tree_node()->MatchesCefReadyDocument(GetGlobalFrameToken(),
++                                                       document_token) &&
++           GetDocumentToken() == document_token;
++  }
++  if (navigation_requests_.size() != 1) {
++    return false;
++  }
++  const auto& request = navigation_requests_.begin()->second;
++  return request->state() == NavigationRequest::READY_TO_COMMIT &&
++         frame_tree_node()->IsLatestNavigationForCef(request->GetNavigationId()) &&
++         frame_tree_node()->MatchesCefReadyDocument(GetGlobalFrameToken(),
++                                                     document_token) &&
++         request->GetRenderFrameHost() == this &&
++         request->GetDocumentToken() == document_token;
++}
++
+ void RenderFrameHostImpl::RecordMetricsForBlockedGetFrameHostAttempt(
+     bool commit_attempt) {
+diff --git a/content/browser/renderer_host/frame_tree_node.h b/content/browser/renderer_host/frame_tree_node.h
+--- a/content/browser/renderer_host/frame_tree_node.h
++++ b/content/browser/renderer_host/frame_tree_node.h
+@@ -351,6 +351,33 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
+ 
+   NavigationRequest* navigation_request() { return navigation_request_.get(); }
+ 
++  // Reject a superseded request even after the newer request is cancelled.
++  bool IsLatestNavigationForCef(int64_t navigation_id) const {
++    return cef_latest_navigation_id_ == navigation_id;
++  }
++
++  void RememberCefReadyDocument(int64_t navigation_id,
++                                const GlobalRenderFrameHostToken& frame,
++                                const blink::DocumentToken& document,
++                                const GURL& url) {
++    if (IsLatestNavigationForCef(navigation_id)) {
++      cef_ready_frame_ = frame;
++      cef_ready_document_ = document;
++      cef_ready_url_ = url;
++    }
++  }
++
++  bool MatchesCefReadyDocument(const GlobalRenderFrameHostToken& frame,
++                               const blink::DocumentToken& document) const {
++    return cef_ready_frame_ == frame && cef_ready_document_ == document;
++  }
++
++  std::optional<GURL> GetCefReadyDocumentURL(
++      const GlobalRenderFrameHostToken& frame,
++      const blink::DocumentToken& document) const {
++    return MatchesCefReadyDocument(frame, document) ? cef_ready_url_ : std::nullopt;
++  }
++
+   // Transfers the ownership of the NavigationRequest to |render_frame_host|.
+   // From ReadyToCommit to DidCommit, the NavigationRequest is owned by the
+   // RenderFrameHost that is committing the navigation.
+@@ -940,6 +967,10 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
+   // Owns an ongoing NavigationRequest until it is ready to commit. It will then
+   // be reset and a RenderFrameHost will be responsible for the navigation.
+   std::unique_ptr<NavigationRequest> navigation_request_;
++  std::optional<int64_t> cef_latest_navigation_id_;
++  std::optional<GlobalRenderFrameHostToken> cef_ready_frame_;
++  std::optional<blink::DocumentToken> cef_ready_document_;
++  std::optional<GURL> cef_ready_url_;
+ 
+   // List of objects observing this FrameTreeNode.
+   base::ObserverList<Observer>::Unchecked observers_;
+diff --git a/content/browser/renderer_host/frame_tree_node.cc b/content/browser/renderer_host/frame_tree_node.cc
+--- a/content/browser/renderer_host/frame_tree_node.cc
++++ b/content/browser/renderer_host/frame_tree_node.cc
+@@ -598,4 +598,10 @@ void FrameTreeNode::TakeNavigationRequest(
+     std::unique_ptr<NavigationRequest> navigation_request) {
++  if (!navigation_request->IsSameDocument()) {
++    cef_latest_navigation_id_ = navigation_request->GetNavigationId();
++    cef_ready_frame_.reset();
++    cef_ready_document_.reset();
++    cef_ready_url_.reset();
++  }
+   // This is never called when navigating to a Javascript URL. For the loading
+   // state, this matches what Blink is doing: Blink doesn't send throbber
+   // notifications for Javascript URLS.
+diff --git a/content/browser/renderer_host/navigation_request.cc b/content/browser/renderer_host/navigation_request.cc
+--- a/content/browser/renderer_host/navigation_request.cc
++++ b/content/browser/renderer_host/navigation_request.cc
+@@ -9731,6 +9731,11 @@ void NavigationRequest::ReadyToCommitNavigation(bool is_error) {
+ 
+   SetState(READY_TO_COMMIT);
++  if (!is_error && !IsSameDocument() && !IsPageActivation()) {
++    frame_tree_node_->RememberCefReadyDocument(
++        GetNavigationId(), GetRenderFrameHost()->GetGlobalFrameToken(),
++        GetDocumentToken(), GetURL());
++  }
+   ready_to_commit_time_ = base::TimeTicks::Now();
+   RestartCommitTimeout();
+ 
+   if (!IsSameDocument() && !IsPageActivation())
+diff --git a/third_party/blink/public/web/web_local_frame.h b/third_party/blink/public/web/web_local_frame.h
+--- a/third_party/blink/public/web/web_local_frame.h
++++ b/third_party/blink/public/web/web_local_frame.h
+@@ -210,6 +210,11 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
+   // correspond to a frame (e.g., workers).
+   static WebLocalFrame* FrameForContext(v8::Local<v8::Context>);
+ 
++  // Identity of this native V8 context, if Blink still owns its ScriptState.
++  // This token is an identifier, not an authorization or control-message key.
++  static std::optional<V8ContextToken> ContextToken(
++      v8::Local<v8::Context> context);
++
+   // Returns the frame associated with the |frame_token|.
+   static WebLocalFrame* FromFrameToken(const LocalFrameToken& frame_token);
+ 
+diff --git a/third_party/blink/renderer/core/frame/web_local_frame_impl.cc b/third_party/blink/renderer/core/frame/web_local_frame_impl.cc
+--- a/third_party/blink/renderer/core/frame/web_local_frame_impl.cc
++++ b/third_party/blink/renderer/core/frame/web_local_frame_impl.cc
+@@ -263,6 +263,7 @@
+ #include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
+ #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+ #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
++#include "third_party/blink/renderer/platform/bindings/script_state.h"
+ #include "third_party/blink/renderer/platform/bindings/source_location.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
+ #include "third_party/blink/renderer/platform/graphics/color.h"
+@@ -778,6 +779,17 @@ WebLocalFrame* WebLocalFrame::FrameForContext(v8::Local<v8::Context> context) {
+   return WebLocalFrameImpl::FromFrame(ToLocalFrameIfNotDetached(context));
+ }
+ 
++std::optional<V8ContextToken> WebLocalFrame::ContextToken(
++    v8::Local<v8::Context> context) {
++  auto* isolate = v8::Isolate::TryGetCurrent();
++  if (!isolate || context.IsEmpty())
++    return std::nullopt;
++  auto* state = ScriptState::MaybeFrom(isolate, context);
++  if (!state)
++    return std::nullopt;
++  return state->GetToken();
++}
++
+ bool WebLocalFrameImpl::IsWebLocalFrame() const {
+   return true;
+ }

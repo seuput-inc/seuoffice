@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "jscompat",
+  "file-commit",
   "ooxml-xml",
   "ooxml-pkg",
   "docx-engine",
@@ -37,6 +38,7 @@ publish = false
 
 [workspace.dependencies]
 jscompat = { path = "jscompat" }
+file-commit = { path = "file-commit" }
 ooxml-xml = { path = "ooxml-xml" }
 ooxml-pkg = { path = "ooxml-pkg" }
 # without icu-collation: each member names it, so the wasm build can leave it out

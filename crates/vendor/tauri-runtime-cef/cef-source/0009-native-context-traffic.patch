@@ -1,0 +1,787 @@
+diff --git a/libcef/common/mojom/cef.mojom b/libcef/common/mojom/cef.mojom
+--- a/libcef/common/mojom/cef.mojom
++++ b/libcef/common/mojom/cef.mojom
+@@ -137,8 +137,23 @@
++interface NativeContextReplies {
++  Reply(uint32 callback, bool raw, array<uint8> body);
++  ReplyChannel(uint32 callback, uint64 index, bool raw, array<uint8> body, bool end);
++};
++
+ // Dedicated renderer-context channel. The receiver is bound to the actual RFH.
+ // Tokens identify native objects; this message is not an activation grant.
+ interface NativeContextHost {
++  [Sync, NoInterrupt]
+   Register(blink.mojom.DocumentToken document_token,
+            blink.mojom.V8ContextToken context_token, int32 world_id,
+-           pending_remote<NativeContextEvaluator> evaluator);
++           pending_remote<NativeContextEvaluator> evaluator,
++           pending_remote<NativeContextReplies> replies)
++      => (bool admitted, int32 renderer_child_id, string document_url,
++          int32 trusted_mode, uint32 browser_pid, string initialization);
++  Listen();
++  SendTauri(string cmd, uint32 callback, uint32 error, bool raw,
++            string invoke_key, string headers_json, array<uint8> body);
++  [Sync, NoInterrupt]
++  SendSync(string channel, array<uint8> body) => (bool accepted, array<uint8> response);
++  FirstNonEmptyLayout();
+ };
+ 
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -61,3 +61,41 @@
+ #include "include/cef_request_handler.h"
+ 
++#include "include/cef_values.h"
++
++#if CEF_API_ADDED(15401)
++///
++/// A native-only reply stream bound to one immutable registered context.
++/// Calls are on the browser UI thread and fail after that context is revoked.
++///
++/*--cef(source=library,added=15401)--*/
++class CefNativeContextChannel : public virtual CefBaseRefCounted {
++ public:
++  ///
++  /// Deliver bytes to the exact listening context; never evaluate a frame.
++  ///
++  /*--cef(optional_param=body)--*/
++  virtual bool Reply(uint32_t callback, bool raw, CefRefPtr<CefBinaryValue> body) = 0;
++  ///
++  /// Preserve original Tauri channel index and end framing in this context.
++  ///
++  /*--cef(optional_param=body)--*/
++  virtual bool ReplyChannel(uint32_t callback, uint64_t index, bool raw,
++                            CefRefPtr<CefBinaryValue> body, bool end) = 0;
++};
++
++///
++/// Complete one native synchronous request. May be called on any thread.
++/// Native delivery is posted to UI and does not block UI waiting for core.
++///
++/*--cef(source=library,added=15401)--*/
++class CefNativeContextSyncReply : public virtual CefBaseRefCounted {
++ public:
++  ///
++  /// Complete once; a revoked context always receives rejection instead.
++  ///
++  /*--cef(optional_param=body)--*/
++  virtual void Complete(bool accepted, CefRefPtr<CefBinaryValue> body) = 0;
++};
++#endif
++
+ #if CEF_API_ADDED(15401)
+@@ -240,2 +278,2 @@
+   /*--cef(added=15401)--*/
+-  virtual void OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
++  virtual bool OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
+@@ -248,3 +286,5 @@
+                                           int world_id,
+-                                          CefRefPtr<CefNativeContextEvaluation> evaluation) {}
++                                          const CefString& document_url,
++                                          CefRefPtr<CefNativeContextEvaluation> evaluation,
++                                          CefRefPtr<CefNativeContextChannel> channel) { return false; }
+ 
+@@ -289,4 +329,28 @@
+                                        const CefString& context_token,
+                                        int world_id) {}
++  ///
++  /// Preserve the Tauri command/key/body and route through its native verifier.
++  ///
++  /*--cef(added=15401,optional_param=body)--*/
++  virtual void OnNativeContextTauriRequest(CefRefPtr<CefBrowser> browser,
++      const CefString& frame_id, int child_id, const CefString& document_token,
++      const CefString& context_token, int world_id, const CefString& cmd,
++      uint32_t callback, uint32_t error, bool raw, const CefString& invoke_key,
++      const CefString& headers_json, CefRefPtr<CefBinaryValue> body) {}
++  ///
++  /// Post work and return; never wait for core, UI, CDP or the renderer here.
++  ///
++  /*--cef(added=15401,optional_param=body)--*/
++  virtual void OnNativeContextSyncRequest(CefRefPtr<CefBrowser> browser,
++      const CefString& frame_id, int child_id, const CefString& document_token,
++      const CefString& context_token, int world_id, const CefString& channel,
++      CefRefPtr<CefBinaryValue> body, CefRefPtr<CefNativeContextSyncReply> reply) {}
++  ///
++  /// Blink's first visually non-empty layout for this exact native context.
++  ///
++  /*--cef(added=15401)--*/
++  virtual void OnNativeContextFirstNonEmptyLayout(CefRefPtr<CefBrowser> browser,
++      const CefString& frame_id, int child_id, const CefString& document_token,
++      const CefString& context_token, int world_id) {}
+ #endif
+ };
+diff --git a/include/cef_render_process_handler.h b/include/cef_render_process_handler.h
+--- a/include/cef_render_process_handler.h
++++ b/include/cef_render_process_handler.h
+@@ -48,6 +48,35 @@
+ #include "include/cef_v8.h"
+ #include "include/cef_values.h"
+ 
++#if CEF_API_ADDED(15401)
++///
++/// Renderer-native exact-context sender. No authority is exposed as JavaScript
++/// strings or headers. Each entry checks both current and entered V8 context.
++///
++/*--cef(source=library,added=15401)--*/
++class CefNativeContextSender : public virtual CefBaseRefCounted {
++ public:
++  /// Whether the browser synchronously admitted this native context.
++  /*--cef()--*/
++  virtual bool IsAdmitted() = 0;
++  /// The immutable URL matched by the browser to the exact native document.
++  /*--cef()--*/
++  virtual CefString GetDocumentURL() = 0;
++  /// Queue listening on the same FIFO as every subsequent native operation.
++  /*--cef()--*/
++  virtual bool Listen() = 0;
++  /// Send original Tauri data without synthesizing a second invoke protocol.
++  /*--cef(optional_param=body)--*/
++  virtual bool SendTauri(const CefString& cmd, uint32_t callback, uint32_t error,
++      bool raw, const CefString& invoke_key, const CefString& headers_json,
++      CefRefPtr<CefBinaryValue> body) = 0;
++  /// Wait only in the renderer, without dispatching unrelated messages or JS.
++  /*--cef(optional_param=body)--*/
++  virtual bool SendSync(const CefString& channel, CefRefPtr<CefBinaryValue> body,
++                        CefRefPtr<CefBinaryValue>& response) = 0;
++};
++#endif
++
+ ///
+ /// Class used to implement render process callbacks. The methods of this class
+ /// will be called on the render process main thread (TID_RENDERER) unless
+@@ -157,8 +186,9 @@
+   /*--cef(added=15401)--*/
+   virtual void OnNativeContextCreated(CefRefPtr<CefBrowser> browser,
+                                       CefRefPtr<CefFrame> frame,
+                                       CefRefPtr<CefV8Context> context,
+                                       const CefString& document_token,
+                                       const CefString& context_token,
+-                                      int world_id) {}
++                                      int world_id,
++                                      CefRefPtr<CefNativeContextSender> sender) {}
+ 
+diff --git a/libcef/browser/native_context_traffic.h b/libcef/browser/native_context_traffic.h
+new file mode 100644
+--- /dev/null
++++ b/libcef/browser/native_context_traffic.h
+@@ -0,0 +1,126 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_TRAFFIC_H_
++#define CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_TRAFFIC_H_
++
++#include <atomic>
++#include <map>
++#include <memory>
++#include <utility>
++#include <vector>
++#include "base/functional/bind.h"
++#include "base/synchronization/lock.h"
++#include "base/task/bind_post_task.h"
++#include "cef/include/cef_client.h"
++#include "cef/libcef/browser/thread_util.h"
++#include "cef/libcef/common/mojom/cef.mojom.h"
++#include "mojo/public/cpp/bindings/remote.h"
++
++class CefNativeContextSyncReplyImpl final : public CefNativeContextSyncReply {
++ public:
++  using Reply = cef::mojom::NativeContextHost::SendSyncCallback;
++  using Completion = base::OnceCallback<void(bool, std::vector<uint8_t>)>;
++  CefNativeContextSyncReplyImpl(Reply reply, std::weak_ptr<std::atomic<bool>> live)
++      : reply_(base::BindPostTask(CEF_TASK_RUNNER<CEF_UIT>(), base::BindOnce(
++            [](Reply reply, std::weak_ptr<std::atomic<bool>> live,
++               bool accepted, std::vector<uint8_t> bytes) {
++              auto gate = live.lock();
++              if (!gate || !gate->load()) { accepted = false; bytes.clear(); }
++              std::move(reply).Run(accepted, bytes);
++            }, std::move(reply), std::move(live)))) {}
++  void Complete(bool accepted, CefRefPtr<CefBinaryValue> body) override {
++    std::vector<uint8_t> bytes;
++    if (accepted && body) {
++      bytes.resize(body->GetSize());
++      if (!bytes.empty() && body->GetData(bytes.data(), bytes.size(), 0) != bytes.size())
++        accepted = false;
++    }
++    Completion reply;
++    {
++      base::AutoLock lock(lock_);
++      if (!reply_) return;
++      reply = std::move(reply_);
++    }
++    std::move(reply).Run(accepted, std::move(bytes));
++  }
++  bool IsPending() {
++    base::AutoLock lock(lock_);
++    return !!reply_;
++  }
++ private:
++  ~CefNativeContextSyncReplyImpl() override { Complete(false, nullptr); }
++  base::Lock lock_;
++  Completion reply_;
++  IMPLEMENT_REFCOUNTING(CefNativeContextSyncReplyImpl);
++};
++
++class CefNativeContextChannelImpl final : public CefNativeContextChannel {
++ public:
++  explicit CefNativeContextChannelImpl(
++      mojo::PendingRemote<cef::mojom::NativeContextReplies> replies)
++      : replies_(std::move(replies)) {}
++
++  bool Reply(uint32_t callback, bool raw, CefRefPtr<CefBinaryValue> body) override {
++    CEF_REQUIRE_UIT_RETURN(false);
++    if (!live_ || !listening_ || !replies_.is_connected()) return false;
++    std::vector<uint8_t> bytes(body ? body->GetSize() : 0);
++    if (!bytes.empty() && body->GetData(bytes.data(), bytes.size(), 0) != bytes.size())
++      return false;
++    replies_->Reply(callback, raw, std::move(bytes));
++    return true;
++  }
++
++  bool ReplyChannel(uint32_t callback, uint64_t index, bool raw,
++                    CefRefPtr<CefBinaryValue> body, bool end) override {
++    CEF_REQUIRE_UIT_RETURN(false);
++    if (!live_ || !listening_ || !replies_.is_connected()) return false;
++    std::vector<uint8_t> bytes(body ? body->GetSize() : 0);
++    if (!bytes.empty() && body->GetData(bytes.data(), bytes.size(), 0) != bytes.size())
++      return false;
++    replies_->ReplyChannel(callback, index, raw, std::move(bytes), end);
++    return true;
++  }
++
++  bool Listen() {
++    CEF_REQUIRE_UIT_RETURN(false);
++    if (!live_ || listening_ || !replies_.is_connected()) return false;
++    listening_ = true;
++    return true;
++  }
++  bool IsLive() const { return live_; }
++
++  CefRefPtr<CefNativeContextSyncReplyImpl> AddSync(
++      cef::mojom::NativeContextHost::SendSyncCallback reply) {
++    CEF_REQUIRE_UIT_RETURN(nullptr);
++    // A NoInterrupt renderer call cannot recursively issue another sync call.
++    if (!live_ || (sync_ && sync_->IsPending())) {
++      std::move(reply).Run(false, {});
++      return nullptr;
++    }
++    auto request = CefRefPtr<CefNativeContextSyncReplyImpl>(
++        new CefNativeContextSyncReplyImpl(std::move(reply), live_gate_));
++    sync_ = request;
++    return request;
++  }
++
++  void Invalidate() {
++    CEF_REQUIRE_UIT();
++    if (!live_) return;
++    live_ = false;
++    live_gate_->store(false);
++    listening_ = false;
++    replies_.reset();
++    auto pending = std::move(sync_);
++    if (pending) pending->Complete(false, nullptr);
++  }
++
++  ~CefNativeContextChannelImpl() override { Invalidate(); }
++ private:
++  bool live_ = true;
++  bool listening_ = false;
++  std::shared_ptr<std::atomic<bool>> live_gate_ = std::make_shared<std::atomic<bool>>(true);
++  mojo::Remote<cef::mojom::NativeContextReplies> replies_;
++  CefRefPtr<CefNativeContextSyncReplyImpl> sync_;
++  IMPLEMENT_REFCOUNTING_DELETE_ON_UIT(CefNativeContextChannelImpl);
++};
++#endif  // CEF_LIBCEF_BROWSER_NATIVE_CONTEXT_TRAFFIC_H_
+diff --git a/libcef/renderer/native_context_sender.h b/libcef/renderer/native_context_sender.h
+new file mode 100644
+--- /dev/null
++++ b/libcef/renderer/native_context_sender.h
+@@ -0,0 +1,168 @@
++// Copyright 2026 The Chromium Embedded Framework Authors.
++// Use of this source code is governed by a BSD-style license.
++#ifndef CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_SENDER_H_
++#define CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_SENDER_H_
++
++#include <deque>
++#include <tuple>
++#include "base/command_line.h"
++#include "content/public/common/content_switches.h"
++#include "content/public/renderer/render_thread.h"
++#include <string>
++#include <utility>
++#include <vector>
++#include "base/functional/callback.h"
++#include "cef/include/cef_render_process_handler.h"
++#include "cef/libcef/common/mojom/cef.mojom.h"
++#include "mojo/public/cpp/bindings/receiver.h"
++#include "mojo/public/cpp/bindings/remote.h"
++#include "third_party/blink/public/web/web_local_frame.h"
++#include "v8/include/v8.h"
++
++class CefNativeContextSenderImpl final : public CefNativeContextSender,
++                                        public cef::mojom::NativeContextReplies {
++ public:
++  CefNativeContextSenderImpl(std::string document, std::string context, int world,
++      base::RepeatingCallback<bool(uint32_t, bool, const std::vector<uint8_t>&, bool, uint64_t, bool)> reply)
++      : document_(std::move(document)), context_(std::move(context)), world_(world),
++        native_reply_(std::move(reply)), receiver_(this) {}
++
++  mojo::PendingReceiver<cef::mojom::NativeContextHost> BindHost() {
++    return host_.BindNewPipeAndPassReceiver();
++  }
++  mojo::PendingRemote<cef::mojom::NativeContextReplies> BindReplies() {
++    return receiver_.BindNewPipeAndPassRemote();
++  }
++  bool Register(const blink::DocumentToken& document,
++      const blink::V8ContextToken& context,
++      mojo::PendingRemote<cef::mojom::NativeContextEvaluator> evaluator) {
++    if (!content::RenderThread::Get() ||
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(switches::kProcessType)
++          != switches::kRendererProcess) { Release(); return false; }
++    bool admitted = false;
++    int32_t child = 0;
++    std::string url;
++    if (!host_->Register(document, context, world_, std::move(evaluator),
++          BindReplies(), &admitted, &child, &url, &trusted_mode_, &browser_pid_, &initialization_) || !admitted || child <= 0) {
++      Release();
++      return false;
++    }
++    admitted_ = true;
++    document_url_ = std::move(url);
++    return true;
++  }
++  int trusted_mode() const { return trusted_mode_; }
++  uint32_t browser_pid() const { return browser_pid_; }
++  const std::string& initialization() const { return initialization_; }
++
++  bool SetReady() {
++    CefRefPtr<CefNativeContextSenderImpl> keep_alive(this);
++    if (!IsAdmitted() || ready_) return false;
++    ready_ = true;
++    while (!pending_replies_.empty()) {
++      auto reply = std::move(pending_replies_.front());
++      pending_replies_.pop_front();
++      if (!IsAdmitted() || !native_reply_.Run(std::get<0>(reply), std::get<1>(reply), std::get<2>(reply),
++                                            std::get<3>(reply), std::get<4>(reply), std::get<5>(reply))) {
++        Release();
++        return false;
++      }
++    }
++    if (layout_pending_) FirstNonEmptyLayout();
++    return IsAdmitted();
++  }
++
++  void FirstNonEmptyLayout() {
++    if (!IsAdmitted() || layout_sent_) return;
++    if (!ready_) { layout_pending_ = true; return; }
++    layout_sent_ = true;
++    host_->FirstNonEmptyLayout();
++  }
++
++  bool IsAdmitted() override { return admitted_ && host_.is_connected(); }
++  CefString GetDocumentURL() override { return document_url_; }
++  bool Listen() override {
++    if (!ExactEntry()) return false;
++    host_->Listen();
++    return true;
++  }
++  bool SendTauri(const CefString& cmd, uint32_t callback, uint32_t error,
++      bool raw, const CefString& invoke_key, const CefString& headers_json,
++      CefRefPtr<CefBinaryValue> body) override {
++    if (!ExactEntry()) return false;
++    std::vector<uint8_t> bytes(body ? body->GetSize() : 0);
++    if (!bytes.empty() && body->GetData(bytes.data(), bytes.size(), 0) != bytes.size())
++      return false;
++    host_->SendTauri(cmd.ToString(), callback, error, raw, invoke_key.ToString(),
++                     headers_json.ToString(), std::move(bytes));
++    return true;
++  }
++  bool SendSync(const CefString& channel, CefRefPtr<CefBinaryValue> body,
++                CefRefPtr<CefBinaryValue>& result) override {
++    result = nullptr;
++    if (!ExactEntry()) return false;
++    std::vector<uint8_t> bytes(body ? body->GetSize() : 0);
++    if (!bytes.empty() && body->GetData(bytes.data(), bytes.size(), 0) != bytes.size())
++      return false;
++    // ExactEntry's V8 locals have gone out of scope. NoInterrupt restricts
++    // this wait to the exact reply; there is no nested RunLoop or V8 delivery.
++    bool accepted = false;
++    std::vector<uint8_t> response;
++    if (!host_->SendSync(channel.ToString(), std::move(bytes), &accepted, &response) || !accepted)
++      return false;
++    if (!response.empty()) result = CefBinaryValue::Create(response.data(), response.size());
++    return response.empty() || !!result;
++  }
++  void Release() {
++    admitted_ = false;
++    ready_ = false;
++    pending_replies_.clear();
++    receiver_.reset();
++    host_.reset();
++    native_reply_.Reset();
++  }
++
++ private:
++  bool ExactEntry() {
++    if (!IsAdmitted() || world_ != 0) return false;
++    auto* isolate = v8::Isolate::TryGetCurrent();
++    if (!isolate) return false;
++    v8::HandleScope scope(isolate);
++    auto current = isolate->GetCurrentContext();
++    auto entered = isolate->GetEnteredOrMicrotaskContext();
++    if (current.IsEmpty() || entered.IsEmpty() || current != entered) return false;
++    auto token = blink::WebLocalFrame::ContextToken(current);
++    return token && token->ToString() == context_;
++  }
++  void Reply(uint32_t callback, bool raw, const std::vector<uint8_t>& body) override {
++    DispatchReply(callback, raw, body, false, 0, false);
++  }
++  void ReplyChannel(uint32_t callback, uint64_t index, bool raw,
++                    const std::vector<uint8_t>& body, bool end) override {
++    DispatchReply(callback, raw, body, true, index, end);
++  }
++  void DispatchReply(uint32_t callback, bool raw, const std::vector<uint8_t>& body,
++                     bool indexed, uint64_t index, bool end) {
++    CefRefPtr<CefNativeContextSenderImpl> keep_alive(this);
++    if (!IsAdmitted() || !native_reply_) return;
++    if (!ready_) { pending_replies_.emplace_back(callback, raw, body, indexed, index, end); return; }
++    if (!native_reply_.Run(callback, raw, body, indexed, index, end)) Release();
++  }
++  const std::string document_;
++  const std::string context_;
++  const int world_;
++  bool admitted_ = false;
++  bool ready_ = false;
++  bool layout_pending_ = false;
++  bool layout_sent_ = false;
++  std::deque<std::tuple<uint32_t, bool, std::vector<uint8_t>, bool, uint64_t, bool>> pending_replies_;
++  std::string document_url_;
++  int trusted_mode_ = 0;
++  uint32_t browser_pid_ = 0;
++  std::string initialization_;
++  base::RepeatingCallback<bool(uint32_t, bool, const std::vector<uint8_t>&, bool, uint64_t, bool)> native_reply_;
++  mojo::Remote<cef::mojom::NativeContextHost> host_;
++  mojo::Receiver<cef::mojom::NativeContextReplies> receiver_;
++  IMPLEMENT_REFCOUNTING(CefNativeContextSenderImpl);
++};
++#endif  // CEF_LIBCEF_RENDERER_NATIVE_CONTEXT_SENDER_H_
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -10,3 +10,8 @@
+ #include "cef/include/cef_client.h"
++#include "base/process/process_handle.h"
++#include "base/memory/weak_ptr.h"
++#include "content/browser/renderer_host/frame_tree_node.h"
++#include "cef/libcef/browser/native_context_traffic.h"
++#include "mojo/public/cpp/bindings/callback_helpers.h"
+ #include "cef/libcef/browser/approved_navigation.h"
+ #include "cef/libcef/browser/native_context_evaluation.h"
+@@ -28,6 +33,9 @@
+       : CefFrameServiceBase(host, std::move(receiver)) {}
+ 
+-  ~CefNativeContextService() override { Revoke(); }
++  ~CefNativeContextService() override {
++    weak_.InvalidateWeakPtrs();
++    Revoke();
++  }
+ 
+  private:
+   void Register(const blink::DocumentToken& document_token,
+@@ -34,5 +42,9 @@
+                 int32_t world_id,
+-                mojo::PendingRemote<cef::mojom::NativeContextEvaluator> evaluator) override {
++                mojo::PendingRemote<cef::mojom::NativeContextEvaluator> evaluator,
++                mojo::PendingRemote<cef::mojom::NativeContextReplies> replies,
++                RegisterCallback callback) override {
++    callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
++        std::move(callback), false, 0, std::string(), 0, uint32_t{0}, std::string());
+     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+     if (attempted_) return;
+     attempted_ = true;
+@@ -40,9 +52,23 @@
+-    if (!evaluator.is_valid()) return;
++    if (!evaluator.is_valid() || !replies.is_valid()) return;
+     auto* rfh = static_cast<content::RenderFrameHostImpl*>(render_frame_host());
+     if (world_id != 0 || rfh->GetParent() || !rfh->MatchesLatestDocumentForCef(document_token))
+       return;
++    CefBrowserInfo* browser_info = nullptr;
+     auto frame = CefBrowserInfoManager::GetFrameHost(
+-        rfh, /*prefer_speculative=*/true, /*browser_info=*/nullptr,
++        rfh, /*prefer_speculative=*/true, &browser_info,
+         /*is_excluded=*/nullptr);
+     if (!frame || !frame->IsSameFrame(rfh)) return;
++    if (!browser_info || !browser_info->IsValid() || browser_info->is_popup())
++      return;
++    const auto info = browser_info->extra_info();
++    if (!info || info->GetType("seuoffice.trusted-mode") != VTYPE_INT)
++      return;
++    const int trusted_mode = info->GetInt("seuoffice.trusted-mode");
++    if (trusted_mode != 1 && trusted_mode != 2) return;
++    const auto initialization = info->GetString("seuoffice.trusted-init").ToString();
++    const auto document_url = rfh->frame_tree_node()->GetCefReadyDocumentURL(
++        rfh->GetGlobalFrameToken(), document_token);
++    const auto renderer_pid = rfh->GetProcess()->GetProcess().Pid();
++    if (!document_url || initialization.empty() || renderer_pid == 0 ||
++        renderer_pid == base::GetCurrentProcId()) return;
+     const auto frame_id = frame->GetIdentifier().ToString();
+@@ -66,3 +94,5 @@
+-    evaluation_ = new CefNativeContextEvaluationImpl(std::move(evaluator));
++    evaluation_ = new CefNativeContextEvaluationImpl(
++        rfh->GetWeakPtr(), document_token, std::move(evaluator));
++    traffic_ = new CefNativeContextChannelImpl(std::move(replies));
+     pre_navigation_ = rfh->frame_tree_node()->AddCefPreNavigationRevoker(
+         base::BindRepeating(&CefNativeContextService::BeforeNavigation,
+@@ -70,4 +99,13 @@
+-    client->OnNativeContextRegistered(browser, frame, frame_id_, child_id_,
++    const auto weak = weak_.GetWeakPtr();
++    const bool accepted = client->OnNativeContextRegistered(browser, frame, frame_id_, child_id_,
+                                       document_token.ToString(),
+-                                      context_token.ToString(), intent->first, intent->second, world_id, evaluation_);
++                                      context_token.ToString(), intent->first, intent->second,
++                                      world_id, document_url->spec(), evaluation_, traffic_);
++    if (!weak) return;
++    if (!accepted || !traffic_->IsLive()) {
++      Revoke();
++      return;
++    }
++    std::move(callback).Run(true, child_id_, document_url->spec(), trusted_mode,
++                            static_cast<uint32_t>(base::GetCurrentProcId()), initialization);
+   }
+@@ -84,3 +123,4 @@
+     if (!registered_ || (affected && affected != render_frame_host())) return;
+     if (evaluation_) evaluation_->Invalidate();
++    if (traffic_) traffic_->Invalidate();
+     client_->OnNativeContextWillRevoke(browser_, frame_, frame_id_, child_id_,
+@@ -109,3 +149,5 @@
+     registered_ = false;
++    auto traffic = std::move(traffic_);
++    if (traffic) traffic->Invalidate();
+     auto evaluation = std::move(evaluation_);
+     if (evaluation) evaluation->Invalidate();
+@@ -123,1 +165,27 @@
++  void Listen() override {
++    if (registered_ && traffic_) traffic_->Listen();
++  }
++
++  void SendTauri(const std::string& cmd, uint32_t callback, uint32_t error,
++                 bool raw, const std::string& key, const std::string& headers_json,
++                 const std::vector<uint8_t>& body) override {
++    if (!registered_ || !traffic_ || !traffic_->IsLive()) return;
++    client_->OnNativeContextTauriRequest(browser_, frame_id_, child_id_, document_,
++        context_, world_, cmd, callback, error, raw, key, headers_json,
++        body.empty() ? nullptr : CefBinaryValue::Create(body.data(), body.size()));
++  }
++
++  void SendSync(const std::string& channel, const std::vector<uint8_t>& body,
++                SendSyncCallback callback) override {
++    if (!registered_ || !traffic_ || !traffic_->IsLive()) {
++      std::move(callback).Run(false, {});
++      return;
++    }
++    auto reply = traffic_->AddSync(std::move(callback));
++    if (!reply) return;
++    client_->OnNativeContextSyncRequest(browser_, frame_id_, child_id_, document_,
++        context_, world_, channel,
++        body.empty() ? nullptr : CefBinaryValue::Create(body.data(), body.size()), reply);
++  }
++
+   bool attempted_ = false;
+@@ -133,3 +206,5 @@
+   CefRefPtr<CefClient> client_;
+   CefRefPtr<CefNativeContextEvaluationImpl> evaluation_;
++  CefRefPtr<CefNativeContextChannelImpl> traffic_;
++  base::WeakPtrFactory<CefNativeContextService> weak_{this};
+ };
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -60,3 +60,4 @@
+     document_ = document_token.ToString();
++    document_identity_ = document_token;
+     context_ = context_token.ToString();
+     world_ = world_id;
+@@ -165,1 +166,11 @@
++  void FirstNonEmptyLayout() override {
++    if (!registered_ || !traffic_ || !traffic_->IsLive() || layout_sent_ ||
++        !document_identity_) return;
++    auto* rfh = static_cast<content::RenderFrameHostImpl*>(render_frame_host());
++    if (!rfh->MatchesLatestDocumentForCef(*document_identity_)) return;
++    layout_sent_ = true;
++    client_->OnNativeContextFirstNonEmptyLayout(browser_, frame_id_, child_id_,
++                                               document_, context_, world_);
++  }
++
+   bool attempted_ = false;
+@@ -170,2 +184,4 @@
+   bool registered_ = false;
++  bool layout_sent_ = false;
++  std::optional<blink::DocumentToken> document_identity_;
+   base::CallbackListSubscription pre_navigation_;
+diff --git a/libcef/renderer/render_frame_observer.h b/libcef/renderer/render_frame_observer.h
+--- a/libcef/renderer/render_frame_observer.h
++++ b/libcef/renderer/render_frame_observer.h
+@@ -18,2 +18,4 @@
+ class CefNativeContextEvaluatorMojo;
++class CefNativeContextSenderImpl;
++class CefNativeV8Bridge;
+ class CefFrameImpl;
+@@ -38,2 +40,3 @@
+   void OnLoadError();
++  void DidMeaningfulLayout(blink::WebMeaningfulLayout layout_type) override;
+ 
+@@ -48,7 +51,7 @@
+   CefFrameImpl* frame_ = nullptr;
+   std::map<std::string, std::pair<std::string, int>> native_contexts_;
+-  std::map<std::string, mojo::Remote<cef::mojom::NativeContextHost>>
+-      native_context_channels_;
++  std::map<std::string, CefRefPtr<CefNativeContextSenderImpl>> native_context_senders_;
+   std::map<std::string, std::unique_ptr<CefNativeContextEvaluatorMojo>>
+       native_context_evaluators_;
++  std::map<std::string, std::shared_ptr<CefNativeV8Bridge>> native_bridges_;
+ };
+diff --git a/libcef/renderer/render_frame_observer.cc b/libcef/renderer/render_frame_observer.cc
+--- a/libcef/renderer/render_frame_observer.cc
++++ b/libcef/renderer/render_frame_observer.cc
+@@ -20,2 +20,8 @@
+ #include "cef/libcef/renderer/native_context_evaluator_mojo.h"
++#include "base/json/json_reader.h"
++#include "base/process/process.h"
++#include "base/process/process_handle.h"
++#include "cef/libcef/renderer/native_context_sender.h"
++#include "cef/libcef/renderer/native_v8_bridge.h"
++#include "third_party/blink/public/web/web_meaningful_layout.h"
+ #include "cef/libcef/renderer/render_frame_observer.h"
+@@ -35,2 +42,6 @@
+ CefRenderFrameObserver::~CefRenderFrameObserver() {
++  for (auto& [token, bridge] : native_bridges_) bridge->Release();
++  native_bridges_.clear();
++  for (auto& [token, sender] : native_context_senders_) sender->Release();
++  native_context_senders_.clear();
+   for (auto& [token, evaluator] : native_context_evaluators_)
+@@ -164,15 +174,67 @@
+                 context_token, std::make_pair(document_token, world_id)).second) {
+-          mojo::Remote<cef::mojom::NativeContextHost> channel;
++          CefRefPtr<CefNativeContextSenderImpl> sender = new CefNativeContextSenderImpl(
++              document_token, context_token, world_id,
++              base::BindRepeating(
++                  [](CefRenderFrameObserver* observer, const std::string& token,
++                     uint32_t callback, bool raw, const std::vector<uint8_t>& bytes,
++                     bool indexed, uint64_t index, bool end) {
++                    auto it = observer->native_bridges_.find(token);
++                    if (it == observer->native_bridges_.end()) return false;
++                    auto bridge = it->second;
++                    return indexed ? bridge->DeliverChannel(callback, index, raw, bytes, end)
++                                   : bridge->Deliver(callback, raw, bytes);
++                  }, base::Unretained(this), context_token));
+           auto evaluator = std::make_unique<CefNativeContextEvaluatorMojo>(
+               isolate, context);
+           auto evaluation_remote = evaluator->BindNewPipeAndPassRemote();
+           native_context_evaluators_.emplace(context_token, std::move(evaluator));
+           render_frame()->GetBrowserInterfaceBroker().GetInterface(
+-              channel.BindNewPipeAndPassReceiver());
+-          channel->Register(document.Token(), *state, world_id, std::move(evaluation_remote));
+-          native_context_channels_.emplace(context_token, std::move(channel));
++              sender->BindHost());
++          native_context_senders_.emplace(context_token, sender);
++          if (sender->Register(document.Token(), *state, std::move(evaluation_remote))) {
++            // Admission came from the actual browser and exact RFH/document
++            // channel. These fields are native creation data, not page input.
++            const uint32_t browser_pid = sender->browser_pid();
++            const bool separate_renderer = browser_pid != 0 &&
++                browser_pid != static_cast<uint32_t>(base::GetCurrentProcId()) &&
++                content::RenderThread::Get() &&
++                base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++                    switches::kProcessType) == switches::kRendererProcess;
++            const auto mode = sender->trusted_mode() == 1
++                ? CefNativeV8Bridge::Mode::kInvoke : CefNativeV8Bridge::Mode::kPreload;
++            auto bridge = std::make_shared<CefNativeV8Bridge>(
++                isolate, context, sender, mode);
++            native_bridges_.emplace(context_token, bridge);
++            std::vector<std::pair<std::string, bool>> scripts;
++            bool valid = separate_renderer &&
++                (sender->trusted_mode() == 1 || sender->trusted_mode() == 2);
++            auto initialization = base::JSONReader::Read(
++                sender->initialization(), base::JSON_PARSE_RFC);
++            if (!initialization || !initialization->is_dict()) valid = false;
++            const auto* entries = valid
++                ? initialization->GetDict().FindList("scripts") : nullptr;
++            if (!entries) valid = false;
++            if (entries) for (const auto& entry : *entries) {
++              if (!entry.is_dict()) { valid = false; break; }
++              const auto* source = entry.GetDict().FindString("source");
++              const auto main_only = entry.GetDict().FindBool("main_only");
++              if (!source || !main_only) { valid = false; break; }
++              scripts.emplace_back(*source, *main_only);
++            }
++            if (!valid || !bridge->Install() ||
++                !bridge->ExecuteTrustedScripts(scripts, framePtr->IsMain()) ||
++                !bridge->FinishInitialization() || !sender->SetReady()) {
++              bridge->Release();
++              sender->Release();
++              // Native admission itself verifies a distinct browser PID;
++              // protected creation rejects single-process configuration.
++              if (separate_renderer)
++                base::Process::TerminateCurrentProcessImmediately(1);
++              return;
++            }
++          }
+ 
+           handler->OnNativeContextCreated(browserPtr.get(), framePtr.get(),
+                                           contextPtr, document_token,
+-                                          context_token, world_id);
++                                          context_token, world_id, sender);
+         }
+@@ -215,6 +273,11 @@
+           auto identity = std::move(it->second);
++          if (auto bridge = native_bridges_.find(context_token);
++              bridge != native_bridges_.end()) bridge->second->Release();
++          native_bridges_.erase(context_token);
++          if (auto sender = native_context_senders_.find(context_token);
++              sender != native_context_senders_.end()) sender->second->Release();
++          native_context_senders_.erase(context_token);
+           if (auto evaluator = native_context_evaluators_.find(context_token);
+               evaluator != native_context_evaluators_.end()) evaluator->second->Release();
+           native_context_evaluators_.erase(context_token);
+-          native_context_channels_.erase(context_token);
+           native_contexts_.erase(it);
+@@ -228,6 +291,9 @@
+       if (!matched) {
++        for (auto& [token, bridge] : native_bridges_) bridge->Release();
++        native_bridges_.clear();
++        for (auto& [token, sender] : native_context_senders_) sender->Release();
++        native_context_senders_.clear();
+         for (auto& [token, evaluator] : native_context_evaluators_)
+           evaluator->Release();
+         native_context_evaluators_.clear();
+-        native_context_channels_.clear();
+         native_contexts_.clear();
+@@ -248,1 +315,15 @@
++void CefRenderFrameObserver::DidMeaningfulLayout(blink::WebMeaningfulLayout type) {
++  if (type != blink::WebMeaningfulLayout::kVisuallyNonEmpty || !frame_) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = frame->GetDocument();
++  if (document.IsNull()) return;
++  const auto document_token = document.Token().ToString();
++  for (const auto& [token, identity] : native_contexts_) {
++    if (identity.first != document_token || identity.second != 0) continue;
++    auto it = native_context_senders_.find(token);
++    if (it != native_context_senders_.end()) it->second->FirstNonEmptyLayout();
++    return;
++  }
++}
++
+ void CefRenderFrameObserver::OnDestruct() {
+diff --git a/BUILD.gn b/BUILD.gn
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -663,3 +663,4 @@
+     "libcef/browser/native_context_evaluation.h",
++    "libcef/browser/native_context_traffic.h",
+     "libcef/browser/navigation_entry_impl.cc",
+     "libcef/browser/navigation_entry_impl.h",
+@@ -906,3 +906,4 @@
+     "libcef/renderer/native_context_evaluator_mojo.h",
++    "libcef/renderer/native_context_sender.h",
+     "libcef/renderer/render_frame_observer.cc",
+     "libcef/renderer/render_frame_observer.h",

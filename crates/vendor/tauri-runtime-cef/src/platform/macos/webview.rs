@@ -13,6 +13,13 @@ use crate::{webview::AppWebview, window::AppWindow};
 
 use super::utils;
 
+pub(crate) fn destroy_browser_host_window(host: &cef::BrowserHost) {
+  let view = host.window_handle().cast::<NSView>();
+  if let Some(view) = unsafe { Retained::<NSView>::retain(view) } {
+    view.removeFromSuperview();
+  }
+}
+
 impl AppWebview {
   fn try_nsview(&self) -> Option<Retained<NSView>> {
     let view = self.host.window_handle().cast::<NSView>();
@@ -33,6 +40,10 @@ impl AppWebview {
 
   pub(crate) fn native_visible(&self) -> Option<bool> {
     Some(!self.try_nsview()?.isHiddenOrHasHiddenAncestor())
+  }
+
+  pub(crate) fn native_explicit_visible(&self) -> Option<bool> {
+    Some(!self.try_nsview()?.isHidden())
   }
 
   pub(crate) fn set_background_color(&self, color: Option<Color>) {
@@ -93,15 +104,6 @@ impl AppWebview {
     nsview.setHidden(!visible);
   }
 
-  /// Destroys CEF's own view for this browser, completing a close that
-  /// `do_close` took over.
-  ///
-  /// The superview holds the only strong reference to that view, so dropping it
-  /// deallocates the view — and its `dealloc` is what reports `WindowDestroyed`
-  /// back to CEF.
-  pub(crate) fn destroy_host_window(&self) {
-    self.nsview().removeFromSuperview();
-  }
 
   pub(crate) fn apply_physical_bounds(&self, scale: f64, x: i32, y: i32, width: i32, height: i32) {
     let nsview = self.nsview();

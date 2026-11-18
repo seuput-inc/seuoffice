@@ -20,6 +20,19 @@
 //! - `Date.now()`, `crypto.randomUUID()` and `userDataDir` come in through
 //!   [`RecoveryStoreOptions`].
 
+pub mod pair_queue;
+pub mod pair_journal;
+#[cfg(any(unix, windows))]
+pub mod strict_marker;
+#[cfg(any(unix, windows))]
+pub mod conditional_entry;
+#[cfg(any(unix, windows))]
+pub mod conditional_pair;
+#[cfg(any(unix, windows))]
+pub mod captured_pair;
+#[cfg(any(unix, windows))]
+pub mod pair_discard;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -204,6 +217,153 @@ pub enum RecoveryDeleteResult {
     Refused,
 }
 
+pub struct RecoveryDeletePlan {
+    copy: String,
+    meta: String,
+}
+
+impl RecoveryDeletePlan {
+    pub fn remove_authorized(&self, admit: &mut super::atomic_write::WriteAdmission<'_>) -> Result<(), NodeError> {
+        for path in [&self.copy, &self.meta] {
+            let mut result = None;
+            admit(&mut || { result = Some(remove_recovery_file(path)); })?;
+            result.ok_or_else(|| plain("recovery deletion was not admitted"))??;
+        }
+        Ok(())
+    }
+
+    pub fn remove_owned(self, admit: &mut dyn FnMut(Box<dyn FnOnce() + Send>) -> Result<(), NodeError>) -> Result<(), NodeError> {
+        for path in [self.copy, self.meta] {
+            let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let captured = result.clone();
+            admit(Box::new(move || {
+                let outcome = remove_recovery_file(&path);
+                if let Ok(mut slot) = captured.lock() { *slot = Some(outcome); }
+            }))?;
+            let outcome = result.lock().map_err(|_| plain("recovery deletion result is unavailable"))?
+                .take().ok_or_else(|| plain("recovery deletion was not admitted"))?;
+            outcome?;
+        }
+        Ok(())
+    }
+}
+
+pub struct RecoveryWritePlan {
+    copy: String,
+    metadata: JsonValue,
+    ticket: RecoveryWriteTicket,
+}
+
+/// Immutable payload prepared after serialization and before entering the
+/// identity FIFO. It is not a publication or a recovery-generation witness.
+pub struct OwnedPreparedRecoveryWrite {
+    plan: RecoveryWritePlan,
+    bytes: Vec<u8>,
+    metadata_bytes: Vec<u8>,
+    queue: std::sync::Arc<pair_queue::RecoveryPairQueue>,
+    pair_ticket: pair_queue::RecoveryPairTicket,
+}
+
+impl OwnedPreparedRecoveryWrite {
+    pub fn new(
+        plan: RecoveryWritePlan, bytes: Vec<u8>, pair_ticket: pair_queue::RecoveryPairTicket,
+    ) -> Result<Self, (NodeError, RecoveryWritePlan, Vec<u8>, pair_queue::RecoveryPairTicket)> {
+        let queue = match pair_queue::for_copy_path(&plan.copy) {
+            Ok(queue) => queue,
+            Err(error) => return Err((error, plan, bytes, pair_ticket)),
+        };
+        if !pair_ticket.belongs_to(&queue) {
+            return Err((plain("recovery write ticket belongs to another identity"), plan, bytes, pair_ticket));
+        }
+        let metadata_bytes = jscompat::json_stringify_pretty(&plan.metadata, 2).into_bytes();
+        Ok(Self { plan, bytes, metadata_bytes, queue, pair_ticket })
+    }
+
+    pub fn copy_path(&self) -> &str { &self.plan.copy }
+    pub fn bytes(&self) -> &[u8] { &self.bytes }
+    pub fn metadata_bytes(&self) -> &[u8] { &self.metadata_bytes }
+    pub fn original_ticket(&self) -> &RecoveryWriteTicket { &self.plan.ticket }
+    pub fn pair_ticket(&self) -> &pair_queue::RecoveryPairTicket { &self.pair_ticket }
+    pub fn queue(&self) -> &std::sync::Arc<pair_queue::RecoveryPairQueue> { &self.queue }
+
+    /// Submit the immutable payload without losing it or its callback if the
+    /// queue rejects the request. The callback runs on the queue's worker and
+    /// must retain the turn through its final core continuation.
+    pub fn submit<F>(self, job: F) -> Result<(), (NodeError, Self, F)>
+    where F: FnOnce(Self, pair_queue::RecoveryPairTurn) + Send + 'static {
+        let queue = self.queue.clone();
+        queue.submit_owned(self, job)
+    }
+
+    pub fn intent(
+        &self, generation: String, previous: Option<&RecoveryPinnedSnapshot>,
+    ) -> Result<pair_journal::PairIntent, NodeError> {
+        if previous.is_some_and(|snapshot| queue_key(&snapshot.path) != queue_key(&self.plan.copy)) {
+            return Err(plain("the previous recovery snapshot belongs to another identity"));
+        }
+        let previous = previous.map(pair_journal::PairImage::from_snapshot).transpose()?;
+        Ok(pair_journal::PairIntent {
+            generation,
+            previous,
+            next: pair_journal::PairImage::from_bytes(&self.bytes, Some(self.metadata_bytes.clone())),
+        })
+    }
+}
+
+impl RecoveryWritePlan {
+    pub fn ticket(&self) -> &RecoveryWriteTicket { &self.ticket }
+
+    pub fn write_authorized(&self, bytes: &[u8], admit: &mut super::atomic_write::WriteAdmission<'_>) -> Result<(), NodeError> {
+        let directory = dirname(&self.copy);
+        let mut created = None;
+        admit(&mut || { created = Some(fs::create_dir_all(&directory)); })?;
+        created.ok_or_else(|| plain("recovery directory creation was not admitted"))?
+            .map_err(|error| node_error(&error, "mkdir", &directory))?;
+        let admission = RefCell::new(admit);
+        self.write_via_owned(bytes,
+            &mut |path, metadata| super::atomic_write::write_json_atomic_authorized(path, metadata, &mut **admission.borrow_mut()),
+            &mut |path, bytes| super::atomic_write::atomic_write_file_authorized(path, bytes, &mut **admission.borrow_mut()))
+    }
+
+    pub fn write_via(
+        &self, bytes: &[u8],
+        write_metadata: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
+        write_copy: &mut dyn FnMut(&str, &[u8]) -> Result<(), NodeError>,
+    ) -> Result<(), NodeError> {
+        let directory = dirname(&self.copy);
+        fs::create_dir_all(&directory).map_err(|error| node_error(&error, "mkdir", &directory))?;
+        self.write_via_owned(bytes, write_metadata, write_copy)
+    }
+
+    pub fn write_via_owned(
+        &self, bytes: &[u8],
+        write_metadata: &mut dyn FnMut(&str, &JsonValue) -> Result<(), NodeError>,
+        write_copy: &mut dyn FnMut(&str, &[u8]) -> Result<(), NodeError>,
+    ) -> Result<(), NodeError> {
+        write_metadata(&RecoveryStore::meta_path_of(&self.copy), &self.metadata)?;
+        write_copy(&self.copy, bytes)
+    }
+}
+
+pub struct RecoveryMetadataPlan {
+    path: String,
+    metadata: JsonValue,
+}
+
+impl RecoveryMetadataPlan {
+    pub fn write_via(&self, write: &mut dyn FnMut(&str, &JsonValue) -> Result<bool, NodeError>) -> Result<bool, NodeError> {
+        write(&self.path, &self.metadata)
+    }
+
+    pub fn write_authorized(&self, admit: &mut super::atomic_write::WriteAdmission<'_>) -> Result<bool, NodeError> {
+        let mut rejected = false;
+        let result = super::atomic_write::write_json_atomic_authorized(&self.path, &self.metadata, &mut |effect| {
+            admit(effect).map_err(|error| { rejected = true; error })
+        });
+        if rejected { result.map(|()| true) } else { Ok(result.is_ok()) }
+    }
+}
+
 /// `RecoveryWriteOptions`
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RecoveryWriteOptions {
@@ -231,6 +391,140 @@ pub struct RecoveryAdoptOptions {
     pub ext: String,
     pub state: Option<RecoveryCopyState>,
     pub original_path: Option<String>,
+}
+
+pub struct RecoveryAdoptPlan {
+    source: String,
+    target: String,
+    identity: RecoveryUntitledIdentity,
+    metadata: JsonValue,
+}
+
+#[derive(Clone, Copy)]
+enum RecoveryAdoptAction<'a> {
+    MakeDirectory(&'a str),
+    WriteMetadata(&'a str, &'a JsonValue),
+    Rename(&'a str, &'a str),
+    Remove(&'a str),
+}
+
+fn create_adoption_directory(
+    path: &str,
+    admit: &mut dyn FnMut(Box<dyn FnOnce() -> bool + Send>) -> Result<bool, NodeError>,
+) -> Result<bool, NodeError> {
+    let mut missing = Vec::new();
+    for directory in std::path::Path::new(path).ancestors() {
+        if directory.as_os_str().is_empty() || directory.is_dir() {
+            break;
+        }
+        if directory.exists() {
+            return Ok(false);
+        }
+        missing.push(directory.to_path_buf());
+    }
+    for directory in missing.into_iter().rev() {
+        let effect_path = directory.clone();
+        if !admit(Box::new(move || fs::create_dir(effect_path).is_ok()))?
+            && !directory.is_dir()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+impl RecoveryAdoptPlan {
+    pub fn prepare(
+        user_data_dir: &str, kind: &str, source_path: &str,
+        options: &RecoveryAdoptOptions, uuid: &dyn Fn() -> String, now: &dyn Fn() -> f64,
+    ) -> Result<Option<Self>, NodeError> {
+        assert_kind(kind)?;
+        let folder = resolve(&[&join(&[user_data_dir, &recovery_folder_name(kind)])]);
+        let source = resolve(&[source_path]);
+        let inside = relative(&folder, &source);
+        let separator = std::path::MAIN_SEPARATOR;
+        let up = inside == ".." || inside.starts_with(&format!("..{separator}"))
+            || (separator == '\\' && inside.starts_with("../"));
+        if inside.is_empty() || up || is_absolute(&inside) || !std::path::Path::new(&source).exists() {
+            return Ok(None);
+        }
+        let identity = RecoveryUntitledIdentity {
+            kind: kind.to_owned(), untitled_id: new_untitled_recovery_id(uuid), ext: options.ext.clone(),
+        };
+        let as_identity = RecoveryIdentity::Untitled(identity.clone());
+        let target = recovery_copy_path(user_data_dir, &as_identity)?;
+        let metadata = RecoveryCopyMeta {
+            kind: kind.to_owned(), file_path: None, untitled_id: Some(identity.untitled_id.clone()),
+            title: options.title.clone(), written_at: stat_mtime(&source).unwrap_or_else(now),
+            run_id: String::new(), state: options.state.unwrap_or(RecoveryCopyState::Later),
+            original_path: original_path_field(&as_identity, options.original_path.as_deref()),
+            formulas_dropped: None,
+        }.to_json();
+        Ok(Some(Self { source, target, identity, metadata }))
+    }
+
+    fn publish_with(self, run: &mut dyn FnMut(RecoveryAdoptAction<'_>) -> Result<bool, NodeError>) -> Result<Option<RecoveryUntitledIdentity>, NodeError> {
+        let dir = dirname(&self.target);
+        let meta_path = RecoveryStore::meta_path_of(&self.target);
+        if !run(RecoveryAdoptAction::MakeDirectory(&dir))?
+            || !run(RecoveryAdoptAction::WriteMetadata(&meta_path, &self.metadata))?
+            || !run(RecoveryAdoptAction::Rename(&self.source, &self.target))?
+        {
+            run(RecoveryAdoptAction::Remove(&meta_path))?;
+            return Ok(None);
+        }
+        Ok(Some(self.identity))
+    }
+
+    pub fn publish_authorized(self, admit: &mut super::atomic_write::WriteAdmission<'_>) -> Result<Option<RecoveryUntitledIdentity>, NodeError> {
+        self.publish_with(&mut |action| match action {
+            RecoveryAdoptAction::WriteMetadata(path, metadata) => {
+                let mut rejected = false;
+                let result = super::atomic_write::write_json_atomic_authorized(path, metadata, &mut |effect| {
+                    admit(effect).map_err(|error| { rejected = true; error })
+                });
+                if rejected {
+                    return match result { Err(error) => Err(error), Ok(()) => Err(plain("recovery adoption authority was revoked")) };
+                }
+                Ok(result.is_ok())
+            }
+            RecoveryAdoptAction::MakeDirectory(path) => create_adoption_directory(path, &mut |effect| {
+                let mut result = None;
+                admit(&mut || { result = Some(effect()); })?;
+                result.ok_or_else(|| plain("recovery adoption effect was not admitted"))
+            }),
+            other => {
+                let mut result = None;
+                admit(&mut || { result = Some(match other {
+                    RecoveryAdoptAction::MakeDirectory(_) => unreachable!(),
+                    RecoveryAdoptAction::Rename(source, target) => fs::rename(source, target).is_ok(),
+                    RecoveryAdoptAction::Remove(path) => { remove_quietly(path); true },
+                    RecoveryAdoptAction::WriteMetadata(_, _) => unreachable!(),
+                }); })?;
+                result.ok_or_else(|| plain("recovery adoption effect was not admitted"))
+            }
+        })
+    }
+
+    pub fn publish_via_owned(
+        self,
+        admit: &mut dyn FnMut(Box<dyn FnOnce() -> bool + Send>) -> Result<bool, NodeError>,
+        write_metadata: &mut dyn FnMut(&str, &JsonValue) -> Result<bool, NodeError>,
+    ) -> Result<Option<RecoveryUntitledIdentity>, NodeError> {
+        self.publish_with(&mut |action| match action {
+            RecoveryAdoptAction::WriteMetadata(path, metadata) => write_metadata(path, metadata),
+            RecoveryAdoptAction::MakeDirectory(path) => create_adoption_directory(path, admit),
+            RecoveryAdoptAction::Rename(source, target) => {
+                let source = source.to_owned();
+                let target = target.to_owned();
+                admit(Box::new(move || fs::rename(source, target).is_ok()))
+            }
+            RecoveryAdoptAction::Remove(path) => {
+                let path = path.to_owned();
+                admit(Box::new(move || { remove_quietly(&path); true }))
+            }
+        })
+    }
 }
 
 // ---- process-wide state ----
@@ -426,6 +720,187 @@ fn copy_relative_path(identity: &RecoveryIdentity) -> Result<String, NodeError> 
     }
 }
 
+pub fn recovery_copy_path(user_data_dir: &str, identity: &RecoveryIdentity) -> Result<String, NodeError> {
+    Ok(join(&[user_data_dir, &recovery_folder_name(identity.kind()), &copy_relative_path(identity)?]))
+}
+
+pub struct RecoveryPinnedRead {
+    identity: RecoveryIdentity,
+    path: String,
+    copy: fs::File,
+    metadata: Option<fs::File>,
+    metadata_error: Option<String>,
+    parent: Option<fs::File>,
+}
+
+pub struct RecoveryPinnedSnapshot {
+    pub bytes: Vec<u8>,
+    pub original_path: Option<String>,
+    pub formulas_dropped: Option<f64>,
+    identity: RecoveryIdentity,
+    path: String,
+    meta: Option<RecoveryCopyMeta>,
+    metadata_bytes: Option<Vec<u8>>,
+    copy_mtime_ms: Option<f64>,
+    copy_handle: fs::File,
+    metadata_handle: Option<fs::File>,
+    metadata_error: Option<String>,
+    parent_handle: Option<fs::File>,
+}
+
+/// Saved-document recovery retains the exact copy read, not merely its path.
+pub enum SavedRecoveryOpenResult {
+    Original,
+    Restore { snapshot: std::sync::Arc<RecoveryPinnedSnapshot>, copy: Box<RecoveryCopyInfo> },
+}
+
+impl RecoveryPinnedSnapshot {
+    pub fn copy_handle(&self) -> &fs::File { &self.copy_handle }
+    pub fn metadata_handle(&self) -> Option<&fs::File> { self.metadata_handle.as_ref() }
+    pub fn parent_handle(&self) -> Option<&fs::File> { self.parent_handle.as_ref() }
+    pub fn exact_metadata(&self) -> Result<Option<&[u8]>, NodeError> {
+        if let Some(error) = &self.metadata_error { return Err(plain(error.clone())); }
+        match (&self.metadata_handle, &self.metadata_bytes) {
+            (None, _) => Ok(None),
+            (Some(_), Some(bytes)) => Ok(Some(bytes)),
+            (Some(_), None) => Err(plain("the captured recovery metadata could not be read")),
+        }
+    }
+    /// Describe the exact pinned read. `original_mtime_ms` comes from the
+    /// retained committed object, never a later lookup of its selected path.
+    pub fn copy_info(&self, original_mtime_ms: Option<f64>) -> Option<RecoveryCopyInfo> {
+        let copy_mtime_ms = self.copy_mtime_ms?;
+        let file_path = match &self.identity {
+            RecoveryIdentity::File(file) => Some(file.file_path.clone()),
+            RecoveryIdentity::Untitled(_) => None,
+        };
+        Some(RecoveryCopyInfo {
+            identity: self.identity.clone(),
+            kind: self.identity.kind().to_owned(),
+            title: self.meta.as_ref().map(|meta| meta.title.clone())
+                .unwrap_or_else(|| file_path.as_deref().map_or_else(String::new, |path| basename(path, None))),
+            file_path,
+            untitled_id: match &self.identity { RecoveryIdentity::Untitled(value) => Some(value.untitled_id.clone()), _ => None },
+            written_at: self.meta.as_ref().map_or(copy_mtime_ms, |meta| meta.written_at),
+            run_id: self.meta.as_ref().map_or_else(String::new, |meta| meta.run_id.clone()),
+            state: self.meta.as_ref().map_or(RecoveryCopyState::Later, |meta| meta.state),
+            legacy: self.meta.is_none(),
+            copy_path: self.path.clone(),
+            copy_mtime_ms,
+            file_changed_after_copy: original_mtime_ms.is_some_and(|mtime| mtime > copy_mtime_ms),
+            original_missing: matches!(&self.identity, RecoveryIdentity::File(_)) && original_mtime_ms.is_none(),
+            original_path: self.original_path.clone(),
+            formulas_dropped: self.formulas_dropped,
+        })
+    }
+
+
+    pub fn prepare_copy_state(&self, state: RecoveryCopyState) -> Option<RecoveryMetadataPlan> {
+        let copy_mtime_ms = self.copy_mtime_ms?;
+        let file_path = match &self.identity {
+            RecoveryIdentity::File(file) => Some(file.file_path.clone()),
+            RecoveryIdentity::Untitled(_) => None,
+        };
+        let metadata = RecoveryCopyMeta {
+            kind: self.identity.kind().to_owned(),
+            file_path: file_path.clone(),
+            untitled_id: match &self.identity {
+                RecoveryIdentity::Untitled(untitled) => Some(untitled.untitled_id.clone()),
+                RecoveryIdentity::File(_) => None,
+            },
+            title: self.meta.as_ref().map(|meta| meta.title.clone())
+                .unwrap_or_else(|| file_path.as_deref().map_or_else(String::new, |path| basename(path, None))),
+            written_at: self.meta.as_ref().map_or(copy_mtime_ms, |meta| meta.written_at),
+            run_id: self.meta.as_ref().map_or_else(String::new, |meta| meta.run_id.clone()),
+            state,
+            original_path: self.original_path.clone(),
+            formulas_dropped: self.formulas_dropped,
+        };
+        Some(RecoveryMetadataPlan { path: RecoveryStore::meta_path_of(&self.path), metadata: metadata.to_json() })
+    }
+}
+
+impl RecoveryPinnedRead {
+    /// Call only inside the target's short native seed admission.
+    pub fn open(user_data_dir: &str, identity: &RecoveryIdentity) -> Result<Self, NodeError> {
+        let path = recovery_copy_path(user_data_dir, identity)?;
+        let copy = fs::File::open(&path).map_err(|error| node_error(&error, "open", &path))?;
+        let metadata = fs::File::open(RecoveryStore::meta_path_of(&path)).ok();
+        Ok(Self { identity: identity.clone(), path, copy, metadata, metadata_error: None, parent: None })
+    }
+
+    /// Capture the app-private recovery directory and both entries relative
+    /// to that same directory. This alone does not authorize mutation.
+    #[cfg(any(unix, windows))]
+    pub fn open_saved(user_data_dir: &str, identity: &RecoveryIdentity) -> Result<Self, NodeError> {
+        use std::path::Path;
+
+        let path = recovery_copy_path(user_data_dir, identity)?;
+        let path_ref = Path::new(&path);
+        let directory = path_ref.parent().ok_or_else(|| plain("recovery copy has no parent directory"))?;
+        let name = path_ref.file_name().and_then(|name| name.to_str()).ok_or_else(|| plain("recovery copy has no Unicode entry name"))?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)] {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        #[cfg(windows)] {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT};
+            options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        let parent = options.open(directory).map_err(|error| node_error(&error, "open", &path))?;
+        let parent_meta = parent.metadata().map_err(|error| node_error(&error, "fstat", &path))?;
+        if !parent_meta.is_dir() { return Err(plain("recovery parent is not a directory")); }
+        #[cfg(windows)] {
+            use std::os::windows::fs::MetadataExt;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if parent_meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                return Err(plain("recovery parent is a reparse point"));
+            }
+        }
+        let copy = file_commit::open_pinned_file(&parent, name).map_err(|error| node_error(&error, "open", &path))?;
+        let meta_path = RecoveryStore::meta_path_of(&path);
+        let meta_name = Path::new(&meta_path).file_name().and_then(|name| name.to_str()).ok_or_else(|| plain("recovery metadata has no Unicode entry name"))?;
+        let (metadata, metadata_error) = match file_commit::open_pinned_file(&parent, meta_name) {
+            Ok(file) => (Some(file), None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+            Err(error) => (None, Some(node_error(&error, "open", &meta_path).message)),
+        };
+        Ok(Self { identity: identity.clone(), path, copy, metadata, metadata_error, parent: Some(parent) })
+    }
+
+    /// Read pinned descriptors on a worker, without holding the seed gate.
+    pub fn read(mut self) -> Result<RecoveryPinnedSnapshot, NodeError> {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        let copy_mtime_ms = self.copy.metadata().ok()
+            .map(|meta| crate::shell::recent_files::StatInfo::of(&meta).mtime_ms);
+        self.copy.read_to_end(&mut bytes).map_err(|error| node_error(&error, "read", &self.path))?;
+        let metadata_bytes = self.metadata.as_mut().and_then(|file| {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).ok()?;
+            Some(data)
+        });
+        let meta = metadata_bytes.as_ref().and_then(|data| parse_meta(&String::from_utf8_lossy(data), &self.identity));
+        Ok(RecoveryPinnedSnapshot {
+            bytes,
+            original_path: meta.as_ref().and_then(|meta| meta.original_path.clone()),
+            formulas_dropped: meta.as_ref().and_then(|meta| meta.formulas_dropped),
+            identity: self.identity,
+            path: self.path,
+            meta,
+            metadata_bytes,
+            copy_mtime_ms,
+            copy_handle: self.copy,
+            metadata_handle: self.metadata,
+            metadata_error: self.metadata_error,
+            parent_handle: self.parent,
+        })
+    }
+}
+
 fn queue_key(copy_path: &str) -> String {
     if cfg!(windows) {
         copy_path.to_lowercase()
@@ -480,7 +955,11 @@ fn read_text(path: &str) -> Option<String> {
 
 /// the metadata when it is readable and belongs to this identity, else None (legacy)
 fn read_meta(meta_path: &str, identity: &RecoveryIdentity) -> Option<RecoveryCopyMeta> {
-    let raw = json_parse(&read_text(meta_path)?).ok()?;
+    parse_meta(&read_text(meta_path)?, identity)
+}
+
+fn parse_meta(text: &str, identity: &RecoveryIdentity) -> Option<RecoveryCopyMeta> {
+    let raw = json_parse(text).ok()?;
     // an array has none of the keys below: every comparison fails
     let JsonValue::Object(meta) = raw else {
         return None;
@@ -603,6 +1082,14 @@ fn remove_quietly(path: &str) -> bool {
     fs::remove_file(path).is_ok()
 }
 
+fn remove_recovery_file(path: &str) -> Result<(), NodeError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(node_error(&error, "unlink", path)),
+    }
+}
+
 /// `readdirSync(dir)`: libuv sorts the names by bytes; None where it throws
 fn read_dir_names(dir: &str) -> Option<Vec<String>> {
     let mut names: Vec<String> = fs::read_dir(dir)
@@ -670,8 +1157,7 @@ impl RecoveryStore<'_> {
 
     /// where this document's copy lives (whether or not it exists)
     pub fn copy_path(&self, identity: &RecoveryIdentity) -> Result<String, NodeError> {
-        let dir = self.kind_dir(identity.kind());
-        Ok(join(&[&dir, &copy_relative_path(identity)?]))
+        recovery_copy_path(&self.root_dir(), identity)
     }
 
     /// take a write ticket now
@@ -682,6 +1168,44 @@ impl RecoveryStore<'_> {
         let key = queue_key(&self.copy_path(identity)?);
         let epoch = self.epoch_of(&key);
         Ok(RecoveryWriteTicket { key, epoch })
+    }
+
+    pub fn write_ticket_is_current(&self, ticket: &RecoveryWriteTicket) -> bool {
+        self.epoch_of(&ticket.key) == ticket.epoch && !self.shared.discarded.borrow().contains(&ticket.key)
+    }
+
+    pub fn prepare_write(&self, identity: &RecoveryIdentity, options: &RecoveryWriteOptions) -> Result<Option<RecoveryWritePlan>, NodeError> {
+        let copy = self.copy_path(identity)?;
+        let ticket = match &options.ticket { Some(ticket) => ticket.clone(), None => self.begin_write(identity)? };
+        if ticket.key != queue_key(&copy) { return Err(plain("recovery write ticket belongs to another document")); }
+        if !self.write_ticket_is_current(&ticket) { return Ok(None); }
+        let metadata = RecoveryCopyMeta {
+            kind: identity.kind().to_owned(),
+            file_path: match identity { RecoveryIdentity::File(file) => Some(file.file_path.clone()), _ => None },
+            untitled_id: match identity { RecoveryIdentity::Untitled(file) => Some(file.untitled_id.clone()), _ => None },
+            title: options.title.clone().unwrap_or_else(|| match identity {
+                RecoveryIdentity::File(file) => basename(&file.file_path, None),
+                RecoveryIdentity::Untitled(_) => String::new(),
+            }),
+            written_at: (self.options.now_ms)(),
+            run_id: recovery_run_id(self.shared).to_owned(),
+            state: RecoveryCopyState::Undecided,
+            original_path: original_path_field(identity, options.original_path.as_deref()),
+            formulas_dropped: formulas_dropped_field(identity, options.formulas_dropped),
+        }.to_json();
+        Ok(Some(RecoveryWritePlan { copy, metadata, ticket }))
+    }
+
+    pub fn prepare_delete(&self, identity: &RecoveryIdentity, reason: RecoveryDeleteReason) -> Result<Option<RecoveryDeletePlan>, NodeError> {
+        if is_app_shutting_down(self.shared) && reason != RecoveryDeleteReason::Saved && reason != RecoveryDeleteReason::DontSave {
+            return Ok(None);
+        }
+        let copy = self.copy_path(identity)?;
+        let key = queue_key(&copy);
+        self.bump_epoch(&key);
+        if reason == RecoveryDeleteReason::DontSave { self.shared.discarded.borrow_mut().insert(key); }
+        let meta = Self::meta_path_of(&copy);
+        Ok(Some(RecoveryDeletePlan { copy, meta }))
     }
 
     fn remove_copy_files(copy: &str) {
@@ -697,6 +1221,7 @@ impl RecoveryStore<'_> {
         identity: &RecoveryIdentity,
         write_options: &RecoveryWriteOptions,
         land: Land<'_>,
+        admission: Option<&RefCell<&mut super::atomic_write::WriteAdmission<'_>>>,
     ) -> Result<RecoveryWriteResult, NodeError> {
         let copy = self.copy_path(identity)?;
         let key = queue_key(&copy);
@@ -737,7 +1262,12 @@ impl RecoveryStore<'_> {
                 ),
                 formulas_dropped: formulas_dropped_field(identity, write_options.formulas_dropped),
             };
-            write_json_atomic(&Self::meta_path_of(&copy), &meta.to_json())
+            match admission {
+                Some(admission) => super::atomic_write::write_json_atomic_authorized(
+                    &Self::meta_path_of(&copy), &meta.to_json(), &mut **admission.borrow_mut(),
+                ),
+                None => write_json_atomic(&Self::meta_path_of(&copy), &meta.to_json()),
+            }
         };
         // "Don't Save" holds until the close is cancelled or the document reopens
         if superseded() || self.shared.discarded.borrow().contains(&key) {
@@ -750,7 +1280,14 @@ impl RecoveryStore<'_> {
         }
         // a delete that ran while the bytes were landing must still win: undo this write
         if superseded() {
-            Self::remove_copy_files(&copy);
+            if let Some(admission) = admission {
+                let meta = Self::meta_path_of(&copy);
+                let mut admit = admission.borrow_mut();
+                admit(&mut || { remove_quietly(&copy); })?;
+                admit(&mut || { remove_quietly(&meta); })?;
+            } else {
+                Self::remove_copy_files(&copy);
+            }
             return Ok(RecoveryWriteResult::Superseded);
         }
         Ok(RecoveryWriteResult::Written)
@@ -773,7 +1310,21 @@ impl RecoveryStore<'_> {
                 atomic_write_file(copy, bytes)?;
                 Ok(true)
             },
+            None,
         )
+    }
+
+    pub fn write_copy_authorized(
+        &self, identity: &RecoveryIdentity, bytes: &[u8],
+        write_options: &RecoveryWriteOptions,
+        admit: &mut super::atomic_write::WriteAdmission<'_>,
+    ) -> Result<RecoveryWriteResult, NodeError> {
+        let admission = RefCell::new(admit);
+        self.queue_copy_write(identity, write_options, &mut |copy, write_meta, _| {
+            write_meta()?;
+            super::atomic_write::atomic_write_file_authorized(copy, bytes, &mut **admission.borrow_mut())?;
+            Ok(true)
+        }, Some(&admission))
     }
 
     /// writeCopy for content too large to hold in memory: `write` streams the
@@ -806,7 +1357,32 @@ impl RecoveryStore<'_> {
                 }
                 landed
             },
+            None,
         )
+    }
+
+    pub fn write_copy_streamed_authorized(
+        &self, identity: &RecoveryIdentity,
+        write: &mut dyn FnMut(&str) -> Result<(), NodeError>,
+        write_options: &RecoveryWriteOptions,
+        admit: &mut super::atomic_write::WriteAdmission<'_>,
+    ) -> Result<RecoveryWriteResult, NodeError> {
+        let admission = RefCell::new(admit);
+        self.queue_copy_write(identity, write_options, &mut |copy, write_meta, superseded| {
+            let temp = temp_path_beside(copy);
+            let landed = (|| {
+                write(&temp)?;
+                if superseded() {
+                    remove_quietly(&temp);
+                    return Ok(false);
+                }
+                write_meta()?;
+                super::atomic_write::atomic_move_file_authorized(&temp, copy, &mut **admission.borrow_mut())?;
+                Ok(true)
+            })();
+            if landed.is_err() { remove_quietly(&temp); }
+            landed
+        }, Some(&admission))
     }
 
     /// Delete the copy and its metadata now. While the app is ending, only
@@ -816,19 +1392,28 @@ impl RecoveryStore<'_> {
         identity: &RecoveryIdentity,
         reason: RecoveryDeleteReason,
     ) -> Result<RecoveryDeleteResult, NodeError> {
+        let Some(plan) = self.prepare_delete(identity, reason)? else { return Ok(RecoveryDeleteResult::Refused); };
+        Self::remove_copy_files(&plan.copy);
+        Ok(RecoveryDeleteResult::Deleted)
+    }
+
+    /// Preserve delete ordering while admitting each namespace/state effect.
+    pub fn delete_copy_authorized(
+        &self,
+        identity: &RecoveryIdentity,
+        reason: RecoveryDeleteReason,
+        admit: &mut super::atomic_write::WriteAdmission<'_>,
+    ) -> Result<RecoveryDeleteResult, NodeError> {
         if is_app_shutting_down(self.shared)
             && reason != RecoveryDeleteReason::Saved
             && reason != RecoveryDeleteReason::DontSave
         {
             return Ok(RecoveryDeleteResult::Refused);
         }
-        let copy = self.copy_path(identity)?;
-        let key = queue_key(&copy);
-        self.bump_epoch(&key);
-        if reason == RecoveryDeleteReason::DontSave {
-            self.shared.discarded.borrow_mut().insert(key);
-        }
-        Self::remove_copy_files(&copy);
+        let mut prepared = Ok(None);
+        admit(&mut || { prepared = self.prepare_delete(identity, reason); })?;
+        let Some(plan) = prepared? else { return Ok(RecoveryDeleteResult::Refused); };
+        plan.remove_authorized(admit)?;
         Ok(RecoveryDeleteResult::Deleted)
     }
 
@@ -845,7 +1430,7 @@ impl RecoveryStore<'_> {
         Ok(())
     }
 
-    fn info_for(&self, identity: &RecoveryIdentity, copy: &str) -> Option<RecoveryCopyInfo> {
+    fn info_for(identity: &RecoveryIdentity, copy: &str) -> Option<RecoveryCopyInfo> {
         let copy_mtime_ms = stat_mtime(copy)?;
         let meta = read_meta(&Self::meta_path_of(copy), identity);
         let file_path = match identity {
@@ -892,7 +1477,7 @@ impl RecoveryStore<'_> {
         &self,
         identity: &RecoveryIdentity,
     ) -> Result<Option<RecoveryCopyInfo>, NodeError> {
-        Ok(self.info_for(identity, &self.copy_path(identity)?))
+        Ok(Self::info_for(identity, &self.copy_path(identity)?))
     }
 
     /// the copy's bytes, or None when it cannot be read (`copyPath` throwing included)
@@ -919,10 +1504,29 @@ impl RecoveryStore<'_> {
         identity: &RecoveryIdentity,
         state: RecoveryCopyState,
     ) -> Result<bool, NodeError> {
+        let Some(plan) = self.prepare_copy_state_update(identity, state)? else { return Ok(false); };
+        plan.write_via(&mut |path, metadata| Ok(write_json_atomic(path, metadata).is_ok()))
+    }
+
+    pub fn set_copy_state_authorized(
+        &self, identity: &RecoveryIdentity, state: RecoveryCopyState,
+        admit: &mut super::atomic_write::WriteAdmission<'_>,
+    ) -> Result<bool, NodeError> {
+        let Some(plan) = self.prepare_copy_state_update(identity, state)? else { return Ok(false); };
+        plan.write_authorized(admit)
+    }
+
+    pub fn prepare_copy_state_update(
+        &self, identity: &RecoveryIdentity, state: RecoveryCopyState,
+    ) -> Result<Option<RecoveryMetadataPlan>, NodeError> {
         let copy = self.copy_path(identity)?;
-        let Some(info) = self.info_for(identity, &copy) else {
-            return Ok(false);
-        };
+        Ok(Self::prepare_copy_state_from_path(identity, &copy, state))
+    }
+
+    pub fn prepare_copy_state_from_path(
+        identity: &RecoveryIdentity, copy: &str, state: RecoveryCopyState,
+    ) -> Option<RecoveryMetadataPlan> {
+        let info = Self::info_for(identity, copy)?;
         let meta = RecoveryCopyMeta {
             kind: identity.kind().to_owned(),
             file_path: info.file_path.clone(),
@@ -937,7 +1541,7 @@ impl RecoveryStore<'_> {
             original_path: original_path_field(identity, info.original_path.as_deref()),
             formulas_dropped: formulas_dropped_field(identity, info.formulas_dropped),
         };
-        Ok(write_json_atomic(&Self::meta_path_of(&copy), &meta.to_json()).is_ok())
+        Some(RecoveryMetadataPlan { path: Self::meta_path_of(copy), metadata: meta.to_json() })
     }
 
     /// Record a launch-list choice: restore -> restoreChosen, later -> later,
@@ -1009,7 +1613,7 @@ impl RecoveryStore<'_> {
                     else {
                         continue;
                     };
-                    let Some(info) = self.info_for(&identity, &copy) else {
+                    let Some(info) = Self::info_for(&identity, &copy) else {
                         continue;
                     };
                     if info.legacy {
@@ -1110,55 +1714,38 @@ impl RecoveryStore<'_> {
         source_path: &str,
         adopt_options: &RecoveryAdoptOptions,
     ) -> Result<Option<RecoveryUntitledIdentity>, NodeError> {
-        assert_kind(kind)?;
-        let folder = resolve(&[&self.kind_dir(kind)]);
-        let source = resolve(&[source_path]);
-        let inside = relative(&folder, &source);
-        let sep = std::path::MAIN_SEPARATOR;
-        // only a whole `..` step leads out: a copy named `..x` is inside
-        let up = inside == ".."
-            || inside.starts_with(&format!("..{sep}"))
-            || (sep == '\\' && inside.starts_with("../"));
-        if inside.is_empty() || up || is_absolute(&inside) {
-            return Ok(None);
-        }
-        if !std::path::Path::new(&source).exists() {
-            return Ok(None);
-        }
-        let identity = RecoveryUntitledIdentity {
-            kind: kind.to_owned(),
-            untitled_id: new_untitled_recovery_id(self.options.random_uuid),
-            ext: adopt_options.ext.clone(),
-        };
-        let as_identity = RecoveryIdentity::Untitled(identity.clone());
-        let target = self.copy_path(&as_identity)?;
-        let meta = RecoveryCopyMeta {
-            kind: kind.to_owned(),
-            file_path: None,
-            untitled_id: Some(identity.untitled_id.clone()),
-            title: adopt_options.title.clone(),
-            written_at: stat_mtime(&source).unwrap_or_else(|| (self.options.now_ms)()),
-            run_id: String::new(),
-            state: adopt_options.state.unwrap_or(RecoveryCopyState::Later),
-            original_path: original_path_field(
-                &as_identity,
-                adopt_options.original_path.as_deref(),
-            ),
-            formulas_dropped: None,
-        };
-        let moved = (|| -> Result<(), NodeError> {
-            let dir = dirname(&target);
-            fs::create_dir_all(&dir).map_err(|e| node_error(&e, "mkdir", &dir))?;
-            write_json_atomic(&Self::meta_path_of(&target), &meta.to_json())?;
-            fs::rename(&source, &target)
-                .map_err(|e| crate::node_fs::node_error2(&e, "rename", &source, &target))
-        })();
-        match moved {
-            Ok(()) => Ok(Some(identity)),
-            Err(_) => {
-                remove_quietly(&Self::meta_path_of(&target));
-                Ok(None)
-            }
-        }
+        let Some(plan) = RecoveryAdoptPlan::prepare(
+            &self.root_dir(), kind, source_path, adopt_options, self.options.random_uuid, self.options.now_ms,
+        )? else { return Ok(None); };
+        plan.publish_authorized(&mut |effect| { effect(); Ok(()) })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pinned_snapshot_tests {
+    use super::*;
+    use std::io::{Read, Seek, SeekFrom};
+
+    #[test]
+    fn snapshot_retains_original_copy_after_name_replacement() {
+        let root = std::env::temp_dir().join(format!("recovery-pinned-{}", jscompat::random_uuid()));
+        let identity = RecoveryIdentity::File(RecoveryFileIdentity { kind: "docs".into(), file_path: "/document.docx".into() });
+        let path = recovery_copy_path(root.to_str().unwrap(), &identity).unwrap();
+        std::fs::create_dir_all(std::path::Path::new(&path).parent().unwrap()).unwrap();
+        std::fs::write(&path, b"original").unwrap();
+        let pinned = RecoveryPinnedRead::open_saved(root.to_str().unwrap(), &identity).unwrap();
+        let displaced = format!("{path}.old");
+        std::fs::rename(&path, &displaced).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        let snapshot = pinned.read().unwrap();
+        assert!(snapshot.parent_handle().is_some());
+        assert_eq!(snapshot.bytes, b"original");
+        let mut original = snapshot.copy_handle().try_clone().unwrap();
+        original.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        original.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"original");
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

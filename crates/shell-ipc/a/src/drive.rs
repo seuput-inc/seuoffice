@@ -24,13 +24,15 @@ pub mod strings;
 pub mod vault;
 
 mod util;
+mod native_reopen;
+pub use native_reopen::{DriveReopenSnapshot, committed_reopen_losses, preflight_committed_reopen, read_committed_reopen, with_committed_reopen_snapshot, with_committed_reopen_state};
 
 #[cfg(test)]
 mod testing;
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use jscompat::{JsonValue, to_primitive, trim};
 use main_core::node_fs::NodeError;
@@ -39,8 +41,8 @@ use main_core::packages::electron_utils::safe_external_url::safe_external_url;
 use main_core::packages::i18n::Lang;
 use main_core::shell::app_settings::{read_app_settings, write_app_setting};
 use shell_contract::hosts::{DialogsHost, MainWindowHost, MessageBox, OsShellHost};
-use shell_contract::ipc::{CallContext, Reply, Responder, Target};
-use shell_contract::runtime::{PathName, Services};
+use shell_contract::ipc::{CallContext, NativeRequestOwner, Reply, Responder, Target};
+use shell_contract::runtime::{CancelToken, PathName, Services, Thread};
 use shell_contract::{IpcError, IpcValue};
 
 use crate::ports::Drive;
@@ -76,6 +78,43 @@ const NOT_AVAILABLE: &str = "Google Drive is not available now.";
 /// that may use what it receives to train models (drive-consent.ts)
 const FREE_AI_REFUSAL: &str = "Drive files are not given to the AI in use: it is a free connection that may use what it receives to train models. Tell the person to choose another AI to work with Drive files.";
 
+
+/// A prepared cache copy retains the exact renderer request that fetched it.
+/// It is not a grant to route a tab without the caller's final native admission.
+pub struct PreparedDriveReopen {
+    path: String,
+    fallback: Option<String>,
+    owner: NativeRequestOwner,
+    cancel: CancelToken,
+}
+
+impl PreparedDriveReopen {
+    pub fn path(&self) -> &str { &self.path }
+    pub fn fallback_path(&self) -> Option<&str> { self.fallback.as_deref() }
+    pub fn into_parts(self) -> (String, Option<String>, NativeRequestOwner, CancelToken) {
+        (self.path, self.fallback, self.owner, self.cancel)
+    }
+}
+
+pub type PreparedReopenReply = Box<dyn FnOnce(Result<Option<PreparedDriveReopen>, String>) + Send>;
+
+pub type ReopenAdmission = Arc<
+    dyn Fn(&NativeRequestOwner, &CancelToken, &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> + Send + Sync,
+>;
+
+struct ReopenReply {
+    core: Arc<dyn Thread>,
+    pending: Mutex<Option<PreparedReopenReply>>,
+}
+
+impl ReopenReply {
+    fn finish(&self, result: Result<Option<PreparedDriveReopen>, String>) {
+        let done = self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        if let Some(done) = done {
+            self.core.post(Box::new(move || done(result)));
+        }
+    }
+}
 /// What the shell entry installs as `setAiRunGuard`'s check and keeps for the
 /// tabs: the `DriveService` of drive-ipc.ts. The port adds it to the
 /// batches' provided table when it is built.
@@ -88,6 +127,25 @@ pub trait DriveService {
     /// stale copy is refreshed. False when `path` is not such a copy; else
     /// `done` is told, on the core thread, whether a tab opened.
     fn reopen(&self, path: &str, done: Box<dyn FnOnce(bool) + Send>) -> bool;
+    /// Refresh on a worker without routing a tab. Every outcome answers on core.
+    fn prepare_reopen(
+        &self,
+        path: &str,
+        owner: &NativeRequestOwner,
+        cancel: &CancelToken,
+        admission: ReopenAdmission,
+        done: PreparedReopenReply,
+    );
+    fn prepare_native_reopen(
+        &self,
+        output: shell_contract::ipc::SavedPublication,
+        participants: Vec<NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<shell_contract::ipc::NativeDriveReopen, String>) + Send>,
+    );
     fn stop(&self);
 }
 
@@ -602,15 +660,24 @@ impl DrivePort {
     /// `DRIVE_CHANNELS.setAiAccess` and `setTrainingAck`
     fn set_flag(&self, key: &str, args: &[IpcValue], reply: Responder) {
         let on = matches!(args.first(), Some(IpcValue::Bool(true)));
-        let written =
-            write_app_setting(&self.inner.settings_path(), key, Some(JsonValue::Bool(on)));
-        reply.reply(match written {
-            Ok(()) => {
-                self.inner.broadcast();
-                Ok(self.inner.ui_state())
-            }
-            Err(error) => Err(node_error(error)),
-        })
+        let path = self.inner.settings_path();
+        let key = key.to_owned();
+        let inner = self.inner.clone();
+        let core = inner.services.core.clone();
+        main_core::shell::app_settings::queue::for_path(&path).submit(move |completion| {
+            let written = write_app_setting(&path, &key, Some(JsonValue::Bool(on)))
+                .map(|()| inner.ui_state());
+            core.post(Box::new(move || {
+                let _completion = completion;
+                reply.reply(match written {
+                    Ok(state) => {
+                        inner.services.events.emit(Target::All, STATE_CHANGED, vec![state.clone()]);
+                        Ok(state)
+                    }
+                    Err(error) => Err(node_error(error)),
+                });
+            }));
+        });
     }
 
     /// The AI's tools refuse first when Drive is not usable by the AI, then
@@ -914,6 +981,103 @@ impl DriveService for DrivePort {
             inner.services.core.post(Box::new(move || done(opened)));
         }));
         true
+    }
+
+    fn prepare_reopen(
+        &self,
+        path: &str,
+        owner: &NativeRequestOwner,
+        cancel: &CancelToken,
+        admission: ReopenAdmission,
+        done: PreparedReopenReply,
+    ) {
+        let reply = Arc::new(ReopenReply { core: self.inner.services.core.clone(), pending: Mutex::new(Some(done)) });
+        let scope = files::OpenScope::request(owner.clone(), cancel.clone(), admission);
+        if let Err(error) = scope.check() {
+            reply.finish(Err(error));
+            return;
+        }
+        let Some(entry) = self.inner.files.entry_for(path) else {
+            reply.finish(Ok(None));
+            return;
+        };
+        let cancelled_reply = reply.clone();
+        let cancelled = cancel.on_cancel(move || cancelled_reply.finish(Err("Drive reopen was cancelled".into())));
+        let owner_reply = reply.clone();
+        let owner_loss = owner.loss_token().map(|loss| loss.on_cancel(move || owner_reply.finish(Err("Drive reopen owner is no longer active".into()))));
+        let renderer_reply = reply.clone();
+        let renderer_loss = owner.context.renderer().map(|renderer| renderer.loss_token().on_cancel(move || renderer_reply.finish(Err("Drive reopen owner is no longer active".into()))));
+        let inner = self.inner.clone();
+        let original = path.to_owned();
+        let owner = owner.clone();
+        let cancel = cancel.clone();
+        self.inner.services.workers.spawn(Box::new(move || {
+            let _subscriptions = (cancelled, owner_loss, renderer_loss);
+            if let Err(error) = scope.check() {
+                reply.finish(Err(error));
+                return;
+            }
+            let refreshed = inner.files.prepare_local_path(&entry.source_id, &scope);
+            if let Err(error) = scope.check() {
+                reply.finish(Err(error));
+                return;
+            }
+            let (path, fallback) = match refreshed {
+                Ok(path) => (path, Some(original)),
+                Err(_) => (original, None),
+            };
+            reply.finish(Ok(Some(PreparedDriveReopen { path, fallback, owner, cancel })));
+        }));
+    }
+
+    fn prepare_native_reopen(
+        &self,
+        output: shell_contract::ipc::SavedPublication,
+        participants: Vec<NativeRequestOwner>,
+        cancel: CancelToken,
+        pending: CancelToken,
+        additional: Vec<CancelToken>,
+        effects: shell_contract::hosts::OwnedEffectsHost,
+        done: Box<dyn FnOnce(Result<shell_contract::ipc::NativeDriveReopen, String>) + Send>,
+    ) {
+        use shell_contract::ipc::NativeDriveReopen;
+        let mut controls = vec![cancel.clone(), pending];
+        controls.extend(additional);
+        let dispatcher=std::iter::once(output.source_owner()).chain(participants.iter())
+            .filter_map(|owner|owner.dispatcher_cancellation_for(&controls[0]).cloned().map(|provenance|(owner.clone(),provenance)))
+            .collect();
+        let authority = native_reopen::Authority { publication: output.clone(), participants, controls, dispatcher, effects };
+        let admission_authority = authority.clone();
+        let admission: ReopenAdmission = Arc::new(move |_, _, effect| admission_authority.admit(&[], &[], effect));
+        let scope = files::OpenScope::request(authority.origin().clone(), cancel, admission);
+        let inner = self.inner.clone();
+        self.inner.services.workers.spawn(Box::new(move || {
+            let result = (|| {
+                scope.check()?;
+                inner.files.start().map_err(|error| error.to_string())?;
+                let path = authority.publication.path().to_str().ok_or("The selected Drive path is not valid Unicode")?;
+                let Some((entry, generation)) = inner.files.capture_native_entry(path)? else {
+                    return Ok(NativeDriveReopen::Unchanged(authority.publication.clone()));
+                };
+                match inner.files.prepare_native_local_path(&entry, &generation, output.commit(), &scope, &authority)? {
+                    files::NativeRefresh::Unchanged => Ok(NativeDriveReopen::Unchanged(authority.publication.clone())),
+                    files::NativeRefresh::Committed { path, entry, generation, transaction, moved_commit, fallback, warning } => {
+                        Ok(NativeDriveReopen::Moved(Arc::new(native_reopen::Committed {
+                            authority, files: inner.files.clone(), entry, generation, moved: path, moved_commit, fallback, original_commit: output.commit().clone(),
+                            transaction: Arc::new(Mutex::new(transaction)), warning: Arc::new(Mutex::new(warning)),
+                            services: inner.services.clone(),
+                        })))
+                    }
+                    files::NativeRefresh::CleanupPending { transaction, error, rollback_error } => {
+                        Ok(NativeDriveReopen::CleanupPending(Arc::new(native_reopen::Pending {
+                            authority, transaction: Arc::new(Mutex::new(transaction)),
+                            original_error: error, cleanup_error: Arc::new(Mutex::new(Some(rollback_error))), services: inner.services.clone(),
+                        })))
+                    }
+                }
+            })();
+            inner.services.core.post(Box::new(move || done(result)));
+        }));
     }
 
     fn stop(&self) {
@@ -1945,6 +2109,96 @@ mod tests {
             "a stale copy is refreshed"
         );
         assert!(!r.port.reopen("/elsewhere/x.docx", Box::new(|_| ())));
+    }
+
+    fn prepared_reopen(r: &Rig, path: &str, owner: &NativeRequestOwner, cancel: &CancelToken) -> Result<Option<PreparedDriveReopen>, String> {
+        let (send, receive) = std::sync::mpsc::channel();
+        r.port.prepare_reopen(path, owner, cancel, synthetic_reopen_admission(), Box::new(move |result| { send.send(result).unwrap(); }));
+        let result = receive.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        assert!(receive.try_recv().is_err(), "one request answers once");
+        result
+    }
+
+    pub(super) fn synthetic_reopen_admission() -> ReopenAdmission {
+        Arc::new(|owner, cancel, effect| {
+            let renderer = owner.context.renderer().ok_or("synthetic renderer is missing")?;
+            renderer.with_active(|| {
+                match owner.loss_token() {
+                    Some(loss) if !cancel.same_token(&loss) => cancel.with_active(|| loss.with_active(effect)).flatten(),
+                    _ => cancel.with_active(effect),
+                }
+            }).flatten().ok_or_else(|| "synthetic owner was revoked".to_owned())?
+        })
+    }
+
+    fn captured_owner(cancel: &CancelToken) -> NativeRequestOwner {
+        NativeRequestOwner {
+            view: shell_contract::ViewId(7),
+            context: shell_contract::ipc::NativeContext::with_owner_loss(
+                (), shell_contract::runtime::RendererGeneration::new(), cancel.clone(),
+            ),
+        }
+    }
+
+    #[test]
+    fn prepared_reopen_refreshes_real_cache_without_routing_a_tab() {
+        let r = rig("prepared-reopen");
+        ready(&r);
+        r.client.add("f1", "Plan.docx", "application/x", "2026-01-02", b"before");
+        let _ = call(|cx, re| r.port.drive_open(cx, vec![s("f1")], re));
+        let original = r.shell.opened.lock().unwrap()[0].clone();
+        r.shell.tabs.lock().unwrap().clear();
+        r.shell.opened.lock().unwrap().clear();
+        r.client.change("f1", b"after", "2026-01-09");
+        let cancel = CancelToken::default();
+        let owner = captured_owner(&cancel);
+        let prepared = prepared_reopen(&r, &original, &owner, &cancel).unwrap().unwrap();
+        assert_eq!(std::fs::read(prepared.path()).unwrap(), b"after");
+        assert_eq!(prepared.fallback_path(), Some(original.as_str()));
+        assert!(r.shell.opened.lock().unwrap().is_empty());
+        let (_, _, captured, request_cancel) = prepared.into_parts();
+        assert!(captured.context.renderer().unwrap().same_generation(owner.context.renderer().unwrap()));
+        cancel.cancel();
+        assert!(request_cancel.is_cancelled());
+    }
+
+    #[test]
+    fn failed_refresh_prepares_original_copy_but_unrecognized_paths_do_not_open() {
+        let r = rig("prepared-reopen-fallback");
+        ready(&r);
+        r.client.add("f1", "Plan.docx", "application/x", "2026-01-02", b"before");
+        let _ = call(|cx, re| r.port.drive_open(cx, vec![s("f1")], re));
+        let original = r.shell.opened.lock().unwrap()[0].clone();
+        r.shell.opened.lock().unwrap().clear();
+        r.client.files.lock().unwrap().remove("f1");
+        let cancel = CancelToken::default();
+        let owner = captured_owner(&cancel);
+        let prepared = prepared_reopen(&r, &original, &owner, &cancel).unwrap().unwrap();
+        assert_eq!(prepared.path(), original);
+        assert_eq!(prepared.fallback_path(), None);
+        assert_eq!(std::fs::read(prepared.path()).unwrap(), b"before");
+        assert!(prepared_reopen(&r, "/elsewhere/unknown.docx", &owner, &cancel).unwrap().is_none());
+        assert!(r.shell.opened.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lost_owner_cannot_refresh_cache_or_fall_back_to_an_unowned_tab() {
+        let r = rig("prepared-reopen-cancelled");
+        ready(&r);
+        r.client.add("f1", "Plan.docx", "application/x", "2026-01-02", b"before");
+        let _ = call(|cx, re| r.port.drive_open(cx, vec![s("f1")], re));
+        let original = r.shell.opened.lock().unwrap()[0].clone();
+        r.shell.tabs.lock().unwrap().clear();
+        r.shell.opened.lock().unwrap().clear();
+        r.client.change("f1", b"after", "2026-01-09");
+        let downloads = r.client.downloads.load(Ordering::SeqCst);
+        let cancel = CancelToken::default();
+        let owner = captured_owner(&cancel);
+        owner.context.renderer().unwrap().revoke();
+        assert!(prepared_reopen(&r, &original, &owner, &cancel).is_err());
+        assert_eq!(r.client.downloads.load(Ordering::SeqCst), downloads);
+        assert_eq!(std::fs::read(&original).unwrap(), b"before");
+        assert!(r.shell.opened.lock().unwrap().is_empty());
     }
 
     #[test]

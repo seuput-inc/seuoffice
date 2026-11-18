@@ -8,11 +8,13 @@
  * A call that waits for the renderer is deferred, then answered by the
  * renderer's own send, then taken with `answerOf`, so the round trip is
  * compared on its full path. Save targets are tokens `...01`, `...02`;
- * questions to the renderer have ids `00000000-0000-4000-8000-000000000001`, ...
+ * in-app questions use deterministic UUIDs. Recovery generations are taken
+ * from the actual request event on each side.
  * (`diagram:bytes-request` is sent by no TypeScript of the diagram app: it is
  * not in the channel table.)
  */
 import { diagramTriggers, loadDiagram } from '../../d1/diagram-host.ts'
+import { eventArg, rejectedAnswer, VOID_ANSWER } from '../../event-refs.ts'
 import {
   CHANGED,
   DIAGRAM,
@@ -24,6 +26,7 @@ import {
   opened,
   send,
   trigger,
+  view,
 } from '../../d1/diagram-cases.ts'
 import type { Case, Group } from '../../types.ts'
 
@@ -224,9 +227,9 @@ const cases: Case[] = [
     OPEN_A,
     dirty,
     trigger('writeDiagramCopiesNow', [], { defer: true }),
-    send('diagram:recovery-copy-now-done'),
-    answerOf(2),
-    trigger('writeDiagramCopiesNow'),
+    send('diagram:recovery-copy-now-done', [eventArg(2, 'diagram:recovery-copy-now'), null]),
+    { ...answerOf(2), expectAnswer: VOID_ANSWER },
+    { ...trigger('writeDiagramCopiesNow'), capture: [eventArg(4, 'diagram:recovery-copy-now')], expectAnswer: rejectedAnswer('Timed out writing the diagram recovery copy') },
   ]),
   diagramCase('a clean diagram is not asked', FILE, [OPEN_A, trigger('writeDiagramCopiesNow')]),
   diagramCase("after Don't Save the tab that stays open is asked for a copy again", FILE, [
@@ -235,6 +238,46 @@ const cases: Case[] = [
     trigger('discardDiagramRecovery', [], { defer: true }),
     call('diagram:recovery-copy', [{ bytes: bin(DIAGRAM) }]),
     answerOf(2),
+  ]),
+  diagramCase('a failed recovery report rejects the flush', FILE, [
+    OPEN_A,
+    dirty,
+    trigger('writeDiagramCopiesNow', [], { defer: true }),
+    send('diagram:recovery-copy-now-done', [eventArg(2, 'diagram:recovery-copy-now'), 'synthetic write failure']),
+    { ...answerOf(2), expectAnswer: rejectedAnswer('synthetic write failure') },
+  ]),
+  diagramCase('stale and other-view recovery reports cannot settle a newer flush', FILE, [
+    OPEN_A,
+    dirty,
+    trigger('writeDiagramCopiesNow', [], { defer: true }),
+    send('diagram:recovery-copy-now-done', [eventArg(2, 'diagram:recovery-copy-now'), null]),
+    { ...answerOf(2), expectAnswer: VOID_ANSWER },
+    trigger('writeDiagramCopiesNow', [], { defer: true }),
+    send('diagram:recovery-copy-now-done', [eventArg(2, 'diagram:recovery-copy-now'), 'stale'], 1),
+    send('diagram:recovery-copy-now-done', [eventArg(5, 'diagram:recovery-copy-now'), 'wrong view'], 2),
+    send('diagram:recovery-copy-now-done', [eventArg(5, 'diagram:recovery-copy-now'), null]),
+    { ...answerOf(5), expectAnswer: VOID_ANSWER },
+  ], { views: [view(1), view(2)] }),
+  diagramCase('replacing a recovery request rejects the first, not the second', FILE, [
+    OPEN_A, dirty,
+    trigger('writeDiagramCopiesNow', [], { defer: true }),
+    trigger('writeDiagramCopiesNow', [], { defer: true }),
+    { ...answerOf(2), expectAnswer: rejectedAnswer('Diagram recovery request was replaced') },
+    send('diagram:recovery-copy-now-done', [eventArg(2, 'diagram:recovery-copy-now'), 'stale']),
+    send('diagram:recovery-copy-now-done', [eventArg(3, 'diagram:recovery-copy-now'), null]),
+    { ...answerOf(3), expectAnswer: VOID_ANSWER },
+  ]),
+  diagramCase('a renderer crash rejects a pending recovery flush', FILE, [
+    OPEN_A, dirty,
+    { ...trigger('writeDiagramCopiesNow', [], { defer: true }), capture: [eventArg(2, 'diagram:recovery-copy-now')] },
+    trigger('render-process-gone'),
+    { ...answerOf(2), expectAnswer: rejectedAnswer('The diagram renderer crashed') },
+  ]),
+  diagramCase('a destroyed view rejects a pending recovery flush', FILE, [
+    OPEN_A, dirty,
+    { ...trigger('writeDiagramCopiesNow', [], { defer: true }), capture: [eventArg(2, 'diagram:recovery-copy-now')] },
+    trigger('destroyed'),
+    { ...answerOf(2), expectAnswer: rejectedAnswer('The diagram view was closed') },
   ]),
 ]
 

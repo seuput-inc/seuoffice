@@ -4,24 +4,24 @@ use std::rc::Rc;
 
 use jscompat::node_path::host::{dirname, join};
 use jscompat::{JsonValue, buffer_from_base64};
-use main_core::pdf::atomic_write::write_pdf_atomically;
 use main_core::pdf::signature_store::{
     SavedSignature, add_signature, is_signature_data, load_signatures, remove_signature,
     save_signatures,
 };
 use main_core::pdf::system_certificates::{
-    CertSummary, CertificateReader, SystemCertificateRef, SystemIdentity, SystemStoreEnv, Thrown,
-    list_system_certificates, open_system_signer, run_command,
+    CertSummary, CertificateReader, SystemCertificateRef, SystemStoreEnv, Thrown,
+    list_system_certificates, run_command,
 };
 use shell_contract::hosts::{FileDialog, FileFilter};
+use shell_contract::pdf_sign_options::{SignOptions, VisibleSignature};
 use shell_contract::runtime::PathName;
 use shell_contract::{IpcValue, ViewId};
 
 use super::dialogs::{Dlg, tm};
 use super::editors::stem;
-use super::hosts::{CertMaterial, PdfEngineHost, SignFailure, SignOptions, VisibleSignature};
+use super::hosts::{CertificateOpenCode, CertificateOpenError, CertificateSource, PdfEngineHost, SignFailure};
 use super::save::is_same_redaction_copy_path;
-use super::{CertEntry, Editor, now_ms, read_file};
+use super::{CachedCertificate, CertEntry, CertificateCache, CertificateState, Editor, now_ms, read_file};
 use crate::kit::{self, Entry, IntoIpc, as_num, as_str, error, field, obj};
 
 /// `MAX_CERTIFICATE_FILE_BYTES`
@@ -159,92 +159,187 @@ impl Editor {
         id
     }
 
-    /// `releaseCertEntry(entry)`: a system identity's exported key goes
     fn release_cert(&self, view: ViewId, id: &str) {
-        self.with_view(view, |v| {
-            if let Some(CertEntry::System { identity, .. }) = v.certs.get_mut(id) {
-                *identity = None;
-            }
+        let cache = self.st.borrow().views.get(&view).and_then(|v| v.certs.get(id)).and_then(|entry| match entry {
+            CertEntry::System { cache, .. } => Some(cache.clone()), CertEntry::File(_) => None,
         });
+        if let Some(cache) = cache {
+            let old = {
+                let mut state = cache.borrow_mut();
+                state.epoch = state.epoch.wrapping_add(1);
+                std::mem::replace(&mut state.state, CertificateState::Invalid)
+            };
+            match old {
+                CertificateState::Opening(token) | CertificateState::Busy(token) => token.cancel(),
+                CertificateState::Ready(certificate) => certificate.session.revoke_token().cancel(),
+                CertificateState::Empty | CertificateState::Invalid => {}
+            }
+            pump_certificate(&cache);
+        }
     }
 
     fn signatures_path(&self) -> String {
         super::user_data_file(self, "pdf-signatures.json")
     }
 
-    /// `certMaterial(entry, password, storePassword)` then
-    /// `openMaterial(material)`, both on a worker; `then` gets the material
-    /// with the chain's `CertificateInfo[]` (or the `CertificateErrorCode`)
-    /// on the core thread. A system identity is kept on the entry.
     fn cert_material(
         self: &Rc<Self>,
         view: ViewId,
-        id: String,
         entry: CertEntry,
         password: String,
         store_password: Option<String>,
-        then: impl FnOnce(Result<(CertMaterial, Opened), Thrown>) + 'static,
+        authorization: (shell_contract::ipc::NativeRequestOwner, shell_contract::runtime::CancelToken),
+        then: impl FnOnce(Result<Opened, Thrown>) + 'static,
     ) {
+        let cache = match &entry { CertEntry::System { cache, .. } => Some(cache.clone()), CertEntry::File(_) => None };
+        if let Some(cache) = &cache {
+            let state = {
+                let mut slot = cache.borrow_mut();
+                match &slot.state {
+                    CertificateState::Opening(token) | CertificateState::Busy(token) if token.is_cancelled() => {
+                        slot.state = CertificateState::Invalid;
+                        drop(slot);
+                        then(Ok(Err(CertificateOpenError::Code(CertificateOpenCode::Invalid))));
+                        pump_certificate(cache);
+                        return;
+                    }
+                    CertificateState::Opening(_) | CertificateState::Busy(_) => {
+                        let weak_editor = Rc::downgrade(self);
+                        let weak_cache = Rc::downgrade(cache);
+                        let CertEntry::System { reference, .. } = entry else { unreachable!() };
+                        slot.waiting.push_back(Box::new(move || {
+                            match (weak_editor.upgrade(), weak_cache.upgrade()) {
+                                (Some(editor), Some(cache)) => editor.cert_material(view, CertEntry::System { reference, cache }, password, store_password, authorization, then),
+                                _ => then(Err(certificate_expired())),
+                            }
+                        }));
+                        return;
+                    }
+                    CertificateState::Invalid => { drop(slot); then(Ok(Err(CertificateOpenError::Code(CertificateOpenCode::Invalid)))); pump_certificate(cache); return; }
+                    CertificateState::Empty => None,
+                    CertificateState::Ready(_) => {
+                        let CertificateState::Ready(certificate) = std::mem::replace(&mut slot.state, CertificateState::Invalid) else { unreachable!() };
+                        let token = certificate.session.revoke_token();
+                        if !certificate.session.is_current(&authorization.0, &authorization.1) {
+                            drop(slot);
+                            token.cancel();
+                            then(Ok(Err(CertificateOpenError::Code(CertificateOpenCode::Invalid))));
+                            pump_certificate(cache);
+                            return;
+                        }
+                        slot.state = CertificateState::Busy(token);
+                        Some((certificate, slot.epoch))
+                    }
+                }
+            };
+            if let Some((certificate, epoch)) = state {
+                then(Ok(Ok((certificate, Some(cache.clone()), epoch))));
+                pump_certificate(cache);
+                return;
+            }
+        }
+        let token = shell_contract::runtime::CancelToken::default();
+        let epoch = if let Some(cache) = &cache {
+            let mut slot = cache.borrow_mut();
+            slot.epoch = slot.epoch.wrapping_add(1);
+            slot.state = CertificateState::Opening(token.clone());
+            slot.epoch
+        } else { 0 };
         let engine = self.engine.clone();
-        let platform = self.shell.platform();
-        let home = self.path(PathName::Home);
+        let worker_authorization = authorization.clone();
+        let worker_token = token.clone();
+        let source = match entry {
+            CertEntry::File(path) => CertificateInput::File(path, password),
+            CertEntry::System { reference, .. } => CertificateInput::System(reference, store_password),
+        };
+        let opening_guard = CertificatePending { cache: cache.clone(), epoch, opening: true };
         let ed = self.clone();
         kit::on_worker(
             &self.services,
-            move || -> Result<(CertMaterial, Option<SystemIdentity>, Opened), Thrown> {
-                let (material, identity) = match entry {
-                    CertEntry::File(path) => {
-                        let p12 = read_certificate_file(&path).map_err(|m| {
-                            Thrown::Node(main_core::node_fs::NodeError {
-                                code: None,
-                                message: m,
-                            })
-                        })?;
-                        (CertMaterial::P12 { p12, password }, None)
-                    }
-                    CertEntry::System {
-                        reference,
-                        identity,
-                    } => {
-                        let identity = match identity {
-                            Some(i) => i,
-                            None => with_env(engine.clone(), platform, home, |env| {
-                                open_system_signer(&reference, store_password.as_deref(), env)
-                            })?,
-                        };
-                        let material = match &identity {
-                            SystemIdentity::P12(e) => CertMaterial::P12 {
-                                p12: e.p12.clone(),
-                                password: e.password.clone(),
-                            },
-                            SystemIdentity::InPlace(s) => CertMaterial::InPlace(s.clone()),
-                        };
-                        (material, Some(identity))
-                    }
+            move || -> Result<OpenedCertificate, Thrown> {
+                if !engine.sign_owner_current(&worker_authorization.0, &worker_authorization.1) { return Err(certificate_expired()); }
+                let source = match source {
+                    CertificateInput::File(path, password) => CertificateSource::P12 {
+                        p12: read_certificate_file(&path).map_err(|message| Thrown::Node(main_core::node_fs::NodeError { code: None, message }))?, password,
+                    },
+                    CertificateInput::System(reference, store_password) => CertificateSource::System { reference, store_password },
                 };
-                let opened = engine.open_certificate(&material);
-                Ok((material, identity, opened))
+                Ok(engine.open_signing_session(&source, &worker_authorization.0, &worker_authorization.1, &worker_token)
+                    .map(|(session, summaries, chain)| CachedCertificate { session, summaries, chain }))
             },
             move |result| {
-                then(result.map(|(material, identity, opened)| {
-                    if let Some(identity) = identity {
-                        ed.with_view(view, |v| {
-                            if let Some(CertEntry::System { identity: slot, .. }) =
-                                v.certs.get_mut(&id)
-                            {
-                                *slot = Some(identity);
-                            }
-                        });
+                let _opening_guard = opening_guard;
+                let current = ed.engine.sign_owner_current(&authorization.0, &authorization.1) && !token.is_cancelled();
+                let valid_epoch = cache.as_ref().is_none_or(|cache| cache.borrow().epoch == epoch);
+                if !current || !valid_epoch {
+                    token.cancel();
+                    if valid_epoch {
+                        if let Some(cache) = &cache { cache.borrow_mut().state = CertificateState::Invalid; }
                     }
-                    (material, opened)
-                }))
+                    then(Err(certificate_expired()));
+                    if let Some(cache) = &cache { pump_certificate(cache); }
+                    return;
+                }
+                if let Some(cache) = &cache {
+                    cache.borrow_mut().state = if matches!(&result, Ok(Ok(_))) { CertificateState::Busy(token) } else { CertificateState::Empty };
+                }
+                then(result.map(|result| result.map(|certificate| (certificate, cache.clone(), epoch))));
+                if let Some(cache) = &cache { pump_certificate(cache); }
             },
         );
     }
 }
 
-/// `openMaterial(material)`: the chain's `CertificateInfo[]`, or the `CertificateErrorCode`
-type Opened = Result<Vec<IpcValue>, String>;
+enum CertificateInput {
+    File(String, String),
+    System(SystemCertificateRef, Option<String>),
+}
+
+type OpenedCertificate = Result<CachedCertificate, CertificateOpenError>;
+type Opened = Result<(CachedCertificate, Option<Rc<std::cell::RefCell<CertificateCache>>>, u64), CertificateOpenError>;
+
+fn certificate_expired() -> Thrown {
+    Thrown::Node(main_core::node_fs::NodeError { code: None, message: "pdf: signing request expired".into() })
+}
+
+fn pump_certificate(cache: &Rc<std::cell::RefCell<CertificateCache>>) {
+    let next = {
+        let mut state = cache.borrow_mut();
+        if matches!(state.state, CertificateState::Opening(_) | CertificateState::Busy(_)) { None } else { state.waiting.pop_front() }
+    };
+    if let Some(next) = next { next(); }
+}
+
+fn retain_certificate(cache: &Rc<std::cell::RefCell<CertificateCache>>, epoch: u64, certificate: CachedCertificate) {
+    let mut state = cache.borrow_mut();
+    if state.epoch == epoch && matches!(state.state, CertificateState::Busy(_)) {
+        state.state = CertificateState::Ready(certificate);
+    }
+}
+
+struct CertificatePending {
+    cache: Option<Rc<std::cell::RefCell<CertificateCache>>>,
+    epoch: u64,
+    opening: bool,
+}
+
+impl Drop for CertificatePending {
+    fn drop(&mut self) {
+        let Some(cache) = &self.cache else { return };
+        let token = {
+            let mut state = cache.borrow_mut();
+            if state.epoch != self.epoch { return; }
+            let applies = if self.opening { matches!(state.state, CertificateState::Opening(_)) } else { matches!(state.state, CertificateState::Busy(_)) };
+            if !applies { return; }
+            match std::mem::replace(&mut state.state, CertificateState::Invalid) {
+                CertificateState::Opening(token) | CertificateState::Busy(token) => Some(token),
+                _ => None,
+            }
+        };
+        if let Some(token) = token { token.cancel(); }
+        pump_certificate(cache);
+    }
+}
 
 fn sign_failed(message: impl Into<String>) -> IpcValue {
     obj([
@@ -262,10 +357,36 @@ fn store_password(v: &IpcValue) -> Option<String> {
     as_str(v).filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
-fn sign(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: shell_contract::ipc::Responder) {
+/// One native read and its request provenance; the source path is not retained.
+struct SigningSnapshot {
+    bytes: Vec<u8>,
+    sha256: String,
+    owner: shell_contract::ipc::NativeRequestOwner,
+    options: SignOptions,
+}
+
+impl SigningSnapshot {
+    fn capture(path: &str, owner: shell_contract::ipc::NativeRequestOwner, options: SignOptions) -> Result<Self, String> {
+        let bytes = read_file(path)?;
+        let sha256 = main_core::markdown::fs_util::sha256_hex(&bytes);
+        Ok(Self { bytes, sha256, owner, options })
+    }
+}
+
+fn sign(e: &Rc<Editor>, owner: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, request: IpcValue, reply: shell_contract::ipc::Responder) {
+    let view = owner.view;
+    if !e.engine.sign_owner_current(&owner, &cancel) {
+        return reply.reply(Ok(sign_failed("pdf: signing request expired")));
+    }
     let Some(path) = e.granted(view, field(&request, "path")) else {
         return reply.reply(Ok(sign_failed(super::NOT_GRANTED)));
     };
+    if e.open_path(view).as_deref() != Some(path.as_str()) {
+        return reply.reply(Ok(sign_failed(super::NOT_GRANTED)));
+    }
+    if e.st.borrow().in_flight.get(&path).is_some_and(|count| *count > 0) {
+        return reply.reply(Ok(sign_failed("pdf: another save is in progress")));
+    }
     let entry = e.cert_entry(view, field(&request, "certId"));
     let (Some((id, entry)), Some(password)) = (
         entry,
@@ -288,35 +409,83 @@ fn sign(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: shell_contract::
     if e.st.borrow().views.get(&view).is_some_and(|v| v.dirty) {
         return reply.reply(Ok(sign_failed("pdf: save pending edits before signing")));
     }
-    e.with_view(view, |v| v.redaction_flow = true);
+    let operation = kit::unique();
+    e.with_view(view, |v| { v.redaction_flow = true; v.sign_operation = Some(operation); });
     e.set_save_as_in_flight(view, true);
     let me = Rc::downgrade(e);
     let finish_id = id.clone();
+    let finish_owner = owner.clone();
+    let finish_cancel = cancel.clone();
     let finish = move |answer: IpcValue| {
         if let Some(ed) = me.upgrade() {
-            ed.release_cert(view, &finish_id);
-            ed.with_view(view, |v| v.redaction_flow = false);
-            ed.set_save_as_in_flight(view, false);
+            let owns_flow = {
+                let mut state = ed.st.borrow_mut();
+                match state.views.get_mut(&view) {
+                    Some(slot) if slot.sign_operation == Some(operation) => {
+                        slot.sign_operation = None;
+                        slot.redaction_flow = false;
+                        true
+                    }
+                    _ => false,
+                }
+            };
+            if owns_flow {
+                if ed.engine.sign_owner_current(&finish_owner, &finish_cancel) {
+                    ed.release_cert(view, &finish_id);
+                }
+                ed.set_save_as_in_flight(view, false);
+            }
         }
         reply.reply(Ok(answer))
     };
+    let store_password = store_password(field(&request, "storePassword"));
+    let snapshot_path = path.clone();
+    let snapshot_owner = owner.clone();
+    let snapshot_cancel = cancel.clone();
+    let snapshot_engine = e.engine.clone();
     let ed = e.clone();
-    e.cert_material(
+    kit::on_worker(
+        &e.services,
+        move || {
+            if !snapshot_engine.sign_owner_current(&snapshot_owner, &snapshot_cancel) {
+                return Err("pdf: signing request expired".to_owned());
+            }
+            let snapshot = SigningSnapshot::capture(&snapshot_path, snapshot_owner, options)?;
+            if !snapshot_engine.sign_owner_current(&snapshot.owner, &snapshot_cancel) {
+                return Err("pdf: signing request expired".to_owned());
+            }
+            Ok(snapshot)
+        },
+        move |snapshot| {
+            let snapshot = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(error) => return finish(sign_failed(error)),
+            };
+            if !ed.engine.sign_owner_current(&snapshot.owner, &cancel) {
+                return finish(sign_failed("pdf: signing request expired"));
+            }
+            let owner = snapshot.owner.clone();
+            let cert_ed = ed.clone();
+            ed.cert_material(
         view,
-        id,
         entry,
         password,
-        store_password(field(&request, "storePassword")),
+        store_password,
+        (owner.clone(), cancel.clone()),
         move |material| {
-            let (material, opened) = match material {
-                Ok(m) => m,
+            let ed = cert_ed;
+            let (mut certificate, cache, epoch) = match material {
+                Ok(Ok(opened)) => opened,
+                Ok(Err(CertificateOpenError::Code(code))) => return finish(sign_error(code.as_str())),
+                Ok(Err(CertificateOpenError::Message(message))) => return finish(sign_failed(message.as_str())),
                 Err(Thrown::Store(err)) => return finish(sign_error(err.code)),
                 Err(err) => return finish(sign_failed(thrown_message(&err))),
             };
-            // fail on a wrong password before asking where to save
-            if let Err(code) = opened {
-                return finish(sign_error(code));
+            let pending_guard = CertificatePending { cache, epoch, opening: false };
+            if !ed.engine.sign_owner_current(&owner, &cancel) {
+                return finish(sign_failed("pdf: signing request expired"));
             }
+            if certificate.chain.is_empty() { return finish(sign_failed("pdf: missing signing certificate chain")); }
             let picked = ed.dialogs.save(
                 ed.contents.window_of(view),
                 &FileDialog {
@@ -346,20 +515,39 @@ fn sign(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: shell_contract::
             let ed2 = ed.clone();
             let written = target.clone();
             let source = path.clone();
+            let worker_owner = owner.clone();
+            let worker_cancel = cancel.clone();
             kit::on_worker(
                 &ed.services,
                 move || -> Result<(), SignFailure> {
-                    let bytes = read_file(&path).map_err(SignFailure::Message)?;
-                    let signed = engine.sign_pdf(&bytes, &material, &options)?;
-                    write_pdf_atomically(&written, &signed)
-                        .map_err(|e| SignFailure::Message(e.message))?;
+                    if !engine.sign_owner_current(&worker_owner, &worker_cancel) {
+                        return Err(SignFailure::Message("pdf: signing request expired".into()));
+                    }
+                    if main_core::markdown::fs_util::sha256_hex(&snapshot.bytes) != snapshot.sha256 {
+                        return Err(SignFailure::Message("pdf: signing snapshot changed".into()));
+                    }
+                    let signed = certificate.session.sign(&snapshot.bytes, &snapshot.options, &certificate.chain, &worker_owner, &worker_cancel)?;
+                    if !engine.sign_owner_current(&worker_owner, &worker_cancel) {
+                        return Err(SignFailure::Message("pdf: signing request expired".into()));
+                    }
+                    engine.write_signed_pdf(&written, &signed, &worker_owner, &worker_cancel)
+                        .map_err(SignFailure::Message)?;
                     Ok(())
                 },
-                move |result| match result {
+                move |result| {
+                    let _pending_guard = pending_guard;
+                    match result {
                     Ok(()) => {
+                        if !ed2.engine.sign_owner_current(&owner, &cancel) {
+                            return finish(sign_failed("pdf: signing request expired"));
+                        }
                         let ed = ed2;
+                        // Finish this request's state before revoking its old slot.
+                        ed.release_cert(view, &id);
+                        ed.with_view(view, |v| v.redaction_flow = false);
+                        ed.set_save_as_in_flight(view, false);
                         ed.grant_only(view, &target);
-                        ed.with_view(view, |v| v.open_path = Some(target.clone()));
+                        ed.replace_document(view, Some(target.clone()));
                         // the signed file starts clean: no copy of the unsigned document follows
                         ed.st.borrow_mut().unsaved_untitled_copy.remove(&source);
                         ed.rec
@@ -372,7 +560,10 @@ fn sign(e: &Rc<Editor>, view: ViewId, request: IpcValue, reply: shell_contract::
                     }
                     Err(SignFailure::Code(code)) => finish(sign_error(code)),
                     Err(SignFailure::Message(m)) => finish(sign_failed(m)),
+                    }
                 },
+            );
+        },
             );
         },
     );
@@ -473,7 +664,7 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
                                 view,
                                 CertEntry::System {
                                     reference,
-                                    identity: None,
+                                    cache: Rc::new(std::cell::RefCell::new(CertificateCache::default())),
                                 },
                             );
                             obj([
@@ -516,30 +707,50 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
         "pdf:inspect-certificate",
         move |cx, args, reply| {
             let view = cx.sender.view;
+            let Some(context) = cx.native.clone() else {
+                return reply.reply(Ok(sign_error("cert-invalid")));
+            };
+            let Some(owner) = e.bind_pdf_owner(view, context) else {
+                return reply.reply(Ok(sign_error("cert-invalid")));
+            };
+            if !e.engine.sign_owner_current(&owner, &cx.cancel) {
+                return reply.reply(Ok(sign_error("cert-invalid")));
+            }
             let entry = e.cert_entry(view, args.get(0));
-            let (Some((id, entry)), Some(password)) = (entry, args.str(1).map(str::to_owned))
+            let (Some((_id, entry)), Some(password)) = (entry, args.str(1).map(str::to_owned))
             else {
                 return reply.reply(Ok(sign_error("cert-invalid")));
             };
+            let inspect_cancel = cx.cancel.clone();
             e.cert_material(
                 view,
-                id,
                 entry,
                 password,
                 store_password(args.get(2)),
+                (owner.clone(), cx.cancel.clone()),
                 move |material| {
                     let answer = match material {
                         Err(err) => sign_error(store_code(&err, "cert-invalid")),
-                        Ok((_, opened)) => match opened {
-                            Ok(info) => obj([
-                                ("ok", true.into_ipc()),
-                                (
-                                    "signer",
-                                    info.first().cloned().unwrap_or(IpcValue::Undefined),
-                                ),
-                                ("chain", IpcValue::Array(info)),
-                            ]),
-                            Err(code) => sign_error(code),
+                        Ok(opened) => match opened {
+                            Ok((certificate, cache, epoch)) => {
+                                if !certificate.session.is_current(&owner, &inspect_cancel) {
+                                    certificate.session.revoke_token().cancel();
+                                    if let Some(cache) = cache {
+                                        let mut state = cache.borrow_mut();
+                                        if state.epoch == epoch { state.state = CertificateState::Invalid; }
+                                    }
+                                    return reply.reply(Ok(sign_error("cert-invalid")));
+                                }
+                                let info = certificate.summaries.clone();
+                                if let Some(cache) = cache { retain_certificate(&cache, epoch, certificate); }
+                                obj([
+                                    ("ok", true.into_ipc()),
+                                    ("signer", info.first().cloned().unwrap_or(IpcValue::Undefined)),
+                                    ("chain", IpcValue::Array(info)),
+                                ])
+                            }
+                            Err(CertificateOpenError::Code(code)) => sign_error(code.as_str()),
+                            Err(CertificateOpenError::Message(_)) => sign_error("cert-invalid"),
                         },
                     };
                     reply.reply(Ok(answer))
@@ -551,7 +762,15 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     let e = ed.clone();
     all.push(kit::invoke_later(
         "pdf:sign-with-certificate",
-        move |cx, mut args, reply| sign(&e, cx.sender.view, args.take(0), reply),
+        move |cx, mut args, reply| {
+            let Some(context) = cx.native.clone() else {
+                return reply.reply(Ok(sign_failed("pdf: signing request is not authenticated")));
+            };
+            let Some(owner) = e.bind_sign_owner(cx.sender.view, context) else {
+                return reply.reply(Ok(sign_failed("pdf: signing request is not authenticated")));
+            };
+            sign(&e, owner, cx.cancel.clone(), args.take(0), reply)
+        },
     ));
 
     let e = ed.clone();
@@ -587,4 +806,131 @@ pub(super) fn entries(ed: &Rc<Editor>) -> Vec<Entry> {
     }));
 
     all
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use shell_contract::Surface;
+    use super::super::editors::PdfEditors;
+
+    #[test]
+    fn bounded_worker_failure_keeps_inspect_and_sign_reply_shapes() {
+        let (mut rt, _) = super::super::tests::rt_with(serde_json::json!({"openCertificateMessage":"worker-unavailable"}));
+        let view = rt.view(1, Surface::Pdf);
+        let editors = rt.provided().all::<PdfEditors>().pop().unwrap();
+        let document = rt.dir.join("source.pdf");
+        let certificate = rt.dir.join("synthetic.p12");
+        std::fs::write(&document, b"%PDF synthetic").unwrap();
+        std::fs::write(&certificate, b"synthetic").unwrap();
+        let document = document.to_string_lossy().into_owned();
+        editors.open_view(view.view, Some(&document));
+        let id = editors.0.remember_cert(view.view, CertEntry::File(certificate.to_string_lossy().into_owned()));
+        let inspect = rt.invoke_now("pdf:inspect-certificate", view, vec![IpcValue::String(id.clone()), IpcValue::String("pw".into())]).unwrap();
+        assert_eq!(field(&inspect, "error"), &IpcValue::String("cert-invalid".into()));
+        let sign = rt.invoke_now("pdf:sign-with-certificate", view, vec![obj([
+            ("path", IpcValue::String(document)), ("certId", IpcValue::String(id)), ("password", IpcValue::String("pw".into())),
+        ])]).unwrap();
+        assert_eq!(field(&sign, "error"), &IpcValue::String("sign-failed".into()));
+        assert_eq!(field(&sign, "message"), &IpcValue::String("certificate worker unavailable".into()));
+    }
+
+    #[test]
+    fn system_inspection_reuses_child_and_loss_does_not_reopen() {
+        let (mut rt, _) = super::super::tests::rt_with(Value::Null);
+        let view = rt.view(1, Surface::Pdf);
+        let editors = rt.provided().all::<PdfEditors>().pop().unwrap();
+        editors.open_view(view.view, None);
+        let cache = Rc::new(std::cell::RefCell::new(CertificateCache::default()));
+        let id = editors.0.remember_cert(view.view, CertEntry::System {
+            reference: SystemCertificateRef::Windows { thumbprint: "synthetic".into() },
+            cache: cache.clone(),
+        });
+        let args = || vec![IpcValue::String(id.clone()), IpcValue::String("pw".into())];
+        let first = rt.invoke_now("pdf:inspect-certificate", view, args()).unwrap();
+        assert_eq!(field(&first, "ok"), &IpcValue::Bool(true));
+        let token = match &cache.borrow().state {
+            CertificateState::Ready(certificate) => certificate.session.revoke_token(),
+            _ => panic!("inspection did not retain its session"),
+        };
+        let second = rt.invoke_now("pdf:inspect-certificate", view, args()).unwrap();
+        assert_eq!(field(&second, "ok"), &IpcValue::Bool(true));
+        token.cancel();
+        let after_loss = rt.invoke_now("pdf:inspect-certificate", view, args()).unwrap();
+        assert_eq!(field(&after_loss, "error"), &IpcValue::String("cert-invalid".into()));
+    }
+
+    #[test]
+    fn cached_system_identity_is_not_reused_by_replacement_renderer() {
+        let (mut rt, _) = super::super::tests::rt_with(Value::Null);
+        let view = rt.view(1, Surface::Pdf);
+        let editors = rt.provided().all::<PdfEditors>().pop().unwrap();
+        editors.open_view(view.view, None);
+        let cache = Rc::new(std::cell::RefCell::new(CertificateCache::default()));
+        let id = editors.0.remember_cert(view.view, CertEntry::System {
+            reference: SystemCertificateRef::Windows { thumbprint: "synthetic".into() },
+            cache: cache.clone(),
+        });
+        let args = || vec![IpcValue::String(id.clone()), IpcValue::String("pw".into())];
+        let first = rt.invoke_now("pdf:inspect-certificate", view, args()).unwrap();
+        assert_eq!(field(&first, "ok"), &IpcValue::Bool(true));
+        let token = match &cache.borrow().state {
+            CertificateState::Ready(certificate) => certificate.session.revoke_token(),
+            _ => panic!("inspection did not retain its session"),
+        };
+        rt.replace_renderer(view.view);
+        let second = rt.invoke_now("pdf:inspect-certificate", view, args()).unwrap();
+        assert_eq!(field(&second, "error"), &IpcValue::String("cert-invalid".into()));
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn release_during_open_revokes_worker_and_settles_queued_inspection() {
+        use std::sync::{Arc, Mutex};
+        use shell_contract::runtime::Workers;
+        use main_core::packages::electron_utils::recovery_store::SharedRecoveryState;
+        use super::super::fakes::{engine, shell};
+        use super::super::hosts::{PdfEngineHost, PdfShellHost};
+        use crate::testing::Rt;
+
+        #[derive(Default)]
+        struct Deferred(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+        impl Workers for Deferred {
+            fn spawn(&self, job: Box<dyn FnOnce() + Send>) { self.0.lock().unwrap().push(job); }
+        }
+        let mut rt = Rt::new(|hosts| {
+            hosts.insert::<PdfEngineHost>(engine(&Value::Null));
+            hosts.insert::<PdfShellHost>(shell(&Value::Null));
+            hosts.insert(Arc::new(Mutex::new(SharedRecoveryState::new("test"))));
+            crate::pdf::tools::fakes(hosts, &Value::Null);
+        });
+        let workers = Arc::new(Deferred::default());
+        rt.services.workers = workers.clone();
+        rt.register(crate::pdf::entries).unwrap();
+        let view = rt.view(1, Surface::Pdf);
+        let editors = rt.provided().all::<PdfEditors>().pop().unwrap();
+        editors.open_view(view.view, None);
+        let cache = Rc::new(std::cell::RefCell::new(CertificateCache::default()));
+        let id = editors.0.remember_cert(view.view, CertEntry::System {
+            reference: SystemCertificateRef::Windows { thumbprint: "synthetic".into() },
+            cache: cache.clone(),
+        });
+        let args = || vec![IpcValue::String(id.clone()), IpcValue::String("pw".into())];
+        let first = rt.invoke("pdf:inspect-certificate", view, args());
+        let second = rt.invoke("pdf:inspect-certificate", view, args());
+        let token = match &cache.borrow().state {
+            CertificateState::Opening(token) => token.clone(),
+            _ => panic!("first inspection did not start opening"),
+        };
+        rt.send("pdf:release-certificate", view, vec![IpcValue::String(id)]);
+        assert!(token.is_cancelled());
+        let answer = second.take().unwrap().unwrap();
+        assert_eq!(field(&answer, "error"), &IpcValue::String("cert-invalid".into()));
+        let worker = workers.0.lock().unwrap().remove(0);
+        worker();
+        rt.drain();
+        assert!(first.take().is_some());
+        assert!(matches!(cache.borrow().state, CertificateState::Invalid));
+    }
 }

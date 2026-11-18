@@ -31,8 +31,16 @@ use shell_contract::{IpcError, IpcValue, ViewId};
 use super::engine::{DeckSize, TxnRequest, TxnResult};
 use super::i18n::tm;
 use super::state::{App, RenderSlide, SlideSession};
-use crate::value::{as_num, field, is_nullish, num, obj, string};
+use crate::value::{as_num, as_str, field, is_nullish, num, obj, string};
 use jscompat::JsonValue;
+
+pub fn render_owner(cx: &shell_contract::ipc::CallContext) -> Result<super::engine::RenderOwner, IpcError> {
+    let native = cx.native.as_ref().ok_or_else(|| crate::value::thrown("missing authenticated render capability"))?;
+    if !native.renderer().is_some_and(|generation| generation.is_active()) {
+        return Err(crate::value::thrown("renderer capability is missing or revoked"));
+    }
+    Ok(super::engine::RenderOwner { view: cx.sender.view, context: native.clone() })
+}
 
 /// `EMU_PER_PX_96`
 pub const EMU_PER_PX_96: f64 = 9525.0;
@@ -187,40 +195,39 @@ impl App {
     }
 
     /// `rebuildSlide(session, slideIndex)`: `None` for a page the deck lacks
-    pub fn rebuild_slide(&self, s: &SlideSession, index: &IpcValue) -> Option<IpcValue> {
-        let index = slide_index(index, self.engine.slide_paths(s.deck()).len())?;
-        self.engine
-            .render_slide(s.deck(), index, s.fit_width_px, false)
+    pub fn rebuild_slide(&self, s: &SlideSession, owner: &super::engine::RenderOwner, index: &IpcValue) -> Result<Option<IpcValue>, IpcError> {
+        let paths = self.engine.slide_paths(s.deck()).map_err(|error| crate::value::thrown(error.0))?;
+        let Some(index) = slide_index(index, paths.len()) else { return Ok(None) };
+        self.engine.render_slide(s.deck(), owner, index, s.fit_width_px, false).map_err(|error| crate::value::thrown(error.0))
     }
 
     /// `rebuildSlideWithReparse(session, slideIndex)`
     pub fn rebuild_slide_with_reparse(
         &self,
         s: &SlideSession,
+        owner: &super::engine::RenderOwner,
         index: &IpcValue,
-    ) -> Option<IpcValue> {
-        let index = slide_index(index, self.engine.slide_paths(s.deck()).len())?;
-        self.engine
-            .render_slide(s.deck(), index, s.fit_width_px, true)
+    ) -> Result<Option<IpcValue>, IpcError> {
+        let paths = self.engine.slide_paths(s.deck()).map_err(|error| crate::value::thrown(error.0))?;
+        let Some(index) = slide_index(index, paths.len()) else { return Ok(None) };
+        self.engine.render_slide(s.deck(), owner, index, s.fit_width_px, true).map_err(|error| crate::value::thrown(error.0))
     }
 
     /// `buildAllRenderSlides(session.opened, session.fitWidthPx)`
-    pub fn render_all(&self, s: &SlideSession) -> IpcValue {
-        IpcValue::Array(self.engine.render_all(s.deck(), s.fit_width_px))
+    pub fn render_all(&self, s: &SlideSession, owner: &super::engine::RenderOwner) -> Result<IpcValue, IpcError> {
+        self.engine.render_all(s.deck(), owner, s.fit_width_px)
+            .map(IpcValue::Array).map_err(|error| crate::value::thrown(error.0))
     }
 
     /// `session.opened.deck.slides.map((_, i) => rebuildSlide(session, i))`
-    pub fn rebuild_every_slide(&self, s: &SlideSession) -> IpcValue {
-        let count = self.engine.slide_paths(s.deck()).len();
-        IpcValue::Array(
-            (0..count)
-                .map(|i| {
-                    self.engine
-                        .render_slide(s.deck(), i, s.fit_width_px, false)
-                        .unwrap_or(IpcValue::Null)
-                })
-                .collect(),
-        )
+    pub fn rebuild_every_slide(&self, s: &SlideSession, owner: &super::engine::RenderOwner) -> Result<IpcValue, IpcError> {
+        let count = self.engine.slide_paths(s.deck()).map_err(|error| crate::value::thrown(error.0))?.len();
+        let slides = (0..count).map(|i| {
+            self.engine.render_slide(s.deck(), owner, i, s.fit_width_px, false)
+                .map(|slide| slide.unwrap_or(IpcValue::Null))
+                .map_err(|error| crate::value::thrown(error.0))
+        }).collect::<Result<Vec<_>, _>>()?;
+        Ok(IpcValue::Array(slides))
     }
 
     /// `journaledTxn(session, source, req)`: every applied batch lands in the
@@ -228,10 +235,11 @@ impl App {
     pub fn journaled_txn(
         &self,
         s: &mut SlideSession,
+        owner: &super::engine::RenderOwner,
         source: OpSource,
         request: &TxnRequest,
-    ) -> TxnResult {
-        let result = self.engine.run_txn(s.deck(), request);
+    ) -> Result<TxnResult, IpcError> {
+        let result = self.engine.run_txn(s.deck(), owner, request).map_err(|error| crate::value::thrown(error.0))?;
         if result.applied {
             let records = result
                 .records
@@ -246,7 +254,7 @@ impl App {
             s.core.journal_ops(source, records);
             s.core.schedule_deck_broadcast();
         }
-        result
+        Ok(result)
     }
 
     /// `sessionTxn(session, req, source)`: one undo step wrapping a
@@ -255,25 +263,26 @@ impl App {
     pub fn session_txn(
         &self,
         s: &mut SlideSession,
+        owner: &super::engine::RenderOwner,
         request: TxnRequest,
         source: OpSource,
-    ) -> Option<TxnResult> {
-        let plan = self.engine.run_txn(s.deck(), &request.dry());
+    ) -> Result<Option<TxnResult>, IpcError> {
+        let plan = self.engine.run_txn(s.deck(), owner, &request.dry()).map_err(|error| crate::value::thrown(error.0))?;
         let invalid = plan.failure_count();
         let refused = match request.isolation {
             super::engine::Isolation::Atomic => invalid > 0,
             super::engine::Isolation::PerOp => invalid >= request.ops.len(),
         };
         if refused {
-            return None;
+            return Ok(None);
         }
-        s.core.push_history();
-        let result = self.journaled_txn(s, source, &request);
+        let snapshot = s.core.take_snapshot().map_err(|error| crate::value::thrown(error.0))?;
+        let result = self.journaled_txn(s, owner, source, &request)?;
         if !result.applied {
-            s.core.undo_stack.pop();
-            return None;
+            return Ok(None);
         }
-        Some(result)
+        s.core.push_history_snapshot(snapshot);
+        Ok(Some(result))
     }
 
     /// `pushHistory(session)`, the transaction, and `undoStack.pop()` when it
@@ -282,37 +291,34 @@ impl App {
     pub fn push_and_journal(
         &self,
         s: &mut SlideSession,
+        owner: &super::engine::RenderOwner,
         source: OpSource,
         request: &TxnRequest,
-    ) -> Option<TxnResult> {
-        s.core.push_history();
-        let result = self.journaled_txn(s, source, request);
+    ) -> Result<Option<TxnResult>, IpcError> {
+        let snapshot = s.core.take_snapshot().map_err(|error| crate::value::thrown(error.0))?;
+        let result = self.journaled_txn(s, owner, source, request)?;
         if !result.applied {
-            s.core.undo_stack.pop();
-            return None;
+            return Ok(None);
         }
-        Some(result)
+        s.core.push_history_snapshot(snapshot);
+        Ok(Some(result))
     }
 
     /// `buildSlideUpdate(session, before, changed)`
     pub fn build_slide_update(
         &self,
         s: &mut SlideSession,
+        owner: &super::engine::RenderOwner,
         before: &[String],
         changed: &[f64],
-    ) -> IpcValue {
-        let refs = self.engine.slide_refs(s.deck());
+    ) -> Result<IpcValue, IpcError> {
+        let refs = self.engine.slide_refs(s.deck()).map_err(|error| crate::value::thrown(error.0))?;
         let (order, rebuild) = plan_slide_update(&refs, before, changed);
-        let slides: Vec<RenderSlide> = rebuild
-            .iter()
-            .map(|i| {
-                RenderSlide(
-                    self.engine
-                        .render_slide(s.deck(), *i, s.fit_width_px, false)
-                        .unwrap_or(IpcValue::Null),
-                )
-            })
-            .collect();
+        let slides: Vec<RenderSlide> = rebuild.iter().map(|i| {
+            self.engine.render_slide(s.deck(), owner, *i, s.fit_width_px, false)
+                .map(|slide| RenderSlide(slide.unwrap_or(IpcValue::Null)))
+                .map_err(|error| crate::value::thrown(error.0))
+        }).collect::<Result<_, _>>()?;
         let value = obj([
             ("order", array_of_strings(&order)),
             (
@@ -321,57 +327,61 @@ impl App {
             ),
         ]);
         s.core.note_slide_update(SlideUpdate { order, slides });
-        value
+        Ok(value)
     }
 
     /// The `{ path, slides, size, defaultFont }` an open answers
-    pub fn open_result(&self, s: &SlideSession, slides: IpcValue) -> IpcValue {
+    pub fn open_result(&self, s: &SlideSession, slides: IpcValue) -> Result<IpcValue, IpcError> {
         let deck = s.deck();
-        obj([
+        Ok(obj([
             ("path", string(s.path())),
             ("slides", slides),
-            ("size", self.size_value(self.engine.size(deck))),
+            ("size", self.size_value(self.engine.size(deck).map_err(|error| crate::value::thrown(error.0))?)),
             (
                 "defaultFont",
                 self.engine
-                    .default_font(deck)
+                    .default_font(deck).map_err(|error| crate::value::thrown(error.0))?
                     .map_or(IpcValue::Undefined, string),
             ),
-        ])
+        ]))
     }
 
     /// `sessionDirty(session)`
-    pub fn session_dirty(&self, s: &SlideSession) -> bool {
-        s.core.meta_dirty || self.engine.slides_dirty(s.deck())
+    pub fn session_dirty(&self, s: &SlideSession) -> Result<bool, super::engine::EngineError> {
+        if s.core.meta_dirty { return Ok(true); }
+        self.engine.slides_dirty(s.deck())
     }
 
-    /// Queues what the sessions scheduled with `setImmediate`
+    /// Queues what the sessions scheduled with `setImmediate`, retaining the
+    /// renderer generations that were attached when the work was queued.
     pub fn pump(&self) {
-        let jobs: Vec<(usize, Scheduled)> = {
+        let jobs = {
             let mut state = self.state.borrow_mut();
             let mut jobs = Vec::new();
             for slot in state.live_slots() {
-                if let Some(session) = state.slot_mut(slot) {
-                    for scheduled in session.core.take_scheduled() {
-                        jobs.push((slot, scheduled));
-                    }
+                let scheduled = state.slot_mut(slot).map(|session| session.core.take_scheduled()).unwrap_or_default();
+                let owners = state.attached_owners(slot);
+                for item in scheduled {
+                    jobs.push((slot, item, owners.clone()));
                 }
             }
             jobs
         };
-        for (slot, scheduled) in jobs {
-            self.post(move |app| app.flush(slot, scheduled));
+        super::export::owned::wake_generated_publications(self);
+        for (slot, scheduled, owners) in jobs {
+            self.post(move |app| app.flush(slot, scheduled, owners));
         }
     }
 
-    /// The callbacks of `scheduleHistoryNotify` and `scheduleDeckBroadcast`
-    fn flush(&self, slot: usize, scheduled: Scheduled) {
-        let sends: Vec<(ViewId, &'static str, IpcValue)> = {
+    fn flush(&self, slot: usize, scheduled: Scheduled, owners: Vec<super::engine::RenderOwner>) {
+        let sends = {
             let mut state = self.state.borrow_mut();
-            let attached = state.attached_ids(slot);
-            let Some(session) = state.slot_mut(slot) else {
-                return;
-            };
+            let owners: Vec<_> = owners.into_iter().filter(|owner| {
+                state.slot_of(owner.view) == Some(slot) &&
+                state.owner_of(owner.view).and_then(|stored| stored.context.renderer().zip(owner.context.renderer()))
+                    .is_some_and(|(stored, captured)| captured.is_active() && stored.same_generation(captured))
+            }).collect();
+            let Some(session) = state.slot_mut(slot) else { return };
             match scheduled {
                 Scheduled::HistoryNotify => {
                     let changed = session.core.flush_history_notify();
@@ -380,37 +390,56 @@ impl App {
                         ("canRedo", IpcValue::Bool(changed.can_redo)),
                         ("aiRunActive", IpcValue::Bool(changed.ai_run_active)),
                     ]);
-                    attached
-                        .into_iter()
-                        .map(|view| (view, "slides:history-changed", payload.clone()))
-                        .collect()
+                    owners.into_iter().map(|owner| (owner, "slides:history-changed", payload.clone())).collect::<Vec<_>>()
                 }
                 Scheduled::DeckBroadcast => {
-                    let plan = session.core.flush_deck_broadcast(attached.len());
-                    let size = self.size_value(self.engine.size(session.deck()));
-                    let payload = match plan {
-                        DeckBroadcast::Nothing => return,
-                        DeckBroadcast::Partial { order, slides } => obj([
-                            ("order", array_of_strings(&order)),
-                            (
-                                "slides",
-                                IpcValue::Array(slides.into_iter().map(|r| r.0).collect()),
-                            ),
-                            ("size", size),
-                        ]),
-                        DeckBroadcast::Full => {
-                            obj([("slides", self.render_all(session)), ("size", size)])
+                    let plan = session.core.flush_deck_broadcast(owners.len());
+                    let size = match self.engine.size(session.deck()) {
+                        Ok(size) => self.size_value(size),
+                        Err(error) => {
+                            eprintln!("[slides] deck broadcast failed: {}", error.0);
+                            return;
                         }
                     };
-                    attached
-                        .into_iter()
-                        .map(|view| (view, "slides:deck-changed", payload.clone()))
-                        .collect()
+                    let mut sends = Vec::new();
+                    for owner in owners {
+                        let payload = (|| -> Result<IpcValue, IpcError> {
+                            Ok(match &plan {
+                                DeckBroadcast::Nothing => return Ok(IpcValue::Undefined),
+                                DeckBroadcast::Partial { order, slides } => {
+                                    let indices: Option<Vec<usize>> = slides.iter().map(|slide| {
+                                        as_str(field(&slide.0, "partPath"))
+                                            .and_then(|path| order.iter().position(|item| item == path))
+                                    }).collect();
+                                    match indices {
+                                        Some(indices) => {
+                                            let rendered = indices.into_iter().map(|index| {
+                                                self.engine.render_slide(session.deck(), &owner, index, session.fit_width_px, false)
+                                                    .map(|slide| slide.unwrap_or(IpcValue::Null))
+                                                    .map_err(|error| crate::value::thrown(error.0))
+                                            }).collect::<Result<Vec<_>, _>>()?;
+                                            obj([("order", array_of_strings(order)), ("slides", IpcValue::Array(rendered)), ("size", size.clone())])
+                                        }
+                                        None => obj([("slides", self.render_all(session, &owner)?), ("size", size.clone())]),
+                                    }
+                                }
+                                DeckBroadcast::Full => obj([("slides", self.render_all(session, &owner)?), ("size", size.clone())]),
+                            })
+                        })();
+                        match payload {
+                            Ok(IpcValue::Undefined) => break,
+                            Ok(payload) => sends.push((owner, "slides:deck-changed", payload)),
+                            Err(error) => eprintln!("[slides] deck broadcast failed: {}", error.message),
+                        }
+                    }
+                    sends
                 }
             }
         };
-        for (view, channel, payload) in sends {
-            self.emit(view, channel, vec![payload]);
+        for (owner, channel, payload) in sends {
+            if let Err(error) = self.services.events.emit_to_owner_checked(&owner, channel, vec![payload]) {
+                eprintln!("[slides] scoped broadcast delivery failed: {error}");
+            }
         }
     }
 }
@@ -447,5 +476,49 @@ pub fn js_string(value: &IpcValue) -> String {
             .collect::<Vec<_>>()
             .join(","),
         _ => "[object Object]".into(),
+    }
+}
+
+#[cfg(test)]
+mod created_record_tests {
+    use main_core::slides::session_state::{Deck, OpRecord, OpSource, Session};
+    use shell_contract::IpcValue;
+
+    struct EmptyDeck;
+    impl Deck<()> for EmptyDeck {
+        type Error = std::convert::Infallible;
+        fn take_snapshot(&self, _: bool) -> Result<(), Self::Error> { Ok(()) }
+        fn restore_snapshot(&mut self, _: ()) -> Result<bool, Self::Error> { Ok(false) }
+    }
+
+    #[test]
+    fn render_owner_rejects_missing_and_revoked_capabilities() {
+        use shell_contract::ipc::{CallContext, NativeContext, Sender};
+        use shell_contract::runtime::{CancelToken, RendererGeneration};
+        use shell_contract::{Surface, ViewId, WindowId};
+        let generation = RendererGeneration::new();
+        let mut context = CallContext {
+            sender: Sender { view: ViewId(1), window: WindowId(1), surface: Surface::Slides },
+            request: None,
+            cancel: CancelToken::default(),
+            native: None,
+        };
+        assert!(super::render_owner(&context).is_err());
+        context.native = Some(NativeContext::with_renderer((), generation.clone()));
+        assert!(super::render_owner(&context).is_ok());
+        generation.revoke();
+        assert!(super::render_owner(&context).is_err());
+    }
+
+    #[test]
+    fn journal_retains_undefined_created_items() {
+        let mut session: Session<EmptyDeck, (), IpcValue, ()> = Session::new("", EmptyDeck);
+        session.journal_ops(OpSource::Edit, vec![OpRecord {
+            op: IpcValue::String("addSmartArt".into()),
+            slide_id: None,
+            created: Some(vec![IpcValue::Undefined, IpcValue::String("element".into())]),
+        }]);
+        let created = session.op_log.unwrap().remove(0).ops.remove(0).created.unwrap();
+        assert_eq!(created, vec![IpcValue::Undefined, IpcValue::String("element".into())]);
     }
 }

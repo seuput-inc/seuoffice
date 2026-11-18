@@ -231,6 +231,7 @@ thread_local! {
 wrap_request_context_handler! {
   struct WebviewRequestContextHandler {
     on_initialized: Arc<Mutex<Option<RequestContextInitContinuation>>>,
+    session_request_policy: Option<crate::network_session::NetworkSessionPolicy>,
   }
 
   impl RequestContextHandler {
@@ -240,6 +241,14 @@ wrap_request_context_handler! {
       };
       let request_context = request_context.map(|rc| rc.clone());
       callback(request_context);
+    }
+
+    fn resource_request_handler(
+      &self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+      _request: Option<&mut Request>, _is_navigation: i32, _is_download: i32,
+      _request_initiator: Option<&CefString>, _disable_default_handling: Option<&mut i32>,
+    ) -> Option<ResourceRequestHandler> {
+      self.session_request_policy.as_ref().map(|policy| crate::network_session::SessionResourceHandler::new(policy.clone()))
     }
   }
 }
@@ -312,10 +321,18 @@ pub(crate) fn request_context_from_webview_attributes<'a>(
   content_settings: Arc<Vec<(ContentSettingTypes, ContentSettingValues)>>,
   custom_schemes: impl IntoIterator<Item = &'a String>,
   custom_protocol_scheme: &str,
+  native_custom_schemes: &[String],
   scheme_registry: request_handler::SchemeRegistry,
   main_thread: request_handler::MainThreadDispatcher,
+  registered_protocols: crate::browser_request::RegisteredProtocols,
+  network_session: Option<&crate::NativeNetworkSession>,
   on_initialized: RequestContextInitContinuation,
 ) -> Option<RequestContext> {
+  let custom_schemes: Vec<_> = custom_schemes.into_iter().collect();
+  if let Some(missing) = native_custom_schemes.iter().find(|name| !custom_schemes.contains(name)) {
+    log::error!("native custom scheme {missing:?} has no Tauri protocol handler");
+    return None;
+  }
   let own_cache_path = |cache_path: PathBuf| {
     if let Err(error) = create_dir_all(&cache_path) {
       log::error!(
@@ -326,7 +343,17 @@ pub(crate) fn request_context_from_webview_attributes<'a>(
     CefStringUtf16::from(cache_path.to_string_lossy().as_ref())
   };
 
-  let cache_path = if webview_attributes.incognito {
+  let cache_path = if let Some(session) = network_session {
+    if webview_attributes.incognito || webview_attributes.data_directory.is_some() || webview_attributes.data_store_identifier.is_some() {
+      log::error!("explicit native network session cannot share a portable storage override");
+      return None;
+    }
+    let path = match session.cache_path(global_cache_path) {
+      Ok(path) => path,
+      Err(error) => { log::error!("{error}"); return None; }
+    };
+    own_cache_path(path)
+  } else if webview_attributes.incognito {
     CefStringUtf16::from("")
   } else if let Some(data_directory) = &webview_attributes.data_directory {
     own_cache_path(resolve_request_context_cache_path(
@@ -377,13 +404,15 @@ pub(crate) fn request_context_from_webview_attributes<'a>(
     }
   });
 
-  let mut handler = WebviewRequestContextHandler::new(Arc::new(Mutex::new(Some(wrapped_callback))));
+  let mut handler = WebviewRequestContextHandler::new(Arc::new(Mutex::new(Some(wrapped_callback))),
+    network_session.map(crate::NativeNetworkSession::policy));
   let request_context = request_context_create_context(Some(&settings), Some(&mut handler));
   *rc_holder.lock().unwrap() = request_context.clone();
+  if let (Some(session), Some(context)) = (network_session, request_context.as_ref()) { session.retain_context(context); }
 
   if let Some(request_context) = request_context.as_ref() {
     for scheme in custom_schemes {
-      request_context.register_scheme_handler_factory(
+      let registered = request_context.register_scheme_handler_factory(
         Some(&custom_protocol_scheme.into()),
         Some(&format!("{scheme}.localhost").as_str().into()),
         Some(&mut request_handler::UriSchemeHandlerFactory::new(
@@ -392,6 +421,22 @@ pub(crate) fn request_context_from_webview_attributes<'a>(
           main_thread.clone(),
         )),
       );
+      if registered != 0 { registered_protocols.alias(scheme, custom_protocol_scheme); }
+      if native_custom_schemes.contains(scheme) {
+        if request_context.register_scheme_handler_factory(
+          Some(&scheme.as_str().into()),
+          None,
+          Some(&mut request_handler::UriSchemeHandlerFactory::new(
+            scheme_registry.clone(),
+            scheme.clone(),
+            main_thread.clone(),
+          )),
+        ) == 0 {
+          log::error!("CEF refused native factory for scheme {scheme:?}");
+          std::process::exit(1);
+        }
+        registered_protocols.native(scheme);
+      }
     }
   }
 

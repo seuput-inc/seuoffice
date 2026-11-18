@@ -43,13 +43,13 @@ const cases: Case[] = [
       prompt(),
       call('pdf-password:get-state'),
       call('pdf-password:submit', 5),
-      call('pdf-password:submit', 'wrong'),
+      call('pdf-password:submit', 'wrong', '1'),
       call('pdf-password:get-state'),
       prompt(true),
       call('pdf-password:get-state'),
-      call('pdf-password:cancel'),
+      call('pdf-password:cancel', '2'),
       call('pdf-password:get-state'),
-      call('pdf-password:submit', 'late'),
+      call('pdf-password:submit', 'late', '2'),
     ],
   },
   {
@@ -61,13 +61,13 @@ const cases: Case[] = [
       call('pdf-password:get-state'),
       prompt(),
       prompt(true),
-      call('pdf-password:submit', 'pw'),
+      call('pdf-password:submit', 'pw', '3'),
     ],
   },
   {
     note: 'the shell window may not answer for the prompt',
     views,
-    calls: [prompt(), { channel: 'pdf-password:submit', view: 1, args: ['pw'] }],
+    calls: [prompt(), { channel: 'pdf-password:submit', view: 1, args: ['pw', '1'] }],
   },
 ]
 
@@ -77,7 +77,7 @@ export const group: Group = {
   cases,
   single: {
     'pdf-password:cancel':
-      'takes no arguments; its effects are the settled prompt and the closed window',
+      'takes the prompt generation; its effects are the settled prompt and the closed window',
   },
   triggers,
 }

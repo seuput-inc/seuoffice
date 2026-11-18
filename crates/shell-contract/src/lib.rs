@@ -15,15 +15,16 @@ pub mod error;
 pub mod hosts;
 pub mod ids;
 pub mod ipc;
+pub mod pdf_sign_options;
 pub mod provided;
 pub mod runtime;
 pub mod slides;
 pub mod value;
 
-pub use channels::{Batch, CHANNELS, ChannelSpec, PRELOADS, PreloadSpec, Surface};
+pub use channels::{Batch, CHANNELS, ChannelNamespace, ChannelSpec, PRELOADS, PreloadSpec, Surface};
 pub use editors::{DocumentEditors, SaveMode, editor_for};
 pub use error::IpcError;
-pub use hosts::{ClipboardHost, ContentsHost, DialogsHost, Hosts, MainWindowHost, OsShellHost};
+pub use hosts::{ClipboardHost, ContentsHost, DialogsHost, Hosts, MainWindowHost, OsShellHost, OwnedEffectsHost};
 pub use ids::{DocumentHandle, RequestId, ViewId, WindowId};
 pub use provided::Provided;
 pub use value::{BytesKind, IpcValue};

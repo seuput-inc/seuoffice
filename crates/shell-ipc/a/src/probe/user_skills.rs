@@ -483,12 +483,13 @@ impl TemplateCopyTabs for FakeTabs {
             .map(str::to_owned)
     }
 
-    fn open_files(&self) -> Result<Vec<OpenFileState>, OpenFilesSourceFailed> {
+    fn open_files(&self, done: Box<dyn FnOnce(Result<Vec<OpenFileState>, OpenFilesSourceFailed>)>) {
         push(&self.log, json!(["fileHasUnsavedChanges"]));
         if self.case["openFiles"].as_str() == Some("fail") {
-            return Err(OpenFilesSourceFailed);
+            done(Err(OpenFilesSourceFailed));
+            return;
         }
-        Ok(self.case["openFiles"]
+        done(Ok(self.case["openFiles"]
             .as_array()
             .map(|list| {
                 list.iter()
@@ -498,7 +499,7 @@ impl TemplateCopyTabs for FakeTabs {
                     })
                     .collect()
             })
-            .unwrap_or_default())
+            .unwrap_or_default()))
     }
 
     fn focus_tab(&self, tab_id: &str) -> bool {

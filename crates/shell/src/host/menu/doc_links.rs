@@ -21,6 +21,8 @@
 //! may call back in.
 
 use std::cell::RefCell;
+mod saved;
+pub(crate) use saved::SavedLinks;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -41,18 +43,20 @@ use main_core::shell::tab_manager::TabKind;
 use shell_contract::ids::{ViewId, WindowId};
 use shell_contract::runtime::{PathName, Services};
 use shell_ipc_m::{MenuDict, current_lang, menu_label};
+use shell_ipc_a::generate::host::GenerateAuthority;
 
 use super::super::shell_tabs::{ShellTabs, shell_tabs};
 use super::super::w::post_core;
 use super::super::window::Windows;
 
 /// What A's host hands over: the make window's opener
-pub(crate) type OpenMakeWindow = Box<dyn Fn(GenerateWindowRequest<WindowId>)>;
+pub(crate) type OpenMakeWindow = Box<dyn Fn(GenerateWindowRequest<WindowId>, GenerateAuthority)>;
 
 type Links = DocumentLinksShell<Host, FileLinksDeps<'static>>;
 
 thread_local! {
     static LINKS: RefCell<Option<Links>> = const { RefCell::new(None) };
+    static LINKS_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// what A attached, until the post that configures the records takes it
     static ATTACHED: RefCell<Option<(Rc<RefCell<HandoffStore>>, OpenMakeWindow)>> =
         const { RefCell::new(None) };
@@ -131,6 +135,7 @@ fn configure(
         },
     );
     LINKS.with(|l| *l.borrow_mut() = Some(links));
+    LINKS_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
     run_deferred();
 }
 
@@ -203,8 +208,15 @@ pub(crate) fn document_link_paths() -> Vec<String> {
 
 /// `makeFromDocument(wc)`
 #[allow(dead_code)] // called by D1's mind map host
-pub(crate) fn make_from_document(view: ViewId) {
-    with_links(|links| links.make_from_document(&Contents(view)));
+pub(crate) fn make_from_document(view: ViewId, authority: GenerateAuthority) {
+    if let Err(error) = authority.check_cancelled() {
+        eprintln!("[generate] document command refused: {error}");
+        return;
+    }
+    with_links(|links| links.make_from_document_with(&Contents(view), move |host, request| {
+        let open = host.open.clone();
+        defer(move || open(request, authority));
+    }));
 }
 
 /// `once('destroyed')` of a view the records hold
@@ -217,6 +229,51 @@ pub(crate) fn document_view_destroyed(view: ViewId) {
 }
 
 // ---- the File menus ----
+/// Refresh the active File menu after the tab strip changes.
+pub(crate) fn refresh_document_link_menu() {
+    with_links(|links| links.refresh_document_link_menu());
+}
+
+pub(crate) fn refresh_saved_menu(
+    menu:Option<super::SavedMenu>,done:Box<dyn FnOnce(Result<(),String>)>,
+) {
+    let kind = LINKS.with(|slot| slot.borrow_mut().as_mut().and_then(|links| links.saved_menu_kind()));
+    match (menu,kind) {
+        (Some(menu),Some(kind)) => menu.refresh(kind,done),
+        _ => done(Ok(())),
+    }
+}
+
+pub(crate) fn refresh_recovery_saved_menu(
+    menu: Option<super::RecoverySavedMenu>, done: Box<dyn FnOnce(Result<(), String>)>,
+) {
+    let kind = LINKS.with(|slot| slot.borrow_mut().as_mut().and_then(|links| links.saved_menu_kind()));
+    match (menu, kind) {
+        (Some(menu), Some(kind)) => menu.refresh(kind, done),
+        _ => done(Ok(())),
+    }
+}
+pub(crate) fn refresh_existing_document_saved_menu(
+    menu:Option<super::ExistingDocumentSavedMenu>,done:Box<dyn FnOnce(Result<(),String>)>,
+) {
+    let kind=LINKS.with(|slot|slot.borrow_mut().as_mut().and_then(|links|links.saved_menu_kind()));
+    match (menu,kind) {
+        (Some(menu),Some(kind))=>menu.refresh(kind,done),
+        _=>done(Ok(())),
+    }
+}
+
+pub(crate) fn refresh_saved_document_menu(
+    menu: Option<super::SavedDocumentMenu>, done: Box<dyn FnOnce(Result<(), String>)>,
+) {
+    let kind = LINKS.with(|slot| slot.borrow_mut().as_mut().and_then(|links| links.saved_menu_kind()));
+    match (menu, kind) {
+        (Some(menu), Some(kind)) => menu.refresh(kind, done),
+        _ => done(Ok(())),
+    }
+}
+
+
 
 /// `documentLinkFileMenuItems(kind)`: the entries and the view their clicks
 /// act on; nothing before A attached or without a document of that kind
@@ -229,8 +286,15 @@ pub(super) fn file_menu(kind: TabKind) -> Option<(Vec<MenuItem>, ViewId)> {
 }
 
 /// A click on one of those entries
-pub(super) fn run_click(click: &MenuClick, view: ViewId) {
-    with_links(|links| links.run_menu_click(click, &Contents(view)));
+pub(super) fn run_click(click: &MenuClick, view: ViewId, authority: Option<GenerateAuthority>) {
+    if matches!(click, MenuClick::Make) {
+        match authority {
+            Some(authority) => make_from_document(view, authority),
+            None => eprintln!("[generate] document menu has no captured native authority"),
+        }
+    } else {
+        with_links(|links| links.run_menu_click(click, &Contents(view)));
+    }
 }
 
 // ---- the host ----
@@ -328,8 +392,8 @@ impl DocumentLinksShellHost for Host {
     }
 
     fn open_generate_window_for_document(&mut self, request: GenerateWindowRequest<WindowId>) {
-        let open = self.open.clone();
-        defer(move || open(request));
+        let _ = request;
+        eprintln!("[generate] uncaptured document entry refused");
     }
 
     fn path_exists(&mut self, path: &str) -> bool {

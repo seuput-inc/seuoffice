@@ -30,6 +30,96 @@ use serde_json::Value;
 use shell_contract::editors::Then;
 use shell_contract::ids::{ViewId, WindowId};
 
+pub trait NativeBrowserCloseProducer: Send + Sync {
+    fn watch(&self, done: Box<dyn FnOnce(shell_contract::ipc::NativeClosureReceipt) + Send>) -> Result<(), String>;
+    fn dispatch_close(
+        &self, permit: shell_contract::ipc::NativeBrowserClosePermit,
+    ) -> Result<shell_contract::ipc::NativeBrowserClosePermit, (String, shell_contract::ipc::NativeBrowserClosePermit)>;
+}
+
+#[derive(Clone)]
+pub enum NativeBrowserRegistration {
+    Unregistered,
+    Registered(shell_contract::ipc::NativeRequestOwner),
+}
+
+#[derive(Clone)]
+pub struct NativeBrowserBinding {
+    pub reservation: shell_contract::ipc::NativeClosureReservation,
+    pub owner: shell_contract::ipc::NativeBrowserOwner,
+    pub producer: std::sync::Arc<dyn NativeBrowserCloseProducer>,
+    pub closure: main_core::shell::tab_manager::ViewClosureWatch<shell_contract::ipc::NativeBrowserRetirement>,
+    pub registration: NativeBrowserRegistration,
+}
+
+pub trait SpareActor {
+    fn prepare_close(&self) -> Result<Box<dyn SpareClosePlan + '_>, String>;
+    fn prepare_transfer(&self) -> Result<Box<dyn SpareTransferPlan>, String>;
+    fn prepare_saved_barrier(&self, target: &shell_contract::ipc::NativeSavedTarget) -> Result<Box<dyn SpareSavedBarrier>, String>;
+}
+
+pub trait SpareClosePlan {
+    fn with_validated(&mut self, transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
+        next: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>;
+}
+
+pub trait SpareTransferPlan {
+    fn successor(&self) -> std::rc::Rc<dyn SpareActor>;
+    fn successor_receipt(&self) -> std::rc::Rc<dyn EditorSeedRollback>;
+    fn with_validated(&mut self, transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
+        successor: &shell_contract::ipc::NativeBrowserOwner,
+        next: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>;
+}
+pub trait SpareSavedBarrier {
+    fn with_validated(&mut self, transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
+        next: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>;
+}
+pub trait SpareSeedPlan {
+    fn with_validated(&mut self, transition: &shell_contract::ipc::NativeBrowserTransition<'_>,
+        successor: &shell_contract::ipc::NativeBrowserOwner,
+        next: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>;
+    fn after_commit(&mut self, cancel: &shell_contract::runtime::CancelToken) -> Result<(), String>;
+}
+
+
+pub type SpareActorSlot = std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<dyn SpareActor>>>>;
+
+#[derive(Clone)]
+pub struct RetainedSpareBinding {
+    pub browser: NativeBrowserBinding,
+    pub rollback: EditorSeedRollbackStore,
+    pub spare_actor: Option<std::rc::Rc<dyn SpareActor>>,
+    identity: std::rc::Rc<()>,
+}
+
+impl RetainedSpareBinding {
+    pub fn new(browser: NativeBrowserBinding, rollback: EditorSeedRollbackStore, spare_actor: Option<std::rc::Rc<dyn SpareActor>>) -> Self {
+        Self { browser, rollback, spare_actor, identity: std::rc::Rc::new(()) }
+    }
+}
+
+impl PartialEq for RetainedSpareBinding {
+    fn eq(&self, other: &Self) -> bool { std::rc::Rc::ptr_eq(&self.identity, &other.identity) }
+}
+
+impl std::fmt::Debug for RetainedSpareBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RetainedSpareBinding([redacted])")
+    }
+}
+pub type ViewCreationResult<V> = main_core::shell::tab_manager::ViewCreationResult<V, shell_contract::ipc::NativeBrowserRetirement, NativeBrowserBinding>;
+pub type ViewCreationReady<V> = main_core::shell::tab_manager::ViewCreationReady<V, shell_contract::ipc::NativeBrowserRetirement, NativeBrowserBinding>;
+pub type ViewCreationFailure = main_core::shell::tab_manager::ViewCreationFailure<shell_contract::ipc::NativeBrowserRetirement>;
+pub type ViewCreationCleanup = main_core::shell::tab_manager::ViewCreationCleanup<shell_contract::ipc::NativeBrowserRetirement>;
+pub type ViewCreationCleanupState = main_core::shell::tab_manager::ViewCreationCleanupState<shell_contract::ipc::NativeBrowserRetirement>;
+pub struct ViewClosureBinding {
+    pub reservation: shell_contract::ipc::NativeClosureReservation,
+    pub owner: shell_contract::ipc::NativeBrowserOwner,
+    pub producer: std::sync::Arc<dyn NativeBrowserCloseProducer>,
+    pub closure: main_core::shell::tab_manager::ViewClosureWatch<shell_contract::ipc::NativeBrowserRetirement>,
+    pub registration: NativeBrowserRegistration,
+}
+
 /// `BrowserWindow`'s state as the tab code reads it, taken in one call
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowState {
@@ -127,6 +217,78 @@ pub trait HostEvents: Send + Sync {
     fn send(&self, event: HostEvent);
 }
 
+pub trait EditorSeedRollback {
+    fn retire_closed(&self, receipt: shell_contract::ipc::NativeClosureReceipt, done: Box<dyn FnOnce(Result<(), String>)>);
+    fn retire_adopted(&self, receipt: shell_contract::ipc::NativeClosureReceipt, done: Box<dyn FnOnce(Result<(), String>)>);
+    fn retire_superseded(&self, proof: shell_contract::ipc::NativeBrowserSuperseded, done: Box<dyn FnOnce(Result<(), String>)>);
+    fn rollback(&self, done: Box<dyn FnOnce(Result<(), String>)>);
+}
+
+pub type EditorSeedRollbackStore = std::rc::Rc<std::cell::RefCell<Vec<std::rc::Rc<dyn EditorSeedRollback>>>>;
+
+pub struct SavedViewLoaded {
+    pub document: shell_contract::ipc::NativeSavedDocument,
+    pub outcome: shell_contract::editors::SavedDocumentLoadOutcome,
+}
+
+/// Validate the manager, then commit it inside the validated actor transition.
+/// Both publications occur in the same saved/browser admission.
+pub type SavedManagerAdoption = Box<dyn FnOnce(
+    &shell_contract::ipc::NativeSavedTarget, &shell_contract::ipc::NativeBrowserTransition<'_>,
+    &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+) -> Result<(), String>>;
+
+pub type SavedManagerRegistration = Box<dyn FnOnce(
+    &shell_contract::ipc::NativeSavedTarget, &shell_contract::ipc::NativeRequestOwner,
+    &shell_contract::ipc::NativeBrowserTransition<'_>, &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String>>;
+
+pub struct PreparedSavedView {
+    pub target: shell_contract::ipc::NativeSavedTarget,
+    pub binding: NativeBrowserBinding,
+    pub start: Box<dyn FnOnce(SavedManagerAdoption, SavedManagerRegistration, Box<dyn FnOnce(ViewCreationResult<SavedViewLoaded>)>)>,
+}
+
+/// Native shell window and lifecycle captured before Drive or file I/O.
+pub trait CapturedSavedShell {
+    fn prepare_fresh(
+        &self, spec: &ViewSpec<'_>, input: shell_contract::ipc::NativeSavedInput,
+        path: shell_contract::ipc::NativeSavedPath, participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>, rollback: EditorSeedRollbackStore,
+    ) -> TabResult<PreparedSavedView>;
+}
+
+pub enum GeneratedRetryChoice { Retry, Cancel }
+
+/// A modal parent and request authority captured before the Drive transaction.
+pub trait CapturedGeneratedRetryPrompt {
+    fn show(&self, error: String, done: Box<dyn FnOnce(Result<GeneratedRetryChoice, String>)>);
+}
+
+pub type EditorInitializer = Box<dyn FnOnce(ViewId, &shell_contract::runtime::RendererGeneration, &shell_contract::ipc::NativeClosureReservation, &shell_contract::ipc::NativeBrowserOwner) -> TabResult<()>>;
+pub type GeneratedPrecloseBarrier = std::sync::Arc<dyn Fn(Box<dyn FnOnce(Result<(), String>) + Send>) + Send + Sync>;
+pub type GeneratedPrecloseRetry = std::sync::Arc<dyn Fn() + Send + Sync>;
+pub type GeneratedPrecloseFailure = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+pub type GeneratedPrecloseInstaller = Box<dyn FnOnce(GeneratedPrecloseBarrier, GeneratedPrecloseFailure) -> Result<GeneratedPrecloseRetry, String>>;
+pub type GeneratedManagerAdoption = Box<dyn FnOnce(
+    &shell_contract::ipc::NativeBrowserTransition<'_>, &shell_contract::ipc::NativeBrowserOwner,
+    &mut dyn FnMut(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+) -> Result<(), String>>;
+pub type GeneratedManagerRegistration = Box<dyn FnOnce(
+    &shell_contract::ipc::NativeRequestOwner, &shell_contract::ipc::NativeBrowserTransition<'_>,
+    &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String>>;
+
+pub struct PreparedGeneratedView {
+    pub view: ViewId,
+    pub created: shell_contract::runtime::RendererGeneration,
+    pub binding: NativeBrowserBinding,
+    pub spare_actor: Option<std::rc::Rc<dyn SpareActor>>,
+    pub installer: GeneratedPrecloseInstaller,
+    pub start: Box<dyn FnOnce(GeneratedManagerAdoption, GeneratedManagerRegistration, ViewCreationCleanup, Box<dyn FnOnce(ViewCreationResult<GeneratedViewCommit>)>)>,
+}
+
 /// One entry of a native popup menu
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuEntry {
@@ -168,14 +330,14 @@ pub trait WindowsHost: Send + Sync {
     fn window_state(&self, window: WindowId) -> WindowState;
     /// `new BrowserWindow(options)` of a detached editor; the host reports
     /// the window's events for it from then on
-    fn create_window(&self, options: &WindowOptions) -> WindowId;
+    fn create_window(&self, options: &WindowOptions) -> super::window_snapshot::WindowReservation;
     fn window_restore(&self, window: WindowId);
     fn window_show(&self, window: WindowId);
     fn window_show_inactive(&self, window: WindowId);
     fn window_focus(&self, window: WindowId);
     /// `win.destroy()`: no `close` event; `Closed` follows
     fn window_destroy(&self, window: WindowId);
-    fn window_set_title(&self, window: WindowId, title: &str);
+    fn window_set_title(&self, window: &super::window_snapshot::WindowReservation, title: &str);
     fn window_set_position(&self, window: WindowId, x: f64, y: f64);
     /// `win.setBounds(frame)`, after `unmaximize()` when the window is maximized
     /// and `setFullScreen(false)` when it is full screen
@@ -202,7 +364,13 @@ pub trait WindowsHost: Send + Sync {
     /// The manual's view before its page loads: sandboxed, `backgroundThrottling`
     /// off, window-open denied except allowlisted external links
     /// (`help_window_open` of main-core)
-    fn create_help_view(&self) -> ViewId;
+    fn create_help_view(&self, done: Box<dyn FnOnce(ViewCreationResult<ViewId>)>);
+    fn create_help_native_command(
+        &self, operation: shell_contract::ipc::NativeInvocationOperation,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
+    );
 
     // ---- the screen ----
     fn cursor_point(&self) -> (f64, f64);
@@ -237,19 +405,240 @@ pub struct TabsChanged {
     pub tabs: Vec<main_core::shell::tab_manager::TabSummary>,
 }
 
+
+/// Native construction, initial payload transfer and load all completed for this exact epoch.
+pub struct GeneratedViewCommit {
+    target: shell_contract::ipc::NativeRequestOwner,
+    created: shell_contract::runtime::RendererGeneration,
+}
+
+impl GeneratedViewCommit {
+    pub fn loaded(target: shell_contract::ipc::NativeRequestOwner, created: shell_contract::runtime::RendererGeneration) -> TabResult<Self> {
+        if !target.context.renderer().is_some_and(|renderer| renderer.same_generation(&created))
+            || !created.is_active() || target.loss_token().is_none_or(|loss| loss.is_cancelled()) {
+            return Err(main_core::shell::tab_manager::TabError("The loaded generated document has no matching native owner".into()));
+        }
+        Ok(Self { target, created })
+    }
+    pub fn view(&self) -> ViewId { self.target.view }
+    pub fn into_target(self) -> shell_contract::ipc::NativeRequestOwner { self.target }
+    pub fn created(&self) -> &shell_contract::runtime::RendererGeneration { &self.created }
+}
 /// The application half, on the core thread. Each method is one call of the
 /// TypeScript into an editor module, a callback `createShellWindow` gave the
 /// tab manager, or a function of the shell's entry module.
 pub trait TabHooks {
+    fn cleanup_lifetime(&self) -> shell_contract::runtime::CancelToken;
+    fn register_generated_path_task(
+        &self, task: std::sync::Arc<dyn shell_contract::hosts::GeneratedPathPending>,
+    ) -> Result<Box<dyn shell_contract::hosts::GeneratedCleanupRegistration>, String>;
+    fn capture_generated_retry_prompt(
+        &self, shell: ShellWindow, owner: shell_contract::ipc::NativeRequestOwner,
+        output: shell_contract::ipc::SavedPublication,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+    ) -> Result<std::rc::Rc<dyn CapturedGeneratedRetryPrompt>, String>;
+    fn capture_saved_shell(&self, shell: ShellWindow, owner: shell_contract::ipc::NativeRequestOwner)
+        -> Result<std::rc::Rc<dyn CapturedSavedShell>, String>;
     // ---- the editor modules ----
     /// the `create*View` call of `spec` (`createDocsView(path)`, ...)
-    fn create_view(&self, spec: &ViewSpec<'_>) -> TabResult<ViewId>;
+    fn create_view(&self, spec: &ViewSpec<'_>, done: Box<dyn FnOnce(ViewCreationResult<ViewId>)>);
+    fn create_spare_view_owned(
+        &self, startup: shell_contract::ipc::NativeInvocationOperation,
+        shell: shell_contract::ipc::NativeRequestOwner, cleanup: shell_contract::runtime::CancelToken,
+        rollback: EditorSeedRollbackStore, spare_actor: SpareActorSlot,
+        done: Box<dyn FnOnce(ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
+    );
+    fn prepare_view_native_command(
+        &self, spec: &ViewSpec<'_>, operation: shell_contract::ipc::NativeInvocationOperation,
+        rollback: EditorSeedRollbackStore,
+        initialize: EditorInitializer,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+    ) -> TabResult<(shell_contract::runtime::RendererGeneration, Box<dyn FnOnce(
+        Box<dyn FnOnce(ViewCreationResult<shell_contract::ipc::NativeInvocationDocument>)>,
+    )>)>;
+    fn prepare_activation_ui(
+        &self, shell: ShellWindow, shell_owner: &shell_contract::ipc::NativeRequestOwner, target: Option<ViewId>,
+        effects: &[main_core::shell::tab_manager::TabActivationEffect<ViewId, RetainedSpareBinding>],
+    ) -> Result<super::activation::PreparedTabUiBatch, String>;
+    fn prepare_activation_publication_owned(
+        &self, authority: super::activation::TabActivationAuthority, shell: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, effects: shell_contract::hosts::OwnedEffectsHost,
+        snapshot: super::activation::TabActivationPublicationSnapshot,
+    ) -> Result<super::activation::PreparedTabActivationPublication, String>;
+    fn prepare_docs_disposal_owned(
+        &self, view: ViewId, origin: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner, participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        target: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+    ) -> Result<std::rc::Rc<dyn super::activation::DocsDisposalOperation>, String>;
+    /// Prepare core editor registration; the owned continuation admits and constructs on UI.
+    fn prepare_view_owned(
+        &self, spec: &ViewSpec<'_>,
+        rollback: EditorSeedRollbackStore,
+        initialize: EditorInitializer,
+    ) -> TabResult<(shell_contract::runtime::RendererGeneration, Box<dyn FnOnce(
+        shell_contract::ipc::NativeRequestOwner,
+        shell_contract::runtime::CancelToken,
+        shell_contract::runtime::CancelToken,
+        Box<dyn FnOnce(ViewCreationResult<shell_contract::ipc::NativeRequestOwner>)>,
+    )>)>;
+    fn prepare_generated_view_owned(
+        &self, spec: &ViewSpec<'_>, source: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        seed: Option<main_core::shell::tab_manager::EditorSeed>,
+        placement: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
+        rollback: EditorSeedRollbackStore,
+    ) -> TabResult<PreparedGeneratedView>;
+    fn prepare_initialized_spare_owned(
+        &self, view: ViewId, expected: &shell_contract::runtime::RendererGeneration,
+        binding: RetainedSpareBinding, source: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        seed: Option<main_core::shell::tab_manager::EditorSeed>,
+        placement: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
+        rollback: EditorSeedRollbackStore,
+    ) -> TabResult<PreparedGeneratedView>;
+    fn commit_generated_seed_owned(
+        &self, view: ViewId, seed: Option<main_core::shell::tab_manager::EditorSeed>,
+        placement: Option<Option<main_core::shell::projects::new_documents::NewDocumentPlacement>>,
+        source: &shell_contract::ipc::NativeRequestOwner, participants: &[shell_contract::ipc::NativeRequestOwner],
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+        created: &shell_contract::runtime::RendererGeneration,
+        reservation: &shell_contract::ipc::NativeClosureReservation, owner: &shell_contract::ipc::NativeBrowserOwner,
+        rollback: &EditorSeedRollbackStore,
+    ) -> TabResult<()>;
+    fn prepare_spare_editor_seed(
+        &self, view: ViewId, seed: Option<main_core::shell::tab_manager::EditorSeed>,
+        docs_open_path: Option<String>, workbook: Option<String>, new_blank: bool,
+        target: &shell_contract::ipc::NativeRequestOwner, binding: &RetainedSpareBinding,
+        rollback: &EditorSeedRollbackStore,
+    ) -> TabResult<Box<dyn SpareSeedPlan>>;
+    fn commit_editor_seed_owned(
+        &self, view: ViewId, seed: Option<main_core::shell::tab_manager::EditorSeed>,
+        docs_open_path: Option<String>, workbook: Option<String>, reused_target: Option<&shell_contract::ipc::NativeRequestOwner>,
+        source: &shell_contract::ipc::NativeRequestOwner,
+        rollback: &EditorSeedRollbackStore,
+        created: &shell_contract::runtime::RendererGeneration,
+        reservation: &shell_contract::ipc::NativeClosureReservation, owner: &shell_contract::ipc::NativeBrowserOwner,
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+    ) -> TabResult<()>;
+    fn commit_native_editor_seed(
+        &self, operation: &shell_contract::ipc::NativeInvocationOperation, expected: &shell_contract::ipc::NativeEditorCommand,
+        view: ViewId, seed: Option<main_core::shell::tab_manager::EditorSeed>,
+        docs_open_path: Option<String>, workbook: Option<String>, reused_target: Option<&shell_contract::ipc::NativeRequestOwner>,
+        rollback: &EditorSeedRollbackStore,
+        created: &shell_contract::runtime::RendererGeneration,
+        reservation: &shell_contract::ipc::NativeClosureReservation, owner: &shell_contract::ipc::NativeBrowserOwner,
+        cancel: &shell_contract::runtime::CancelToken, pending: &shell_contract::runtime::CancelToken,
+    ) -> TabResult<()>;
+    fn rollback_generated_seed_owned(&self, view: ViewId, expected: &shell_contract::runtime::RendererGeneration);
+    fn reveal_written_export_owned(
+        &self, path: std::path::PathBuf,
+        origin: shell_contract::ipc::NativeRequestOwner, destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<(),String>)>,
+    );
+    fn reveal_written_export_existing_document(
+        &self, selection: shell_contract::ipc::NativeSaveDestination,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    );
+    fn reveal_written_publication(
+        &self, output: shell_contract::ipc::SavedPublication,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    );
+    fn open_opener_owned(
+        &self, opener: &Opener, context: &UnloadedTabOpenContext,
+        source: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<super::activation::OwnedLoadedTabView,String>)>,
+    );
+    fn open_opener_startup(
+        &self, opener: &Opener, context: &UnloadedTabOpenContext,
+        constraint: super::activation::StartupRecoveryConstraint,
+        done: Box<dyn FnOnce(Result<super::activation::OwnedLoadedTabView, String>)>,
+    );
+    fn open_opener_native_command(
+        &self, opener: &Opener, context: &UnloadedTabOpenContext,
+        command: shell_contract::ipc::NativeInvocationOperation,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<super::activation::OwnedLoadedTabView, String>)>,
+    );
+    fn opener_needs_user_owned(
+        &self,opener:&Opener,context:&UnloadedTabOpenContext,
+        source:shell_contract::ipc::NativeRequestOwner,cancel:shell_contract::runtime::CancelToken,
+        pending:shell_contract::runtime::CancelToken,done:Box<dyn FnOnce(Result<bool,String>)>,
+    );
+    fn reveal_view_owned(
+        &self,
+        view: ViewId,
+        expected: &shell_contract::runtime::RendererGeneration,
+        owner: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        then: Box<dyn FnOnce(TabResult<()>)>,
+    );
+    fn reveal_captured_many(
+        &self, authority: super::activation::TabActivationAuthority,
+        target: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        done: super::activation::TabUiDone,
+    );
+    fn adopt_recovery_view_owned(
+        &self, shell: ShellWindow, authority: super::activation::TabActivationAuthority,
+        target: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        done: super::activation::TabUiDone,
+    );
+    /// Resolve Drive refresh without opening a tab or replacing the captured owner.
+    fn prepare_reopen_owned(
+        &self,
+        path: String,
+        owner: shell_contract::ipc::NativeRequestOwner,
+        destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken,
+        then: Box<dyn FnOnce(Result<(String, Option<String>, shell_contract::ipc::NativeRequestOwner, shell_contract::runtime::CancelToken), String>)>,
+    );
+    fn prepare_reopen_existing_document(
+        &self, output: shell_contract::ipc::SavedPublication,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>,
+        then: Box<dyn FnOnce(Result<shell_contract::ipc::NativeDriveReopen, String>)>,
+    );
+    /// Read the exact committed file object on a worker, not by its display path.
+    fn read_saved_input(
+        &self, output: shell_contract::ipc::SavedPublication, path: shell_contract::ipc::NativeSavedPath,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, cancel: shell_contract::runtime::CancelToken,
+        pending: shell_contract::runtime::CancelToken, additional: Vec<shell_contract::runtime::CancelToken>,
+        then: Box<dyn FnOnce(Result<shell_contract::ipc::NativeSavedInput, String>)>,
+    );
     fn sheets_pending_edit_count(&self, wc_id: i64) -> f64;
     /// `pdfIsDirty`, `markdownIsDirty`, ... by `kind`
-    fn family_is_dirty(&self, kind: TabKind, wc_id: i64) -> bool;
+    fn family_is_dirty(&self, kind: TabKind, wc_id: i64) -> TabResult<bool>;
     fn hwp_memo_modal_open(&self, wc_id: i64) -> bool;
     /// `docsQueryDirty(contents)`: asks the docs renderer; answers in `then`
     fn docs_query_dirty(&self, view: ViewId, then: Then<bool>);
+    fn docs_query_dirty_owned(&self, view: ViewId, owner: shell_contract::ipc::NativeRequestOwner, cancel: shell_contract::runtime::CancelToken, then: Then<bool>);
+    fn docs_query_dirty_captured_many(&self, view: ViewId, origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, then: Then<bool>);
+    fn docs_request_close_captured_many(&self, view: ViewId, parent: Option<WindowId>, origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>, destination: shell_contract::ipc::NativeRequestOwner,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken, then: Then<bool>);
+    fn with_request_owner(&self, owner: &shell_contract::ipc::NativeRequestOwner, cancel: &shell_contract::runtime::CancelToken, effect: &mut dyn FnMut() -> Result<(), shell_contract::IpcError>) -> Result<(), shell_contract::IpcError>;
     fn set_active_docs_resolver(&self, view: Option<ViewId>, null_if_destroyed: bool);
     fn set_active_sheets_web_contents(&self, view: Option<ViewId>);
     fn set_active_slides_web_contents(&self, view: ViewId);
@@ -258,7 +647,7 @@ pub trait TabHooks {
     fn teardown_docs_renderer(&self, view: ViewId);
     fn release_closed_renderer(&self, view: ViewId);
     fn mark_docs_new_blank(&self, wc_id: i64);
-    fn queue_docs_ai_content(&self, wc_id: i64, content: &Value);
+    fn queue_docs_ai_content(&self, wc_id: i64, content: &Value) -> TabResult<()>;
     fn queue_docs_copy(&self, wc_id: i64, path: &str, name: &str);
     fn set_sheets_new_blank(&self);
     fn queue_workbook_for_view(&self, view: ViewId, path: &str);
@@ -282,6 +671,11 @@ pub trait TabHooks {
         opener: &Opener,
         context: &UnloadedTabOpenContext,
     ) -> Result<LoadedTabView<ViewId>, String>;
+    fn opener_needs_user(
+        &self,
+        opener: &Opener,
+        context: &UnloadedTabOpenContext,
+    ) -> Result<bool, String>;
     /// the Sheets close guard re-arms after a vetoed close
     fn reset_sheets_shutting_down(&self);
     fn cancel_update_restart(&self);
@@ -308,6 +702,28 @@ pub trait TabHooks {
     /// documents, refresh the document link menu, push the HWP recovery
     /// titles, note the live session
     fn tabs_changed(&self, changed: &TabsChanged);
+    fn prepare_saved_publication_owned(
+        &self,origin:shell_contract::ipc::NativeRequestOwner,destination:shell_contract::ipc::NativeRequestOwner,
+        participants:Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,
+        effects:shell_contract::hosts::OwnedEffectsHost,
+    )->Result<super::owned_saved::SavedPublication,String>;
+    fn prepare_saved_publication_recovery(
+        &self,receipt:shell_contract::ipc::RecoverySeedReceipt,receiver:shell_contract::ipc::NativeRequestOwner,
+        cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,
+        effects:shell_contract::hosts::OwnedEffectsHost,
+    )->Result<super::owned_saved::SavedPublication,String>;
+    fn prepare_saved_publication_existing_document(
+        &self,destination:shell_contract::ipc::NativeSaveDestination,
+        participants:Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel:shell_contract::runtime::CancelToken,pending:shell_contract::runtime::CancelToken,additional:Vec<shell_contract::runtime::CancelToken>,
+        effects:shell_contract::hosts::OwnedEffectsHost,
+    )->Result<super::owned_saved::SavedPublication,String>;
+    fn prepare_saved_publication_saved_document(
+        &self, document: shell_contract::ipc::NativeSavedDocument, participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        additional: Vec<shell_contract::runtime::CancelToken>, effects: shell_contract::hosts::OwnedEffectsHost,
+    ) -> Result<super::owned_saved::SavedPublication, String>;
     /// `handleSplitChanged`'s `noteLiveSession()`
     fn split_changed(&self, state: Option<&SplitViewState>);
     /// `setDetachedChangedListener`'s callback
@@ -319,7 +735,7 @@ pub trait TabHooks {
     /// Each entry's `id` is what [`TabHooks::app_menu_activate`] takes.
     fn app_menu_popup(&self) -> Option<Vec<MenuEntry>>;
     /// A click on one of those entries: runs the menu item's own `click`
-    fn app_menu_activate(&self, id: u32);
+    fn app_menu_activate(&self, id: u32, cx: shell_contract::ipc::CallContext);
     /// `visibleHomeKinds(readHomeKinds())` without `pdfTools`: `docx`, `xlsx`,
     /// `pptx`, `md`, `html`, `xmind`, `drawio`, `hwp`, `pdf`, in home's order
     fn visible_home_kinds(&self) -> Vec<String>;
@@ -328,19 +744,50 @@ pub trait TabHooks {
     /// `driveService?.reopen(path)`: `true` when Drive took the reopen
     fn drive_reopen(&self, path: &str) -> bool;
     fn record_recent_file(&self, path: &str);
+    fn record_recent_file_native(
+        &self,
+        path: String,
+        operation: shell_contract::ipc::NativeInvocationOperation,
+        expected: shell_contract::ipc::NativeEditorCommand,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    );
     /// `notifyUnsupportedFile(path)`
     fn notify_unsupported_file(&self, path: &str);
+    fn notify_unsupported_file_native(
+        &self, path: String, operation: shell_contract::ipc::NativeInvocationOperation,
+        expected: shell_contract::ipc::NativeEditorCommand, done: Box<dyn FnOnce(Result<(), String>)>,
+    );
     /// `showAppWarning(message, detail?)`
     fn show_app_warning(&self, message: &str, detail: Option<&str>);
+    fn show_app_warning_owned(
+        &self, message: String, detail: Option<String>, origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    );
+    fn show_app_warning_native(
+        &self, message: String, detail: Option<String>, operation: shell_contract::ipc::NativeInvocationOperation,
+        expected: shell_contract::ipc::NativeEditorCommand, done: Box<dyn FnOnce(Result<(), String>)>,
+    );
     /// `openDiagramChecked`'s refusal check of a diagram file; `Some(message)`
     /// refuses it with this warning, `None` lets it open
-    fn diagram_open_refusal(&self, path: &str) -> Option<String>;
+    fn diagram_open_refusal(&self, path: &str, then: Box<dyn FnOnce(Option<String>)>);
+    fn diagram_open_refusal_owned(
+        &self, path: String, origin: shell_contract::ipc::NativeRequestOwner,
+        participants: Vec<shell_contract::ipc::NativeRequestOwner>,
+        cancel: shell_contract::runtime::CancelToken, pending: shell_contract::runtime::CancelToken,
+        done: Box<dyn FnOnce(Result<Option<String>, String>)>,
+    );
+    fn diagram_open_refusal_native(
+        &self, path: String, operation: shell_contract::ipc::NativeInvocationOperation,
+        expected: shell_contract::ipc::NativeEditorCommand, done: Box<dyn FnOnce(Result<Option<String>, String>)>,
+    );
     /// `startQueuedWorkbookNudge()`
     fn start_queued_workbook_nudge(&self);
     /// `defaultSaveDir()`
     fn default_save_dir(&self) -> String;
     /// `blankXlsxBuffer()`
-    fn blank_xlsx(&self) -> Vec<u8>;
+    fn blank_xlsx(&self) -> Result<Vec<u8>, String>;
     /// `blankPdfBuffer()`
     fn blank_pdf(&self) -> Vec<u8>;
     /// `uniquePathIn(dir, name)`
@@ -357,7 +804,7 @@ pub trait TabHooks {
     fn open_agent_window(&self);
     /// What a dropped skill file is (`droppedSkillSourceOf`) and the import
     /// that follows: `true` when `path` was taken as a skill source
-    fn drop_skill_file(&self, path: &str) -> bool;
+    fn drop_skill_file(&self, path: &str, then: Box<dyn FnOnce(bool)>);
     /// the notice of a dropped zip or `SKILL.md` that held no skill
     fn drop_no_skills_found(&self);
     /// `isInsideRoot(root, path)` of the folder tree

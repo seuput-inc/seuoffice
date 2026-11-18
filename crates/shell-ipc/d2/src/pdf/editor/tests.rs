@@ -41,6 +41,107 @@ pub(super) fn rt_with(case: Value) -> (Rt, Arc<FakeShell>) {
     (rt, fake_shell)
 }
 
+#[test]
+fn generate_image_snapshots_status_before_worker_dispatch() {
+    use shell_contract::runtime::Workers;
+
+    #[derive(Default)]
+    struct DeferredWorkers(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+    impl Workers for DeferredWorkers {
+        fn spawn(&self, job: Box<dyn FnOnce() + Send>) {
+            self.0.lock().unwrap().push(job);
+        }
+    }
+
+    let case = json!({"engine": {
+        "imageSubscriptionStatuses": [
+            {"codex": {"state": "signed-out"}},
+            {"codex": {"state": "ready"}}
+        ],
+        "generateImageEchoStatuses": true
+    }});
+    let fake_shell = shell(&case);
+    let mut rt = Rt::new(move |hosts| {
+        hosts.insert::<PdfEngineHost>(engine(&case));
+        hosts.insert::<PdfShellHost>(fake_shell);
+        hosts.insert(Arc::new(Mutex::new(SharedRecoveryState::new("test"))));
+        crate::pdf::tools::fakes(hosts, &Value::Null);
+    });
+    let workers = Arc::new(DeferredWorkers::default());
+    rt.services.workers = workers.clone();
+    rt.register(crate::pdf::entries).unwrap();
+    let view = rt.view(1, Surface::Pdf);
+    pdf(&rt).open_view(view.view, Some("/synthetic/report.pdf"));
+
+    let pending = rt.invoke("pdf:generate-image", view, vec![obj([("prompt", s("kite"))])]);
+    assert!(pending.take().is_none());
+    let live = rt.services.hosts.get::<PdfEngineHost>().unwrap().image_subscription_statuses();
+    assert_eq!(jscompat::json_value_to_serde(&live), json!({"codex":{"state":"ready"}}));
+    let job = workers.0.lock().unwrap().remove(0);
+    job();
+    rt.drain();
+    assert_eq!(
+        pending.take().unwrap().unwrap(),
+        crate::kit::from_json(&json!({"codex":{"state":"signed-out"}}))
+    );
+}
+
+#[test]
+fn signed_copy_commit_rejects_revoked_renderer() {
+    use shell_contract::ipc::{NativeContext, NativeRequestOwner};
+    use shell_contract::runtime::{CancelToken, RendererGeneration};
+    let (rt, _) = rt_with(Value::Null);
+    let generation = RendererGeneration::new();
+    let owner = NativeRequestOwner { view: ViewId(1), context: NativeContext::with_renderer((), generation.clone()) };
+    let engine = rt.services.hosts.get::<PdfEngineHost>().unwrap();
+    let target = rt.dir.join("revoked-signed.pdf");
+    generation.revoke();
+    assert!(!engine.sign_owner_current(&owner, &CancelToken::default()));
+    assert!(engine.write_signed_pdf(target.to_str().unwrap(), b"signed", &owner, &CancelToken::default()).is_err());
+    assert!(!target.exists());
+}
+
+#[test]
+fn pdf_actor_captures_slot_and_revision_before_async_work() {
+    use shell_contract::ipc::NativeContext;
+    use shell_contract::runtime::{CancelToken, RendererGeneration};
+
+    let (rt, _) = rt_with(Value::Null);
+    let sender = rt.view(1, Surface::Pdf);
+    let editor = pdf(&rt);
+    editor.open_view(sender.view, None);
+    let native_renderer = rt.services.views.renderer_generation(sender.view).unwrap();
+    let captured = editor.capture_document_owner(sender.view, shell_contract::ipc::NativeRequestOwner { view: sender.view, context: NativeContext::with_owner_loss((), native_renderer, CancelToken::default()) }).unwrap();
+    let context = || NativeContext::with_owner_loss((), RendererGeneration::new(), CancelToken::default());
+    let inspection = editor.0.bind_pdf_owner(sender.view, context()).unwrap();
+    let first = editor.0.bind_sign_owner(sender.view, context()).unwrap();
+    assert!(inspection.pdf_document().unwrap().same_document(first.pdf_document().unwrap()));
+    let first_loss = first.loss_token().unwrap();
+    editor.0.advance_document_revision(sender.view);
+    assert!(first_loss.is_cancelled());
+    assert!(inspection.pdf_document().unwrap().is_live());
+    assert!(!first.pdf_revision().unwrap().is_live());
+    let engine = rt.services.hosts.get::<PdfEngineHost>().unwrap();
+    let stale_target = rt.dir.join("stale-signed.pdf");
+    assert!(!engine.sign_owner_current(&first, &CancelToken::default()));
+    assert!(engine.write_signed_pdf(stale_target.to_str().unwrap(), b"stale", &first, &CancelToken::default()).is_err());
+    assert!(!stale_target.exists());
+    let second = editor.0.bind_sign_owner(sender.view, context()).unwrap();
+    assert!(first.pdf_document().unwrap().same_document(second.pdf_document().unwrap()));
+    assert!(!first.pdf_revision().unwrap().same_document(second.pdf_revision().unwrap()));
+
+    let slot_loss = inspection.loss_token().unwrap();
+    editor.0.replace_document(sender.view, Some("/synthetic/replacement.pdf".to_owned()));
+    assert!(editor.capture_document_owner(sender.view, captured).is_err());
+    assert!(slot_loss.is_cancelled());
+    assert!(!second.pdf_document().unwrap().is_live());
+    let replacement = editor.0.bind_pdf_owner(sender.view, context()).unwrap();
+    assert!(!inspection.pdf_document().unwrap().same_document(replacement.pdf_document().unwrap()));
+    editor.0.destroyed(sender.view);
+    assert!(!replacement.pdf_document().unwrap().is_live());
+    assert!(editor.0.bind_pdf_owner(sender.view, context()).is_none());
+}
+
 fn pdf(rt: &Rt) -> Rc<PdfEditors> {
     rt.provided()
         .all::<PdfEditors>()
@@ -116,6 +217,20 @@ fn empty_save(path: &str) -> IpcValue {
         ("formValues", IpcValue::Array(vec![])),
         ("stamps", IpcValue::Array(vec![])),
     ])
+}
+
+#[test]
+fn recovery_contract_flushes_dirty_pdf() {
+    use main_core::packages::electron_utils::recovery_contract::RecoveryEditorContract;
+    let mut t = setup(Value::Null);
+    t.send("pdf:dirty-changed", vec![true.into_ipc()]);
+    let contract = t.rt.provided().all::<dyn RecoveryEditorContract<ViewId, ()>>()
+        .into_iter().find(|editor| editor.kind() == "pdf").unwrap();
+    let (result, done) = slot();
+    contract.write_copies_now(done);
+    let events = t.events();
+    assert_eq!(events[0].0, "pdf:recovery-flush-request");
+    assert!(result.borrow().is_none());
 }
 
 // ---- reading ----
@@ -1268,19 +1383,38 @@ fn copies_now_waits_for_each_dirty_view_or_its_timeout() {
     let mut t = setup(Value::Null);
     let ed = pdf(&t.rt);
     let (none, then) = slot();
-    ed.write_copies_now(Box::new(move || then(())));
-    assert_eq!(*none.borrow(), Some(()));
+    ed.write_copies_now(then);
+    assert_eq!(*none.borrow(), Some(Ok(())));
     t.send("pdf:dirty-changed", vec![true.into_ipc()]);
     let (answered, then) = slot();
-    ed.write_copies_now(Box::new(move || then(())));
-    assert_eq!(t.events(), vec![("pdf:recovery-flush-request", vec![])]);
-    assert_eq!(*answered.borrow(), None);
-    t.send("pdf:recovery-flush-done", vec![]);
-    assert_eq!(*answered.borrow(), Some(()));
+    ed.write_copies_now(then);
+    let events = t.events();
+    assert_eq!(events[0].0, "pdf:recovery-flush-request");
+    let token = events[0].1[0].clone();
+    t.send("pdf:recovery-flush-done", vec![s("stale")]);
+    assert!(answered.borrow().is_none());
+    t.send("pdf:recovery-flush-done", vec![token]);
+    assert_eq!(*answered.borrow(), Some(Ok(())));
     let (timed, then) = slot();
-    ed.write_copies_now(Box::new(move || then(())));
+    ed.write_copies_now(then);
     t.rt.advance(Duration::from_secs(8));
-    assert_eq!(*timed.borrow(), Some(()));
+    assert!(timed.borrow().as_ref().unwrap().is_err());
+}
+
+#[test]
+fn recovery_flush_reports_renderer_failure_and_destroyed_view() {
+    let mut t = setup(Value::Null);
+    t.send("pdf:dirty-changed", vec![true.into_ipc()]);
+    let ed = pdf(&t.rt);
+    let (failed, done) = slot();
+    ed.write_copies_now(done);
+    let events = t.events();
+    t.send("pdf:recovery-flush-done", vec![events[0].1[0].clone(), s("disk failure")]);
+    assert!(failed.borrow().as_ref().unwrap().is_err());
+    let (destroyed, done) = slot();
+    ed.write_copies_now(done);
+    t.rt.destroy(t.view.view);
+    assert!(destroyed.borrow().as_ref().unwrap().is_err());
 }
 
 #[test]
@@ -1323,6 +1457,99 @@ fn saved_signatures_persist_and_ignore_bad_input() {
         t.invoke("pdf:remove-signature", vec![id]),
         IpcValue::Array(vec![])
     );
+}
+
+#[test]
+fn signing_stops_before_certificate_open_when_renderer_is_replaced() {
+    use shell_contract::runtime::Workers;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[derive(Default)]
+    struct DeferredWorkers { defer: AtomicBool, jobs: Mutex<Vec<Box<dyn FnOnce() + Send>>> }
+    impl Workers for DeferredWorkers {
+        fn spawn(&self, job: Box<dyn FnOnce() + Send>) {
+            if self.defer.load(Ordering::SeqCst) { self.jobs.lock().unwrap().push(job); } else { job(); }
+        }
+    }
+    let fake_shell = shell(&Value::Null);
+    let s = fake_shell.clone();
+    let mut rt = Rt::new(move |hosts| {
+        hosts.insert::<PdfEngineHost>(engine(&Value::Null));
+        hosts.insert::<PdfShellHost>(s);
+        hosts.insert(Arc::new(Mutex::new(SharedRecoveryState::new("test"))));
+        crate::pdf::tools::fakes(hosts, &Value::Null);
+    });
+    let workers = Arc::new(DeferredWorkers::default());
+    rt.services.workers = workers.clone();
+    rt.register(crate::pdf::entries).unwrap();
+    let file = rt.dir.join("doc.pdf").to_string_lossy().into_owned();
+    std::fs::write(&file, ORIGINAL).unwrap();
+    let view = rt.view(1, Surface::Pdf);
+    pdf(&rt).open_view(view.view, Some(&file));
+    let p12 = rt.dir.join("stale-cert.p12");
+    std::fs::write(&p12, b"p12").unwrap();
+    rt.script().open.push_back(Some(vec![p12]));
+    let picked = rt.invoke_now("pdf:pick-certificate", view, vec![]).unwrap();
+    workers.defer.store(true, Ordering::SeqCst);
+    let pending = rt.invoke("pdf:sign-with-certificate", view, vec![obj([
+        ("path", s(&file)), ("certId", field(&picked, "certId").clone()), ("password", s("pw")),
+    ])]);
+    rt.replace_renderer(view.view);
+    let worker = workers.jobs.lock().unwrap().remove(0);
+    worker();
+    rt.drain();
+    let response = pending.take().unwrap().unwrap();
+    assert_eq!(field(&response, "message"), &s("pdf: signing request expired"));
+    assert!(workers.jobs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn signing_uses_native_snapshot_when_source_is_replaced_after_capture() {
+    use shell_contract::runtime::Workers;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[derive(Default)]
+    struct DeferredWorkers { defer: AtomicBool, jobs: Mutex<Vec<Box<dyn FnOnce() + Send>>> }
+    impl Workers for DeferredWorkers {
+        fn spawn(&self, job: Box<dyn FnOnce() + Send>) {
+            if self.defer.load(Ordering::SeqCst) { self.jobs.lock().unwrap().push(job); } else { job(); }
+        }
+    }
+    let fake_shell = shell(&Value::Null);
+    let mut rt = Rt::new(move |hosts| {
+        hosts.insert::<PdfEngineHost>(engine(&Value::Null));
+        hosts.insert::<PdfShellHost>(fake_shell);
+        hosts.insert(Arc::new(Mutex::new(SharedRecoveryState::new("test"))));
+        crate::pdf::tools::fakes(hosts, &Value::Null);
+    });
+    let workers = Arc::new(DeferredWorkers::default());
+    rt.services.workers = workers.clone();
+    rt.register(crate::pdf::entries).unwrap();
+    let file = rt.dir.join("source.pdf");
+    let target = rt.dir.join("signed.pdf");
+    let p12 = rt.dir.join("cert.p12");
+    std::fs::write(&file, ORIGINAL).unwrap();
+    std::fs::write(&p12, b"p12").unwrap();
+    let view = rt.view(1, Surface::Pdf);
+    pdf(&rt).open_view(view.view, file.to_str());
+    rt.script().open.push_back(Some(vec![p12]));
+    let picked = rt.invoke_now("pdf:pick-certificate", view, vec![]).unwrap();
+    rt.script().save.push_back(Some(target.clone()));
+    workers.defer.store(true, Ordering::SeqCst);
+    let pending = rt.invoke("pdf:sign-with-certificate", view, vec![obj([
+        ("path", s(file.to_str().unwrap())), ("certId", field(&picked, "certId").clone()), ("password", s("pw")),
+    ])]);
+    let capture = workers.jobs.lock().unwrap().remove(0);
+    capture();
+    std::fs::write(&file, b"%PDF externally replaced").unwrap();
+    rt.drain();
+    workers.defer.store(false, Ordering::SeqCst);
+    while let Some(job) = { let mut jobs = workers.jobs.lock().unwrap(); if jobs.is_empty() { None } else { Some(jobs.remove(0)) } } {
+        job();
+        rt.drain();
+    }
+    let response = pending.take().unwrap().unwrap();
+    assert!(ok(&response));
+    assert_eq!(std::fs::read(&target).unwrap(), [ORIGINAL, b"%signed"].concat());
+    assert_eq!(std::fs::read(&file).unwrap(), b"%PDF externally replaced");
 }
 
 #[test]

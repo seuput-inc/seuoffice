@@ -22,7 +22,6 @@ import type { Case, Group } from '../../types.ts'
 
 const TWO = { views: [view(1), view(100)] }
 const SYNC = { slide: 1, step: 2 }
-const CLOCK = Date.UTC(2026, 10, 13, 9, 30, 15)
 
 const cases: Case[] = [
   slidesCase('a presenter view with one display has no audience', {}, [

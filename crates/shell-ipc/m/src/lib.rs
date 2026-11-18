@@ -122,6 +122,21 @@ impl Docs {
             .map(|p| p.to_string_lossy().into_owned())
     }
 
+    pub fn take_owned_pdf_grant(
+        &self, view: ViewId, token: &str, generation: &shell_contract::runtime::RendererGeneration,
+    ) -> Option<shell_contract::editors::OwnedPdfGrant> {
+        self.editor(view)?.take_owned_pdf_grant(view, token, generation)
+    }
+
+    pub fn take_native_headless_pdf_grant(
+        &self, view: ViewId, native: Option<&shell_contract::ipc::NativeContext>,
+    ) -> Result<Option<shell_contract::editors::NativeHeadlessPdfGrant>, String> {
+        match self.editor(view) {
+            Some(editor) => editor.take_native_headless_pdf_grant(view, native),
+            None => Ok(None),
+        }
+    }
+
     /// docs: `tornDownWcIds.has(view)`
     pub fn torn_down(&self, view: ViewId) -> bool {
         self.editor(view).is_some_and(|e| e.torn_down(view))

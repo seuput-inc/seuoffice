@@ -153,7 +153,7 @@ pub fn insert(hosts: &mut shell_contract::Hosts, case: &Value, log: Option<Log>)
         )),
         log,
     }));
-    let pending = Arc::new(PendingAiDocs::default());
+    let pending = Arc::new(PendingAiDocs::synthetic());
     for (view, content) in world["pendingDocs"].as_object().into_iter().flatten() {
         if let Ok(view) = view.parse::<i64>() {
             pending.queue(view, content);

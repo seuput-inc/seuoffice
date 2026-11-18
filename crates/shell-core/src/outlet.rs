@@ -15,7 +15,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use shell_contract::ids::{RequestId, ViewId};
 use shell_contract::ipc::{EventSink, Reply, Target};
-use shell_contract::runtime::Views;
+use shell_contract::runtime::{RendererGeneration, Views};
 use shell_contract::value::IpcValue;
 
 use crate::wire::{Encoder, frame};
@@ -23,6 +23,9 @@ use crate::wire::{Encoder, frame};
 /// One view's stream. Frames for one view are delivered in call order.
 pub trait Outlet: Send + Sync {
     fn deliver(&self, view: ViewId, frame: Vec<u8>);
+    fn deliver_to_generation_checked(&self, _view: ViewId, _generation: &RendererGeneration, _frame: Vec<u8>) -> Result<(), String> {
+        Err("generation-scoped outlet delivery is unavailable".into())
+    }
 }
 
 pub fn reply_frame(id: RequestId, channel: &str, reply: &Reply) -> Vec<u8> {
@@ -76,5 +79,12 @@ impl EventSink for OutletSink {
         for view in resolve(self.views.as_ref(), target) {
             self.outlet.deliver(view, frame.clone());
         }
+    }
+
+
+    fn emit_to_owner_checked(&self, owner: &shell_contract::ipc::NativeRequestOwner, channel: &'static str, args: Vec<IpcValue>) -> Result<(), String> {
+        let generation = owner.context.renderer().filter(|generation| generation.is_active())
+            .ok_or_else(|| "renderer generation is unavailable or revoked".to_owned())?;
+        self.outlet.deliver_to_generation_checked(owner.view, generation, event_frame(channel, &args))
     }
 }

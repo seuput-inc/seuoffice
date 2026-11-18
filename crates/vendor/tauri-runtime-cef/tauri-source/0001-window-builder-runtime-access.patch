@@ -1,0 +1,20 @@
+--- a/src/window/mod.rs
++++ b/src/window/mod.rs
+@@ -346,6 +346,17 @@
+     Ok((window, webview))
+   }
+ 
++  /// Access the concrete runtime's window builder before native creation.
++  ///
++  /// Runtime-specific extensions use this to attach creation reservations;
++  /// the selected runtime remains responsible for validating those attributes.
++  #[cfg(feature = "unstable")]
++  pub fn runtime_window_builder_mut(
++    &mut self,
++  ) -> &mut <R::WindowDispatcher as WindowDispatch<EventLoopMessage>>::WindowBuilder {
++    &mut self.window_builder
++  }
++
+   /// Creates a new window.
+   pub fn build(self) -> crate::Result<Window<R>> {
+     self.build_internal(None)

@@ -213,9 +213,10 @@ struct ProbeTabs {
 }
 
 impl McpTabs for ProbeTabs {
-    fn open_blank_docs_tab(&self) -> ViewId {
+    fn open_blank_docs_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
         push(&self.log, json!(["openBlankDocsTabForMcp"]));
-        ViewId(self.docs.lock().expect("tabs").pop_front().unwrap_or(0))
+        let result = Ok(ViewId(self.docs.lock().expect("tabs").pop_front().unwrap_or(0)));
+        done(result);
     }
 
     fn authorize_docs_save(&self, view: ViewId, path: &str) {
@@ -226,14 +227,13 @@ impl McpTabs for ProbeTabs {
         push(&self.log, json!(["abandonBlankTabForMcp", view.0]));
     }
 
-    fn open_blank_sheets_tab(&self) -> Result<ViewId, String> {
+    fn open_blank_sheets_tab(&self, done: Box<dyn FnOnce(Result<ViewId, String>)>) {
         push(&self.log, json!(["openBlankSheetsTabForMcp"]));
-        if let Some(message) = &self.sheets_error {
-            return Err(message.clone());
-        }
-        Ok(ViewId(
-            self.sheets.lock().expect("tabs").pop_front().unwrap_or(0),
-        ))
+        let result = match &self.sheets_error {
+            Some(message) => Err(message.clone()),
+            None => Ok(ViewId(self.sheets.lock().expect("tabs").pop_front().unwrap_or(0))),
+        };
+        done(result);
     }
 
     fn authorize_sheets_save(&self, view: ViewId, path: &str) {

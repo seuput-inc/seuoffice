@@ -118,7 +118,7 @@ impl Fetcher for FakeFetcher {
         }
     }
 
-    fn fetch(&mut self, url: &str, init: &FetchInit<'_>) -> Result<Box<dyn Response>, FetchError> {
+    fn fetch<'signal>(&mut self, url: &str, init: &FetchInit<'_, 'signal>) -> Result<Box<dyn Response + 'signal>, FetchError> {
         let mut shown = Map::new();
         if let Some(headers) = init.headers {
             let mut object = Map::new();
@@ -127,7 +127,7 @@ impl Fetcher for FakeFetcher {
             }
             shown.insert("headers".into(), Value::Object(object));
         }
-        shown.insert("signal".into(), Value::Bool(init.signal));
+        shown.insert("signal".into(), Value::Bool(init.signal.is_some()));
         let pinned = match init.pinned {
             Some(target) => {
                 let answer = pinned_lookup(target)(
@@ -188,5 +188,5 @@ impl Fetcher for FakeFetcher {
         self.0.note(json!(["undici.agent.close"]));
     }
 
-    fn sleep(&mut self, _ms: f64) {}
+    fn sleep(&mut self, _ms: f64, _: Option<&dyn main_core::packages::electron_utils::safe_remote_url::AbortSignal>) {}
 }

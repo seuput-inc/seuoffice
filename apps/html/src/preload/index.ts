@@ -84,9 +84,11 @@ const api: HtmlApi = {
     ipcRenderer.send(HTML_CHANNELS.headlessExportDone, result),
   readFile: (path) => ipcRenderer.invoke(HTML_CHANNELS.readFile, path),
   recoveryOpen: () => ipcRenderer.invoke(HTML_CHANNELS.recoveryOpen),
-  writeRecoveryCopy: (text) => ipcRenderer.invoke(HTML_CHANNELS.recoveryWrite, text),
+  recoveryApplied: (result) => ipcRenderer.invoke(HTML_CHANNELS.recoveryApplied, result),
+  savedInputApplied: (result) => ipcRenderer.invoke(HTML_CHANNELS.savedInputApplied, result),
+  writeRecoveryCopy: (text, token, error) => ipcRenderer.invoke(HTML_CHANNELS.recoveryWrite, text, token, error),
   onRecoveryFlushRequest: (handler) => {
-    const listener = () => handler()
+    const listener = (_e: Electron.IpcRendererEvent, token?: string) => handler(token)
     ipcRenderer.on(HTML_CHANNELS.recoveryFlushRequest, listener)
     return () => ipcRenderer.removeListener(HTML_CHANNELS.recoveryFlushRequest, listener)
   },

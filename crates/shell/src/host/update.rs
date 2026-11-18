@@ -155,6 +155,9 @@ struct Control {
 
 impl UpdaterControl for Control {
     fn started(&self) {
+        if crate::headless::is_headless() {
+            return;
+        }
         let resources = self.resources.clone();
         // after the batches registered: the update window is there by then
         post_core(move |_, services| Driver::start(services, resources));
@@ -208,6 +211,21 @@ fn with_driver(job: impl FnOnce(&mut Updater, &mut ShellUpdater) + 'static) {
         });
     }
 }
+/// A vetoed close clears the flag read by this driver's `on_will_quit`.
+pub(crate) fn cancel_update_restart() {
+    with_driver(|updater, _| updater.cancel_update_restart());
+}
+/// Read the same flag the updater uses before starting the installer.
+pub(crate) fn with_update_restart_requested(then: impl FnOnce(bool) + 'static) {
+    let absent = DRIVER.with(|driver| driver.try_borrow().is_ok_and(|driver| driver.is_none()));
+    if absent {
+        then(false);
+    } else {
+        with_driver(move |updater, _| then(updater.restart().update_restart_requested()));
+    }
+}
+
+
 
 /// The env of the updater's log: the console and the clocks
 struct Env;
@@ -623,27 +641,20 @@ impl SwapChild for Spawned {
 #[derive(Clone)]
 struct QuitHost(AppHandle);
 
-/// The event loop's events: the exit is held once for `on_will_quit`
 pub fn on_run_event(app: &AppHandle, event: &RunEvent) {
-    let RunEvent::ExitRequested { api, .. } = event else {
-        return;
-    };
-    if HELD.swap(true, Ordering::AcqRel) {
-        // the second request is the one made below: it goes through
-        return;
-    }
-    api.prevent_exit();
-    // the run ends on purpose: the next start reports no crash
-    super::crash::mark_ended();
-    let app = app.clone();
-    post_core(move |_, _| {
-        with_driver(|updater, shell| {
-            shell.exit_held = true;
-            updater.on_will_quit(shell);
-        });
-        let _ = app.clone().run_on_main_thread(move || app.exit(0));
-    });
+    super::quit::on_run_event(app, event);
 }
 
-/// `on_will_quit` ran once: the next exit request is not held
-static HELD: AtomicBool = AtomicBool::new(false);
+/// Runs on core after owned resources have stopped.
+pub(crate) fn will_quit(done: impl FnOnce() + 'static) {
+    let absent = DRIVER.with(|driver| driver.try_borrow().is_ok_and(|driver| driver.is_none()));
+    if absent {
+        done();
+    } else {
+        with_driver(move |updater, shell| {
+            shell.exit_held = true;
+            updater.on_will_quit(shell);
+            done();
+        });
+    }
+}

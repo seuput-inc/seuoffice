@@ -1,0 +1,348 @@
+# Private pinned source patch. Native compile, generated ABI and runtime are unverified.
+diff --git a/include/internal/cef_types.h b/include/internal/cef_types.h
+--- a/include/internal/cef_types.h
++++ b/include/internal/cef_types.h
+@@ -2507,5 +2507,19 @@
+   ///
+   /// True (1) if browser interface elements should be hidden.
+   ///
+   int isPopup;
++#if CEF_API_ADDED(15401)
++  ///
++  /// Exact RFH-bound browser-admitted default-world popup source, or zero.
++  /// The tokens identify native objects. The client must redeem its original
++  /// registered identity; these fields are not a JavaScript-issued capability.
++  ///
++  int nativeContextAuthenticated;
++  int nativeRendererChildId;
++  int nativeWorldId;
++  uint64_t nativeDocumentHigh;
++  uint64_t nativeDocumentLow;
++  uint64_t nativeContextHigh;
++  uint64_t nativeContextLow;
++#endif
+ } cef_popup_features_t;
+diff --git a/libcef/browser/native_context_service.h b/libcef/browser/native_context_service.h
+--- a/libcef/browser/native_context_service.h
++++ b/libcef/browser/native_context_service.h
+@@ -6,2 +6,4 @@
++#include <map>
++#include <optional>
+ #include <string>
+ #include <utility>
+@@ -9,2 +11,4 @@
+ #include "cef/include/cef_client.h"
++#include "base/no_destructor.h"
++#include "cef/libcef/browser/thread_util.h"
+ #include "base/process/process_handle.h"
+@@ -35,7 +39,71 @@
+   ~CefNativeContextService() override {
++    RemovePopupRegistration();
+     weak_.InvalidateWeakPtrs();
+     Revoke();
+   }
+ 
++  // Only the caller's RFH-bound, browser-admitted default world can populate
++  // popup metadata. A renderer payload is never itself an activation grant.
++  static bool AuthenticatePopup(content::RenderFrameHostImpl* rfh,
++                                const blink::DocumentToken& document,
++                                const blink::V8ContextToken& context,
++                                CefPopupFeatures& features) {
++    CEF_REQUIRE_UIT();
++    if (!rfh || !CEF_API_IS_ADDED(15401)) return false;
++    const auto found = PopupRegistrations().find(rfh->GetGlobalId());
++    if (found == PopupRegistrations().end()) return false;
++    auto* service = found->second.get();
++    if (!service || service->render_frame_host() != rfh ||
++        !service->registered_ || service->world_ != 0 ||
++        !service->traffic_ || !service->traffic_->IsLive() ||
++        !service->document_identity_ || !service->context_identity_ ||
++        *service->document_identity_ != document ||
++        *service->context_identity_ != context ||
++        service->child_id_ != rfh->GetProcess()->GetDeprecatedID() ||
++        rfh->GetParent() || !rfh->MatchesLatestDocumentForCef(document)) {
++      return false;
++    }
++    features.nativeRendererChildId = service->child_id_;
++    features.nativeWorldId = service->world_;
++    features.nativeDocumentHigh = document.value().GetHighForSerialization();
++    features.nativeDocumentLow = document.value().GetLowForSerialization();
++    features.nativeContextHigh = context.value().GetHighForSerialization();
++    features.nativeContextLow = context.value().GetLowForSerialization();
++    features.nativeContextAuthenticated = 1;
++    return true;
++  }
++
+  private:
++  using PopupRegistry = std::map<content::GlobalRenderFrameHostId,
++                                base::WeakPtr<CefNativeContextService>>;
++
++  static PopupRegistry& PopupRegistrations() {
++    static base::NoDestructor<PopupRegistry> registrations;
++    return *registrations;
++  }
++
++  bool PublishPopupRegistration() {
++    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    auto* rfh = static_cast<content::RenderFrameHostImpl*>(render_frame_host());
++    if (!registered_ || !traffic_ || !traffic_->IsLive() ||
++        !document_identity_ || !context_identity_ ||
++        !rfh->MatchesLatestDocumentForCef(*document_identity_)) return false;
++    const auto key = rfh->GetGlobalId();
++    const bool inserted =
++        PopupRegistrations().emplace(key, weak_.GetWeakPtr()).second;
++    if (!inserted) return false;
++    popup_registration_ = key;
++    return true;
++  }
++
++  void RemovePopupRegistration() {
++    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    if (!popup_registration_) return;
++    const auto found = PopupRegistrations().find(*popup_registration_);
++    // Never erase a newer endpoint that reused the RFH's route identity.
++    if (found != PopupRegistrations().end() && found->second.get() == this)
++      PopupRegistrations().erase(found);
++    popup_registration_.reset();
++  }
++
+   void Register(const blink::DocumentToken& document_token,
+@@ -89,4 +157,5 @@
+     document_ = document_token.ToString();
+     document_identity_ = document_token;
+     context_ = context_token.ToString();
++    context_identity_ = context_token;
+     world_ = world_id;
+@@ -104,5 +173,6 @@
+     if (!weak) return;
+-    if (!accepted || !traffic_->IsLive()) {
++    if (!accepted || !registered_ || !traffic_ || !traffic_->IsLive() ||
++        !PublishPopupRegistration()) {
+       Revoke();
+       return;
+     }
+@@ -121,3 +191,4 @@
+     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+     if (!registered_ || (affected && affected != render_frame_host())) return;
++    RemovePopupRegistration();
+     if (evaluation_) evaluation_->Invalidate();
+@@ -148,3 +219,4 @@
+   void Revoke() {
+     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
++    RemovePopupRegistration();
+     auto mutation = content::FrameTreeNode::BeginCefAdmissionMutation();
+@@ -212,2 +284,4 @@
+   std::optional<blink::DocumentToken> document_identity_;
++  std::optional<blink::V8ContextToken> context_identity_;
++  std::optional<content::GlobalRenderFrameHostId> popup_registration_;
+   base::CallbackListSubscription pre_navigation_;
+diff --git a/libcef/browser/browser_info_manager.cc b/libcef/browser/browser_info_manager.cc
+--- a/libcef/browser/browser_info_manager.cc
++++ b/libcef/browser/browser_info_manager.cc
+@@ -14,2 +14,3 @@
+ #include "cef/libcef/browser/browser_platform_delegate.h"
++#include "cef/libcef/browser/native_context_service.h"
+ #include "cef/libcef/browser/context.h"
+@@ -122,3 +123,5 @@
+   CEF_REQUIRE_UIT();
+ 
++  const auto popup_host =
++      static_cast<content::RenderFrameHostImpl*>(opener)->GetWeakPtr();
+   content::OpenURLParams params(target_url, referrer, disposition,
+@@ -130,6 +133,22 @@
+   if (!MaybeAllowNavigation(opener, params, browser) || !browser) {
+     // Cancel the popup.
+     return false;
+   }
+ 
++  if (!popup_host) return false;
++  CefPopupFeatures cef_features;
++  TranslatePopupFeatures(features, cef_features);
++  const auto info = browser->browser_info()->extra_info();
++  const bool protected_popup = info && info->HasKey("seuoffice.trusted-mode");
++  const auto* native_params = popup_host->GetScopedCreateNewWindowParamsForCef();
++  if (protected_popup &&
++      (!CEF_API_IS_ADDED(15401) || !native_params ||
++       !native_params->cef_opener_document_token ||
++       !native_params->cef_opener_context_token ||
++       !CefNativeContextService::AuthenticatePopup(
++           popup_host.get(), *native_params->cef_opener_document_token,
++           *native_params->cef_opener_context_token, cef_features))) {
++    return false;
++  }
++
+   CefRefPtr<CefClient> client = browser->GetClient();
+@@ -163,4 +182,1 @@
+-      CefPopupFeatures cef_features;
+-      TranslatePopupFeatures(features, cef_features);
+-
+       // Default to the size from the popup features.
+@@ -210,4 +226,14 @@
+   }
+ 
++  // A nested embedder callback may revoke or replace the original source.
++  // Recheck the captured request, never a current-frame identity substitute.
++  if (!popup_host ||
++      (allow && protected_popup &&
++       !CefNativeContextService::AuthenticatePopup(
++           popup_host.get(), *native_params->cef_opener_document_token,
++           *native_params->cef_opener_context_token, cef_features))) {
++    return false;
++  }
++
+   if (allow) {
+     CefBrowserCreateParams create_params;
+diff --git a/tests/ceftests/navigation_unittest.cc b/tests/ceftests/navigation_unittest.cc
+--- a/tests/ceftests/navigation_unittest.cc
++++ b/tests/ceftests/navigation_unittest.cc
+@@ -5,2 +5,4 @@
+ #include <algorithm>
++#include <iomanip>
+ #include <list>
++#include <sstream>
+@@ -3709,2 +3711,145 @@
++#if CEF_API_ADDED(15401)
++namespace {
++enum class NativePopupCase { kLive, kMissing, kRejected, kStale, kForeign, kNested };
++
++std::string NativePopupToken(uint64_t high, uint64_t low) {
++  std::ostringstream text;
++  text << std::uppercase << std::hex << std::setfill('0')
++       << std::setw(16) << high << std::setw(16) << low;
++  return text.str();
++}
++
++class NativePopupOriginTest : public TestHandler {
++ public:
++  explicit NativePopupOriginTest(NativePopupCase which) : which_(which) {}
++
++  void RunTest() override {
++    AddResource(kReadyUrl, "<html><body>native popup source</body></html>", "text/html");
++    AddResource(kStaleUrl, "<html><body>unapproved replacement</body></html>", "text/html");
++    auto info = CefDictionaryValue::Create();
++    info->SetInt("seuoffice.trusted-mode", 1);
++    info->SetString("seuoffice.trusted-init", R"json({"scripts":[{"source":"(() => { const b = globalThis.__seuofficeNativeBridgeBootstrap(); delete globalThis.__seuofficeNativeBridgeBootstrap; delete globalThis.__seuofficeNativeSendSync; b.listenTauri(() => {}); })();","main_only":true}]})json");
++    CreateBrowser(CefString(), nullptr, info);
++    SetTestTimeout();
++  }
++
++  void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
++    TestHandler::OnAfterCreated(browser);
++    GrantPopupPermission(browser->GetHost()->GetRequestContext(), kReadyUrl);
++    if (which_ == NativePopupCase::kMissing) {
++      browser->GetMainFrame()->LoadURL(kReadyUrl);
++    } else {
++      browser->GetHost()->LoadApprovedMainFrameURL(
++          kReadyUrl, 1, "native-popup-fixture-intent", new Completion(this));
++    }
++  }
++
++  bool OnNativeContextRegistered(CefRefPtr<CefBrowser> browser,
++      CefRefPtr<CefFrame> frame, const CefString& frame_id, int child,
++      const CefString& document, const CefString& context, uint64_t issuance,
++      const CefString& intent, int world, const CefString& document_url,
++      CefRefPtr<CefNativeContextEvaluation> evaluation,
++      CefRefPtr<CefNativeContextChannel> channel) override {
++    EXPECT_EQ(kReadyUrl, document_url.ToString());
++    EXPECT_EQ(0, world);
++    EXPECT_GT(child, 0);
++    EXPECT_TRUE(frame->IsMain());
++    registered_ = true;
++    frame_ = frame_id.ToString();
++    document_ = document.ToString();
++    context_ = context.ToString();
++    child_ = child;
++    return which_ != NativePopupCase::kRejected;
++  }
++
++  void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++                 int http_status_code) override {
++    if (!frame->IsMain()) return;
++    const auto url = frame->GetURL().ToString();
++    if (url != kReadyUrl && url != kStaleUrl) return;
++    std::string script;
++    if (which_ == NativePopupCase::kForeign) {
++      script = R"js(const child = document.createElement('iframe'); child.srcdoc = '<script>top.open("https://popup-origin.example/foreign"); console.log("CEF_NATIVE_POPUP_FINISHED")<\/script>'; document.body.appendChild(child);)js";
++    } else if (which_ == NativePopupCase::kNested) {
++      script = "window.open(window.open('https://popup-origin.example/inner')); console.log('CEF_NATIVE_POPUP_FINISHED');";
++    } else if (which_ == NativePopupCase::kStale && url == kReadyUrl) {
++      script = "window.open('https://popup-origin.example/live'); location.href='https://popup-origin.example/unapproved';";
++    } else {
++      script = "window.open('https://popup-origin.example/popup'); console.log('CEF_NATIVE_POPUP_FINISHED');";
++    }
++    frame->ExecuteJavaScript(script, url, 0);
++  }
++
++  bool OnBeforePopup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
++      int popup_id, const CefString& target_url, const CefString& target_frame_name,
++      cef_window_open_disposition_t target_disposition, bool user_gesture,
++      const CefPopupFeatures& features, CefWindowInfo& window_info,
++      CefRefPtr<CefClient>& client, CefBrowserSettings& settings,
++      CefRefPtr<CefDictionaryValue>& extra_info, bool* no_javascript_access) override {
++    EXPECT_TRUE(registered_);
++    EXPECT_EQ(1, features.nativeContextAuthenticated);
++    EXPECT_EQ(child_, features.nativeRendererChildId);
++    EXPECT_EQ(0, features.nativeWorldId);
++    EXPECT_EQ(frame_, frame->GetIdentifier().ToString());
++    EXPECT_EQ(document_, NativePopupToken(features.nativeDocumentHigh, features.nativeDocumentLow));
++    EXPECT_EQ(context_, NativePopupToken(features.nativeContextHigh, features.nativeContextLow));
++    ++popups_;
++    return true;
++  }
++
++  bool OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_severity_t level,
++      const CefString& message, const CefString& source, int line) override {
++    if (message != "CEF_NATIVE_POPUP_FINISHED") return false;
++    const int expected = which_ == NativePopupCase::kNested ? 2
++        : (which_ == NativePopupCase::kLive || which_ == NativePopupCase::kStale ? 1 : 0);
++    EXPECT_EQ(expected, popups_);
++    EXPECT_EQ(which_ != NativePopupCase::kMissing, registered_);
++    finished_ = true;
++    DestroyTest();
++    return true;
++  }
++
++  void DestroyTest() override {
++    EXPECT_TRUE(finished_);
++    TestHandler::DestroyTest();
++  }
++
++ private:
++  class Completion : public CefApprovedNavigationCallback {
++   public:
++    explicit Completion(CefRefPtr<NativePopupOriginTest> owner) : owner_(owner) {}
++    void OnComplete(bool accepted) override { EXPECT_TRUE(accepted); }
++   private:
++    CefRefPtr<NativePopupOriginTest> owner_;
++    IMPLEMENT_REFCOUNTING(Completion);
++  };
++  static constexpr char kReadyUrl[] = "https://popup-origin.example/ready";
++  static constexpr char kStaleUrl[] = "https://popup-origin.example/unapproved";
++  const NativePopupCase which_;
++  bool registered_ = false;
++  bool finished_ = false;
++  int child_ = 0;
++  int popups_ = 0;
++  std::string frame_;
++  std::string document_;
++  std::string context_;
++  IMPLEMENT_REFCOUNTING(NativePopupOriginTest);
++};
++
++void RunNativePopupCase(NativePopupCase which) {
++  CefRefPtr<NativePopupOriginTest> handler = new NativePopupOriginTest(which);
++  handler->ExecuteTest();
++  ReleaseAndWaitForDestructor(handler);
++}
++}  // namespace
++
++TEST(NavigationTest, NativePopupLiveIdentity) { RunNativePopupCase(NativePopupCase::kLive); }
++TEST(NavigationTest, NativePopupMissingRegistration) { RunNativePopupCase(NativePopupCase::kMissing); }
++TEST(NavigationTest, NativePopupRejectedRegistration) { RunNativePopupCase(NativePopupCase::kRejected); }
++TEST(NavigationTest, NativePopupStaleIdentity) { RunNativePopupCase(NativePopupCase::kStale); }
++TEST(NavigationTest, NativePopupForeignRealm) { RunNativePopupCase(NativePopupCase::kForeign); }
++TEST(NavigationTest, NativePopupNestedExpressions) { RunNativePopupCase(NativePopupCase::kNested); }
++#endif
++
+ // Entry point for creating navigation renderer test objects.
+ // Called from client_app_delegates.cc.

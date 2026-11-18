@@ -28,13 +28,14 @@ interface Fake {
   saves: SaveMindmapRequest[]
   copies: RecoveryCopyRequest[]
   dirty: boolean[]
+  initialized: Array<{ token: string; ok: boolean; error?: string }>
   copyNowDone: number
   emitCopyNow(): void
   emitReset(): void
 }
 
 function fakeApi(pending: string | null, file: OpenFileResult | null): Fake {
-  const handlers: Record<string, (() => void) | undefined> = {}
+  const handlers: Record<string, ((generation?: number) => void) | undefined> = {}
   const on =
     (name: string) =>
     (handler: () => void): (() => void) => {
@@ -47,12 +48,16 @@ function fakeApi(pending: string | null, file: OpenFileResult | null): Fake {
     saves: [],
     copies: [],
     dirty: [],
+    initialized: [],
     copyNowDone: 0,
-    emitCopyNow: () => handlers.copyNow?.(),
+    emitCopyNow: () => handlers.copyNow?.(7),
     emitReset: () => handlers.reset?.(),
     api: {
       consumePending: async () => pending,
       openFile: async () => file ?? { status: 'unreadable' },
+      recoveryInitialized: async (token: string, ok: boolean, error?: string) => {
+        fake.initialized.push({ token, ok, error })
+      },
       save: async (request: SaveMindmapRequest) => {
         fake.saves.push(request)
         return { ok: true, path: pending ?? 'C:/maps/new.xmind' }
@@ -135,6 +140,14 @@ async function mountApp(fake: Fake): Promise<void> {
 async function bytesOf(...sheets: XmindSheet[]): Promise<Uint8Array> {
   return (await documentOf(...sheets)).save()
 }
+
+it('acknowledges a recovery only after its map session is ready', async () => {
+  const bytes = await bytesOf(plainSheet('Recovered'))
+  const fake = fakeApi('C:/maps/restored.xmind', { status: 'ok', bytes, restored: 'file', recoveryToken: 'receipt-1' })
+  expect(fake.initialized).toEqual([])
+  await mountApp(fake)
+  expect(fake.initialized).toEqual([{ token: 'receipt-1', ok: true, error: undefined }])
+})
 
 async function branchTitles(bytes: Uint8Array): Promise<string[]> {
   const opened = await openXmind(bytes)

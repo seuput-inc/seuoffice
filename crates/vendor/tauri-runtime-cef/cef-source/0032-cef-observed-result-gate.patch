@@ -1,0 +1,70 @@
+# Private CEF source patch. Result acceptance is not CDP target authentication.
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -1,3 +1,12 @@
++/// One result can be accepted only while its exact observed document is live.
++/*--cef(source=library,added=15401,no_debugct_check)--*/
++class CefNativeObservedResult : public virtual CefBaseRefCounted {
++ public:
++  /// One-shot atomic acceptance; false means already attempted or document lost.
++  /*--cef()--*/
++  virtual bool TryAccept() = 0;
++};
++
+ /// Native-only observation, never a V8 context or IPC authority.
+ /*--cef(source=library,added=15401,no_debugct_check)--*/
+ class CefNativeObservedDocument : public virtual CefBaseRefCounted {
+diff --git a/include/cef_client.h b/include/cef_client.h
+--- a/include/cef_client.h
++++ b/include/cef_client.h
+@@ -1,2 +1,5 @@
+   virtual CefRefPtr<CefNativeRendererProcess> GetProcess() = 0;
++  /// Makes a one-shot result gate. This does not authenticate a CDP target.
++  /*--cef()--*/
++  virtual CefRefPtr<CefNativeObservedResult> CreateResultGate() = 0;
+   /// Race-free registration; false means no callback was registered.
+diff --git a/libcef/browser/native_observed_document.h b/libcef/browser/native_observed_document.h
+--- a/libcef/browser/native_observed_document.h
++++ b/libcef/browser/native_observed_document.h
+@@ -1,2 +1,3 @@
++#include <atomic>
+ #include <limits>
+ #include <map>
+diff --git a/libcef/browser/native_observed_document.h b/libcef/browser/native_observed_document.h
+--- a/libcef/browser/native_observed_document.h
++++ b/libcef/browser/native_observed_document.h
+@@ -1,3 +1,8 @@
+   CefRefPtr<CefNativeRendererProcess> GetProcess() override { return process_; }
++  CefRefPtr<CefNativeObservedResult> CreateResultGate() override;
++  bool ClaimResult() {
++    base::AutoLock lock(lock_);
++    return reason_ == 0;
++  }
+ 
+   bool ObserveLoss
+diff --git a/libcef/browser/native_observed_document.h b/libcef/browser/native_observed_document.h
+--- a/libcef/browser/native_observed_document.h
++++ b/libcef/browser/native_observed_document.h
+@@ -1,2 +1,21 @@
+ };
++
++class CefNativeObservedResultImpl final : public CefNativeObservedResult {
++ public:
++  explicit CefNativeObservedResultImpl(CefRefPtr<CefNativeObservedDocumentImpl> document)
++      : document_(std::move(document)) {}
++  bool TryAccept() override {
++    bool expected = false;
++    if (!attempted_.compare_exchange_strong(expected, true)) return false;
++    return document_->ClaimResult();
++  }
++ private:
++  CefRefPtr<CefNativeObservedDocumentImpl> document_;
++  std::atomic<bool> attempted_{false};
++  IMPLEMENT_REFCOUNTING(CefNativeObservedResultImpl);
++};
++
++inline CefRefPtr<CefNativeObservedResult> CefNativeObservedDocumentImpl::CreateResultGate() {
++  return new CefNativeObservedResultImpl(this);
++}
+ #endif  // CEF_LIBCEF_BROWSER_NATIVE_OBSERVED_DOCUMENT_H_

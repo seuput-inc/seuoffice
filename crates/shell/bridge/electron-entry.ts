@@ -5,9 +5,7 @@
  * aliased to this file.
  */
 import { IpcRenderer, makeContextBridge, makeWebUtils } from './electron'
-import { tauriTransport } from './tauri'
-
-const transport = tauriTransport()
+import { transport } from './transport-instance'
 
 export const ipcRenderer = new IpcRenderer(transport)
 export const contextBridge = makeContextBridge(window)

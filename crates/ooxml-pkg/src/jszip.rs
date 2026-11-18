@@ -408,6 +408,9 @@ pub struct CompressedData {
 /// One entry as `loadAsync` adds it to the zip object.
 pub struct LoadedEntry {
     pub name: String,
+    /// Decoded filename before path resolution, including directory entries.
+    /// Importers must validate this before extracting a normalized `name`.
+    pub unsafe_original_name: String,
     pub is_dir: bool,
     /// What the central directory declares, as JSZip keeps it. `None` where
     /// JSZip stores an empty string in place of the data (folders and entries
@@ -424,8 +427,7 @@ pub struct LoadedEntry {
     pub raw: Option<RawRecord>,
 }
 
-/// `JSZip.loadAsync(bytes)`: the entries in central directory order.
-pub fn load(data: &[u8], keep_raw: bool) -> Result<Vec<LoadedEntry>, String> {
+fn parse_entries(data: &[u8]) -> Result<Vec<(ZipEntry<'_>, Compression, String)>, String> {
     let mut reader = Reader::new(data);
     let (central_dir_records, central_dir_offset, zip64) = read_end_of_central(&mut reader)?;
 
@@ -450,6 +452,12 @@ pub fn load(data: &[u8], keep_raw: bool) -> Result<Vec<LoadedEntry>, String> {
         read.push((file, compression, file_name_str));
     }
 
+    Ok(read)
+}
+
+/// `JSZip.loadAsync(bytes)`: the entries in central directory order.
+pub fn load(data: &[u8], keep_raw: bool) -> Result<Vec<LoadedEntry>, String> {
+    let read = parse_entries(data)?;
     let mut loaded = Vec::with_capacity(read.len());
     for (file, compression, file_name_str) in read {
         let is_dir = file.is_dir(&file_name_str);
@@ -484,6 +492,7 @@ pub fn load(data: &[u8], keep_raw: bool) -> Result<Vec<LoadedEntry>, String> {
         };
         loaded.push(LoadedEntry {
             name,
+            unsafe_original_name: file_name_str,
             is_dir,
             uncompressed_size: (!stored_empty).then_some(file.uncompressed_size as f64),
             unix_permissions: (file.version_made_by >> 8 == MADE_BY_UNIX)
@@ -498,6 +507,190 @@ pub fn load(data: &[u8], keep_raw: bool) -> Result<Vec<LoadedEntry>, String> {
         });
     }
     Ok(loaded)
+}
+
+struct DeferredEntry {
+    name: String,
+    is_dir: bool,
+    compression: Compression,
+    uncompressed_size: i64,
+    content: std::ops::Range<usize>,
+}
+
+/// A JSZip archive whose entries are inflated only when requested.
+pub struct Archive {
+    data: Vec<u8>,
+    entries: Vec<DeferredEntry>,
+}
+
+/// Parse the same archive metadata as `load`, retaining its compressed bytes.
+pub fn open_owned(data: Vec<u8>) -> Result<Archive, String> {
+    let read = parse_entries(&data)?;
+    let mut entries = Vec::<DeferredEntry>::with_capacity(read.len());
+    let mut indices = std::collections::HashMap::<String, usize>::new();
+    for (file, compression, file_name_str) in read {
+        let is_dir = file.is_dir(&file_name_str);
+        if !is_dir && file.has_unix_dir_mode() {
+            return Err(UNIX_DIR_WITHOUT_SLASH.to_owned());
+        }
+        let mut name = resolve(&file_name_str);
+        if is_dir && !name.ends_with('/') {
+            name.push('/');
+        }
+        let content = if file.compressed_content.is_empty() {
+            0..0
+        } else {
+            let start = file.compressed_content.as_ptr() as usize - data.as_ptr() as usize;
+            start..start + file.compressed_content.len()
+        };
+        let entry = DeferredEntry {
+            name: name.clone(),
+            is_dir,
+            compression,
+            uncompressed_size: file.uncompressed_size,
+            content,
+        };
+        if let Some(&index) = indices.get(&name) {
+            entries[index] = entry;
+        } else {
+            indices.insert(name, entries.len());
+            entries.push(entry);
+        }
+    }
+    Ok(Archive { data, entries })
+}
+
+impl Archive {
+    /// Finds the exact file first, then the first case-insensitive file.
+    pub fn entry(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        let exact = self.entries.iter().find(|entry| !entry.is_dir && entry.name == name);
+        let found = exact.or_else(|| {
+            let lower = name.to_lowercase();
+            self.entries.iter().find(|entry| !entry.is_dir && entry.name.to_lowercase() == lower)
+        });
+        let Some(entry) = found else { return Ok(None) };
+        if entry.uncompressed_size == 0 {
+            return Ok(Some(Vec::new()));
+        }
+        content_of(entry.compression, &self.data[entry.content.clone()], entry.uncompressed_size).map(Some)
+    }
+}
+
+/// A borrowed, exact-name view for importers that read only selected parts.
+/// Metadata parsing and local-header validation are shared with `load`.
+pub struct SelectiveArchive<'a> {
+    indices: std::collections::HashMap<String, usize>,
+    entries: Vec<SelectiveEntry<'a>>,
+}
+
+pub struct SelectiveEntry<'a> {
+    pub name: String,
+    pub unsafe_original_name: String,
+    pub is_dir: bool,
+    pub uncompressed_size: Option<f64>,
+    pub date: f64,
+    pub unix_permissions: Option<u32>,
+    compression: Compression,
+    compressed: &'a [u8],
+    size: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CappedReadError {
+    Limit,
+    Read(String),
+}
+
+pub fn open_selective(data: &[u8]) -> Result<SelectiveArchive<'_>, String> {
+    let mut entries = Vec::new();
+    let mut indices = std::collections::HashMap::<String, usize>::new();
+    for (file, compression, original) in parse_entries(data)? {
+        let is_dir = file.is_dir(&original);
+        if !is_dir && file.has_unix_dir_mode() {
+            return Err(UNIX_DIR_WITHOUT_SLASH.to_owned());
+        }
+        let mut name = resolve(&original);
+        if is_dir && !name.ends_with('/') { name.push('/'); }
+        let stored_empty = is_dir || file.uncompressed_size == 0;
+        let entry = SelectiveEntry {
+            name: name.clone(), unsafe_original_name: original, is_dir,
+            uncompressed_size: (!stored_empty).then_some(file.uncompressed_size as f64),
+            date: file.date(),
+            unix_permissions: (file.version_made_by >> 8 == MADE_BY_UNIX)
+                .then_some(((file.external_file_attributes >> 16) & 0xffff) as u32),
+            compression,
+            compressed: if stored_empty { &[] } else { file.compressed_content },
+            size: if stored_empty { 0 } else { file.uncompressed_size },
+        };
+        if let Some(&index) = indices.get(&name) { entries[index] = entry; }
+        else { indices.insert(name, entries.len()); entries.push(entry); }
+    }
+    Ok(SelectiveArchive { entries, indices })
+}
+
+impl<'a> SelectiveArchive<'a> {
+    pub fn file(&self, name: &str) -> Option<&SelectiveEntry<'a>> {
+        self.indices.get(name).map(|index| &self.entries[*index]).filter(|entry| !entry.is_dir)
+    }
+}
+
+impl SelectiveEntry<'_> {
+    /// JSZip DataWorker emits one 16 KiB compressed-input block per deferred
+    /// turn. Simultaneously resumed reads finish by this count, ties in order.
+    /// The common final EOF turn is omitted.
+    pub fn worker_input_chunks(&self) -> usize {
+        self.compressed.len().div_ceil(16 * 1024)
+    }
+
+    /// The limit applies to declared bytes and each actual JSZip output chunk,
+    /// before copying that chunk into the result. Damaged partial chunks retain
+    /// pako's existing discard semantics, not an eager inflater's error policy.
+    pub fn read_capped(&self, limit: usize) -> Result<Vec<u8>, CappedReadError> {
+        if self.uncompressed_size.is_some_and(|size| size > limit as f64) {
+            return Err(CappedReadError::Limit);
+        }
+        if self.size == 0 { return Ok(Vec::new()); }
+        let result = match self.compression {
+            Compression::Store => {
+                if self.compressed.len() > limit { return Err(CappedReadError::Limit); }
+                self.compressed.to_vec()
+            }
+            Compression::Deflate => {
+                const CHUNK: usize = 65536;
+                let mut inflater = Decompress::new(false);
+                let mut buffer = vec![0; CHUNK];
+                let mut filled = 0;
+                let mut input = self.compressed;
+                let mut result = Vec::new();
+                loop {
+                    let (before_in, before_out) = (inflater.total_in(), inflater.total_out());
+                    let status = inflater.decompress(input, &mut buffer[filled..], FlushDecompress::None);
+                    let consumed = (inflater.total_in() - before_in) as usize;
+                    let produced = (inflater.total_out() - before_out) as usize;
+                    input = &input[consumed..];
+                    if status.is_ok() {
+                        filled += produced;
+                        if filled == CHUNK || matches!(status, Ok(Status::StreamEnd)) {
+                            if filled > limit.saturating_sub(result.len()) {
+                                return Err(CappedReadError::Limit);
+                            }
+                            result.extend_from_slice(&buffer[..filled]);
+                            filled = 0;
+                        }
+                    }
+                    match status {
+                        Ok(Status::StreamEnd) => break,
+                        Ok(_) if consumed + produced > 0 && result.len() <= usize::try_from(self.size).unwrap_or(0).saturating_add(CHUNK) => {},
+                        _ => break,
+                    }
+                }
+                result
+            }
+        };
+        if result.len() as i64 != self.size {
+            Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned()))
+        } else { Ok(result) }
+    }
 }
 
 /// `readEndOfCentral`: the record count, the directory offset and whether the
@@ -733,5 +926,166 @@ mod tests {
     #[test]
     fn a_zip64_record_without_extensible_data_opens() {
         assert_eq!(load_in_time(zip64_with_extensible_data(&[])), Ok(0));
+    }
+    fn test_archive(parts: &[(&str, &[u8], u16, u32)]) -> Vec<u8> {
+        fn put16(buf: &mut [u8], at: usize, n: u16) {
+            buf[at..at + 2].copy_from_slice(&n.to_le_bytes());
+        }
+        fn put32(buf: &mut [u8], at: usize, n: u32) {
+            buf[at..at + 4].copy_from_slice(&n.to_le_bytes());
+        }
+        let mut local = Vec::new();
+        let mut central = Vec::new();
+        for &(name, body, method, size) in parts {
+            let offset = local.len() as u32;
+            let mut header = [0; 30];
+            header[..4].copy_from_slice(&LOCAL_FILE_HEADER);
+            put16(&mut header, 4, 20);
+            put16(&mut header, 6, 0x0800);
+            put16(&mut header, 8, method);
+            put32(&mut header, 18, body.len() as u32);
+            put32(&mut header, 22, size);
+            put16(&mut header, 26, name.len() as u16);
+            local.extend_from_slice(&header);
+            local.extend_from_slice(name.as_bytes());
+            local.extend_from_slice(body);
+            let mut header = [0; 46];
+            header[..4].copy_from_slice(&CENTRAL_FILE_HEADER);
+            put16(&mut header, 4, 20);
+            put16(&mut header, 6, 20);
+            put16(&mut header, 8, 0x0800);
+            put16(&mut header, 10, method);
+            put32(&mut header, 20, body.len() as u32);
+            put32(&mut header, 24, size);
+            put16(&mut header, 28, name.len() as u16);
+            put32(&mut header, 42, offset);
+            central.extend_from_slice(&header);
+            central.extend_from_slice(name.as_bytes());
+        }
+        let offset = local.len() as u32;
+        local.extend_from_slice(&central);
+        let mut end = [0; 22];
+        end[..4].copy_from_slice(&CENTRAL_DIRECTORY_END);
+        put16(&mut end, 8, parts.len() as u16);
+        put16(&mut end, 10, parts.len() as u16);
+        put32(&mut end, 12, central.len() as u32);
+        put32(&mut end, 16, offset);
+        local.extend_from_slice(&end);
+        local
+    }
+
+    #[test]
+    fn deferred_entry_preserves_jszip_names_and_duplicate_order() {
+        let data = test_archive(&[
+            ("dir/../Thumb.PNG", b"old", 0, 3),
+            ("thumb.png", b"exact", 0, 5),
+            ("Thumb.PNG", b"new", 0, 3),
+            ("folder/", b"", 0, 0),
+        ]);
+        let loaded = load(&data, false).unwrap();
+        let archive = open_owned(data).unwrap();
+        assert_eq!(archive.entry("Thumb.PNG").unwrap(), Some(b"new".to_vec()));
+        assert_eq!(archive.entry("thumb.png").unwrap(), Some(b"exact".to_vec()));
+        assert_eq!(archive.entry("THUMB.PNG").unwrap(), Some(b"new".to_vec()));
+        assert_eq!(archive.entry("folder/").unwrap(), None);
+        assert_eq!(archive.entry("missing").unwrap(), None);
+        assert_eq!(loaded[0].unsafe_original_name, "dir/../Thumb.PNG");
+        assert_eq!(loaded[0].name, "Thumb.PNG");
+    }
+
+    #[test]
+    fn deferred_entry_does_not_inflate_unrequested_corrupt_large_part() {
+        let data = test_archive(&[
+            ("large.bin", b"bad", 8, 1_500_000_000),
+            ("Preview/cover.png", b"image", 0, 5),
+        ]);
+        let eager = load(&data, false).unwrap();
+        let archive = open_owned(data).unwrap();
+        assert_eq!(archive.entry("preview/COVER.png").unwrap(), Some(b"image".to_vec()));
+        assert_eq!(archive.entry("large.bin").unwrap_err(), "Bug : uncompressed data size mismatch");
+        assert_eq!(eager[0].content.as_ref().unwrap_err(), "Bug : uncompressed data size mismatch");
+    }
+
+    #[test]
+    fn deferred_archive_rejects_the_same_malformed_header() {
+        let mut data = test_archive(&[("name", b"x", 0, 1)]);
+        data[0] = 0;
+        let eager = match load(&data, false) { Err(error) => error, Ok(_) => panic!("expected error") };
+        let deferred = match open_owned(data) { Err(error) => error, Ok(_) => panic!("expected error") };
+        assert_eq!(deferred, eager);
+    }
+
+    #[test]
+    fn selective_reads_are_exact_and_keep_last_normalized_duplicate_metadata() {
+        let data = test_archive(&[
+            ("dir/../content.xml", b"old", 0, 3),
+            ("CONTENT.XML", b"upper", 0, 5),
+            ("content.xml", b"new", 0, 3),
+            ("folder/", b"", 0, 0),
+        ]);
+        let eager = load(&data, false).unwrap();
+        let selective = open_selective(&data).unwrap();
+        let selected = selective.file("content.xml").unwrap();
+        assert_eq!(selected.read_capped(3), Ok(b"new".to_vec()));
+        assert_eq!(selected.date, eager[2].date);
+        assert_eq!(selected.unix_permissions, eager[2].unix_permissions);
+        assert_eq!(selected.unsafe_original_name, eager[2].unsafe_original_name);
+        assert_eq!(selective.file("CONTENT.XML").unwrap().read_capped(5), Ok(b"upper".to_vec()));
+        assert!(selective.file("Content.xml").is_none());
+        assert!(selective.file("folder/").is_none());
+    }
+
+    #[test]
+    fn selective_read_does_not_inflate_unused_large_or_damaged_parts() {
+        let data = test_archive(&[
+            ("unused", b"bad", 8, 512 * 1024 * 1024),
+            ("content.xml", b"<a/>", 0, 4),
+        ]);
+        let archive = open_selective(&data).unwrap();
+        assert_eq!(archive.file("content.xml").unwrap().read_capped(4), Ok(b"<a/>".to_vec()));
+        assert_eq!(archive.file("unused").unwrap().read_capped(64 * 1024 * 1024), Err(CappedReadError::Limit));
+    }
+
+    #[test]
+    fn selective_cap_checks_declared_and_actual_stored_bytes_before_copy() {
+        let data = test_archive(&[("declared", b"short", 0, 100), ("actual", b"longer", 0, 2), ("empty", b"ignored", 0, 0)]);
+        let archive = open_selective(&data).unwrap();
+        assert_eq!(archive.file("declared").unwrap().read_capped(99), Err(CappedReadError::Limit));
+        assert_eq!(archive.file("actual").unwrap().read_capped(5), Err(CappedReadError::Limit));
+        assert_eq!(archive.file("actual").unwrap().read_capped(6), Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned())));
+        assert_eq!(archive.file("empty").unwrap().read_capped(0), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn selective_deflate_cap_keeps_the_exact_boundary_and_damaged_chunk_semantics() {
+        use std::io::Write;
+        for size in [65_535usize, 65_536, 65_537, 131_073] {
+            let expected = vec![b'x'; size];
+            let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&expected).unwrap();
+            let compressed = encoder.finish().unwrap();
+            let data = test_archive(&[("body", &compressed, 8, size as u32)]);
+            let archive = open_selective(&data).unwrap();
+            assert_eq!(archive.file("body").unwrap().read_capped(size), Ok(expected));
+            assert_eq!(archive.file("body").unwrap().read_capped(size - 1), Err(CappedReadError::Limit));
+        }
+        let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(&vec![b'x'; 65_537]).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let understated = test_archive(&[("body", &compressed, 8, 1)]);
+        let archive = open_selective(&understated).unwrap();
+        assert_eq!(archive.file("body").unwrap().read_capped(65_536), Err(CappedReadError::Limit));
+        assert_eq!(archive.file("body").unwrap().read_capped(65_537), Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned())));
+        let corrupt = test_archive(&[("body", b"bad", 8, 1)]);
+        assert_eq!(open_selective(&corrupt).unwrap().file("body").unwrap().read_capped(1), Err(CappedReadError::Read("Bug : uncompressed data size mismatch".to_owned())));
+    }
+
+    #[test]
+    fn selective_metadata_refusals_match_the_unchanged_eager_reader() {
+        let mut data = test_archive(&[("name", b"x", 0, 1)]);
+        data[0] = 0;
+        let eager = match load(&data, false) { Err(error) => error, Ok(_) => panic!("expected refusal") };
+        let selective = match open_selective(&data) { Err(error) => error, Ok(_) => panic!("expected refusal") };
+        assert_eq!(selective, eager);
     }
 }

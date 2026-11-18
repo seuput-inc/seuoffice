@@ -254,61 +254,117 @@ pub fn prepare_generate_request(
     raw: &Value,
     inspect: &mut dyn FnMut(&str) -> Result<MaterialStatus, Failure>,
 ) -> Result<Prepared, Failure> {
-    let request = match validate_generate_request(raw) {
-        Ok(request) => request,
-        Err(error) => {
-            return Ok(Prepared::Refused {
-                error: PrepareError::Shape(error),
-                unsaved: None,
-                excluded: None,
-            });
-        }
-    };
-    let mut statuses: Vec<MaterialStatus> = Vec::new();
-    let mut failure: Option<Failure> = None;
-    for path in &request.materials {
-        match inspect(path) {
-            Ok(status) => statuses.push(status),
-            Err(error) => {
-                if failure.is_none() {
-                    failure = Some(error);
-                }
-            }
-        }
+    let mut step = prepare_generate_request_begin(raw);
+    loop {
+        step = match step {
+            PrepareStep::Done(result) => return result,
+            PrepareStep::Inspect { path, run } => run.resume(inspect(&path)),
+        };
     }
-    if let Some(error) = failure {
-        return Err(error);
+}
+
+/// A move-only inspection cursor. Every path is visited once, including after
+/// an earlier failure; the first failure in request order remains the result.
+#[derive(Debug)]
+pub struct PrepareRun {
+    request: GenerateRequest,
+    next: usize,
+    statuses: Vec<MaterialStatus>,
+    failure: Option<Failure>,
+}
+
+#[derive(Debug)]
+pub enum PrepareStep {
+    Done(Result<Prepared, Failure>),
+    Inspect { path: String, run: PrepareRun },
+}
+
+pub fn prepare_generate_request_begin(raw: &Value) -> PrepareStep {
+    match validate_generate_request(raw) {
+        Ok(request) => PrepareRun { request, next: 0, statuses: Vec::new(), failure: None }.advance(),
+        Err(error) => PrepareStep::Done(Ok(Prepared::Refused {
+            error: PrepareError::Shape(error), unsaved: None, excluded: None,
+        })),
     }
+}
+
+impl PrepareRun {
+    pub fn resume(mut self, answer: Result<MaterialStatus, Failure>) -> PrepareStep {
+        match answer {
+            Ok(status) => self.statuses.push(status),
+            Err(error) if self.failure.is_none() => self.failure = Some(error),
+            Err(_) => {}
+        }
+        self.advance()
+    }
+
+    fn advance(mut self) -> PrepareStep {
+        if let Some(path) = self.request.materials.get(self.next) {
+            let path = path.clone();
+            self.next += 1;
+            return PrepareStep::Inspect { path, run: self };
+        }
+        PrepareStep::Done(match self.failure {
+            Some(error) => Err(error),
+            None => Ok(prepare_inspected_request(self.request, &self.statuses)),
+        })
+    }
+}
+
+fn prepare_inspected_request(request: GenerateRequest, statuses: &[MaterialStatus]) -> Prepared {
     let kind_for_notices: AiTargetKind = match request.kind {
         RequestKind::Ai(kind) => kind,
         RequestKind::Convert(_) => AiTargetKind::Mindmap,
     };
-    let summary = summarize_materials(&statuses, kind_for_notices);
+    let summary = summarize_materials(statuses, kind_for_notices);
     if !summary.unsaved.is_empty() {
-        return Ok(Prepared::Refused {
+        return Prepared::Refused {
             error: PrepareError::UnsavedMaterial,
             unsaved: Some(summary.unsaved),
             excluded: Some(summary.excluded),
-        });
+        };
     }
     if summary.ready.is_empty() {
-        return Ok(Prepared::Refused {
+        return Prepared::Refused {
             error: PrepareError::NoReadableMaterial,
             unsaved: None,
             excluded: Some(summary.excluded),
-        });
+        };
     }
     let materials = summary
         .ready
         .iter()
         .map(|s| s.path.clone().unwrap_or_default())
         .collect();
-    Ok(Prepared::Ready {
+    Prepared::Ready {
         request: GenerateRequest {
             materials,
             ..request
         },
         ready: summary.ready,
         excluded: summary.excluded,
-    })
+    }
+}
+
+#[cfg(test)]
+mod continuation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn preparation_visits_every_unique_path_once_and_returns_first_ordered_failure() {
+        let raw = json!({ "mode": "ai", "kind": "markdown", "materials": ["/a.md", "/a.md", "/b.md"], "text": "" });
+        let PrepareStep::Inspect { path, run } = prepare_generate_request_begin(&raw) else { panic!("expected first inspection") };
+        assert_eq!(path, "/a.md");
+        let PrepareStep::Inspect { path, run } = run.resume(Err(Failure("first".into()))) else { panic!("second inspection must still run") };
+        assert_eq!(path, "/b.md");
+        let PrepareStep::Done(Err(Failure(error))) = run.resume(Err(Failure("second".into()))) else { panic!("expected ordered failure") };
+        assert_eq!(error, "first");
+    }
+
+    #[test]
+    fn invalid_shape_never_requests_an_inspection() {
+        assert!(matches!(prepare_generate_request_begin(&json!({ "mode": "ai", "kind": "markdown", "materials": [] })),
+            PrepareStep::Done(Ok(Prepared::Refused { error: PrepareError::Shape(RequestShapeError::NoMaterial), .. }))));
+    }
 }

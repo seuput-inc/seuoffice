@@ -11,6 +11,9 @@
 pub mod diagram;
 pub mod host;
 pub mod mindmap;
+mod owned_recovery;
+mod owned_save;
+mod owned_seed;
 pub mod route;
 pub mod sheets;
 pub mod slides;
@@ -51,6 +54,7 @@ pub fn insert_fakes(hosts: &mut shell_contract::Hosts) {
 #[cfg(feature = "probe")]
 pub fn probe_hosts(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) {
     use std::sync::Arc;
+    hosts.insert::<shell_contract::runtime::NativeViewRetirementsHost>(Arc::new(testkit::FakeNativeRetirements::default()));
     hosts.insert::<host::LocaleHost>(Arc::new(testkit::FixedLocale(
         main_core::packages::i18n::Lang::En,
     )));
@@ -68,6 +72,7 @@ pub fn probe_hosts(hosts: &mut shell_contract::Hosts, case: &serde_json::Value) 
 pub fn probe_trigger(
     name: &str,
     view: shell_contract::ViewId,
+    owner: Option<shell_contract::ipc::NativeRequestOwner>,
     args: &serde_json::Value,
     services: &Services,
     provided: &std::rc::Rc<shell_contract::provided::Provided>,
@@ -82,7 +87,7 @@ pub fn probe_trigger(
         Some("sheets" | "workbook") => {
             sheets::probe_trigger(what, view, args, services, provided, then)
         }
-        Some("slides") => slides::probe_trigger(what, view, args, services, provided, then),
+        Some("slides") => slides::probe_trigger(what, view, owner, args, services, provided, then),
         _ => false,
     }
 }

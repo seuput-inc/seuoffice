@@ -38,8 +38,9 @@ use main_core::packages::google_drive::oauth::{
     GoogleClient, GoogleSignInFailure, SignInPage as GooglePage, SignInPages,
 };
 use main_core::packages::i18n::Lang;
+use notify::{RecursiveMode, Watcher};
 use shell_contract::runtime::{AppPaths, PathName, Services};
-use shell_contract::{Batch, Hosts};
+use shell_contract::{Batch, Hosts, ViewId};
 use shell_ipc_a::drive::client::{
     BrowserRound, ConnectionState, DriveAccount, DriveClient, DriveClientHost, DriveError,
     DriveFile, DriveResult, ListPage, Listing, OpenPlan, ShortcutTarget, SignInFailure,
@@ -49,14 +50,20 @@ use shell_ipc_a::drive::host::{DriveShell, DriveShellHost, ParsedText, StopWatch
 use shell_ipc_a::drive::vault::{DriveVault, SafeStorageCipher, create_drive_vault};
 use shell_ipc_a::runtime::{CallReply, Driver, NetHost};
 use shell_ipc_a::secrets::SafeStorageHost;
+use shell_ipc_w::editor_files::{FileParseHost, ParsedKind};
+use shell_ipc_w::home_files::HomeFilesHost;
+use shell_ipc_w::tabs::TabsState;
 
-use super::{current_lang, unbuilt};
+use super::current_lang;
 use crate::host::HostContext;
-use crate::host::w::post_core;
+use crate::host::w::{on_core, post_core};
 use crate::paths::ShellPaths;
 
 pub(super) fn install(hosts: &mut Hosts, _cx: &HostContext) {
-    let shell: DriveShellHost = Arc::new(ShellDrive);
+    let shell: DriveShellHost = Arc::new(ShellDrive {
+        parser: hosts.get::<FileParseHost>().cloned().expect("W file parser"),
+        home: hosts.get::<HomeFilesHost>().cloned().expect("W home files"),
+    });
     hosts.insert(shell);
     let client: DriveClientHost = Arc::new(ShellDriveClient::new());
     hosts.insert(client);
@@ -65,24 +72,27 @@ pub(super) fn install(hosts: &mut Hosts, _cx: &HostContext) {
 
 // ---- DriveShell ----
 
-/// `DriveIpcDeps` of drive-ipc.ts: the language and the stored AI settings
-/// are real, the rest waits for the tab manager, the file parser and a
-/// folder watcher
-struct ShellDrive;
+/// `DriveIpcDeps` backed by the shared tabs and file parser.
+struct ShellDrive {
+    parser: FileParseHost,
+    home: HomeFilesHost,
+}
 
 impl DriveShell for ShellDrive {
     fn lang(&self) -> Lang {
         current_lang()
     }
 
-    fn open_path(&self, _: &str) -> bool {
-        unbuilt("DriveShell::open_path");
-        false
+    fn open_path(&self, path: &str) -> bool {
+        let path = path.to_owned();
+        on_core(move |provided| {
+            provided.all::<TabsState>().into_iter().next()
+                .is_some_and(|tabs| tabs.route_document_path(&path))
+        }).unwrap_or(false)
     }
 
-    fn is_open(&self, _: &str) -> bool {
-        unbuilt("DriveShell::is_open");
-        false
+    fn is_open(&self, path: &str) -> bool {
+        self.home.open_file_paths().iter().any(|open| open == path)
     }
 
     /// `readStoredAiSettings()`: `userData/ai-settings.json` as every reader gets it
@@ -94,19 +104,45 @@ impl DriveShell for ShellDrive {
         read_routing_settings(text.as_deref())
     }
 
-    fn document_of(&self, _: f64) -> Option<String> {
-        unbuilt("DriveShell::document_of");
-        None
+    fn document_of(&self, id: f64) -> Option<String> {
+        if !id.is_finite() || id.fract() != 0.0 || id < 0.0 || id > u32::MAX as f64 {
+            return None;
+        }
+        let view = ViewId(id as u32);
+        on_core(move |provided| {
+            provided.all::<TabsState>().into_iter().next()
+                .and_then(|tabs| tabs.document_of(view))
+                .and_then(|document| document.file_path)
+        }).flatten()
     }
 
-    fn parse_file_to_text(&self, _: &Path) -> ParsedText {
-        unbuilt("DriveShell::parse_file_to_text");
-        ParsedText::default()
+    fn parse_file_to_text(&self, path: &Path) -> ParsedText {
+        match self.parser.parse_file_to_text(path) {
+            Ok(parsed) => ParsedText {
+                ok: parsed.ok,
+                kind: Some(match parsed.kind {
+                    ParsedKind::Text => "text",
+                    ParsedKind::Image => "image",
+                    ParsedKind::Unsupported => "unsupported",
+                }.into()),
+                text: parsed.text,
+            },
+            Err(_) => ParsedText { ok: false, kind: None, text: None },
+        }
     }
 
-    fn watch(&self, _: &Path, _: Arc<dyn Fn(&Path) + Send + Sync>) -> StopWatch {
-        unbuilt("DriveShell::watch");
-        Box::new(|| {})
+    fn watch(&self, dir: &Path, on_change: Arc<dyn Fn(&Path) + Send + Sync>) -> StopWatch {
+        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if let Ok(event) = event && !matches!(event.kind, notify::EventKind::Access(_)) {
+                for path in event.paths {
+                    on_change(&path);
+                }
+            }
+        }).and_then(|mut watcher| {
+            watcher.watch(dir, RecursiveMode::Recursive)?;
+            Ok(watcher)
+        }).ok();
+        Box::new(move || drop(watcher))
     }
 }
 
@@ -221,7 +257,10 @@ fn rig(services: &Services, shared: &Arc<Shared>) -> Option<Rc<Rig>> {
     let net = services.hosts.need::<NetHost>(Batch::A).ok()?;
     let storage = services.hosts.need::<SafeStorageHost>(Batch::A).ok()?;
     let vault = Arc::new(create_drive_vault(
-        services.paths.path(PathName::UserData).join("google-drive.json"),
+        services
+            .paths
+            .path(PathName::UserData)
+            .join("google-drive.json"),
         Arc::new(SafeStorageCipher::over_os(storage)),
     ));
     let driver = Driver::new(services, net);
@@ -413,7 +452,10 @@ impl DriveClient for ShellDriveClient {
     }
 
     fn connected(&self) -> bool {
-        matches!(*locked(&self.shared.state), ConnectionState::Connected { .. })
+        matches!(
+            *locked(&self.shared.state),
+            ConnectionState::Connected { .. }
+        )
     }
 
     fn load(&self) {
@@ -448,16 +490,18 @@ impl DriveClient for ShellDriveClient {
     fn pick(&self, round: &BrowserRound, multiple: bool) -> Result<Vec<String>, SignInFailure> {
         let pages = pages_of(round);
         let open = round.open_browser.clone();
-        self.on_core(move |rig| -> LocalBoxFuture<Result<Vec<String>, SignInFailure>> {
-            *rig.browser.borrow_mut() = Some(open);
-            let (connection, rt) = (rig.connection.clone(), rig.rt.clone());
-            Box::pin(async move {
-                connection
-                    .pick(&rt, &pages, multiple)
-                    .await
-                    .map_err(sign_in_failure)
-            })
-        })
+        self.on_core(
+            move |rig| -> LocalBoxFuture<Result<Vec<String>, SignInFailure>> {
+                *rig.browser.borrow_mut() = Some(open);
+                let (connection, rt) = (rig.connection.clone(), rig.rt.clone());
+                Box::pin(async move {
+                    connection
+                        .pick(&rt, &pages, multiple)
+                        .await
+                        .map_err(sign_in_failure)
+                })
+            },
+        )
         .unwrap_or(Err(SignInFailure::Network))
     }
 

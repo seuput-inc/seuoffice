@@ -16,16 +16,14 @@
 //!
 //! The TypeScript class holds its `deps`; here every method takes the host
 //! ([`GenerateSessionHost`]) it runs against, so the window can lend its own
-//! to a session it also owns. Promises are plain calls, a rejection is a
-//! [`Failure`], and `Promise.all` over the rows runs them one after another
-//! (the first rejection, in row order, is the answer; every row still runs).
-//! The open files and open tabs the TypeScript asks the shell for are the
-//! [`OpenSnapshot`] every action is handed. Two awaits wait on a renderer and
-//! are steps: an editor's save command and the recheck `setTimeout` of
-//! [`GenerateSession::save_begin`] ([`SaveStep`], [`SaveRun`]).
+//! to a session it also owns. Every renderer, parser, conversion and tab-open
+//! boundary yields an owned [`SessionNeed`]. The caller releases core state,
+//! performs the effect, then resumes with a fresh [`OpenSnapshot`]. A move-only
+//! [`SessionRun`] retains the exact row and action that requested the answer.
 
 use jscompat::math_round;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 use super::convert::{ConvertResult, ConvertedDocument};
 use super::generate_api::{
@@ -41,7 +39,8 @@ use super::open_materials::{
     OpenSnapshot, SaveAnswer, SaveMaterialRun, SaveMaterialStep, SaveNeed, SaveOutcome,
 };
 use super::request::{
-    Prepared, available_conversions, is_ai_target_kind, prepare_generate_request,
+    PrepareRun, PrepareStep, Prepared, available_conversions, is_ai_target_kind,
+    prepare_generate_request_begin,
 };
 use crate::packages::electron_utils::generate_handoff::{
     GenerateHandoff, GenerateHandoffTarget, Material,
@@ -59,17 +58,15 @@ pub enum MaterialRef {
 /// `GenerateSessionDeps`. A call that rejects is a [`Failure`].
 pub trait GenerateSessionHost {
     fn lang(&self) -> Lang;
-    /// `deps.inspect(path)`, with the open files the shell gathered
-    fn inspect(&mut self, snap: &OpenSnapshot<'_>, path: &str) -> Result<MaterialStatus, Failure>;
     /// For a never-saved document: its path now, `None` while it is still untitled.
     /// (`deps.pathOfUntitled(..).catch(() => null)`: the open tabs are the snapshot's.)
     fn path_of_untitled(&mut self, snap: &OpenSnapshot<'_>, web_contents_id: f64)
-    -> Option<String>;
+    -> Result<Option<String>, Failure>;
     /// whether this path's open document can be saved in place, or only shown
     fn save_action_for(&mut self, snap: &OpenSnapshot<'_>, path: &str) -> SaveAction;
     /// save the open document behind `path`, up to the editor's save command
     /// (a rejection is [`SaveOutcome::Failed`])
-    fn save_material_begin(&mut self, snap: &OpenSnapshot<'_>, path: &str) -> SaveMaterialStep;
+    fn save_material_begin(&mut self, snap: &OpenSnapshot<'_>, path: &str) -> Result<SaveMaterialStep, Failure>;
     /// the editor answered a [`SaveNeed`]
     fn save_material_resume(&mut self, run: SaveMaterialRun, answer: SaveAnswer) -> SaveOutcome;
     /// bring a never-saved document's tab forward so the user can save it
@@ -77,21 +74,12 @@ pub trait GenerateSessionHost {
         &mut self,
         snap: &OpenSnapshot<'_>,
         web_contents_id: f64,
-    ) -> Result<(), Failure>;
-    /// open the new untitled tab with the request queued for it (fails when it cannot)
-    fn open_target_tab(&mut self, handoff: &GenerateHandoff) -> Result<(), Failure>;
+    ) -> Result<Option<String>, Failure>;
     /// `deps.convert` and `deps.openConvertedTab` were both given: conversions are offered
     fn can_convert(&self) -> bool;
-    /// 8.6: run a conversion without AI on one material
-    fn convert(&mut self, kind: ConvertKind, path: &str) -> Result<ConvertResult, Failure>;
-    /// open a conversion's result as a new unsaved tab (fails when it cannot)
-    fn open_converted_tab(&mut self, doc: &ConvertedDocument) -> Result<(), Failure>;
     /// `deps.redactionNotice` was given
     fn has_redaction_notice(&self) -> bool;
-    /// whether converting this markdown file carries withheld spans over as their labels
-    fn redaction_notice(&mut self, path: &str) -> Result<bool, Failure>;
-    fn push(&mut self, state: &GenerateWindowState);
-    fn close(&mut self);
+    fn push(&mut self, state: &GenerateWindowState) -> Result<(), Failure>;
     fn new_id(&mut self) -> String;
     fn now(&mut self) -> f64;
     /// a dirty flag can lag a save by a beat: when to look again (`None`: 600 ms)
@@ -121,44 +109,105 @@ fn key_of(mref: &MaterialRef) -> String {
     }
 }
 
-/// What the caller carries out for a save in flight, and answers with a
-/// [`SessionAnswer`] through [`GenerateSession::save_resume`].
-#[derive(Debug, Clone, PartialEq)]
+/// Owned effects. No session, host reference or core borrow crosses a yield.
+#[derive(Debug)]
 pub enum SessionNeed {
-    /// the editor's save command
     Save(SaveNeed),
-    /// `await new Promise((r) => setTimeout(r, ms))`: call back after `ms`
-    /// milliseconds, other messages landing meanwhile
+    Reveal(String),
     Sleep(f64),
+    Inspect(String),
+    Notice(String),
+    Convert { kind: ConvertKind, path: String },
+    OpenTarget { handoff: GenerateHandoff, token: OpenCommitToken },
+    OpenConverted { document: ConvertedDocument, token: OpenCommitToken },
 }
 
-/// The answer to a [`SessionNeed`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum SessionAnswer {
     Save(SaveAnswer),
+    Revealed(Result<(), Failure>),
     Slept,
+    Inspected(Result<MaterialStatus, Failure>),
+    Noticed(Result<bool, Failure>),
+    Converted(Result<ConvertResult, Failure>),
+    OpenFailed(Failure),
+    Dialog(Result<super::generate_window::OpenDialogResult, Failure>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionOutcome {
+    Unit,
+    Made(bool),
+}
+
+/// A move-only operation identity, not native authority. The host retains it
+/// through the actual constructor, immutable seed commit and load outcome.
+#[derive(Debug)]
+pub struct OpenCommitToken {
+    operation: Arc<()>,
 }
 
 #[derive(Debug)]
-enum SaveStage {
-    Saving(SaveMaterialRun),
-    Waiting,
+pub struct OpenCommitReceipt {
+    operation: Arc<()>,
 }
 
-/// The continuation of `save` between two calls; the caller keeps it. The
-/// row is named by its id, so a row removed meanwhile is left alone.
-#[derive(Debug)]
-pub struct SaveRun {
-    id: u64,
-    row_key: String,
-    stage: SaveStage,
+impl OpenCommitToken {
+    /// The native/port wrapper must require its actual CommittedGeneratedTab
+    /// evidence before consuming this token. A successful queue operation or
+    /// Result<()> is not evidence of a committed target.
+    pub fn commit(self) -> OpenCommitReceipt {
+        OpenCommitReceipt { operation: self.operation }
+    }
 }
 
-/// One step of `save`.
 #[derive(Debug)]
-pub enum SaveStep {
-    Done(Result<(), Failure>),
-    Need(SessionNeed, SaveRun),
+pub struct SessionRun {
+    stage: RunStage,
+}
+
+#[derive(Debug)]
+pub enum SessionStep {
+    Done(Result<SessionOutcome, Failure>),
+    Need(SessionNeed, SessionRun),
+}
+
+#[derive(Debug)]
+enum AfterInspection {
+    Unit,
+    Saved { id: u64, result: SaveOutcome },
+    Make { text: String },
+}
+
+#[derive(Debug)]
+struct InspectionRun {
+    rows: Vec<u64>,
+    next: usize,
+    failure: Option<Failure>,
+    after: AfterInspection,
+}
+
+#[derive(Debug)]
+enum InspectWait {
+    Status { id: u64, path: String },
+    Notice { id: u64, status: MaterialStatus, save_action: Option<SaveAction> },
+}
+
+#[derive(Debug)]
+enum AfterPrepared {
+    Ai { text: String },
+    Convert { kind: ConvertKind },
+}
+
+#[derive(Debug)]
+enum RunStage {
+    Inspect { run: InspectionRun, waiting: InspectWait },
+    Saving { id: u64, row_key: String, run: SaveMaterialRun },
+    Revealing { saved: Option<(u64, String)> },
+    Waiting { id: u64 },
+    Preparing { run: PrepareRun, after: AfterPrepared },
+    Converting { source: String },
+    Opening { operation: Arc<()> },
 }
 
 pub struct GenerateSession {
@@ -198,48 +247,37 @@ impl GenerateSession {
         self.closed
     }
 
-    /// start over with a new set of materials (the window was opened again from an entry point)
+    /// Start over without retaining a core borrow while rows are inspected.
     pub fn reset<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        refs: &[MaterialRef],
-        kind: Option<AiTargetKind>,
-    ) -> Result<(), Failure> {
-        let rows = self.reset_begin(host, refs, kind);
-        self.reset_finish(host, snap, &rows)
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>,
+        refs: &[MaterialRef], kind: Option<AiTargetKind>,
+    ) -> SessionStep {
+        match self.reset_begin(host, refs, kind) {
+            Ok(rows) => self.reset_finish(host, snap, rows),
+            Err(error) => SessionStep::Done(Err(error)),
+        }
     }
 
-    /// `reset` up to its first await (the rows are cleared, refilled and the
-    /// first push went out): what the caller's own statements after
-    /// `void session.reset(...)` see. Answers the rows to read.
     pub fn reset_begin<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        refs: &[MaterialRef],
-        kind: Option<AiTargetKind>,
-    ) -> Vec<u64> {
+        &mut self, host: &mut H, refs: &[MaterialRef], kind: Option<AiTargetKind>,
+    ) -> Result<Vec<u64>, Failure> {
         self.rows = Vec::new();
-        if let Some(kind) = kind {
-            self.kind = kind;
-        }
+        if let Some(kind) = kind { self.kind = kind; }
         self.failure = None;
         self.convert_problem = None;
         self.mode = GenerateMode::Ai;
         self.convert_kind = None;
         self.append_refs(refs);
-        self.inspect_begin(host);
-        self.rows.iter().map(|r| r.id).collect()
+        self.inspect_begin(host)?;
+        Ok(self.rows.iter().map(|row| row.id).collect())
     }
 
-    /// `reset` after that await: the rows read, the last push
     pub fn reset_finish<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        rows: &[u64],
-    ) -> Result<(), Failure> {
-        self.inspect_finish(host, snap, rows)
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, rows: Vec<u64>,
+    ) -> SessionStep {
+        self.advance_inspection(host, snap, InspectionRun {
+            rows, next: 0, failure: None, after: AfterInspection::Unit,
+        })
     }
 
     pub fn state<H: GenerateSessionHost>(&self, host: &H) -> GenerateWindowState {
@@ -351,11 +389,9 @@ impl GenerateSession {
         view
     }
 
-    fn push<H: GenerateSessionHost>(&self, host: &mut H) {
-        if !self.closed {
-            let state = self.state(&*host);
-            host.push(&state);
-        }
+    fn push<H: GenerateSessionHost>(&self, host: &mut H) -> Result<(), Failure> {
+        if !self.closed { host.push(&self.state(host))?; }
+        Ok(())
     }
 
     /// the rows that count as listed material: not left out (or still being read)
@@ -424,34 +460,22 @@ impl GenerateSession {
         self.rows.iter_mut().find(|r| r.id == id)
     }
 
-    /// read one row again; a row removed meanwhile is left alone
-    fn inspect_row<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        id: u64,
-    ) -> Result<(), Failure> {
-        let untitled = self
-            .rows
-            .iter()
-            .find(|r| r.id == id)
-            .and_then(|r| match &r.mref {
-                MaterialRef::Untitled {
-                    web_contents_id,
-                    title,
-                } => Some((*web_contents_id, title.clone())),
-                MaterialRef::Path(_) => None,
-            });
+    /// Resolve a row's current path on core. Saved untitled rows retain their
+    /// identity; a removed row cannot be recreated by a late worker answer.
+    fn inspection_path<H: GenerateSessionHost>(
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, id: u64,
+    ) -> Result<Option<String>, Failure> {
+        let untitled = self.rows.iter().find(|row| row.id == id).and_then(|row| match &row.mref {
+            MaterialRef::Untitled { web_contents_id, title } => Some((*web_contents_id, title.clone())),
+            MaterialRef::Path(_) => None,
+        });
         if let Some((web_contents_id, title)) = untitled {
-            let saved_path = host
-                .path_of_untitled(snap, web_contents_id)
-                .filter(|path| !path.is_empty());
-            match saved_path {
+            match host.path_of_untitled(snap, web_contents_id)?.filter(|path| !path.is_empty()) {
                 Some(saved) => {
                     let key = material_key(&saved);
-                    if self.rows.iter().any(|r| r.id != id && r.key == key) {
-                        self.rows.retain(|r| r.id != id);
-                        return Ok(());
+                    if self.rows.iter().any(|row| row.id != id && row.key == key) {
+                        self.rows.retain(|row| row.id != id);
+                        return Ok(None);
                     }
                     if let Some(row) = self.row_mut(id) {
                         row.mref = MaterialRef::Path(saved);
@@ -462,90 +486,91 @@ impl GenerateSession {
                     if let Some(row) = self.row_mut(id) {
                         row.status = Some(untitled_material(web_contents_id, &title));
                     }
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
-        let path = match self.rows.iter().find(|r| r.id == id).map(|r| &r.mref) {
-            Some(MaterialRef::Path(path)) => path.clone(),
-            _ => return Ok(()),
-        };
-        let status = host.inspect(snap, &path)?;
-        let save_action = if status.unsaved {
-            Some(host.save_action_for(snap, &path))
-        } else {
-            None
-        };
-        // only a markdown file that could be converted to a map is asked about its withheld spans
-        let marked = if host.has_redaction_notice()
-            && status.problem.is_none()
-            && !status.unsaved
-            && available_conversions(std::slice::from_ref(&path))
-                .contains(&ConvertKind::MarkdownToMindmap)
-        {
-            host.redaction_notice(&path).unwrap_or(false)
-        } else {
-            false
-        };
+        Ok(match self.rows.iter().find(|row| row.id == id).map(|row| &row.mref) {
+            Some(MaterialRef::Path(path)) => Some(path.clone()),
+            _ => None,
+        })
+    }
+
+    fn apply_inspection(&mut self, id: u64, mut status: MaterialStatus, save_action: Option<SaveAction>, marked: bool) {
         if let Some(row) = self.row_mut(id) {
-            let mut status = status;
             status.key = row.key.clone();
             row.status = Some(status);
             row.save_action = save_action;
             row.marked = marked;
         }
+    }
+
+    fn inspect_begin<H: GenerateSessionHost>(&mut self, host: &mut H) -> Result<(), Failure> {
+        self.in_flight += 1;
+        if let Err(error) = self.push(host) {
+            self.in_flight -= 1;
+            return Err(error);
+        }
         Ok(())
     }
 
     fn inspect_rows<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        rows: &[u64],
-    ) -> Result<(), Failure> {
-        self.inspect_begin(host);
-        self.inspect_finish(host, snap, rows)
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, rows: Vec<u64>, after: AfterInspection,
+    ) -> SessionStep {
+        if let Err(error) = self.inspect_begin(host) {
+            if matches!(after, AfterInspection::Make { .. }) { self.making = false; }
+            return SessionStep::Done(Err(error));
+        }
+        self.advance_inspection(host, snap, InspectionRun { rows, next: 0, failure: None, after })
     }
 
-    /// `inspectRows` up to its first await: `inFlight++; this.push()`
-    fn inspect_begin<H: GenerateSessionHost>(&mut self, host: &mut H) {
-        self.in_flight += 1;
-        self.push(host);
-    }
-
-    /// `inspectRows` after that await: every row read, then `inFlight--; this.push()`
-    fn inspect_finish<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        rows: &[u64],
-    ) -> Result<(), Failure> {
-        let mut failure: Option<Failure> = None;
-        for id in rows {
-            if let Err(error) = self.inspect_row(host, snap, *id)
-                && failure.is_none()
-            {
-                failure = Some(error);
+    fn advance_inspection<H: GenerateSessionHost>(
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, mut run: InspectionRun,
+    ) -> SessionStep {
+        while let Some(&id) = run.rows.get(run.next) {
+            run.next += 1;
+            match self.inspection_path(host, snap, id) {
+                Ok(Some(path)) => return SessionStep::Need(SessionNeed::Inspect(path.clone()), SessionRun {
+                    stage: RunStage::Inspect { run, waiting: InspectWait::Status { id, path } },
+                }),
+                Ok(None) => {}
+                Err(error) => { if run.failure.is_none() { run.failure = Some(error); } }
             }
         }
         self.in_flight -= 1;
-        self.push(host);
-        failure.map_or(Ok(()), Err)
+        if let Err(error) = self.push(host) {
+            if matches!(run.after, AfterInspection::Make { .. }) { self.making = false; }
+            return SessionStep::Done(Err(error));
+        }
+        let result = run.failure.map_or(Ok(()), Err);
+        match run.after {
+            AfterInspection::Unit => SessionStep::Done(result.map(|()| SessionOutcome::Unit)),
+            AfterInspection::Make { text } => match result {
+                Ok(()) => self.prepare_make(host, text),
+                Err(_) => self.failed_make(host),
+            },
+            AfterInspection::Saved { id, result: saved } => {
+                if let Err(error) = result { return SessionStep::Done(Err(error)); }
+                let still_unsaved = self.rows.iter().find(|row| row.id == id)
+                    .and_then(|row| row.status.as_ref()).is_some_and(|status| status.unsaved);
+                if saved == SaveOutcome::Saved && still_unsaved {
+                    SessionStep::Need(SessionNeed::Sleep(host.recheck_delay_ms().unwrap_or(600.0)),
+                        SessionRun { stage: RunStage::Waiting { id } })
+                } else {
+                    SessionStep::Done(Ok(SessionOutcome::Unit))
+                }
+            }
+        }
     }
 
-    /// read every row again (window focus, after a save, before "make")
-    pub fn refresh<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-    ) -> Result<(), Failure> {
-        let all: Vec<u64> = self.rows.iter().map(|r| r.id).collect();
-        self.inspect_rows(host, snap, &all)
+    pub fn refresh<H: GenerateSessionHost>(&mut self, host: &mut H, snap: &OpenSnapshot<'_>) -> SessionStep {
+        let rows = self.rows.iter().map(|row| row.id).collect();
+        self.inspect_rows(host, snap, rows, AfterInspection::Unit)
     }
 
-    pub fn set_kind<H: GenerateSessionHost>(&mut self, host: &mut H, kind: Option<&Value>) {
+    pub fn set_kind<H: GenerateSessionHost>(&mut self, host: &mut H, kind: Option<&Value>) -> Result<(), Failure> {
         if !is_ai_target_kind(kind) || self.making {
-            return;
+            return Ok(());
         }
         let text = kind.and_then(Value::as_str).unwrap_or_default();
         if let Some(kind) = GenerateHandoffTarget::parse(text) {
@@ -553,27 +578,27 @@ impl GenerateSession {
         }
         self.mode = GenerateMode::Ai;
         self.failure = None;
-        self.push(host);
+        self.push(host)
     }
 
     /// 8.6: choose a conversion on offer, or null for back to the AI kinds
-    pub fn set_convert<H: GenerateSessionHost>(&mut self, host: &mut H, kind: Option<&Value>) {
+    pub fn set_convert<H: GenerateSessionHost>(&mut self, host: &mut H, kind: Option<&Value>) -> Result<(), Failure> {
         if self.making {
-            return;
+            return Ok(());
         }
         if matches!(kind, Some(Value::Null)) {
             self.mode = GenerateMode::Ai;
         } else {
             let parsed = kind.and_then(Value::as_str).and_then(parse_convert_kind);
             let Some(parsed) = parsed.filter(|k| self.conversions(&*host).contains(k)) else {
-                return;
+                return Ok(());
             };
             self.mode = GenerateMode::Convert;
             self.convert_kind = Some(parsed);
         }
         self.failure = None;
         self.convert_problem = None;
-        self.push(host);
+        self.push(host)
     }
 
     pub fn add_paths<H: GenerateSessionHost>(
@@ -581,9 +606,9 @@ impl GenerateSession {
         host: &mut H,
         snap: &OpenSnapshot<'_>,
         paths: &[Value],
-    ) -> Result<(), Failure> {
+    ) -> SessionStep {
         if self.making {
-            return Ok(());
+            return SessionStep::Done(Ok(SessionOutcome::Unit));
         }
         self.failure = None;
         let refs: Vec<MaterialRef> = paths
@@ -594,274 +619,244 @@ impl GenerateSession {
             .collect();
         let added = self.append_refs(&refs);
         if !added.is_empty() {
-            self.inspect_rows(host, snap, &added)
+            self.inspect_rows(host, snap, added, AfterInspection::Unit)
         } else {
-            self.push(host);
-            Ok(())
+            SessionStep::Done(self.push(host).map(|()| SessionOutcome::Unit))
         }
     }
 
-    pub fn remove<H: GenerateSessionHost>(&mut self, host: &mut H, key: Option<&Value>) {
+    pub fn remove<H: GenerateSessionHost>(&mut self, host: &mut H, key: Option<&Value>) -> Result<(), Failure> {
         let Some(key) = key.and_then(Value::as_str) else {
-            return;
+            return Ok(());
         };
         if self.making {
-            return;
+            return Ok(());
         }
         self.rows.retain(|r| r.key != key);
         self.failure = None;
-        self.push(host);
+        self.push(host)
     }
 
-    /// `save(key)`, up to the first await that waits on a renderer
     pub fn save_begin<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        key: Option<&Value>,
-    ) -> SaveStep {
-        let found = key
-            .and_then(Value::as_str)
-            .and_then(|key| self.rows.iter().find(|r| r.key == key));
-        let Some(row) = found else {
-            return SaveStep::Done(Ok(()));
-        };
-        if self.making || self.saving.contains(&row.key) {
-            return SaveStep::Done(Ok(()));
-        }
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, key: Option<&Value>,
+    ) -> SessionStep {
+        let found = key.and_then(Value::as_str).and_then(|key| self.rows.iter().find(|row| row.key == key));
+        let Some(row) = found else { return SessionStep::Done(Ok(SessionOutcome::Unit)); };
+        if self.making || self.saving.contains(&row.key) { return SessionStep::Done(Ok(SessionOutcome::Unit)); }
         let (id, row_key, mref) = (row.id, row.key.clone(), row.mref.clone());
         self.failure = None;
         let path = match mref {
-            MaterialRef::Untitled {
-                web_contents_id, ..
-            } => {
-                if let Err(error) = host.show_untitled(snap, web_contents_id) {
-                    return SaveStep::Done(Err(error));
-                }
-                self.push(host);
-                return SaveStep::Done(Ok(()));
+            MaterialRef::Untitled { web_contents_id, .. } => {
+                return match host.show_untitled(snap, web_contents_id) {
+                    Ok(Some(tab)) => SessionStep::Need(SessionNeed::Reveal(tab),
+                        SessionRun { stage: RunStage::Revealing { saved: None } }),
+                    Ok(None) => SessionStep::Done(self.push(host).map(|()| SessionOutcome::Unit)),
+                    Err(error) => SessionStep::Done(Err(error)),
+                };
             }
             MaterialRef::Path(path) => path,
         };
         self.saving.push(row_key.clone());
-        self.push(host);
+        if let Err(error) = self.push(host) {
+            self.saving.retain(|key| key != &row_key);
+            return SessionStep::Done(Err(error));
+        }
         match host.save_material_begin(snap, &path) {
-            SaveMaterialStep::Done(result) => self.after_save(host, snap, id, &row_key, result),
-            SaveMaterialStep::Need(need, run) => SaveStep::Need(
-                SessionNeed::Save(need),
-                SaveRun {
-                    id,
-                    row_key,
-                    stage: SaveStage::Saving(run),
-                },
-            ),
+            Err(error) => {
+                self.saving.retain(|key| key != &row_key);
+                SessionStep::Done(Err(error))
+            }
+            Ok(SaveMaterialStep::Done(result)) => self.after_save(host, snap, id, row_key, result),
+            Ok(SaveMaterialStep::Reveal(tab)) => SessionStep::Need(SessionNeed::Reveal(tab),
+                SessionRun { stage: RunStage::Revealing { saved: Some((id, row_key)) } }),
+            Ok(SaveMaterialStep::Need(need, run)) => SessionStep::Need(SessionNeed::Save(need),
+                SessionRun { stage: RunStage::Saving { id, row_key, run } }),
         }
     }
 
-    /// the caller carried out a [`SessionNeed`]
-    pub fn save_resume<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        run: SaveRun,
-        answer: SessionAnswer,
-    ) -> SaveStep {
-        let SaveRun { id, row_key, stage } = run;
-        match (stage, answer) {
-            (SaveStage::Saving(save), SessionAnswer::Save(answer)) => {
-                let result = host.save_material_resume(save, answer);
-                self.after_save(host, snap, id, &row_key, result)
-            }
-            (SaveStage::Waiting, SessionAnswer::Slept) => {
-                if self.has_row(id) {
-                    SaveStep::Done(self.inspect_rows(host, snap, &[id]))
-                } else {
-                    SaveStep::Done(Ok(()))
-                }
-            }
-            // an answer the step did not ask for ends the save
-            _ => SaveStep::Done(Ok(())),
-        }
-    }
-
-    /// what follows `result = await this.deps.saveMaterial(path)`
     fn after_save<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        id: u64,
-        row_key: &str,
-        result: SaveOutcome,
-    ) -> SaveStep {
-        self.saving.retain(|k| k != row_key);
-        if result == SaveOutcome::Failed {
-            self.failure = Some(Failed::Save);
-        }
-        if let Err(error) = self.inspect_rows(host, snap, &[id]) {
-            return SaveStep::Done(Err(error));
-        }
-        // a tab can report its clean state a moment after the write lands
-        let still_unsaved = self
-            .rows
-            .iter()
-            .find(|r| r.id == id)
-            .and_then(|r| r.status.as_ref())
-            .is_some_and(|s| s.unsaved);
-        if result == SaveOutcome::Saved && still_unsaved {
-            let delay = host.recheck_delay_ms().unwrap_or(600.0);
-            return SaveStep::Need(
-                SessionNeed::Sleep(delay),
-                SaveRun {
-                    id,
-                    row_key: row_key.to_owned(),
-                    stage: SaveStage::Waiting,
-                },
-            );
-        }
-        SaveStep::Done(Ok(()))
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, id: u64, row_key: String, result: SaveOutcome,
+    ) -> SessionStep {
+        self.saving.retain(|key| key != &row_key);
+        if result == SaveOutcome::Failed { self.failure = Some(Failed::Save); }
+        self.inspect_rows(host, snap, vec![id], AfterInspection::Saved { id, result })
     }
 
-    /// "make": read everything again, then open the new tab with the request
-    /// queued for it and close the window. False (and nothing opened) when the
-    /// materials do not allow it any more.
-    pub fn make<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        text: Option<&Value>,
-    ) -> bool {
-        let Some(text) = text.and_then(Value::as_str) else {
-            return false;
-        };
-        if self.closed || self.making {
-            return false;
+    /// Resume only the action named by this move-only token.
+    pub fn resume<H: GenerateSessionHost>(
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, run: SessionRun, answer: SessionAnswer,
+    ) -> SessionStep {
+        match (run.stage, answer) {
+            (RunStage::Revealing { saved }, SessionAnswer::Revealed(answer)) => match (saved, answer) {
+                (Some((id, row_key)), Ok(())) => self.after_save(host, snap, id, row_key, SaveOutcome::Shown),
+                (Some((_, row_key)), Err(error)) => {
+                    self.saving.retain(|key| key != &row_key);
+                    SessionStep::Done(Err(error))
+                }
+                (None, Ok(())) => SessionStep::Done(self.push(host).map(|()| SessionOutcome::Unit)),
+                (None, Err(error)) => SessionStep::Done(Err(error)),
+            },
+            (RunStage::Saving { id, row_key, run }, SessionAnswer::Save(answer)) => {
+                let result = host.save_material_resume(run, answer);
+                self.after_save(host, snap, id, row_key, result)
+            }
+            (RunStage::Waiting { id }, SessionAnswer::Slept) => {
+                if self.has_row(id) { self.inspect_rows(host, snap, vec![id], AfterInspection::Unit) }
+                else { SessionStep::Done(Ok(SessionOutcome::Unit)) }
+            }
+            (RunStage::Inspect { mut run, waiting: InspectWait::Status { id, path } }, SessionAnswer::Inspected(answer)) => {
+                match answer {
+                    Err(error) => { if run.failure.is_none() { run.failure = Some(error); } }
+                    Ok(status) => {
+                        let save_action = status.unsaved.then(|| host.save_action_for(snap, &path));
+                        if host.has_redaction_notice() && status.problem.is_none() && !status.unsaved
+                            && available_conversions(std::slice::from_ref(&path)).contains(&ConvertKind::MarkdownToMindmap) {
+                            return SessionStep::Need(SessionNeed::Notice(path), SessionRun {
+                                stage: RunStage::Inspect { run, waiting: InspectWait::Notice { id, status, save_action } },
+                            });
+                        }
+                        self.apply_inspection(id, status, save_action, false);
+                    }
+                }
+                self.advance_inspection(host, snap, run)
+            }
+            (RunStage::Inspect { run, waiting: InspectWait::Notice { id, status, save_action } }, SessionAnswer::Noticed(answer)) => {
+                self.apply_inspection(id, status, save_action, answer.unwrap_or(false));
+                self.advance_inspection(host, snap, run)
+            }
+            (RunStage::Preparing { run, after }, SessionAnswer::Inspected(answer)) => {
+                self.prepared_step(host, run.resume(answer), after)
+            }
+            (RunStage::Converting { source }, SessionAnswer::Converted(answer)) => match answer {
+                Err(_) => self.failed_make(host),
+                Ok(Err(problem)) => {
+                    self.failure = Some(Failed::Convert);
+                    self.convert_problem = Some(problem);
+                    self.stop_making(host, false)
+                }
+                Ok(Ok(content)) => {
+                    let document = ConvertedDocument {
+                        id: host.new_id(), content, sources: vec![source], created_at: host.now(),
+                    };
+                    let token = OpenCommitToken { operation: Arc::new(()) };
+                    let operation = token.operation.clone();
+                    SessionStep::Need(SessionNeed::OpenConverted { document, token },
+                        SessionRun { stage: RunStage::Opening { operation } })
+                }
+            },
+            (RunStage::Opening { .. }, SessionAnswer::OpenFailed(_)) => self.failed_make(host),
+            (stage, _) => {
+                self.discard_run(SessionRun { stage });
+                SessionStep::Done(Err(Failure("unexpected generate continuation answer".into())))
+            }
         }
+    }
+
+    /// This terminal path cannot inspect, convert, open again, or invoke a host.
+    pub fn complete_committed_open(&mut self, run: SessionRun, receipt: OpenCommitReceipt) -> Result<SessionOutcome, Failure> {
+        match run.stage {
+            RunStage::Opening { operation } if Arc::ptr_eq(&operation, &receipt.operation) => {
+                self.closed = true;
+                Ok(SessionOutcome::Made(true))
+            }
+            stage => {
+                self.discard_run(SessionRun { stage });
+                Err(Failure("committed generate operation does not match its continuation".into()))
+            }
+        }
+    }
+
+    /// Cancellation cleanup has no host effects and cannot push stale state.
+    pub fn discard_run(&mut self, run: SessionRun) {
+        match run.stage {
+            RunStage::Inspect { run, .. } => {
+                self.in_flight -= 1;
+                if matches!(run.after, AfterInspection::Make { .. }) { self.making = false; }
+            }
+            RunStage::Saving { row_key, .. } => self.saving.retain(|key| key != &row_key),
+            RunStage::Revealing { saved: Some((_, row_key)) } => self.saving.retain(|key| key != &row_key),
+            RunStage::Revealing { saved: None } => {}
+            RunStage::Waiting { .. } => {}
+            RunStage::Preparing { .. } | RunStage::Converting { .. } | RunStage::Opening { .. } => self.making = false,
+        }
+    }
+
+    pub fn make<H: GenerateSessionHost>(
+        &mut self, host: &mut H, snap: &OpenSnapshot<'_>, text: Option<&Value>,
+    ) -> SessionStep {
+        let Some(text) = text.and_then(Value::as_str) else { return SessionStep::Done(Ok(SessionOutcome::Made(false))); };
+        if self.closed || self.making { return SessionStep::Done(Ok(SessionOutcome::Made(false))); }
         self.making = true;
         self.failure = None;
-        self.push(host);
-        match self.make_run(host, snap, text) {
-            Ok(done) => done,
-            Err(_) => {
-                self.failure = Some(Failed::Make);
-                self.stop_making(host, false)
-            }
+        if let Err(error) = self.push(host) {
+            self.making = false;
+            return SessionStep::Done(Err(error));
         }
+        let rows = self.rows.iter().map(|row| row.id).collect();
+        self.inspect_rows(host, snap, rows, AfterInspection::Make { text: text.to_owned() })
     }
 
-    fn make_run<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        text: &str,
-    ) -> Result<bool, Failure> {
-        self.refresh(host, snap)?;
-        if self.mode == GenerateMode::Convert {
-            let chosen = self.chosen_conversion(&self.conversions(&*host));
-            return match chosen {
-                Some(kind) => self.convert_and_open(host, snap, kind),
-                None => Ok(self.stop_making(host, false)),
+    fn prepare_make<H: GenerateSessionHost>(&mut self, host: &mut H, text: String) -> SessionStep {
+        let (raw, after) = if self.mode == GenerateMode::Convert {
+            let Some(kind) = self.chosen_conversion(&self.conversions(host)) else { return self.stop_making(host, false); };
+            let path = match self.listed_rows().first().map(|row| &row.mref) {
+                Some(MaterialRef::Path(path)) if host.can_convert() => path.clone(),
+                _ => return self.stop_making(host, false),
             };
-        }
-        let materials: Vec<Value> = self
-            .rows
-            .iter()
-            .filter(|r| r.status.as_ref().is_some_and(|s| s.problem.is_none()))
-            .filter_map(|r| match &r.mref {
-                MaterialRef::Path(path) => Some(Value::from(path.as_str())),
-                MaterialRef::Untitled { .. } => None,
-            })
-            .collect();
-        let raw = json!({
-            "mode": "ai",
-            "kind": ai_target_str(self.kind),
-            "materials": materials,
-            "text": text,
-        });
-        let prepared = prepare_generate_request(&raw, &mut |path| host.inspect(snap, path))?;
-        let Prepared::Ready { ready, .. } = prepared else {
-            return Ok(self.stop_making(host, false));
+            (json!({ "mode": "convert", "kind": convert_kind_str(kind), "materials": [path], "text": "" }), AfterPrepared::Convert { kind })
+        } else {
+            let materials: Vec<Value> = self.rows.iter()
+                .filter(|row| row.status.as_ref().is_some_and(|status| status.problem.is_none()))
+                .filter_map(|row| match &row.mref {
+                    MaterialRef::Path(path) => Some(Value::from(path.as_str())),
+                    MaterialRef::Untitled { .. } => None,
+                }).collect();
+            (json!({ "mode": "ai", "kind": ai_target_str(self.kind), "materials": materials, "text": text.as_str() }), AfterPrepared::Ai { text })
         };
-        let trimmed = jscompat::trim(text);
-        let id = host.new_id();
-        let lang = host.lang();
-        let created_at = host.now();
-        let handoff = GenerateHandoff {
-            id,
-            mode: "ai".to_owned(),
-            target: self.kind,
-            materials: ready
-                .iter()
-                .map(|s| Material {
-                    path: s.path.clone().unwrap_or_default(),
-                    name: s.name.clone(),
-                })
-                .collect(),
-            text: if trimmed.is_empty() {
-                default_generate_prompt(lang, self.kind).to_owned()
-            } else {
-                trimmed.to_owned()
-            },
-            default_text: trimmed.is_empty(),
-            created_at,
-        };
-        host.open_target_tab(&handoff)?;
-        self.closed = true;
-        host.close();
-        Ok(true)
+        self.prepared_step(host, prepare_generate_request_begin(&raw), after)
     }
 
-    /// 8.6: the one material, read again just now (8.4: not open with unsaved
-    /// changes, saved at least once), converted without AI and opened as a new
-    /// unsaved tab. A failed conversion opens nothing and keeps the window.
-    fn convert_and_open<H: GenerateSessionHost>(
-        &mut self,
-        host: &mut H,
-        snap: &OpenSnapshot<'_>,
-        kind: ConvertKind,
-    ) -> Result<bool, Failure> {
-        let path = match self.listed_rows().first().map(|row| &row.mref) {
-            Some(MaterialRef::Path(path)) if host.can_convert() => Some(path.clone()),
-            _ => None,
-        };
-        let Some(path) = path else {
-            return Ok(self.stop_making(host, false));
-        };
-        let raw = json!({
-            "mode": "convert",
-            "kind": convert_kind_str(kind),
-            "materials": [path],
-            "text": "",
-        });
-        let prepared = prepare_generate_request(&raw, &mut |path| host.inspect(snap, path))?;
-        let Prepared::Ready { request, .. } = prepared else {
-            return Ok(self.stop_making(host, false));
-        };
-        let source = request.materials[0].clone();
-        match host.convert(kind, &source)? {
-            Err(problem) => {
-                self.failure = Some(Failed::Convert);
-                self.convert_problem = Some(problem);
-                Ok(self.stop_making(host, false))
-            }
-            Ok(content) => {
-                let id = host.new_id();
-                let created_at = host.now();
-                host.open_converted_tab(&ConvertedDocument {
-                    id,
-                    content,
-                    sources: vec![source],
-                    created_at,
-                })?;
-                self.closed = true;
-                host.close();
-                Ok(true)
+    fn prepared_step<H: GenerateSessionHost>(&mut self, host: &mut H, step: PrepareStep, after: AfterPrepared) -> SessionStep {
+        match step {
+            PrepareStep::Inspect { path, run } => SessionStep::Need(SessionNeed::Inspect(path),
+                SessionRun { stage: RunStage::Preparing { run, after } }),
+            PrepareStep::Done(Err(_)) => self.failed_make(host),
+            PrepareStep::Done(Ok(Prepared::Refused { .. })) => self.stop_making(host, false),
+            PrepareStep::Done(Ok(Prepared::Ready { request, ready, .. })) => match after {
+                AfterPrepared::Convert { kind } => {
+                    let source = request.materials.into_iter().next().expect("a ready conversion has one material");
+                    SessionStep::Need(SessionNeed::Convert { kind, path: source.clone() },
+                        SessionRun { stage: RunStage::Converting { source } })
+                }
+                AfterPrepared::Ai { text } => {
+                    let trimmed = jscompat::trim(&text);
+                    let id = host.new_id();
+                    let lang = host.lang();
+                    let created_at = host.now();
+                    let handoff = GenerateHandoff {
+                        id, mode: "ai".into(), target: self.kind,
+                        materials: ready.into_iter().map(|status| Material {
+                            path: status.path.unwrap_or_default(), name: status.name,
+                        }).collect(),
+                        text: if trimmed.is_empty() { default_generate_prompt(lang, self.kind).to_owned() } else { trimmed.to_owned() },
+                        default_text: trimmed.is_empty(), created_at,
+                    };
+                    let token = OpenCommitToken { operation: Arc::new(()) };
+                    let operation = token.operation.clone();
+                    SessionStep::Need(SessionNeed::OpenTarget { handoff, token },
+                        SessionRun { stage: RunStage::Opening { operation } })
+                }
             }
         }
     }
 
-    fn stop_making<H: GenerateSessionHost>(&mut self, host: &mut H, result: bool) -> bool {
+    fn failed_make<H: GenerateSessionHost>(&mut self, host: &mut H) -> SessionStep {
+        self.failure = Some(Failed::Make);
+        self.stop_making(host, false)
+    }
+
+    fn stop_making<H: GenerateSessionHost>(&mut self, host: &mut H, result: bool) -> SessionStep {
         self.making = false;
-        self.push(host);
-        result
+        SessionStep::Done(self.push(host).map(|()| SessionOutcome::Made(result)))
     }
 }

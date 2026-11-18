@@ -19,9 +19,9 @@ export interface RecoveryCopyLoopOptions {
    */
   read: () => string | null
   /** hand the text to the main process; rejects when the copy could not be written */
-  write: (text: string | null) => Promise<unknown>
+  write: (text: string | null, token?: string, error?: string) => Promise<unknown>
   /** the main process asks for a copy now (the OS is ending the session) */
-  onFlushRequest?: (handler: () => void) => () => void
+  onFlushRequest?: (handler: (token?: string) => void) => () => void
   intervalMs?: number
   backoffTicks?: number
 }
@@ -30,39 +30,43 @@ export interface RecoveryCopyLoopOptions {
 export function startRecoveryCopies(options: RecoveryCopyLoopOptions): () => void {
   const backoffTicks = options.backoffTicks ?? RECOVERY_COPY_BACKOFF_TICKS
   let skip = 0
-  let busy = false
   let stopped = false
+  let chain = Promise.resolve()
+  let periodicQueued = false
 
-  const run = async (flush: boolean): Promise<void> => {
-    // an in-flight write answers a flush request too
-    if (busy || stopped) return
+  const run = (flush: boolean, token?: string): void => {
+    if (stopped) return
+    if (!flush && periodicQueued) return
     if (!flush && skip > 0) {
       skip -= 1
       return
     }
-    let text: string | null
-    try {
-      text = options.read()
-    } catch (error) {
-      console.warn('[recovery] could not serialize the document:', error)
-      text = null
-    }
-    // a flush is always answered, so the main process does not wait it out
-    if (text === null && !flush) return
-    busy = true
-    try {
-      await options.write(text)
-      skip = 0
-    } catch (error) {
-      console.warn('[recovery] copy not written, retrying later:', error)
-      skip = backoffTicks
-    } finally {
-      busy = false
-    }
+    if (!flush) periodicQueued = true
+    chain = chain.then(async () => {
+      if (stopped) return
+      try {
+        const text = options.read()
+        if (text === null && !flush) return
+        await options.write(text, token)
+        skip = 0
+      } catch (error) {
+        console.warn('[recovery] copy not written, retrying later:', error)
+        skip = backoffTicks
+        if (flush && token !== undefined) {
+          try {
+            await options.write(null, token, String(error))
+          } catch {
+            // The host may already have settled the matching failed write.
+          }
+        }
+      }
+    }).finally(() => {
+      if (!flush) periodicQueued = false
+    })
   }
 
-  const timer = setInterval(() => void run(false), options.intervalMs ?? RECOVERY_COPY_INTERVAL_MS)
-  const offFlush = options.onFlushRequest?.(() => void run(true))
+  const timer = setInterval(() => run(false), options.intervalMs ?? RECOVERY_COPY_INTERVAL_MS)
+  const offFlush = options.onFlushRequest?.((token) => run(true, token))
   return () => {
     stopped = true
     clearInterval(timer)

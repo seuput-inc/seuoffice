@@ -30,8 +30,6 @@ use main_core::shell::launch_paths::collect_launch_paths;
 use serde_json::{Value, json};
 use shell_contract::Hosts;
 use shell_contract::runtime::AppPaths;
-use shell_ipc_u::launch_list;
-use shell_ipc_w::tabs::TabsState;
 use tauri::{AppHandle, RunEvent};
 
 use super::HostContext;
@@ -55,7 +53,7 @@ struct Launch {
     _lock: Option<File>,
     /// documents of the first launch and open-file events before ready
     pending: Vec<String>,
-    /// the shell window is up: later paths open at once
+    /// the first Shell registration owns the initial paths; later events use its runtime
     ready: bool,
 }
 
@@ -64,6 +62,15 @@ static LAUNCH: Mutex<Launch> = Mutex::new(Launch {
     pending: Vec::new(),
     ready: false,
 });
+
+/// Called once on the core thread when the first native Shell registration is
+/// installed. Later OS events are separate immutable startup operations.
+pub(crate) fn take_startup_paths() -> Result<Vec<String>, String> {
+    let mut launch = LAUNCH.lock().map_err(|_| "The native launch queue is unavailable.")?;
+    if launch.ready { return Err("The initial native launch was already consumed.".into()); }
+    launch.ready = true;
+    Ok(std::mem::take(&mut launch.pending))
+}
 
 fn exists(path: &str) -> bool {
     Path::new(path).exists()
@@ -229,45 +236,21 @@ fn open_paths(paths: Vec<String>, reveal: bool) {
             return;
         }
     }
-    post_core(move |provided, _| {
-        let Some(tabs) = provided.all::<TabsState>().into_iter().next() else {
-            return;
-        };
-        if reveal {
-            tabs.reveal_shell_window();
-        }
-        // while the launch recovery list is up, nothing restored may load:
-        // the paths open once it is answered (`deferredLaunchPaths`)
-        let open: Box<dyn FnOnce()> = Box::new(move || {
-            let mut opened = false;
-            for path in &paths {
-                opened = tabs.open_document_path(path) || opened;
-            }
-            if !opened {
-                tabs.open_home_tab();
-            }
-        });
-        match launch_list::current() {
-            Some(list) => list.when_unblocked(open),
-            None => open(),
+    post_core(move |_, _| {
+        if let Err(error) = super::recovery_launch::open_native_paths(paths, reveal) {
+            eprintln!("shell: cannot open native launch paths: {error}");
         }
     });
 }
 
 /// The event loop's events U answers
 pub fn on_run_event(app: &AppHandle, event: &RunEvent) {
+    if crate::headless::is_headless() {
+        return;
+    }
     match event {
         RunEvent::Ready => {
-            let first = {
-                let mut launch = LAUNCH.lock().unwrap();
-                launch.ready = true;
-                std::mem::take(&mut launch.pending)
-            };
             write_start_mark(app);
-            // the first launch's documents, after whatever the launch restores
-            if !first.is_empty() {
-                open_paths(first, false);
-            }
         }
         // macOS: a file opened from Finder or dropped on the Dock icon
         #[cfg(target_os = "macos")]

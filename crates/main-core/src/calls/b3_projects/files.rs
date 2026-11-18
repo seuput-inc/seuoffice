@@ -768,13 +768,9 @@ impl IndexStore for FakeIndex {
         })
     }
 
-    fn paths_indexed_as_on_disk(&mut self, paths: &[String]) -> Vec<String> {
+    fn paths_indexed_as_on_disk(&mut self, paths: &[String]) -> Result<Vec<String>, Thrown> {
         log(&self.logs, vec![Value::from("indexed"), json!(paths)]);
-        paths
-            .iter()
-            .filter(|path| self.indexed.contains(path))
-            .cloned()
-            .collect()
+        Ok(paths.iter().filter(|path| self.indexed.contains(path)).cloned().collect())
     }
 }
 
@@ -782,8 +778,8 @@ impl IndexStore for FakeIndex {
 struct FakeStoreProvider(Option<FakeIndex>);
 
 impl ProjectToolsStore for FakeStoreProvider {
-    fn store(&mut self) -> Option<&mut dyn IndexStore> {
-        self.0.as_mut().map(|index| index as &mut dyn IndexStore)
+    fn store(&mut self) -> Result<Option<&mut dyn IndexStore>, Thrown> {
+        Ok(self.0.as_mut().map(|index| index as &mut dyn IndexStore))
     }
 }
 

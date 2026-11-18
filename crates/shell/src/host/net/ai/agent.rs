@@ -257,6 +257,25 @@ impl AgentServices for Services {
         Ok(enabled?.iter().map(enabled_json).collect())
     }
 
+    fn enabled_for_agent_task(
+        &self,
+        folder: &str,
+    ) -> Result<Box<dyn FnOnce() -> Result<Vec<JsonValue>, String> + Send>, String> {
+        let folder = folder.to_owned();
+        let task = on_core(move |provided| {
+            provided
+                .all::<SkillsCore>()
+                .first()
+                .map(|core| core.enabled_for_agent_task(Some(folder)))
+        })
+        .flatten()
+        .ok_or_else(no_skills_port)?;
+        Ok(Box::new(move || {
+            let enabled = task().map_err(reason)?;
+            Ok(enabled.iter().map(enabled_json).collect())
+        }))
+    }
+
     fn build_skill_bundle(
         &self,
         _: &[JsonValue],
