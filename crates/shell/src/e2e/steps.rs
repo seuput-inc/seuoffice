@@ -444,9 +444,12 @@ impl Runner<'_> {
                 if !path.exists() {
                     return Err(failed(format!("{} does not exist", path.display())));
                 }
-                self.begin_switch(Some(path.clone()))?;
-                crate::host::os::open_paths(vec![path.to_string_lossy().into_owned()], true);
-                Ok(Some(json!({ "path": path.display().to_string() })))
+                // The scenario spells paths with `/`; the OS hands the app its own spelling
+                // (`\` on Windows), which is what a tab's file, a save and a recent entry see.
+                let native: PathBuf = path.components().collect();
+                self.begin_switch(Some(native.clone()))?;
+                crate::host::os::open_paths(vec![native.to_string_lossy().into_owned()], true);
+                Ok(Some(json!({ "path": native.display().to_string() })))
             }
             Step::NewDocument { kind } => {
                 self.begin_switch(None)?;
@@ -467,7 +470,12 @@ impl Runner<'_> {
                 let target = self.target()?;
                 let focus = Self::focus_page(&target.webview)?;
                 let keys = typed_keys(text);
-                input::type_text(&self.context.ui, &target.window, &keys).map_err(unrunnable)?;
+                // one key at a time: the page must have handled a key before the next arrives,
+                // or an editor under load drops characters (S, s, a hyphen) out of the text
+                input::type_text(&self.context.ui, &target.window, &keys, &|| {
+                    Self::flush_input(&target.webview)
+                })
+                .map_err(unrunnable)?;
                 Self::flush_input(&target.webview);
                 let after = Self::focus_state(&target.webview);
                 Ok(Some(json!({

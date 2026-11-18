@@ -548,6 +548,7 @@ pub(super) fn consume_pending_ready(
             // parse failure, so a remount can retry
             let reply = prepared.and_then(|(prepared, authority)| match prepared {
                 PreparedOpen::Rejected => {
+                    eprintln!("[slides] view {}: the open was rejected", view.0);
                     drop_queued(app, view, &queued_for_then);
                     null()
                 }
@@ -559,6 +560,16 @@ pub(super) fn consume_pending_ready(
                     r
                 }
             });
+            match &reply {
+                Ok(IpcValue::Null | IpcValue::Undefined) => {
+                    eprintln!("[slides] view {}: the pending open answered no deck", view.0)
+                }
+                Err(error) => eprintln!(
+                    "[slides] view {}: the pending open failed: {}",
+                    view.0, error.message
+                ),
+                Ok(_) => {}
+            }
             answer(responder, reply, app);
         });
         return;

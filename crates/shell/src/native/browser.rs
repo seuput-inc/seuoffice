@@ -456,7 +456,11 @@ impl BrowserCore {
         self.close.claim()
     }
 
-    /// The OS observers are attached and the webview is usable. Called once on the UI thread.
+    /// The OS observers are attached and the webview is usable. Called once on the UI thread,
+    /// inside the `with_webview` job. The held navigation is not replayed here: Tauri's
+    /// dispatcher holds its window id lock for the whole job when the job runs on the UI thread
+    /// itself, and a navigate on the same webview would wait for that lock for ever. The caller
+    /// replays it afterwards ([`BrowserCore::replay_held_navigation`]).
     pub(crate) fn mark_attached(
         self: &Arc<Self>,
         control: Arc<dyn WebviewControl>,
@@ -479,8 +483,6 @@ impl BrowserCore {
         self.close
             .complete_creation(BrowserCreationOutcome::Attached);
         self.ready_check();
-        crate::trace::trace!("attach", "'{}': replaying the held navigation", self.label);
-        self.replay_held_navigation();
         crate::trace::trace!("attach", "'{}': attach complete", self.label);
     }
 
@@ -509,7 +511,7 @@ impl BrowserCore {
 
     /// Navigate to the held URL once the webview is attached and the policy is enforced. The
     /// navigation goes through the hook like any other, now under the policy.
-    fn replay_held_navigation(self: &Arc<Self>) {
+    pub(crate) fn replay_held_navigation(self: &Arc<Self>) {
         let url = {
             let mut state = self.lock();
             if !(state.attached && state.policy_ready) || state.closed {

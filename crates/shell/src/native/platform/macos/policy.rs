@@ -104,6 +104,7 @@ fn install(
     let browser = browser.clone();
     let block: RcBlock<dyn Fn(*mut WKContentRuleList, *mut NSError)> =
         RcBlock::new(move |list: *mut WKContentRuleList, error: *mut NSError| {
+            crate::trace::trace!("attach", "macos: the content rules answered");
             // SAFETY: WebKit passes null or live objects that outlive this handler.
             match (unsafe { list.as_ref() }, unsafe { error.as_ref() }) {
                 (Some(list), None) => {
@@ -124,6 +125,7 @@ fn install(
                 }
             }
         });
+    crate::trace::trace!("attach", "macos: compiling the content rules");
     // SAFETY: the block matches the completion handler type.
     unsafe {
         store.compileContentRuleListForIdentifier_encodedContentRuleList_completionHandler(

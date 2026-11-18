@@ -90,6 +90,14 @@ impl NetworkPolicy {
         if request.url == "about:blank" {
             return true;
         }
+        // The shell's own IPC transport (`http://ipc.localhost` and
+        // `http://seuoffice-ipc.localhost` on Windows) is how the bridge registers the document
+        // and talks to the shell; it is not page traffic. Refusing it left the Windows diagram
+        // page without a native document (no register, no listen), so its tab never opened.
+        // Every call still has to carry the document's nonce, as on every other surface.
+        if matches!(request.bound_scheme, Some("ipc" | crate::ipc::sync::SCHEME)) {
+            return true;
+        }
         match Self::logical_url(request) {
             Some(original) => self.allow(&original),
             None => false,
@@ -147,6 +155,23 @@ mod tests {
             policy.requests(),
             serde_json::json!({
                 "allowed": 2, "refused": 1, "blocked": ["http://example.org/"]
+            })
+        );
+    }
+
+    #[test]
+    fn the_shell_ipc_transport_is_not_page_traffic_but_foreign_hosts_still_are() {
+        let policy = NetworkPolicy::new(Vec::new());
+        assert!(policy.resource(&request("http://ipc.localhost/ipc_register", Some("ipc"))));
+        assert!(policy.resource(&request(
+            "http://seuoffice-ipc.localhost/seuoffice:register",
+            Some("seuoffice-ipc")
+        )));
+        assert!(!policy.resource(&request("http://example.net/x", None)));
+        assert_eq!(
+            policy.requests(),
+            serde_json::json!({
+                "allowed": 0, "refused": 1, "blocked": ["http://example.net/x"]
             })
         );
     }

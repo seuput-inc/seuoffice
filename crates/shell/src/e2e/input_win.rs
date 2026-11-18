@@ -47,6 +47,9 @@ const KEY_GAP: Duration = Duration::from_millis(40);
 const IME_KEY_GAP: Duration = Duration::from_millis(120);
 /// after a layout or IME mode change: the system answers asynchronously
 const SETTLE: Duration = Duration::from_millis(300);
+/// after the Korean layout is active and after Hangul mode is toggled: the IME of a freshly
+/// switched window took longer than `SETTLE` to start composing (the first keys came out raw)
+const IME_SETTLE: Duration = Duration::from_millis(1000);
 const FOREGROUND_TRIES: u32 = 20;
 const FOREGROUND_WAIT: Duration = Duration::from_millis(100);
 const LAYOUT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -211,11 +214,13 @@ pub(super) fn type_text(
     _ui: &Arc<dyn Thread>,
     window: &Window,
     keys: &[TypedKey],
+    after_key: &dyn Fn(),
 ) -> Result<(), String> {
     foreground(hwnd_of(window)?)?;
     for key in keys {
         send(&typed_inputs(key))?;
         sleep(KEY_GAP);
+        after_key();
     }
     Ok(())
 }
@@ -338,13 +343,13 @@ pub(super) fn ime_ko_2set(
         return Err("Windows did not load the Korean keyboard layout".into());
     }
     request_layout(hwnd, thread, korean)?;
-    sleep(SETTLE);
+    sleep(IME_SETTLE);
     // a freshly activated Korean IME may start in alphanumeric mode: toggle unless Hangul mode
     // is confirmed
     let started_in_hangul = hangul_mode();
     if started_in_hangul != Some(true) {
         toggle_hangul()?;
-        sleep(SETTLE);
+        sleep(IME_SETTLE);
     }
     let typed = keys.chars().try_for_each(|c| {
         let result = send(&ime_inputs(c)?);

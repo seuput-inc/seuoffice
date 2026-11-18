@@ -252,13 +252,27 @@ pub(crate) fn attach(webview: &Webview, browser: &BrowserIdentity) -> Result<(),
     let window_label = webview.window().label().to_owned();
     let identity = browser.clone();
     let observing = label.clone();
+    let app = webview.app_handle().clone();
     let reached = webview
         .with_webview(move |platform_webview| {
             trace!("attach", "'{observing}' attaching the OS observers");
             let attached = platform::attach(&platform_webview, &identity);
             trace!("attach", "'{observing}' the platform observers returned");
             match attached {
-                Ok(()) => identity.core.mark_attached(control, &window_label),
+                Ok(()) => {
+                    identity.core.mark_attached(control, &window_label);
+                    // Posted from another thread so that it is queued behind this job: from
+                    // the UI thread itself it would run inside it, under the dispatcher's lock.
+                    let core = identity.core.clone();
+                    let posted = std::thread::Builder::new()
+                        .name("attach-replay".into())
+                        .spawn(move || {
+                            let _ = app.run_on_main_thread(move || core.replay_held_navigation());
+                        });
+                    if let Err(error) = posted {
+                        eprintln!("shell: the held navigation could not be replayed: {error}");
+                    }
+                }
                 Err(error) => {
                     eprintln!("shell: native observers could not be attached: {error}");
                     identity.core.attach_failed(&error);

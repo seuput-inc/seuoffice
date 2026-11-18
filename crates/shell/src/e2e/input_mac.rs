@@ -269,10 +269,12 @@ pub(super) fn type_text(
     ui: &Arc<dyn Thread>,
     window: &Window,
     keys: &[TypedKey],
+    after_key: &dyn Fn(),
 ) -> Result<(), String> {
     for key in keys {
         send(ui, window, stroke_of(key))?;
         sleep(KEY_GAP);
+        after_key();
     }
     Ok(())
 }
