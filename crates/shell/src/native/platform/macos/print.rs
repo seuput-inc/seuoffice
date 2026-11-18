@@ -341,8 +341,11 @@ pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>
     );
 }
 
+/// What runs on the UI thread once a print job reports back, with whether it went through
+type Finish = Box<dyn FnOnce(bool)>;
+
 struct Answer {
-    finish: RefCell<Option<Box<dyn FnOnce(bool)>>>,
+    finish: RefCell<Option<Finish>>,
     /// written on AppKit's print thread, read on the UI thread after the hop
     success: Cell<bool>,
 }
@@ -388,7 +391,7 @@ define_class!(
 );
 
 impl PrintAnswer {
-    fn new(mtm: MainThreadMarker, finish: Box<dyn FnOnce(bool)>) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, finish: Finish) -> Retained<Self> {
         let answer = Answer {
             finish: RefCell::new(Some(finish)),
             success: Cell::new(false),
@@ -405,7 +408,7 @@ fn run_modal(
     mtm: MainThreadMarker,
     operation: &NSPrintOperation,
     window: &NSWindow,
-    finish: Box<dyn FnOnce(bool)>,
+    finish: Finish,
 ) {
     let answer = PrintAnswer::new(mtm, finish);
     // One retain is leaked on purpose: AppKit does not retain the delegate, and `finish_on_main`
