@@ -389,10 +389,7 @@ pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>
                 let size = answer.and_then(|text| serde_json::from_str::<(f64, f64)>(&text).ok());
                 if let Some((width, height)) = size {
                     spec.landscape = width > height;
-                    spec.paper_in = Some((
-                        width.min(height) / POINTS,
-                        width.max(height) / POINTS,
-                    ));
+                    spec.paper_in = Some((width.min(height) / POINTS, width.max(height) / POINTS));
                 }
                 begin_job(&surface, spec, ranges, done)
             }
@@ -680,7 +677,13 @@ mod tests {
             header_footer::media_box(&document, page).unwrap(),
             [0.0, 0.0, 300.0, 400.0]
         );
-        assert!(document.get_dictionary(page).unwrap().get(b"CropBox").is_err());
+        assert!(
+            document
+                .get_dictionary(page)
+                .unwrap()
+                .get(b"CropBox")
+                .is_err()
+        );
         let content = String::from_utf8(document.get_page_content(page).unwrap()).unwrap();
         assert!(content.starts_with("q\n0.5 0 0 0.5 0 0 cm\n"), "{content}");
         assert!(content.contains("0 0 100 50 re f"));
