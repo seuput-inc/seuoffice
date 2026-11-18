@@ -230,7 +230,9 @@ test('two people edit one xlsx at once; saves hold one exact version with everyo
   const carol = await open(browser, documentId, 'carol')
   const viewer = await open(browser, documentId, 'dave', 'view')
   expect((await viewer.status()).canEdit).toBe(false)
-  await select(viewer, 'M1')
+  // a viewer's name box is read-only: the cell is reached with a press on the grid
+  const grid = (await viewer.page.locator('#viewer iframe').boundingBox())!
+  await viewer.page.mouse.click(grid.x + 400, grid.y + 200)
   await viewer.page.keyboard.type('dave-typed')
   await viewer.page.keyboard.press('Enter')
   await viewer.page.waitForTimeout(1_000)
