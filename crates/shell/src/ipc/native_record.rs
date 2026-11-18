@@ -209,14 +209,7 @@ impl Recorder {
         Some((args, recorded))
     }
 
-    fn replied(
-        &self,
-        seq: u64,
-        view: ViewId,
-        channel: String,
-        args: Vec<IpcValue>,
-        reply: &Reply,
-    ) {
+    fn replied(&self, seq: u64, view: ViewId, channel: String, args: Vec<IpcValue>, reply: &Reply) {
         let mut state = self.lock();
         let mut line = json!({ "event": "reply", "seq": seq, "ms": self.elapsed_ms() });
         match reply {
