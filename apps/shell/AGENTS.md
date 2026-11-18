@@ -105,6 +105,7 @@
 - **세션 기록에는 문서 내용을 넣지 않는다.** 탭 종류, 경로 또는 제목 없는 사본의 식별자와 제목, 순서, 앞 탭, 나눔, 정상 표시, 시작 시각, 되살리기 실행인지만 둔다. 크래시 기록과 섞지 않는다. 망가진 기록은 무시한다.
 - **세션 기록은 `initSessionRecord`를 부른 실행만 건드린다.** 단일 실행 잠금을 얻고 창 없는 내보내기가 아닌 것을 안 뒤에만 부른다. 두 번째 실행과 `--headless-export`는 읽지도 쓰지도 않는다(그래서 다음 실행이 비정상으로 잘못 판정되지 않는다).
 - **종료가 시작되면 먼저 래치를 세운다.** `before-quit`와 PC 끄기에서 `markAppShuttingDown`이 탭을 내리기 전에 서야 편집기의 닫기 정리가 사본을 지우지 못한다. 닫기가 취소되면(`installShellCloseGuard`의 `onVetoed`, 떼어 낸 창의 닫기 거절) `resetAppShuttingDown`으로 내리고, `resumeDiscardedCopies`로 "저장 안 함"에 답했던 탭의 사본 쓰기를 다시 연다. PC 끄기(`createOsSessionEnd`)는 질문 없이 편집기마다 `writeCopiesNow`를 기다린 뒤 `app.exit(0)`으로 끝나고 정상 표시를 남기지 않는다.
+- **종료는 창이 다 닫힌 뒤에도 이어서 끝낸다.** 닫기 확인(`installShellCloseGuard`, 떼어 낸 창)은 묻기 전에 닫기를 취소하고(워드 탭은 저장 안 됨이 렌더러에 있어 항상), 답이 오면 창을 스스로 닫는다. Electron은 취소된 닫기에서 종료를 이미 접었고 macOS는 창이 없어도 끝나지 않으므로, `window-all-closed`가 `before-quit` 뒤 취소되지 않은 종료(`appQuitting`)를 `afterLastWindowClosed`로 읽어 `app.quit()`로 이어 끝낸다. 그래서 닫기를 취소하는 길(떼어 낸 창은 `setDetachedCloseVetoedListener`)은 `appQuitting`도 내려야 한다. 안 내리면 나중에 마지막 창을 닫을 때 앱이 끝난다.
 - **시작 목록이 떠 있는 동안 어떤 탭도 불러오지 않는다.** 홈을 앞에 두고, 답(또는 닫기 = 나중에)을 받은 뒤에 앞 탭과 나눔을 불러온다. 편집기 화면은 홈의 겹침 화면 위에 그려지고, 무엇을 불러올지가 답에 달렸다. 되살리기 반복(`crashLoop`)이면 아무 탭도 미리 불러오지 않는다.
 - **불러오지 않은 탭은 깨끗한 탭이다.** 저장 안 됨 계산, 닫기 확인, 저장 메뉴 대상에서 빠지고, 닫으면 편집기 정리 없이 사라져 사본이 남는다. 열린 문서의 화면이 필요한 MCP 길은 `webContentsForTab`이 아니라 `liveDocumentContents`(`ensureTabLoaded`)를 쓴다.
 

@@ -471,6 +471,30 @@ describe('close guard', () => {
     expect(win.destroyed).toBe(true)
   })
 
+  it('reports a cancelled close, which calls a quit off, and stays quiet when it is confirmed', async () => {
+    const { htmlIsDirty, requestHtmlClose } = await import('../../html/src/main/html-main')
+    vi.mocked(htmlIsDirty).mockReturnValue(true)
+    const vetoed = vi.fn()
+    detached.setDetachedCloseVetoedListener(vetoed)
+    detached.createDetachedEditorWindow({
+      view: fakeView(6) as never,
+      kind: 'html',
+      title: 'page.html',
+      applyMenuFor: () => {},
+    })
+    const win = instances[0]!
+    vi.mocked(requestHtmlClose).mockResolvedValueOnce(false)
+    win.emit('close', { preventDefault: vi.fn() })
+    await flush()
+    expect(vetoed).toHaveBeenCalledTimes(1)
+
+    vi.mocked(requestHtmlClose).mockResolvedValueOnce(true)
+    win.emit('close', { preventDefault: vi.fn() })
+    await flush()
+    expect(win.destroyed).toBe(true)
+    expect(vetoed).toHaveBeenCalledTimes(1)
+  })
+
   it('docs never has its webContents closed: the teardown path owns it', async () => {
     const { teardownDocsRenderer } = await import('../../docs/src/main/docs-main')
     const view = fakeView(7)

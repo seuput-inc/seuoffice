@@ -86,6 +86,13 @@ export function setDetachedChangedListener(listener: () => void): void {
   onChanged = listener
 }
 
+let onCloseVetoed: () => void = () => {}
+
+/** fires when a detached window's close was cancelled or failed, which calls an in-flight quit off */
+export function setDetachedCloseVetoedListener(listener: () => void): void {
+  onCloseVetoed = listener
+}
+
 /**
  * The shell side of docking, registered by the shell window: where its strip
  * is on screen, how to show the insertion indicator, and how to take a
@@ -616,6 +623,7 @@ export function createDetachedEditorWindow(options: {
           resetSheetsShuttingDown()
           // so is a "Restart & Install" waiting on that quit
           cancelUpdateRestart()
+          onCloseVetoed()
           // a "Don't Save" answered before the denial no longer holds: the
           // window stays open with its edits, so its copies resume
           resumeDiscardedCopies()
@@ -624,6 +632,7 @@ export function createDetachedEditorWindow(options: {
       } catch (err) {
         console.error('[shell] detached window close prompt failed:', err)
         resetSheetsShuttingDown()
+        onCloseVetoed()
         cancelUpdateRestart()
         resumeDiscardedCopies()
       } finally {
