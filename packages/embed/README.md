@@ -220,9 +220,56 @@ try {
 
 `doc.exportLocal()`은 그 사람 화면에 보이는 그대로의 파일(`{ fileName, bytes }`)을 돌려준다. `collab`을 넘겨 연 문서에만 있다. 공동 편집이 `diverged`나 `failed`로 끝났을 때, 또는 연결이 끊긴 사람이 사본을 갖고 싶을 때 쓴다. 이 파일에는 판 번호가 없고 서버가 확정한 내용과 다를 수 있으므로, 저장된 문서를 자동으로 덮어쓰면 안 된다. 내려받기나 "사본으로 저장"으로 건넨다. `onSave`를 부르지 않고 소켓도 건드리지 않는다. 페이지가 거절하거나 60초(`collab.exportTimeoutMs`) 안에 답하지 않거나 문서가 닫히면 `save_failed`로 reject한다.
 
+## 첫 쪽 그림
+
+`doc.thumbnail()`은 문서의 첫 쪽을 PNG로 돌려준다. 보기와 고치기 모두 된다. `opened`가 끝난 직후에 불러도 된다. 페이지가 문서를 아직 화면에 올리는 중이면 다 올린 뒤에 그린다.
+
+```ts
+await doc.opened
+const { bytes, width, height } = await doc.thumbnail({ width: 480 })
+const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
+```
+
+- `width`는 그림의 가로 픽셀 수다. 주지 않으면 480이다. 64보다 작으면 64로, 1024보다 크면 1024로 그린다. 소수는 반올림하고, 숫자가 아니면 480으로 그린다. 그린 크기는 답의 `width`와 `height`에 있다.
+- 세로는 쪽의 비율을 따른다. 세로가 가로의 4배를 넘는 쪽은 위에서부터 4배까지만 담는다.
+- 그림에는 투명한 곳이 없다. 배경이 없는 쪽은 흰 바탕에 그린다.
+- PNG가 2 MiB(2,097,152바이트)를 넘으면 `thumbnail_too_large`로 reject한다. 더 작은 `width`로 다시 부른다.
+- 페이지는 10초 안에 그리지 못하면 `thumbnail_timeout`으로 답한다. 호스트 쪽은 답을 15초까지 기다린다. 이 기능이 없는 옛 웹 묶음은 답하지 않으므로 15초 뒤에 `thumbnail_timeout`이 된다.
+- 화면을 찍은 그림이 아니다. 페이지가 첫 쪽을 따로 그리므로 배율, 스크롤 위치, 도구 모음, 선택 표시가 그림에 없다.
+- iframe의 `sandbox`와 `allow`는 기본값 그대로 쓴다.
+
+| 형식       | 그림에 담기는 것                            | 알아 둘 것                                                                                                                                     |
+| ---------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| pdf        | 파일의 1쪽                                  | 저장하지 않은 주석과 편집은 담기지 않는다. 문서가 화면에 올라오지 않으면(암호 입력을 기다리는 PDF) `thumbnail_timeout`이다                     |
+| pptx       | 첫 슬라이드. 편집 화면과 같은 코드로 그린다 | 저장하지 않은 편집도 담긴다. 그림과 글꼴이 다 올라온 뒤에 그린다. 가려진 탭처럼 브라우저가 화면을 그리지 않는 동안에는 `thumbnail_timeout`이다 |
+| hwp, hwpx  | 1쪽. 인쇄 미리 보기와 같은 그림이다         | 저장하지 않은 편집도 담긴다. 글자는 기기에 깔린 글꼴로 그리므로 편집 화면과 글자 모양이 다를 수 있다                                           |
+| xlsx, docx | 없음                                        | `thumbnail_unsupported`로 reject한다                                                                                                           |
+
+`thumbnail()`은 `SeuofficeEmbedError`로 reject하고, `code`는 아래 넷 중 하나다.
+
+| 코드                    | 언제                                                                                                                             |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `thumbnail_unsupported` | xlsx와 docx. 문서가 열려 있지 않음(`opened` 전, 열기 실패, `destroy()` 뒤). 페이지가 그림을 만들지 못함(까닭은 `message`에 있다) |
+| `thumbnail_timeout`     | 페이지가 10초 안에 그리지 못함. 또는 페이지가 15초 안에 답하지 않음                                                              |
+| `thumbnail_too_large`   | PNG가 2 MiB를 넘음                                                                                                               |
+| `thumbnail_tainted`     | 쪽에 다른 출처의 그림이 있어서 브라우저가 그 캔버스를 읽지 못하게 함                                                             |
+
+### 메시지
+
+이 패키지를 쓰지 않고 `postMessage`로 페이지와 직접 말하는 호스트는 아래 모양을 쓴다. 다른 메시지처럼 `source: 'seuoffice'`와 `version: 1`이 붙고, 페이지는 `open`을 보낸 창과 출처의 요청만 받는다.
+
+```ts
+// 호스트 → 페이지. requestId는 호스트가 정하는 문자열이고 답에 그대로 돌아온다
+{ type: 'thumbnail', requestId: string, width?: number }
+
+// 페이지 → 호스트. bytes는 PNG이고 transfer로 넘어온다
+{ type: 'thumbnail_done', requestId: string, ok: true, bytes: ArrayBuffer, width: number, height: number }
+{ type: 'thumbnail_done', requestId: string, ok: false, code: string, message: string }
+```
+
 ## 오류
 
-`SeuofficeEmbedError.code`는 `opened`가 reject될 때 이유를 나타내는 고정 값이다.
+`SeuofficeEmbedError.code`는 `opened`가 reject될 때 이유를 나타내는 고정 값이다. `doc.thumbnail()`의 `thumbnail_*` 코드는 위 "첫 쪽 그림"에 있다.
 
 | 코드                 | 언제                                                                                                   |
 | -------------------- | ------------------------------------------------------------------------------------------------------ |
