@@ -210,8 +210,8 @@ impl Runner<'_> {
         match asked {
             Ok(active) => Ok(active.flatten()),
             Err(_) => {
-                let inside = crate::ipc::in_flight()
-                    .unwrap_or_else(|| "no traced IPC handler".to_owned());
+                let inside =
+                    crate::ipc::in_flight().unwrap_or_else(|| "no traced IPC handler".to_owned());
                 let message = format!(
                     "the core thread did not answer within {CORE_STALL:?} (inside {inside})"
                 );
@@ -341,7 +341,8 @@ impl Runner<'_> {
                 return Err(failed(format!(
                     "the active tab's document was not ready within {} ms (active tab: {})",
                     timeout.as_millis(),
-                    last.as_ref().map_or_else(|| "none".to_owned(), Active::describe)
+                    last.as_ref()
+                        .map_or_else(|| "none".to_owned(), Active::describe)
                 )));
             }
             sleep(POLL);

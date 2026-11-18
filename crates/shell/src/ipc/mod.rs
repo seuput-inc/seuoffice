@@ -98,7 +98,10 @@ impl Drop for InFlight {
 pub(crate) fn in_flight() -> Option<String> {
     let held = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
     let (channel, since) = held.as_ref()?;
-    Some(format!("'{channel}' for {} ms", since.elapsed().as_millis()))
+    Some(format!(
+        "'{channel}' for {} ms",
+        since.elapsed().as_millis()
+    ))
 }
 
 /// One message to its handler, on the core thread. `deliver` gets the answer
