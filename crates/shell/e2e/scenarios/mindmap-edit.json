@@ -13,9 +13,8 @@
       "ms": 1000
     },
     {
-      "op": "query",
-      "as": "prep-select",
-      "js": "(() => { const t = document.querySelector('me-root me-tpc') ?? document.querySelector('me-tpc'); if (!t) return false; t.closest('.map-container')?.focus(); t.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true })()"
+      "op": "click",
+      "selector": "me-root me-tpc"
     },
     {
       "op": "wait",

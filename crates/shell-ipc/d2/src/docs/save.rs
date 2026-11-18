@@ -436,6 +436,12 @@ impl Docs {
         responder: Responder,
     ) {
         if self.is_torn_down(view) || !self.can_doc_write(view, &path) {
+            eprintln!(
+                "[docs] view {}: the save of {path:?} is refused (torn down: {}, may write: {})",
+                view.0,
+                self.is_torn_down(view),
+                self.can_doc_write(view, &path)
+            );
             return responder.reply(Ok(failed(NOT_OPENED)));
         }
         if let Some(scope) = &scope
@@ -507,6 +513,11 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
                 .filter(|p| d.can_doc_write(view, p))
                 .map(str::to_owned)
             else {
+                eprintln!(
+                    "[docs] view {}: docs:save of {:?} is not for a document this view opened",
+                    view.0,
+                    args.str(0)
+                );
                 return responder.reply(Ok(failed(NOT_OPENED)));
             };
             let auto = args.get(2) == &IpcValue::Bool(true);

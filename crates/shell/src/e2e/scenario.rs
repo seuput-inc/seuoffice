@@ -188,6 +188,14 @@ pub(super) enum Step {
     Screenshot {
         name: String,
     },
+    /// A native left click at a point of the element the CSS selector names in the top
+    /// document, `fx` and `fy` from its top left
+    Click {
+        selector: String,
+        fx: f64,
+        fy: f64,
+        timeout_ms: u64,
+    },
     Wait {
         ms: u64,
     },
@@ -208,6 +216,7 @@ impl Step {
             Self::Dialog { .. } => "dialog",
             Self::ExportPdf { .. } => "exportPdf",
             Self::Screenshot { .. } => "screenshot",
+            Self::Click { .. } => "click",
             Self::Wait { .. } => "wait",
         }
     }
@@ -300,6 +309,17 @@ impl Fields<'_> {
         }
     }
 
+    /// A position inside an element, from its top left (0) to its bottom right (1)
+    fn fraction(&self, key: &str, default: f64) -> Result<f64, String> {
+        match self.object.get(key) {
+            None | Some(Value::Null) => Ok(default),
+            Some(value) => value
+                .as_f64()
+                .filter(|fraction| (0.0..=1.0).contains(fraction))
+                .ok_or_else(|| format!("{key} must be a number from 0 to 1")),
+        }
+    }
+
     fn millis(&self, key: &str, default: u64) -> Result<u64, String> {
         match self.object.get(key) {
             None | Some(Value::Null) => Ok(default),
@@ -389,6 +409,12 @@ fn parse_step(raw: &Value, env: Env<'_>) -> Result<Step, String> {
         "screenshot" => Step::Screenshot {
             name: fields.name("name")?,
         },
+        "click" => Step::Click {
+            selector: fields.string("selector")?,
+            fx: fields.fraction("fx", 0.5)?,
+            fy: fields.fraction("fy", 0.5)?,
+            timeout_ms: fields.millis("timeoutMs", DEFAULT_QUERY_TIMEOUT_MS)?,
+        },
         "wait" => Step::Wait {
             ms: fields.millis("ms", 0)?,
         },
@@ -474,6 +500,35 @@ mod tests {
         assert_eq!(scenario.steps[8].op(), "dialog");
         assert_eq!(scenario.steps[7].name(), Some("prep-sum"));
         assert_eq!(scenario.steps[0].name(), None);
+    }
+
+    #[test]
+    fn a_click_names_an_element_and_a_point_inside_it() {
+        let scenario = parse_text(
+            r##"{"steps":[{"op":"click","selector":"#a iframe"},
+                {"op":"click","selector":"canvas","fx":0.25,"fy":1,"timeoutMs":500}]}"##,
+        )
+        .unwrap();
+        assert_eq!(
+            scenario.steps[0],
+            Step::Click {
+                selector: "#a iframe".into(),
+                fx: 0.5,
+                fy: 0.5,
+                timeout_ms: DEFAULT_QUERY_TIMEOUT_MS
+            }
+        );
+        assert_eq!(scenario.steps[1].op(), "click");
+        assert!(
+            parse_text(r#"{"steps":[{"op":"click","selector":"a","fx":1.5}]}"#)
+                .unwrap_err()
+                .contains("fx must be a number from 0 to 1")
+        );
+        assert!(
+            parse_text(r#"{"steps":[{"op":"click"}]}"#)
+                .unwrap_err()
+                .contains("selector is required")
+        );
     }
 
     #[test]

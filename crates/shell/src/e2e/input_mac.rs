@@ -287,6 +287,53 @@ pub(super) fn shortcut(
     send(ui, window, shortcut_stroke(shortcut))
 }
 
+/// A left click through the application: a move, then a press and a release, as a mouse sends
+/// them. `x` and `y` are pixels from the top left of the window's content area; AppKit takes
+/// points from its bottom left.
+fn post_click(window: &Window, x: f64, y: f64) -> Result<(), String> {
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| "AppKit mouse events can only be sent on the UI thread.".to_owned())?;
+    let native = ns_window(window)?;
+    activate(mtm, native);
+    let height = native
+        .contentView()
+        .ok_or_else(|| "The window has no content view.".to_owned())?
+        .frame()
+        .size
+        .height;
+    let location = NSPoint { x, y: height - y };
+    let app = NSApplication::sharedApplication(mtm);
+    let (number, time) = (native.windowNumber(), uptime());
+    for (kind, count, pressure) in [
+        (NSEventType::MouseMoved, 0, 0.0),
+        (NSEventType::LeftMouseDown, 1, 1.0),
+        (NSEventType::LeftMouseUp, 1, 0.0),
+    ] {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            location,
+            NSEventModifierFlags::empty(),
+            time,
+            number,
+            None,
+            0,
+            count,
+            pressure,
+        )
+        .ok_or_else(|| "AppKit could not build the mouse event.".to_owned())?;
+        app.sendEvent(&event);
+        sleep(Duration::from_millis(30));
+    }
+    Ok(())
+}
+
+/// A native left click at `x`, `y`, pixels from the top left of the window's content area
+pub(super) fn click(ui: &Arc<dyn Thread>, window: &Window, x: f64, y: f64) -> Result<(), String> {
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let window = window.clone();
+    on_ui(ui, move || post_click(&window, x / scale, y / scale))
+}
+
 /// The first responder's text input context (a web view is a text input client): the source its
 /// keys are interpreted with. The system-wide selection alone left the keys as plain Latin text.
 /// Sets it when `id` is given; the answer is what it is set to afterwards.

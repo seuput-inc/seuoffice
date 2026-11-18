@@ -32,7 +32,13 @@ function frame(callback, flags, index, body) {
   return buffer
 }
 
-function setup({ bridge = 'preload', protocol = 'https:', ready = 'complete', route } = {}) {
+function setup({
+  bridge = 'preload',
+  protocol = 'https:',
+  ready = 'complete',
+  route,
+  subframe = false,
+} = {}) {
   const requests = []
   const callbacks = []
   const listeners = new Map()
@@ -115,6 +121,7 @@ function setup({ bridge = 'preload', protocol = 'https:', ready = 'complete', ro
       return answer(null)
     },
   }
+  window.top = subframe ? {} : window
   const context = createContext({
     window,
     Response,
@@ -133,6 +140,12 @@ function setup({ bridge = 'preload', protocol = 'https:', ready = 'complete', ro
 
 const nonceOf = (request) => request.headers.get('x-seuoffice-doc')
 const commands = (requests) => requests.map((request) => request.url.split('/').pop())
+
+it('does nothing in a subframe, whose nonce would revoke the top document', async () => {
+  const { requests } = setup({ subframe: true })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(requests).toEqual([])
+})
 
 it('registers the document nonce once and sends it with every protected call', async () => {
   const { window, internals, requests, callbacks } = setup()

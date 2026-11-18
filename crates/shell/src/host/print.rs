@@ -43,6 +43,8 @@ use crate::views::ViewTable;
 /// Electron's `loadFile` resolved when the page loaded; a page that never
 /// does is a failure, not a hang
 const LOAD_TIMEOUT: Duration = Duration::from_secs(60);
+/// how long the print browser's first about:blank may take to be seen loading
+const BLANK_OBSERVE: Duration = Duration::from_secs(3);
 /// The longest a print preview may stay open before the window is let go
 const PREVIEW_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PREVIEW_POLL: Duration = Duration::from_millis(300);
@@ -1109,9 +1111,32 @@ impl PrintWindow {
             "ERR_TIMED_OUT: the print browser navigation was not initialized".to_owned()
         })??;
         drop(ready_subscription);
-        blank_rx
-            .recv_timeout(LOAD_TIMEOUT)
-            .map_err(|_| "ERR_TIMED_OUT: the print browser did not initialize".to_owned())?;
+        // The browser's own first about:blank raises no navigation events a late-attached
+        // observer can see (WebView2 raises none at all), so the print page would wait for a
+        // load nobody reports. When none is seen, navigate to it once, through the hook.
+        if blank_rx.recv_timeout(BLANK_OBSERVE).is_err() {
+            crate::trace::trace!("print", "the initial blank load was not observed: navigating");
+            self.document_navigation
+                .as_ref()
+                .ok_or("missing print navigation state")?
+                .lock()
+                .map_err(|_| "print navigation state is poisoned")?
+                .initial_seen = false;
+            let window = self
+                .window
+                .as_ref()
+                .ok_or("the print browser is gone")?
+                .clone();
+            let to = Url::parse("about:blank").map_err(|error| error.to_string())?;
+            if let Some(owner) = &self.owner {
+                owner.navigate(window.as_ref(), to)?;
+            } else {
+                on_ui(&self.ui, move || window.navigate(to)).map_err(|error| error.to_string())?;
+            }
+            blank_rx
+                .recv_timeout(LOAD_TIMEOUT)
+                .map_err(|_| "ERR_TIMED_OUT: the print browser did not initialize".to_owned())?;
+        }
         drop(blank_subscription);
         if cancel.is_cancelled() {
             return Err("HTML printing was cancelled".into());

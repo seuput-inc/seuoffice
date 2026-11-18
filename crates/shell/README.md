@@ -52,6 +52,8 @@ G3 관문의 실행기다(`src/e2e/`). 앱은 평소처럼 전부 시작하고(`
 - 시나리오 문자열 안의 `${FIXTURES}`, `${WORK}`는 환경 변수 `SEUOFFICE_E2E_FIXTURES`, `SEUOFFICE_E2E_WORK`로 바뀐다.
 - 대화 상자: `dialog` 단계가 다음 네이티브 대화 상자의 답(`save`, `dontSave`, `cancel`, `path:<절대경로>`)을 넣는다. 훅은 `host/dialog/owned.rs`와 `Dialogs::error`에 있고 `--e2e`가 아니면 아무 일도 하지 않는다. 답 없는 대화 상자는 15초 뒤 취소되며 `e2e-dialogs.jsonl`에 남는다.
 - `query`는 활성 편집기 웹뷰에서 `PageOps::evaluate`로 식을 돌린다(Promise는 기다린다). 새 IPC 길은 없다.
+- `click`은 최상위 문서에서 CSS 선택자가 가리키는 요소를 보이는 곳으로 스크롤하고, 페이지가 알려 주는 사각형(`getBoundingClientRect`)의 한 점(`fx`, `fy`, 기본 0.5)에 OS 입력으로 왼쪽 클릭을 한다(macOS는 `NSEvent` 마우스 이벤트, 윈도는 `SetCursorPos`와 `SendInput`). 교차 출처 프레임(draw.io)이나 캔버스도 사용자의 클릭을 받는다. 값에 그 점의 CSS 좌표, 창 좌표, 페이지가 그 점에서 찾은 요소(`hit`)가 들어간다.
+- `type`의 값 `received`는 페이지의 `keydown` 수신 기록(최상위와 iframe별)이다. 보낸 글자와 다르면 OS나 웹뷰가 입력을 떨어뜨린 것이고, 같은데 문서가 다르면 편집기가 떨어뜨린 것이다.
 - 윈도의 `ime` 단계는 한국어 언어 팩(한글 IME)이 이미지에 깔려 있어야 한다.
 
 ## 파일 지도

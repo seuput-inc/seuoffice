@@ -663,18 +663,29 @@ pub async fn ipc_render_ready(webview: Webview, request: Request<'_>) -> Result<
         .map_err(register_refusal)
 }
 
+/// A refused call, on a tag the trace does not thin out: which channel of which view was
+/// refused and why. The `ipc` tag shows one line in a hundred after the first forty.
+fn trace_refused(kind: &str, label: &str, bytes: Option<&[u8]>, error: &str) {
+    trace!("refused", "{kind} of '{label}'{}: {error}", {
+        let channel = bytes.and_then(|bytes| parse_bytes(bytes, false).ok());
+        channel.map_or(String::new(), |call| format!(" '{}'", call.channel))
+    });
+}
+
 #[tauri::command]
 pub async fn ipc_invoke(
     webview: Webview,
     request: Request<'_>,
     ipc: State<'_, Ipc>,
 ) -> Result<(), String> {
-    let (sender, owner) = attested_sender(&ipc, &webview, &request)
-        .inspect_err(|e| trace!("ipc", "invoke refused: {e}"))?;
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("the shell's IPC commands take a raw body".into());
     };
+    let bytes: &[u8] = bytes;
+    let (sender, owner) = attested_sender(&ipc, &webview, &request)
+        .inspect_err(|e| trace_refused("invoke", webview.label(), Some(bytes), e))?;
     invoke_verified(&ipc, sender, owner, bytes)
+        .inspect_err(|e| trace_refused("invoke", webview.label(), Some(bytes), e))
 }
 
 #[tauri::command]
@@ -683,12 +694,14 @@ pub async fn ipc_send(
     request: Request<'_>,
     ipc: State<'_, Ipc>,
 ) -> Result<(), String> {
-    let (sender, owner) = attested_sender(&ipc, &webview, &request)
-        .inspect_err(|e| trace!("ipc", "send refused: {e}"))?;
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("the shell's IPC commands take a raw body".into());
     };
+    let bytes: &[u8] = bytes;
+    let (sender, owner) = attested_sender(&ipc, &webview, &request)
+        .inspect_err(|e| trace_refused("send", webview.label(), Some(bytes), e))?;
     send_verified(&ipc, sender, owner, bytes)
+        .inspect_err(|e| trace_refused("send", webview.label(), Some(bytes), e))
 }
 
 #[tauri::command]

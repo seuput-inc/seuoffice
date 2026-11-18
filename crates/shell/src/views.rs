@@ -222,6 +222,19 @@ impl SlidesMediaAuthorization {
         self.lease.clone()
     }
 
+    /// The authorization of a slides view's registered document: its lease, and the browser
+    /// and committed document `token` belongs to. It is current only while that document is
+    /// still the browser's committed one.
+    pub(crate) fn of_document(view: ViewId, lease: SlidesViewLease, token: &DocumentContext) -> Self {
+        Self {
+            view,
+            lease,
+            browser_id: token.identity().browser_id(),
+            browser: token.browser().clone(),
+            document: token.identity().clone(),
+        }
+    }
+
     pub fn is_current(&self) -> bool {
         self.lease.is_active() && self.browser.document().as_ref() == Some(&self.document)
     }

@@ -22,20 +22,23 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use shell_contract::runtime::Thread;
 use tauri::Window;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::Ime::{
     IME_CMODE_HANGUL, IME_CONVERSION_MODE, IME_SENTENCE_MODE, ImmGetContext,
     ImmGetConversionStatus, ImmReleaseContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, HKL, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, KLF_NOTELLSHELL, LoadKeyboardLayoutW, MAPVK_VK_TO_VSC,
+    GetKeyboardLayout, HKL, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS,
+    KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, KLF_NOTELLSHELL, LoadKeyboardLayoutW,
+    MAPVK_VK_TO_VSC, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
     MapVirtualKeyW, SendInput, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_ESCAPE, VK_F4, VK_HANGUL,
     VK_MENU, VK_RETURN, VK_SHIFT, VK_TAB, VkKeyScanW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, IsIconic,
-    PostMessageW, SW_RESTORE, SetForegroundWindow, ShowWindow, WM_INPUTLANGCHANGEREQUEST,
+    GUITHREADINFO, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
+    IsIconic, PostMessageW, SW_RESTORE, SetCursorPos, SetForegroundWindow, ShowWindow,
+    WM_INPUTLANGCHANGEREQUEST,
 };
 use windows::core::w;
 
@@ -223,6 +226,56 @@ pub(super) fn type_text(
         after_key();
     }
     Ok(())
+}
+
+fn mouse_input(flags: MOUSE_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// A native left click at `x`, `y`, pixels from the top left of the window's client area: the
+/// cursor is moved there, then the button is pressed and released through `SendInput`
+pub(super) fn click(
+    _ui: &Arc<dyn Thread>,
+    window: &Window,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let hwnd = hwnd_of(window)?;
+    foreground(hwnd)?;
+    let mut point = POINT {
+        x: x.round() as i32,
+        y: y.round() as i32,
+    };
+    // SAFETY: converts a point of this process's own window; the cursor is moved to the result.
+    let spot = unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+        let _ = SetCursorPos(point.x, point.y);
+        let mut now = POINT::default();
+        let _ = GetCursorPos(&mut now);
+        now
+    };
+    if (spot.x - point.x).abs() > 2 || (spot.y - point.y).abs() > 2 {
+        return Err(format!(
+            "The cursor stayed at {},{} instead of {},{}.",
+            spot.x, spot.y, point.x, point.y
+        ));
+    }
+    sleep(Duration::from_millis(50));
+    send(&[mouse_input(MOUSEEVENTF_LEFTDOWN)])?;
+    sleep(Duration::from_millis(50));
+    send(&[mouse_input(MOUSEEVENTF_LEFTUP)])
 }
 
 pub(super) fn shortcut(

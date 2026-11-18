@@ -470,6 +470,7 @@ impl Runner<'_> {
                 let target = self.target()?;
                 let focus = Self::focus_page(&target.webview)?;
                 let keys = typed_keys(text);
+                Self::reset_keys(&target.webview);
                 // one key at a time: the page must have handled a key before the next arrives,
                 // or an editor under load drops characters (S, s, a hyphen) out of the text
                 input::type_text(&self.context.ui, &target.window, &keys, &|| {
@@ -483,6 +484,7 @@ impl Runner<'_> {
                     "kind": target.kind,
                     "focusBefore": focus,
                     "focusAfter": after,
+                    "received": Self::keys_received(&target.webview),
                 })))
             }
             Step::Ime { keys } => {
@@ -536,6 +538,12 @@ impl Runner<'_> {
                 self.export_pdf(path, Duration::from_millis(*timeout_ms))
             }
             Step::Screenshot { name } => self.screenshot(name),
+            Step::Click {
+                selector,
+                fx,
+                fy,
+                timeout_ms,
+            } => self.click(selector, *fx, *fy, Duration::from_millis(*timeout_ms)),
             Step::Wait { ms } => {
                 sleep(Duration::from_millis(*ms));
                 Ok(None)
@@ -601,6 +609,82 @@ impl Runner<'_> {
         let _ = page.blocking(FOCUS_QUERY, |done| {
             page.evaluate(expression, true, None, done)
         });
+    }
+
+    /// The keys the page's own `keydown` listeners saw since the last [`Self::reset_keys`], per
+    /// frame (`top`, then each iframe in order). What was sent and what arrived differ when the
+    /// OS or the webview drops input; what arrived and what the editor shows differ when the
+    /// editor drops it.
+    fn keys_received(webview: &Webview) -> Option<Value> {
+        let page = webview.page().ok()?;
+        let expression = "(() => { const read = (w) => { try { return (w.__e2eKeys || []).join('') } catch (error) { return null } }; \
+             return { top: read(window), frames: [...document.querySelectorAll('iframe')].map((f) => read(f.contentWindow)) } })()";
+        page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, false, None, done))
+            .ok()
+    }
+
+    fn reset_keys(webview: &Webview) {
+        let Ok(page) = webview.page() else { return };
+        let expression = "(() => { const clear = (w) => { try { w.__e2eKeys = [] } catch (error) {} }; \
+             clear(window); for (const f of document.querySelectorAll('iframe')) clear(f.contentWindow); return true })()";
+        let _ = page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, false, None, done));
+    }
+
+    /// A native left click at a point of an element of the top document. The page reports the
+    /// element's rectangle (scrolled into view) in CSS pixels; the click is made in the window's
+    /// pixels, through the OS's own input, so a cross-origin frame (draw.io) or a canvas gets it
+    /// as a user's click. The value carries the element the page finds at that point.
+    fn click(&self, selector: &str, fx: f64, fy: f64, timeout: Duration) -> StepResult {
+        let target = self.target()?;
+        let focus = Self::focus_page(&target.webview)?;
+        let page = target.webview.page().map_err(failed)?;
+        let quoted = serde_json::to_string(selector).map_err(failed)?;
+        let expression = format!(
+            "(() => {{ const e = document.querySelector({quoted}); if (!e) return null; \
+             e.scrollIntoView({{ block: 'center', inline: 'center' }}); \
+             const r = e.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return null; \
+             const x = r.left + r.width * {fx}; const y = r.top + r.height * {fy}; \
+             const hit = document.elementFromPoint(x, y); \
+             return {{ x, y, dpr: window.devicePixelRatio, \
+             hit: hit ? hit.tagName + (hit.className ? '.' + String(hit.className).split(' ')[0] : '') : null }} }})()"
+        );
+        let end = Instant::now() + timeout;
+        let spot = loop {
+            let answer = page
+                .blocking(FOCUS_QUERY, |done| page.evaluate(&expression, false, None, done))
+                .ok();
+            if let Some(spot) = answer.filter(|value| value.is_object()) {
+                break spot;
+            }
+            if Instant::now() >= end {
+                return Err(failed(format!(
+                    "no element matching {selector:?} to click within {} ms",
+                    timeout.as_millis()
+                )));
+            }
+            sleep(POLL);
+        };
+        let number = |key: &str| spot.get(key).and_then(Value::as_f64);
+        let (Some(x), Some(y), Some(dpr)) = (number("x"), number("y"), number("dpr")) else {
+            return Err(failed(format!("the page's answer for {selector:?} has no point")));
+        };
+        // CSS pixels of the webview to pixels of the window: the webview's own offset in the
+        // window, then the page's pixel ratio (which includes the shell's interface scale)
+        let origin = target.webview.position().map_err(failed)?;
+        let (px, py) = (
+            f64::from(origin.x) + x * dpr,
+            f64::from(origin.y) + y * dpr,
+        );
+        input::click(&self.context.ui, &target.window, px, py).map_err(unrunnable)?;
+        Self::flush_input(&target.webview);
+        Ok(Some(json!({
+            "selector": selector,
+            "css": { "x": x, "y": y },
+            "window": { "x": px, "y": py },
+            "hit": spot.get("hit"),
+            "focusBefore": focus,
+            "focusAfter": Self::focus_state(&target.webview),
+        })))
     }
 
     /// The expression's value, awaited when it is a promise, as JSON

@@ -13,9 +13,8 @@
       "ms": 2000
     },
     {
-      "op": "query",
-      "as": "prep-focus",
-      "js": "(() => { const f = document.querySelector('iframe'); f?.focus(); return f !== null })()"
+      "op": "click",
+      "selector": "iframe"
     },
     {
       "op": "wait",

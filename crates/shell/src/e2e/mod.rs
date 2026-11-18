@@ -27,6 +27,7 @@
 //! | `newDocument` | `ShellTabs::new_document`, as the Home tiles and the New menu do |
 //! | `waitReady` | the tab of the file `open` named (after `newDocument`: a tab other than the one before) is active and its document reached the bridge's render-ready state, then the page is quiet |
 //! | `type`, `shortcut`, `ime` | native key events (`input_mac.rs`, `input_win.rs`) |
+//! | `click` | a native left click at a point of an element the page reports (`getBoundingClientRect` of the CSS selector, scrolled into view): `NSEvent` mouse events on macOS, `SetCursorPos` and `SendInput` on Windows |
 //! | `clipboard` | the OS clipboard on the UI thread |
 //! | `query` | `PageOps::evaluate` on the active editor's webview; no new IPC channel exists |
 //! | `dialog` | answers the next native dialog (`dialog.rs`) |
@@ -95,6 +96,7 @@ const PAGE_ERROR_SCRIPT: &str = "(() => { \
     addEventListener('error', (e) => log('error', e.message + ' at ' + e.filename + ':' + e.lineno)); \
     addEventListener('unhandledrejection', (e) => log('rejection', String(e.reason && e.reason.stack ? e.reason.stack : e.reason))); \
     addEventListener('securitypolicyviolation', (e) => log('csp', e.violatedDirective + ' blocked ' + e.blockedURI)); \
+    addEventListener('keydown', (e) => { try { (window.__e2eKeys = window.__e2eKeys || []).push(e.key.length === 1 ? e.key : '<' + e.key + '>') } catch (error) {} }, true); \
     const original = console.error; \
     console.error = function () { log('console.error', Array.prototype.map.call(arguments, String).join(' ')); return original.apply(console, arguments) }; \
 })()";

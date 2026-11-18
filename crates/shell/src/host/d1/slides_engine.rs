@@ -101,14 +101,34 @@ fn read_host_number(value: &serde_json::Value) -> Option<f64> {
     }
 }
 
+/// The slide authority of an owner: one the owner carries, else the one its native owner
+/// proves. A slides view's owner carries the view's lease, and its native authority carries
+/// the registered document that lease was bound to.
+fn request_authority(owner: &RenderOwner) -> Option<Arc<SlidesRequestAuthority>> {
+    if let Ok(authority) = owner.context.as_arc().downcast::<SlidesRequestAuthority>() {
+        return Some(authority);
+    }
+    let lease = owner.context.downcast_ref::<crate::views::SlidesViewLease>()?;
+    let token = owner
+        .context
+        .authority_ref::<crate::ipc::native_owner::NativeOwnerAuthority>()?
+        .origin
+        .clone();
+    Some(Arc::new(SlidesRequestAuthority {
+        authorization: crate::views::SlidesMediaAuthorization::of_document(
+            owner.view,
+            lease.clone(),
+            &token,
+        ),
+        token,
+    }))
+}
+
 pub(crate) fn owner_authority(
     owner: &RenderOwner,
 ) -> Result<Arc<SlidesRequestAuthority>, EngineError> {
-    let authority = owner
-        .context
-        .as_arc()
-        .downcast::<SlidesRequestAuthority>()
-        .map_err(|_| EngineError("invalid slide document authorization".into()))?;
+    let authority = request_authority(owner)
+        .ok_or_else(|| EngineError("invalid slide document authorization".into()))?;
     let document = authority.token.browser().document();
     if authority.authorization.view != owner.view
         || !authority.authorization.is_current()
@@ -137,7 +157,7 @@ fn owner_authorization(
 }
 
 fn captured_lease(owner: &RenderOwner) -> Result<Arc<crate::views::SlidesViewLease>, EngineError> {
-    if let Some(authority) = owner.context.downcast_ref::<SlidesRequestAuthority>() {
+    if let Some(authority) = request_authority(owner) {
         if authority.authorization.view != owner.view {
             return Err(EngineError(
                 "slide document view does not match owner".into(),
@@ -190,10 +210,7 @@ fn same_owner(a: &RenderOwner, b: &RenderOwner) -> bool {
                 _ => false,
             };
     }
-    let (Some(a_token), Some(b_token)) = (
-        a.context.downcast_ref::<SlidesRequestAuthority>(),
-        b.context.downcast_ref::<SlidesRequestAuthority>(),
-    ) else {
+    let (Some(a_token), Some(b_token)) = (request_authority(a), request_authority(b)) else {
         return false;
     };
     a_token.token == b_token.token

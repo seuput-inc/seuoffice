@@ -9,6 +9,10 @@
 //    document has loaded and its fonts are ready.
 // A document whose nonce is not registered is refused by Rust before any state is read.
 ;(function () {
+  // Windows runs initialization scripts in every frame, whatever `for_main_frame_only` says
+  // (wry). A subframe is no document of the shell: its own nonce would conflict with the top
+  // document's registration and revoke it, which left draw.io and the HWP studio unusable.
+  if (window.top !== window) return
   const invokeKey = __INVOKE_KEY__
   const internals = window.__TAURI_INTERNALS__
   // Tauri installs these non-configurable functions after invoke_system.
