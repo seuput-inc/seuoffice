@@ -13,6 +13,15 @@
       "ms": 800
     },
     {
+      "op": "query",
+      "as": "prep-focus",
+      "js": "(() => { const e = document.querySelector('.ProseMirror'); if (!e || e.textContent.length === 0) return false; e.focus(); return true })()"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
       "op": "type",
       "text": "SEU-E2E-markdown"
     },

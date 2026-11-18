@@ -783,6 +783,14 @@ struct PrintEvents {
 
 impl PrintEvents {
     fn on_event(&self, event: &NativeEvent) {
+        if crate::trace::enabled() {
+            let shown = format!("{:?}", event.kind);
+            crate::trace::trace!(
+                "print",
+                "event {}",
+                shown.chars().take(200).collect::<String>()
+            );
+        }
         match &event.kind {
             NativeEventKind::NavigationStarted {
                 navigation,

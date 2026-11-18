@@ -498,7 +498,13 @@ pub fn consume_pending_open(app: &App, cx: &CallContext, args: Args, responder: 
     let authority =
         match super::open_authority::OpenAuthority::capture(app, &owner, cx.cancel.clone()) {
             Ok(authority) => authority,
-            Err(error) => return responder.reply(Err(error)),
+            Err(error) => {
+                eprintln!(
+                    "[slides] view {}: consume-pending-open refused: {}",
+                    view.0, error.message
+                );
+                return responder.reply(Err(error));
+            }
         };
     consume_pending_ready(app, owner, authority, fit, responder);
 }
@@ -519,6 +525,13 @@ pub(super) fn consume_pending_ready(
             .cloned()
             .or_else(|| state.pending_open_path.clone())
     };
+    eprintln!(
+        "[slides] view {}: consume-pending-open finds queued path {queued:?} (exists: {})",
+        view.0,
+        queued
+            .as_deref()
+            .is_some_and(|q| std::path::Path::new(q).exists())
+    );
     if let Some(queued) = queued.filter(|q| std::path::Path::new(q).exists()) {
         fn drop_queued(app: &App, view: ViewId, queued: &str) {
             let mut state = app.state.borrow_mut();

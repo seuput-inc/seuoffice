@@ -1800,9 +1800,22 @@ fn flush_scheduled_session<E: RecoveryEditors<Contents = Contents> + 'static>(
                         Some(plan) => Ok(Some((plan, admission, false))),
                     }
                 }
-                None if recorder.write_timer() => {
-                    Err("the pending session write lost its original authority".into())
-                }
+                // a tab change noted by the process itself armed the timer without a request's
+                // authority: the session writer admits it, as it does the startup timer's write
+                None if recorder.write_timer() => match recorder.prepare_fire_write_timer() {
+                    None => Ok(None),
+                    Some(plan) => {
+                        let writer = event_runtime.borrow().session_writer.clone();
+                        let quiescing = writer.as_ref().is_some_and(|writer| writer.is_quiescing());
+                        writer
+                            .ok_or_else(|| "the native session writer is unavailable".to_owned())
+                            .and_then(|writer| {
+                                writer
+                                    .admission(&plan, quiescing)
+                                    .map(|admission| Some((plan, admission, true)))
+                            })
+                    }
+                },
                 None => Ok(None),
             });
         },
@@ -2060,10 +2073,25 @@ fn run_session_timer(
                         Some((_, admission, native)) => Ok(recorder
                             .prepare_fire_write_timer()
                             .map(|plan| (plan, admission, native))),
-                        None if recorder.write_timer() => {
-                            Err("the scheduled session write lost its original authority"
-                                .to_owned())
-                        }
+                        // a tab change noted by the process itself (`note_session_changed`)
+                        // armed the timer and never had a request's authority; like the
+                        // startup timer it is admitted by the session writer
+                        None if recorder.write_timer() => match recorder.prepare_fire_write_timer()
+                        {
+                            None => Ok(None),
+                            Some(plan) => {
+                                let writer = event_runtime.borrow().session_writer.clone();
+                                writer
+                                    .ok_or_else(|| {
+                                        "the native session writer is unavailable".to_owned()
+                                    })
+                                    .and_then(|writer| {
+                                        writer
+                                            .admission(&plan, false)
+                                            .map(|admission| Some((plan, admission, true)))
+                                    })
+                            }
+                        },
                         None => Ok(None),
                     }
                 }

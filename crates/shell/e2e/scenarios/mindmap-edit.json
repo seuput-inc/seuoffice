@@ -51,6 +51,10 @@
       "js": "[...document.querySelectorAll('me-tpc')].map((e) => e.textContent).join(' | ')"
     },
     {
+      "op": "screenshot",
+      "name": "mindmap-typed"
+    },
+    {
       "op": "shortcut",
       "name": "save"
     },

@@ -88,6 +88,22 @@ pub fn request() -> Option<&'static Request> {
         .map(|loaded| &loaded.request)
 }
 
+/// Records what goes wrong inside a page, in every frame, for the runner to read back: a hang
+/// or a blank editor says nothing about why, and the page's own console is out of reach.
+const PAGE_ERROR_SCRIPT: &str = "(() => { \
+    const log = (kind, text) => { try { (window.__e2eErrors = window.__e2eErrors || []).push(kind + ': ' + text) } catch (e) {} }; \
+    addEventListener('error', (e) => log('error', e.message + ' at ' + e.filename + ':' + e.lineno)); \
+    addEventListener('unhandledrejection', (e) => log('rejection', String(e.reason && e.reason.stack ? e.reason.stack : e.reason))); \
+    addEventListener('securitypolicyviolation', (e) => log('csp', e.violatedDirective + ' blocked ' + e.blockedURI)); \
+    const original = console.error; \
+    console.error = function () { log('console.error', Array.prototype.map.call(arguments, String).join(' ')); return original.apply(console, arguments) }; \
+})()";
+
+/// The recorder script for a view's builder; only a `--e2e` run has one
+pub(crate) fn page_error_script() -> Option<&'static str> {
+    request().map(|_| PAGE_ERROR_SCRIPT)
+}
+
 /// The first thing `main` does after the worker modes: reads the command line, and ends the
 /// process with exit 2 when `--e2e` is given but cannot be honoured. A no-op without `--e2e`.
 pub fn init() {

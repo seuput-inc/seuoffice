@@ -756,6 +756,9 @@ impl Windows {
         if let Some(script) = spec.view.bridge.script() {
             builder = builder.initialization_script(script);
         }
+        if let Some(script) = crate::e2e::page_error_script() {
+            builder = builder.initialization_script_for_all_frames(script);
+        }
         // The page asks for a popup; the OS opens nothing, the app's policy decides
         let asked_by = spec.view.bridge.surface();
         let popup_views = self.views.clone();
@@ -965,6 +968,9 @@ impl Windows {
         }
         if let Some(script) = spec.bridge.script() {
             builder = builder.initialization_script(script);
+        }
+        if let Some(script) = crate::e2e::page_error_script() {
+            builder = builder.initialization_script_for_all_frames(script);
         }
         let asked_by = spec.bridge.surface();
         let popup_views = self.views.clone();

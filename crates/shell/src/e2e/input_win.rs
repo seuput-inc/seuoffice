@@ -42,7 +42,9 @@ use windows::core::w;
 use super::scenario::{Shortcut, TypedKey};
 
 /// between two typed characters
-const KEY_GAP: Duration = Duration::from_millis(10);
+const KEY_GAP: Duration = Duration::from_millis(40);
+/// between two raw keys of an input method, which composes each against the one before
+const IME_KEY_GAP: Duration = Duration::from_millis(120);
 /// after a layout or IME mode change: the system answers asynchronously
 const SETTLE: Duration = Duration::from_millis(300);
 const FOREGROUND_TRIES: u32 = 20;
@@ -346,7 +348,7 @@ pub(super) fn ime_ko_2set(
     }
     let typed = keys.chars().try_for_each(|c| {
         let result = send(&ime_inputs(c)?);
-        sleep(KEY_GAP);
+        sleep(IME_KEY_GAP);
         result
     });
     sleep(SETTLE);

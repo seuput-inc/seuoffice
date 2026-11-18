@@ -28,7 +28,9 @@ use super::scenario::{Shortcut, TypedKey};
 use crate::host::on_ui;
 
 /// between two typed characters, so WebKit and the input method keep up in order
-const KEY_GAP: Duration = Duration::from_millis(10);
+const KEY_GAP: Duration = Duration::from_millis(40);
+/// between two raw keys of an input method, which composes each against the one before
+const IME_KEY_GAP: Duration = Duration::from_millis(120);
 /// after an input source change or before it is committed: the system answers asynchronously
 const SETTLE: Duration = Duration::from_millis(300);
 
@@ -283,6 +285,25 @@ pub(super) fn shortcut(
     send(ui, window, shortcut_stroke(shortcut))
 }
 
+/// The first responder's text input context (a web view is a text input client): the source its
+/// keys are interpreted with. The system-wide selection alone left the keys as plain Latin text.
+/// Sets it when `id` is given; the answer is what it is set to afterwards.
+fn context_source(id: Option<&str>) -> Option<String> {
+    // SAFETY: `NSTextInputContext` class methods and properties, sent on the UI thread; the
+    // returned objects are retained for the duration of the calls.
+    unsafe {
+        let context: Option<Retained<AnyObject>> =
+            msg_send![objc2::class!(NSTextInputContext), currentInputContext];
+        let context = context?;
+        if let Some(id) = id {
+            let source = NSString::from_str(id);
+            let _: () = msg_send![&*context, setSelectedKeyboardInputSource: &*source];
+        }
+        let current: Option<Retained<NSString>> = msg_send![&*context, selectedKeyboardInputSource];
+        current.map(|source| source.to_string())
+    }
+}
+
 /// Selects the Korean 2-Set input source, types the raw keys so the OS IME composes, commits by
 /// switching back to the source that was active, and leaves that source selected
 pub(super) fn ime_ko_2set(
@@ -294,11 +315,13 @@ pub(super) fn ime_ko_2set(
         on_ui(ui, tis::current_id).ok_or("cannot read the current keyboard input source")?;
     on_ui(ui, || tis::select(tis::KOREAN_2SET))?;
     sleep(SETTLE);
+    let context = on_ui(ui, || context_source(Some(tis::KOREAN_2SET)));
+    sleep(SETTLE);
     let active = on_ui(ui, tis::current_id);
     let typed = if active.as_deref() == Some(tis::KOREAN_2SET) {
         keys.chars().try_for_each(|c| {
             let result = send(ui, window, stroke_of(&TypedKey::Char(c)));
-            sleep(KEY_GAP);
+            sleep(IME_KEY_GAP);
             result
         })
     } else {
@@ -309,11 +332,19 @@ pub(super) fn ime_ko_2set(
     sleep(SETTLE);
     // leaving the input source commits the composition into the page
     let back = previous.clone();
-    let restored = on_ui(ui, move || tis::select(&back));
+    let restored = on_ui(ui, move || {
+        context_source(Some(&back));
+        tis::select(&back)
+    });
     typed?;
     restored?;
     sleep(SETTLE);
-    Ok(json!({ "source": "ko-2set", "previous": previous }))
+    Ok(json!({
+        "source": "ko-2set",
+        "previous": previous,
+        "contextSource": context,
+        "activeSource": active,
+    }))
 }
 
 /// Text Input Sources (HIToolbox, through the Carbon framework): called on the UI thread only

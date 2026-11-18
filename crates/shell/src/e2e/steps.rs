@@ -7,6 +7,7 @@
 //! input source is not installed, there is no window): `ok: false`, and the runner stops with
 //! exit 3, as nothing after it would mean anything.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,8 @@ const PREP_RETRY: Duration = Duration::from_millis(250);
 const FOCUS_QUERY: Duration = Duration::from_secs(3);
 /// the page has the OS focus within this of the request, or the keys go out anyway
 const FOCUS_WAIT: Duration = Duration::from_secs(5);
+/// a view answers the page error question within this, or it is skipped
+const PAGE_ERRORS_QUERY: Duration = Duration::from_secs(1);
 const QUIET_TIMEOUT_MS: u32 = 10_000;
 /// a file written by an export must keep its size this long before it counts as complete
 const FILE_STABLE: Duration = Duration::from_millis(600);
@@ -114,6 +117,8 @@ struct Runner<'a> {
     switch: Option<TabSwitch>,
     /// a `quit` shortcut was sent: the app is ending, and what follows is part of that
     quitting: bool,
+    /// page errors already written to the trace
+    reported: HashSet<String>,
 }
 
 /// Runs the scenario and returns the process's exit code
@@ -122,6 +127,7 @@ pub(super) fn execute(context: &HostContext, scenario: &Scenario, report: &Repor
         context,
         switch: None,
         quitting: false,
+        reported: HashSet::new(),
     };
     if let Err(error) = runner.wait_shell() {
         eprintln!("shell: e2e: {error}");
@@ -153,6 +159,9 @@ pub(super) fn execute(context: &HostContext, scenario: &Scenario, report: &Repor
             }
         }
         let outcome = runner.run(step);
+        if !runner.quitting {
+            runner.report_page_errors();
+        }
         record.ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         trace!(
             "e2e",
@@ -393,6 +402,34 @@ impl Runner<'_> {
                 )));
             }
             sleep(POLL);
+        }
+    }
+
+    /// What the pages recorded about their own errors (see `page_error_script`), in every view
+    /// and its same-origin frames, written once each to the trace. Best effort: a view that
+    /// does not answer within a second is skipped.
+    fn report_page_errors(&mut self) {
+        let expression = "(() => { const out = []; \
+             const grab = (w, tag) => { try { for (const e of (w.__e2eErrors || [])) out.push(tag + ' ' + e) } catch (error) {} }; \
+             grab(window, 'top'); \
+             for (const f of document.querySelectorAll('iframe')) { try { grab(f.contentWindow, 'frame') } catch (error) {} } \
+             return out })()";
+        for (label, webview) in self.context.app.webviews() {
+            if !label.starts_with("view-") {
+                continue;
+            }
+            let Ok(page) = webview.page() else { continue };
+            let Ok(value) = page.blocking(PAGE_ERRORS_QUERY, |done| {
+                page.evaluate(expression, false, None, done)
+            }) else {
+                continue;
+            };
+            for line in value.as_array().into_iter().flatten().filter_map(Value::as_str) {
+                if self.reported.insert(format!("{label} {line}")) {
+                    let short: String = line.chars().take(400).collect();
+                    trace!("pageerr", "{label}: {short}");
+                }
+            }
         }
     }
 

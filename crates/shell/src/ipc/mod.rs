@@ -645,6 +645,7 @@ fn native_channel(
 /// The bridge's first call: bind its nonce to the committed document of this webview's browser.
 #[tauri::command]
 pub async fn ipc_register(webview: Webview, request: Request<'_>) -> Result<Value, String> {
+    trace!("ipc", "'{}' registers its document", webview.label());
     let (browser, nonce) = nonce_browser(&webview, &request)
         .inspect_err(|e| trace!("ipc", "register refused: {e}"))?;
     register_document(&browser, nonce).inspect_err(|e| trace!("ipc", "register refused: {e}"))
@@ -653,6 +654,7 @@ pub async fn ipc_register(webview: Webview, request: Request<'_>) -> Result<Valu
 /// The bridge's second call: the registered document has loaded and its fonts are ready.
 #[tauri::command]
 pub async fn ipc_render_ready(webview: Webview, request: Request<'_>) -> Result<(), String> {
+    trace!("ipc", "'{}' reports render-ready", webview.label());
     let (browser, nonce) = nonce_browser(&webview, &request)
         .inspect_err(|e| trace!("ipc", "render-ready refused: {e}"))?;
     browser
