@@ -1,0 +1,80 @@
+name: repro ios text size
+
+# Throwaway: every format's view and edit page, embedded cross-origin, opened in Mobile Safari on
+# an iPhone simulator. The pages measure the font size of their own text (tools/repro/ios) and the
+# run keeps the numbers and a screenshot of each page.
+
+on:
+  push:
+    branches: ['repro/ios-*']
+
+permissions:
+  contents: read
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # the bundle changes only with the product: reworking the harness does not rebuild it
+      - id: source
+        run: |
+          tree=$(git rev-parse HEAD:apps HEAD:packages HEAD:crates HEAD:vendor HEAD:fixtures \
+            HEAD:package-lock.json HEAD:tools/repro/ios/build-site.mjs | sha256sum | cut -c1-32)
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ios-repro-site.tar
+          key: ios-repro-site-${{ steps.source.outputs.tree }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      # the same steps as the `web` job of seuoffice.yml
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          npm ci --ignore-scripts
+          npm run build:wasm
+          npm run build -w @seuoffice/web
+          npm run fixtures -w @seuoffice/sheets
+          node tools/repro/ios/build-site.mjs ios-repro-site
+          tar -cf ios-repro-site.tar ios-repro-site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-repro-site
+          path: ios-repro-site.tar
+          retention-days: 3
+
+  iphone:
+    needs: site
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ios-repro-site
+      - run: tar -xf ios-repro-site.tar
+      - name: what this runner has
+        run: |
+          sw_vers
+          ls /Applications | grep -i xcode
+          xcodebuild -version
+          xcrun simctl list runtimes
+          node --version
+      - name: open every case in Mobile Safari
+        run: node tools/repro/ios/run-ios.mjs ios-repro-site ios-repro-out
+      - if: always()
+        run: cat ios-repro-out/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-repro-out
+          path: ios-repro-out
