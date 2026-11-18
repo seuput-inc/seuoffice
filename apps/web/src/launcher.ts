@@ -8,6 +8,8 @@ import {
   type EmbeddedDocument,
   type LocalFile,
   type SaveReason,
+  type Thumbnail,
+  type ThumbnailOptions,
 } from '@seuoffice/embed'
 
 const viewer = document.getElementById('viewer')!
@@ -74,6 +76,8 @@ declare global {
       save(): Promise<string | null>
       /** `doc.exportLocal()` of a co-edited document */
       exportLocal(): Promise<LocalFile>
+      /** `doc.thumbnail()`: the first page as a PNG, or a rejection that carries its `code` */
+      thumbnail(options?: ThumbnailOptions): Promise<Thumbnail>
     }
   }
 }
@@ -99,6 +103,10 @@ const observed: NonNullable<Window['seuLauncher']> = {
   exportLocal() {
     if (!rescue) return Promise.reject(new Error('no co-edited document is open'))
     return rescue.exportLocal()
+  },
+  thumbnail(options) {
+    if (!current) return Promise.reject(new Error('nothing is open'))
+    return current.thumbnail(options)
   },
 }
 window.seuLauncher = observed
