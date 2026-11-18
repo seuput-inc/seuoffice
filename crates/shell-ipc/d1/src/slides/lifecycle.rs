@@ -562,7 +562,10 @@ pub(super) fn consume_pending_ready(
             });
             match &reply {
                 Ok(IpcValue::Null | IpcValue::Undefined) => {
-                    eprintln!("[slides] view {}: the pending open answered no deck", view.0)
+                    eprintln!(
+                        "[slides] view {}: the pending open answered no deck",
+                        view.0
+                    )
                 }
                 Err(error) => eprintln!(
                     "[slides] view {}: the pending open failed: {}",
