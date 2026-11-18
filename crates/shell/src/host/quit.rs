@@ -427,6 +427,11 @@ fn start_session_flush(startup: Startup) {
     completion::post_with_completion(
         |job| services.core.post(job),
         |done| {
+            // `--measure-dialog`, the probes, and a quit before the shell window's first
+            // frame never started a recovery session: there is nothing to finalize
+            if !super::recovery_launch::is_live() {
+                return done.finish(Ok(()));
+            }
             // "Restart & Install" brings the tabs back after the update; any other
             // quit is a clean exit (`will-quit` of the Electron app)
             super::update::with_update_restart_requested(move |restart| {

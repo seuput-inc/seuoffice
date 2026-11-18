@@ -66,7 +66,7 @@ const TAURI_SCHEMES = [
 
 describe('renderer page CSP', () => {
   it('finds the pages the shell serves', () => {
-    const names = pages.map((file) => path.relative(appsDir, file))
+    const names = pages.map((file) => path.relative(appsDir, file).split(path.sep).join('/'))
     expect(names).toEqual(
       expect.arrayContaining([
         'shell/src/renderer/index.html',

@@ -160,8 +160,9 @@ fn call(
             let _ = tx.send(reply);
         }),
     );
+    // some answers (slides:recent) queue behind file writes on a worker thread
     let reply = rx
-        .try_recv()
+        .recv_timeout(std::time::Duration::from_secs(10))
         .unwrap_or_else(|_| panic!("{channel} did not answer"));
     if *kind == shell_contract::ipc::ChannelKind::Send {
         assert_eq!(reply.as_ref().ok(), Some(&IpcValue::Undefined));

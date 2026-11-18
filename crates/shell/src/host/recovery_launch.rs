@@ -271,6 +271,11 @@ thread_local! {
     static ACTIVE_FLUSH: RefCell<Option<Rc<RefCell<FlushState>>>> = const { RefCell::new(None) };
 }
 
+/// Whether the shell window's recovery session runs on this (core) thread
+pub(crate) fn is_live() -> bool {
+    LIVE.with(|slot| slot.borrow().is_some())
+}
+
 pub(crate) fn install_live(runtime: Rc<RefCell<Runtime<Editors>>>) -> Result<(), String> {
     LIVE.with(|slot| {
         let mut slot = slot.borrow_mut();

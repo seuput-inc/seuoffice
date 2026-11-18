@@ -392,9 +392,7 @@ describe('co-editing', () => {
   })
 
   it('holds for this repository', () => {
-    const result = coeditCheck(
-      path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..'),
-    )
+    const result = coeditCheck(path.resolve(import.meta.dirname, '../../..'))
     expect(result.evidence).not.toMatch(/reference co-editing/)
     expect(result.status).toBe('UNVERIFIED')
   })
@@ -484,7 +482,7 @@ describe('readers of the saved files', () => {
 describe('the fixtures the scenarios open', () => {
   it('builds the big workbook with the cells the far-cell scenario edits', async () => {
     const template = path.resolve(
-      path.dirname(new URL(import.meta.url).pathname),
+      import.meta.dirname,
       '../../../apps/shell/build/shell-new/blank.xlsx',
     )
     const book = await JSZip.loadAsync(await bigWorkbook(template, 120, 10))
@@ -514,7 +512,7 @@ describe('the fixtures the scenarios open', () => {
   })
 
   it('names, in every scenario file, only checks the checker knows', () => {
-    const dir = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../e2e/scenarios')
+    const dir = path.resolve(import.meta.dirname, '../e2e/scenarios')
     const names = fs.readdirSync(dir).map((file) => file.replace(/\.json$/, ''))
     for (const check of CHECKS.filter((candidate) => candidate.scenario !== '*')) {
       expect(names, `${check.scenario} has no scenario file`).toContain(check.scenario)
@@ -562,7 +560,8 @@ describe('the staging of resources', () => {
   it('keeps what was built, falls back to the host target, and lists the rest', async () => {
     const { splitResources } = await import('../e2e/stage-resources.mjs')
     const built = new Set(['docs/out', 'sidecar/target/release/xlsx-sidecar.exe'])
-    const exists = (file) => [...built].some((suffix) => file.endsWith(suffix))
+    const exists = (file) =>
+      [...built].some((suffix) => file.split(path.sep).join('/').endsWith(suffix))
     const { kept, skipped } = splitResources(
       {
         'docs/out': 'modules/docs',
@@ -575,9 +574,11 @@ describe('the staging of resources', () => {
       'docs/out',
       'sidecar/target/x86_64-pc-windows-gnu/release/xlsx-sidecar.exe',
     ])
-    expect(kept['sidecar/target/x86_64-pc-windows-gnu/release/xlsx-sidecar.exe'].found).toMatch(
-      /sidecar\/target\/release\/xlsx-sidecar\.exe$/,
-    )
+    expect(
+      kept['sidecar/target/x86_64-pc-windows-gnu/release/xlsx-sidecar.exe'].found
+        .split(path.sep)
+        .join('/'),
+    ).toMatch(/sidecar\/target\/release\/xlsx-sidecar\.exe$/)
     expect(skipped).toEqual(['cli/dist/seuoffice.cjs'])
   })
 })
