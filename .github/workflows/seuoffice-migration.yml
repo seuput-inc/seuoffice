@@ -1,0 +1,405 @@
+name: seuoffice migration
+
+# The migration acceptance test of decision 0029 on runners
+# (docs/seuoffice/3단계-넘어가기-시험.md, scripts in tools/migration-test):
+# an installed Electron build updates itself, through its own dialog, to a
+# candidate build and then to the next one, and the data it kept is still
+# what the app shows. On Windows the forced failures run too.
+#
+# Without a candidate it updates Electron releases to Electron releases: the
+# check of the harness itself, and the baseline the CEF build must equal.
+#   gh workflow run "seuoffice migration" --ref <branch>
+#   gh workflow run "seuoffice migration" --ref <branch> -f to_run=<id> -f to_version=<version> -f to_source_sha=<sha> -f next_run=<id> -f next_version=<version> -f next_source_sha=<sha>
+# A published release, a pre-release included, is checked before it is
+# promoted: the installed release `from` updates through its own update window
+# to the release `to_tag`, served from that release's own latest*.yml and
+# files (nothing rebuilt or re-hashed), and keeps its data. Only the fault-free
+# path runs unless `faults` says otherwise (the faults test the CEF installer).
+#   gh workflow run "seuoffice migration" --ref <branch> -f from=v0.12.42 -f to_tag=v0.12.43
+# By hand only: it downloads releases and installs the app on the runner. A
+# dispatch needs the file on main; a push to a migration-test/* branch runs it
+# instead, with `from`, `to_tag`, `next_tag` and `faults` read from
+# tools/migration-test/targets.json of the pushed commit (defaults when absent).
+
+on:
+  push:
+    branches: ['migration-test/**']
+  workflow_dispatch:
+    inputs:
+      from:
+        description: Electron releases to start from, comma separated tags; "oldest" and "previous" are resolved
+        required: false
+        default: oldest,previous
+      to_run:
+        description: Successful candidate bundle run id
+        required: false
+        default: ''
+      to_version:
+        description: Exact candidate version
+        required: false
+        default: ''
+      to_source_sha:
+        description: Exact candidate source commit
+        required: false
+        default: ''
+      next_run:
+        description: Successful second candidate bundle run id
+        required: false
+        default: ''
+      next_version:
+        description: Exact second candidate version
+        required: false
+        default: ''
+      next_source_sha:
+        description: Exact second candidate source commit
+        required: false
+        default: ''
+      to_tag:
+        description: Existing release tag (a pre-release too) to update to, served from its own latest*.yml and files
+        required: false
+        default: ''
+      next_tag:
+        description: Existing release tag to update to after to_tag
+        required: false
+        default: ''
+      faults:
+        description: Windows faults to run, comma separated (none, kill-installer, block-start, lock-file); default none with to_tag, all otherwise
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: seuput-inc/seuoffice
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      faults: ${{ steps.r.outputs.faults }}
+      real_feed: ${{ steps.r.outputs.real_feed }}
+      from: ${{ steps.r.outputs.from }}
+      to: ${{ steps.r.outputs.to }}
+      next: ${{ steps.r.outputs.next }}
+      oldest: ${{ steps.r.outputs.oldest }}
+      previous: ${{ steps.r.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Quit policy tests
+        run: npx --yes vitest@4.1.12 run --root tools/migration-test quit-policy
+      - id: t
+        if: github.event_name == 'push'
+        name: Targets of the pushed branch
+        run: |
+          if [ -f tools/migration-test/targets.json ]; then node tools/migration-test/targets.mjs >> "$GITHUB_OUTPUT"; fi
+      - id: r
+        name: Releases to start from and to update to
+        env:
+          TO_RUN: ${{ inputs.to_run }}
+          TO_VERSION: ${{ inputs.to_version }}
+          TO_SOURCE_SHA: ${{ inputs.to_source_sha }}
+          NEXT_RUN: ${{ inputs.next_run }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+          NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
+          TO_TAG: ${{ inputs.to_tag || steps.t.outputs.to_tag }}
+          NEXT_TAG: ${{ inputs.next_tag || steps.t.outputs.next_tag }}
+          FAULTS: ${{ inputs.faults || steps.t.outputs.faults }}
+          FROM: ${{ inputs.from || steps.t.outputs.from || 'oldest,previous' }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          if [ -n "$TO_TAG$NEXT_TAG" ] && [ -n "$TO_RUN$TO_VERSION$TO_SOURCE_SHA$NEXT_RUN$NEXT_VERSION$NEXT_SOURCE_SHA" ]; then
+            fail "Release tags and candidate runs are separate targets"
+          fi
+          [ -z "$NEXT_TAG" ] || [ -n "$TO_TAG" ] || fail "next_tag needs to_tag"
+          if [ -n "$TO_RUN$TO_VERSION$TO_SOURCE_SHA$NEXT_RUN$NEXT_VERSION$NEXT_SOURCE_SHA" ]; then
+            for value in "$TO_RUN" "$TO_VERSION" "$TO_SOURCE_SHA" "$NEXT_RUN" "$NEXT_VERSION" "$NEXT_SOURCE_SHA"; do
+              [ -n "$value" ] || fail "Both candidates require a run, exact version and source SHA"
+            done
+            node -e 'const parse = s => { if (!/^\d+\.\d+\.\d+$/.test(s)) throw Error("Expected x.y.z versions"); return s.split(".").map(BigInt) }; const a = parse(process.env.TO_VERSION), b = parse(process.env.NEXT_VERSION); if (!(b[0] > a[0] || b[0] === a[0] && (b[1] > a[1] || b[1] === a[1] && b[2] > a[2]))) throw Error("next_version must be greater than to_version")'
+          fi
+          FROM=$(echo "$FROM" | tr -d ' ')
+          uses_keywords=false
+          case ",$FROM," in *,oldest,*|*,previous,*) uses_keywords=true ;; esac
+          # a published release offers a platform what its update needs only with all of these
+          check_release() {
+            local tag=$1 v=${1#v} names need
+            names=$(gh release view "$tag" --json assets -q '.assets[].name') || fail "Release $tag does not exist (a draft is not visible either)"
+            for need in "SeuOffice-Setup-$v.exe" "SeuOffice-Setup-$v.exe.blockmap" latest.yml "SeuOffice-$v-arm64-mac.zip" "SeuOffice-$v-arm64-mac.zip.blockmap" latest-mac.yml; do
+              echo "$names" | grep -qxF "$need" || fail "Release $tag has no $need"
+            done
+          }
+          has_installer() { gh release view "$1" --json assets -q '.assets[].name' | grep -q '^SeuOffice-Setup-.*\.exe$'; }
+          stable=()
+          oldest='' previous=''
+          if [ -z "$TO_TAG" ] || [ "$uses_keywords" = true ]; then
+            # stable releases, newest first
+            mapfile -t stable < <(gh release list --limit 200 --exclude-pre-releases --json tagName -q '.[].tagName')
+            for ((i = ${#stable[@]} - 1; i >= 0; i--)); do
+              if has_installer "${stable[$i]}"; then oldest=${stable[$i]}; break; fi
+            done
+          fi
+          to='' next=''
+          if [ -n "$TO_TAG" ]; then to=$TO_TAG next=$NEXT_TAG; previous=${stable[0]:-}
+          elif [ -z "$TO_RUN" ]; then to=${stable[1]:-} next=${stable[0]:-} previous=${stable[2]:-}
+          else previous=${stable[0]:-}; fi
+          if [ "$uses_keywords" = true ] || [ -z "$TO_TAG" ]; then
+            [ -n "$oldest" ] && [ -n "$previous" ] || fail "Cannot resolve required Electron origins"
+          fi
+          if [ -n "$TO_TAG" ]; then
+            check_release "$to"
+            [ -z "$next" ] || check_release "$next"
+            for tag in $(echo "$FROM" | tr ',' ' '); do
+              case "$tag" in oldest|previous) ;; *) check_release "$tag" ;; esac
+            done
+          fi
+          echo "oldest=$oldest" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          from=$(echo "$FROM" | tr ',' '\n' | sed "s/^oldest$/$oldest/; s/^previous$/$previous/" | sort -u | jq -R . | jq -cs .)
+          echo "from=$from" >> "$GITHUB_OUTPUT"
+          echo "to=$to" >> "$GITHUB_OUTPUT"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          if [ -n "$TO_TAG" ]; then echo "real_feed=true" >> "$GITHUB_OUTPUT"; else echo "real_feed=false" >> "$GITHUB_OUTPUT"; fi
+          # the receipt of a candidate binds all four paths; a release check runs the update path
+          all=none,kill-installer,block-start,lock-file
+          if [ -n "$TO_RUN" ]; then
+            [ -z "$FAULTS" ] || [ "$FAULTS" = "$all" ] || fail "A candidate run needs every fault"
+            faults=$all
+          elif [ -n "$FAULTS" ]; then faults=$FAULTS
+          elif [ -n "$TO_TAG" ]; then faults=none
+          else faults=$all; fi
+          for fault in $(echo "$faults" | tr ',' ' '); do
+            case "$fault" in none|kill-installer|block-start|lock-file) ;; *) fail "Unknown fault $fault" ;; esac
+          done
+          echo "faults=$(echo "$faults" | tr ',' '\n' | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+          echo "from $from, to ${to:-run $TO_RUN}, next ${next:-run $NEXT_RUN}, faults $faults"
+
+  windows:
+    needs: resolve
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        from: ${{ fromJSON(needs.resolve.outputs.from) }}
+        fault: ${{ fromJSON(needs.resolve.outputs.faults) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Candidate and next builds
+        id: builds
+        shell: bash
+        env:
+          TO_RUN: ${{ inputs.to_run }}
+          TO_VERSION: ${{ inputs.to_version }}
+          TO_SOURCE_SHA: ${{ inputs.to_source_sha }}
+          NEXT_RUN: ${{ inputs.next_run }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+          NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
+          TO_RELEASE: ${{ needs.resolve.outputs.to }}
+          NEXT_RELEASE: ${{ needs.resolve.outputs.next }}
+          REAL_FEED: ${{ needs.resolve.outputs.real_feed }}
+        run: |
+          set -euo pipefail
+          get() {
+            local prefix=$1 run=$2 version=$3 sha=$4 release=$5 dir="$RUNNER_TEMP/$1"
+            if [ -n "$run" ]; then
+              node tools/migration-test/candidate.mjs win32 "$run" "$version" "$sha" "$dir" "$prefix"
+            else
+              version=${release#v}
+              mkdir -p "$dir"
+              local name="SeuOffice-Setup-$version.exe" more=()
+              [ "$REAL_FEED" != true ] || more=(--pattern "$name.blockmap" --pattern latest.yml)
+              gh release download "$release" --dir "$dir" --pattern "$name" "${more[@]}"
+              test -f "$dir/$name"
+              echo "$prefix=$(cygpath -w "$dir/$name")" >> "$GITHUB_OUTPUT"
+              echo "${prefix}_version=$version" >> "$GITHUB_OUTPUT"
+              if [ "$REAL_FEED" = true ]; then
+                test -f "$dir/latest.yml" && test -f "$dir/$name.blockmap"
+                echo "${prefix}_yml=$(cygpath -w "$dir/latest.yml")" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          }
+          get to "$TO_RUN" "$TO_VERSION" "$TO_SOURCE_SHA" "$TO_RELEASE"
+          if [ -n "$NEXT_RUN$NEXT_RELEASE" ]; then get next "$NEXT_RUN" "$NEXT_VERSION" "$NEXT_SOURCE_SHA" "$NEXT_RELEASE"; fi
+      - name: Update from ${{ matrix.from }} (${{ matrix.fault }})
+        shell: pwsh
+        run: |
+          $next = @{ Next = '${{ steps.builds.outputs.next }}'; NextVersion = '${{ steps.builds.outputs.next_version }}' }
+          ./tools/migration-test/win-desktop.ps1 -From '${{ matrix.from }}' -To '${{ steps.builds.outputs.to }}' `
+            -ToVersion '${{ steps.builds.outputs.to_version }}' -Fault '${{ matrix.fault }}' `
+            -ToReceipt '${{ steps.builds.outputs.to_receipt }}' -NextReceipt '${{ steps.builds.outputs.next_receipt }}' `
+            -ToYml '${{ steps.builds.outputs.to_yml }}' -NextYml '${{ steps.builds.outputs.next_yml }}' `
+            -Out "$env:RUNNER_TEMP\migration" @next
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-windows-${{ matrix.from }}-${{ matrix.fault }}
+          path: ${{ runner.temp }}/migration
+          if-no-files-found: ignore
+
+  mac:
+    needs: resolve
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        from: ${{ fromJSON(needs.resolve.outputs.from) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Candidate and next builds
+        id: builds
+        env:
+          TO_RUN: ${{ inputs.to_run }}
+          TO_VERSION: ${{ inputs.to_version }}
+          TO_SOURCE_SHA: ${{ inputs.to_source_sha }}
+          NEXT_RUN: ${{ inputs.next_run }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+          NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
+          TO_RELEASE: ${{ needs.resolve.outputs.to }}
+          NEXT_RELEASE: ${{ needs.resolve.outputs.next }}
+          REAL_FEED: ${{ needs.resolve.outputs.real_feed }}
+        run: |
+          set -euo pipefail
+          get() {
+            local prefix=$1 run=$2 version=$3 sha=$4 release=$5 dir="$RUNNER_TEMP/$1"
+            if [ -n "$run" ]; then
+              node tools/migration-test/candidate.mjs darwin "$run" "$version" "$sha" "$dir" "$prefix"
+            else
+              version=${release#v}
+              mkdir -p "$dir"
+              local name="SeuOffice-$version-arm64-mac.zip" more=()
+              [ "$REAL_FEED" != true ] || more=(--pattern "$name.blockmap" --pattern latest-mac.yml)
+              gh release download "$release" --dir "$dir" --pattern "$name" "${more[@]}"
+              test -f "$dir/$name"
+              echo "$prefix=$dir/$name" >> "$GITHUB_OUTPUT"
+              echo "${prefix}_version=$version" >> "$GITHUB_OUTPUT"
+              if [ "$REAL_FEED" = true ]; then
+                test -f "$dir/latest-mac.yml" && test -f "$dir/$name.blockmap"
+                echo "${prefix}_yml=$dir/latest-mac.yml" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          }
+          get to "$TO_RUN" "$TO_VERSION" "$TO_SOURCE_SHA" "$TO_RELEASE"
+          if [ -n "$NEXT_RUN$NEXT_RELEASE" ]; then get next "$NEXT_RUN" "$NEXT_VERSION" "$NEXT_SOURCE_SHA" "$NEXT_RELEASE"; fi
+      - name: Update from ${{ matrix.from }}
+        env:
+          TO: ${{ steps.builds.outputs.to }}
+          TO_VERSION: ${{ steps.builds.outputs.to_version }}
+          TO_RECEIPT: ${{ steps.builds.outputs.to_receipt }}
+          NEXT: ${{ steps.builds.outputs.next }}
+          NEXT_VERSION: ${{ steps.builds.outputs.next_version }}
+          NEXT_RECEIPT: ${{ steps.builds.outputs.next_receipt }}
+          TO_YML: ${{ steps.builds.outputs.to_yml }}
+          NEXT_YML: ${{ steps.builds.outputs.next_yml }}
+          FROM: ${{ matrix.from }}
+        run: tools/migration-test/mac-runner.sh "$FROM" "$TO" "$TO_VERSION" "$RUNNER_TEMP/migration" "$NEXT" "$NEXT_VERSION" "$TO_RECEIPT" "$NEXT_RECEIPT"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-mac-${{ matrix.from }}
+          path: ${{ runner.temp }}/migration
+          if-no-files-found: ignore
+
+  receipt:
+    if: ${{ inputs.to_run != '' }}
+    needs: [resolve, windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: migration-*
+          path: ${{ runner.temp }}/migration-results
+      - name: Bind successful migration results to candidate bytes
+        env:
+          RESULTS: ${{ runner.temp }}/migration-results
+          FROM: ${{ needs.resolve.outputs.from }}
+          OLDEST: ${{ needs.resolve.outputs.oldest }}
+          PREVIOUS: ${{ needs.resolve.outputs.previous }}
+          CANDIDATE_RUN: ${{ inputs.to_run }}
+          VERSION: ${{ inputs.to_version }}
+          SOURCE_SHA: ${{ inputs.to_source_sha }}
+          NEXT_RUN: ${{ inputs.next_run }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+          NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const env = process.env
+          const fail = (message) => { throw new Error(message) }
+          const from = JSON.parse(env.FROM)
+          const expectedOrigins = [...new Set([env.OLDEST, env.PREVIOUS])].sort()
+          if (!Array.isArray(from) || !expectedOrigins.every(Boolean) ||
+              JSON.stringify([...from].sort()) !== JSON.stringify(expectedOrigins)) fail('migration requires exactly the oldest and previous Electron origins')
+          const read = (name) => JSON.parse(fs.readFileSync(path.join(env.RESULTS, name, 'result.json'), 'utf8'))
+          const references = new Map()
+          const results = []
+          function bind(receipt, platform, next) {
+            const expected = next
+              ? { runId: env.NEXT_RUN, version: env.NEXT_VERSION, sourceSha: env.NEXT_SOURCE_SHA }
+              : { runId: env.CANDIDATE_RUN, version: env.VERSION, sourceSha: env.SOURCE_SHA }
+            const arch = platform === 'win32' ? 'x64' : 'arm64'
+            if (!receipt || receipt.platform !== platform || receipt.arch !== arch || receipt.channel !== 'latest' ||
+                receipt.artifact !== (platform === 'win32' ? 'rust-bundle-win' : 'rust-bundle-mac') ||
+                receipt.runId !== expected.runId || receipt.version !== expected.version ||
+                receipt.sourceSha !== expected.sourceSha || !/^[a-f0-9]{40}$/.test(receipt.definitionSha || '') ||
+                !Array.isArray(receipt.channels)) fail(`invalid ${platform} ${next ? 'next' : 'candidate'} receipt`)
+            const key = `${platform}:${next}`
+            const identity = JSON.stringify({ definitionSha: receipt.definitionSha, channels: receipt.channels })
+            if (references.has(key) && references.get(key).identity !== identity) fail(`inconsistent ${key} bytes`)
+            references.set(key, { identity, receipt })
+          }
+          for (const origin of from) {
+            const mac = read(`migration-mac-${origin}`)
+            if (mac.from !== origin || mac.to !== env.VERSION || mac.next !== env.NEXT_VERSION || mac.passed !== true ||
+                !['profile-initially-absent', 'seeded', 'candidate-ui-data', 'second-update-ui-data'].every((step) => mac.checks?.includes(step))) fail(`incomplete mac migration ${origin}`)
+            bind(mac.toReceipt, 'darwin', false)
+            bind(mac.nextReceipt, 'darwin', true)
+            results.push({ platform: 'darwin', result: mac })
+            for (const fault of ['none', 'kill-installer', 'block-start', 'lock-file']) {
+              const win = read(`migration-windows-${origin}-${fault}`)
+              const steps = new Set((win.steps || []).map((step) => step.step))
+              const required = ['profile', 'installed', 'seeded', 'installer-started', 'after-install', 'checked']
+              if (fault === 'none') required.push('installer-ended', 'second-update-download', 'second-update')
+              if (fault === 'kill-installer') required.push('installer-killed', 'sign-in-recovery')
+              if (fault === 'block-start') required.push('installer-ended')
+              if (fault === 'lock-file') required.push('file-held', 'installer-ended')
+              if (win.from !== origin || win.to !== env.VERSION || win.next !== env.NEXT_VERSION ||
+                  win.fault !== fault || win.passed !== true || win.skipped || win.failure ||
+                  !required.every((step) => steps.has(step)) ||
+                  (fault === 'none' && !win.steps.some((step) => step.step === 'second-update' && step.data?.version === env.NEXT_VERSION))) fail(`incomplete Windows migration ${origin}/${fault}`)
+              bind(win.toReceipt, 'win32', false)
+              bind(win.nextReceipt, 'win32', true)
+              results.push({ platform: 'win32', result: win })
+            }
+          }
+          const win = references.get('win32:false').receipt
+          const mac = references.get('darwin:false').receipt
+          const nextWin = references.get('win32:true').receipt
+          const nextMac = references.get('darwin:true').receipt
+          if (win.definitionSha !== mac.definitionSha || nextWin.definitionSha !== nextMac.definitionSha) fail('candidate workflow definitions differ')
+          const result = {
+            schema: 'seuoffice-rust-migration/v2', sourceSha: env.SOURCE_SHA,
+            definitionSha: env.GITHUB_SHA, workflowRunId: env.GITHUB_RUN_ID,
+            candidateRunId: env.CANDIDATE_RUN, version: env.VERSION,
+            next: { runId: env.NEXT_RUN, version: env.NEXT_VERSION, sourceSha: env.NEXT_SOURCE_SHA, definitionSha: nextWin.definitionSha,
+              platforms: [nextWin, nextMac].map(({ platform, arch, channel, artifact, channels }) => ({ platform, arch, channel, artifact, channels })) },
+            origins: expectedOrigins, results,
+            platforms: [win, mac].map(({ platform, arch, channels }) => ({ platform, arch, channels })),
+          }
+          fs.writeFileSync(path.join(env.RUNNER_TEMP, 'rust-migration-receipt.json'), JSON.stringify(result, null, 2) + '\n')
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-migration-receipt
+          path: ${{ runner.temp }}/rust-migration-receipt.json
+          if-no-files-found: error
