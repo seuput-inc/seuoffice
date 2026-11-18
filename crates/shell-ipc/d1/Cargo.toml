@@ -20,3 +20,6 @@ encoding_rs.workspace = true
 # new URL(value, base) of the mind map link preview, the version main-core uses
 url = "2.5"
 file-commit.workspace = true
+
+[dev-dependencies]
+shell-core = { path = "../../shell-core" }

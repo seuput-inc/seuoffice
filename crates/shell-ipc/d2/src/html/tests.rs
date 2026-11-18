@@ -2233,3 +2233,30 @@ fn native_rename_commits_the_captured_revision_and_destination() {
     );
     assert_eq!(std::fs::read_to_string(new).unwrap(), "contents");
 }
+
+/// The acknowledgements carry one `result`; the drivers say what each scenario keys on
+const ACK_APP: super::ack_evidence::App = super::ack_evidence::App {
+    name: "html",
+    surface: Surface::Html,
+    sibling: Surface::Markdown,
+    hosts: |hosts| {
+        crate::text_recovery::test_hosts(hosts);
+        super::fakes(hosts, &json!({}))
+    },
+    entries: super::entries,
+    track: view_on,
+    file: doc,
+};
+
+#[test]
+fn native_evidence_html_recovery_applied() {
+    let observed = super::ack_evidence::recovery_acks(&ACK_APP);
+    super::ack_evidence::record(&ACK_APP, "recovery-applied", &observed);
+}
+
+#[cfg(unix)]
+#[test]
+fn native_evidence_html_saved_input_applied() {
+    let observed = super::ack_evidence::saved_input_acks(&ACK_APP);
+    super::ack_evidence::record(&ACK_APP, "saved-input-applied", &observed);
+}

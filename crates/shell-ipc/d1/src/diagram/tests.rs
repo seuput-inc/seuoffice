@@ -1240,99 +1240,264 @@ fn a_foreign_owned_save_id_cannot_write_or_retarget_a_diagram() {
     );
 }
 
-#[test]
-fn recovery_file_waits_for_exact_renderer_and_initialized_ack() {
-    use main_core::packages::electron_utils::recovery_contract::{
-        RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
-    };
-    use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
-    use shell_contract::runtime::CancelToken;
-    let s = setup("diagram-recovery-exact");
-    let (tab, path) = s.tab(401, Some(("diagram.drawio", DIAGRAM)));
-    let path = path.unwrap();
-    let generation = s.kit.services.views.renderer_generation(tab.view).unwrap();
-    let synthetic = s
-        .kit
-        .host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>();
-    let origin = synthetic
-        .capture_invocation_root(
-            tab.view,
-            &generation,
-            &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
-        )
-        .unwrap();
-    let cancel = CancelToken::default();
-    let (_issuer, closure, browser_owner) =
-        shell_contract::ipc::NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
-    let target = RecoveryOpenTarget::bind(
-        RecoveryOpenContext::Renderer {
-            source: origin.clone(),
-            participants: vec![],
-            cancel: cancel.clone(),
-            pending: cancel,
-        },
-        tab.view,
-        generation,
-        closure,
-        browser_owner,
-    )
-    .unwrap();
-    let done = Rc::new(RefCell::new(None));
-    let completed = done.clone();
-    views().unwrap().open_file_with_decision(
-        &tab.view,
-        &RecoveryOpenFileRequest {
-            file_path: path.clone(),
-            decision: RecoveryOpenDecision::Original,
-        },
-        &target,
-        Box::new(move |result| *completed.borrow_mut() = Some(result)),
-    );
-    assert!(done.borrow_mut().take().unwrap().is_ok());
-    let receipt = target.committed_seed().unwrap();
-    target.retain_native_registration(origin.clone()).unwrap();
-    let call = |channel: &str, args: Vec<IpcValue>| {
+/// A diagram renderer: its view plus the native origin its calls carry
+struct Renderer {
+    tab: Sender,
+    origin: shell_contract::ipc::NativeRequestOwner,
+}
+
+impl Renderer {
+    fn call(&self, s: &Setup, channel: &str, args: Vec<IpcValue>) -> Result<IpcValue, IpcError> {
         crate::testkit::start_with_owner(
             &s.registry,
-            tab,
+            self.tab,
             channel,
             args,
-            &origin,
-            CancelToken::default(),
+            &self.origin,
+            shell_contract::runtime::CancelToken::default(),
         )
         .try_recv()
         .unwrap()
-    };
+    }
+
+    fn acknowledge(&self, s: &Setup, token: &str, ok: bool) -> Result<IpcValue, IpcError> {
+        self.call(
+            s,
+            "diagram:recovery-initialized",
+            vec![string(token), IpcValue::Bool(ok)],
+        )
+    }
+}
+
+/// A recovery file the shell committed and the renderer opened: the renderer
+/// now owes `diagram:recovery-initialized` with `token`
+struct Recovering {
+    renderer: Renderer,
+    receipt: shell_contract::ipc::RecoverySeedReceipt,
+    token: String,
+    // the closure and target must outlive the wait
+    _issuer: shell_contract::ipc::NativeClosureIssuer,
+    _target: shell_contract::ipc::RecoveryOpenTarget,
+}
+
+impl Setup {
+    fn renderer(&self, tab: Sender) -> Renderer {
+        let generation = self
+            .kit
+            .services
+            .views
+            .renderer_generation(tab.view)
+            .unwrap();
+        let origin = self
+            .kit
+            .host::<std::sync::Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+            .capture_invocation_root(
+                tab.view,
+                &generation,
+                &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
+            )
+            .unwrap();
+        Renderer { tab, origin }
+    }
+
+    /// Drives the recovery open of diagram view `id` through the real
+    /// handlers up to the token the renderer must acknowledge
+    fn recover(&self, id: u32, name: &str) -> Recovering {
+        use main_core::packages::electron_utils::recovery_contract::{
+            RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
+        };
+        use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
+        use shell_contract::runtime::CancelToken;
+        let (tab, path) = self.tab(id, Some((name, DIAGRAM)));
+        let path = path.unwrap();
+        let renderer = self.renderer(tab);
+        let generation = self
+            .kit
+            .services
+            .views
+            .renderer_generation(tab.view)
+            .unwrap();
+        let cancel = CancelToken::default();
+        let (issuer, closure, browser_owner) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
+        let target = RecoveryOpenTarget::bind(
+            RecoveryOpenContext::Renderer {
+                source: renderer.origin.clone(),
+                participants: vec![],
+                cancel: cancel.clone(),
+                pending: cancel,
+            },
+            tab.view,
+            generation,
+            closure,
+            browser_owner,
+        )
+        .unwrap();
+        let done = Rc::new(RefCell::new(None));
+        let completed = done.clone();
+        views().unwrap().open_file_with_decision(
+            &tab.view,
+            &RecoveryOpenFileRequest {
+                file_path: path.clone(),
+                decision: RecoveryOpenDecision::Original,
+            },
+            &target,
+            Box::new(move |result| *completed.borrow_mut() = Some(result)),
+        );
+        assert!(done.borrow_mut().take().unwrap().is_ok());
+        let receipt = target.committed_seed().unwrap();
+        target
+            .retain_native_registration(renderer.origin.clone())
+            .unwrap();
+        assert_eq!(
+            renderer
+                .call(self, "diagram:consume-pending", vec![])
+                .unwrap(),
+            string(path.clone())
+        );
+        let opened = renderer
+            .call(self, "diagram:open-file", vec![string(path)])
+            .unwrap();
+        assert_eq!(field(&opened, "status"), &string("ok"));
+        let token = text(&opened, "recoveryToken");
+        assert!(receipt.settlement().is_none());
+        Recovering {
+            renderer,
+            receipt,
+            token,
+            _issuer: issuer,
+            _target: target,
+        }
+    }
+}
+
+#[test]
+fn native_evidence_diagram_recovery_initialized_settles_only_the_exact_ack() {
+    let s = setup("diagram-recovery-exact");
+    let a = s.recover(401, "a.drawio");
+    let b = s.recover(402, "b.drawio");
+    let bystander = s.renderer(s.tab(403, None).0);
+    let message = |result: Result<IpcValue, IpcError>| result.unwrap_err().message;
+
+    // missing-receipt: no token at all, then a wrong argument type
+    let no_token = message(a.renderer.call(&s, "diagram:recovery-initialized", vec![]));
+    assert!(no_token.contains("token is required"), "{no_token}");
+    let no_text_token = message(a.renderer.call(
+        &s,
+        "diagram:recovery-initialized",
+        vec![IpcValue::Bool(true)],
+    ));
+    assert!(
+        no_text_token.contains("token is required"),
+        "{no_text_token}"
+    );
+    assert!(a.receipt.settlement().is_none() && b.receipt.settlement().is_none());
+
+    // foreign-receipt: an unknown token, and the token of the other view's wait
+    let unknown = message(a.renderer.acknowledge(&s, "stale-token", true));
+    assert!(unknown.contains("does not match"), "{unknown}");
+    let other_wait = message(b.renderer.acknowledge(&s, &a.token, true));
+    assert!(other_wait.contains("does not match"), "{other_wait}");
+    assert!(a.receipt.settlement().is_none() && b.receipt.settlement().is_none());
+
+    // foreign-renderer: a diagram view that was never handed the recovery
+    // copy cannot settle it, even with the exact token
+    let foreign = message(bystander.acknowledge(&s, &a.token, true));
+    assert!(foreign.contains("does not match"), "{foreign}");
+    assert!(a.receipt.settlement().is_none() && b.receipt.settlement().is_none());
+
+    // successful-ack: the exact acknowledgement settles only its own wait
     assert_eq!(
-        call("diagram:consume-pending", vec![]).unwrap(),
-        string(path.clone())
+        a.renderer.acknowledge(&s, &a.token, true).unwrap(),
+        IpcValue::Null
     );
-    let opened = call("diagram:open-file", vec![string(path)]).unwrap();
-    assert_eq!(field(&opened, "status"), &string("ok"));
-    let token = text(&opened, "recoveryToken");
-    assert!(receipt.settlement().is_none());
-    assert!(
-        call(
-            "diagram:recovery-initialized",
-            vec![string("foreign"), IpcValue::Bool(true)]
-        )
-        .is_err()
+    assert!(matches!(a.receipt.settlement(), Some(Ok(()))));
+    assert!(b.receipt.settlement().is_none());
+
+    // duplicate-ack: a second acknowledgement changes nothing
+    let duplicate = message(a.renderer.acknowledge(&s, &a.token, false));
+    assert!(duplicate.contains("does not match"), "{duplicate}");
+    assert!(matches!(a.receipt.settlement(), Some(Ok(()))));
+    assert!(b.receipt.settlement().is_none());
+
+    shell_contract::native_evidence::record(
+        "diagram:recovery-initialized",
+        &[
+            "successful-ack",
+            "missing-receipt",
+            "foreign-receipt",
+            "foreign-renderer",
+            "duplicate-ack",
+        ],
+        &serde_json::json!({
+            "missing-receipt": {"noToken": no_token, "nonTextToken": no_text_token, "settled": false},
+            "foreign-receipt": {"unknownToken": unknown, "otherWaitsToken": other_wait, "settled": false},
+            "foreign-renderer": {"error": foreign, "settled": false},
+            "successful-ack": {"answer": null, "settlement": "ok", "otherWaitSettled": false},
+            "duplicate-ack": {"error": duplicate, "settlement": "ok"},
+        })
+        .to_string(),
     );
-    assert!(receipt.settlement().is_none());
-    assert!(
-        call(
-            "diagram:recovery-initialized",
-            vec![string(&token), IpcValue::Bool(true)]
-        )
-        .is_ok()
+}
+
+#[test]
+fn native_evidence_diagram_recovery_initialized_failed_apply_settles_the_wait_as_failure() {
+    let s = setup("diagram-recovery-failed");
+    let a = s.recover(411, "a.drawio");
+    let failure = "the renderer could not apply the recovery copy";
+    assert_eq!(
+        a.renderer
+            .call(
+                &s,
+                "diagram:recovery-initialized",
+                vec![string(&a.token), IpcValue::Bool(false), string(failure)],
+            )
+            .unwrap(),
+        IpcValue::Null
     );
-    assert!(matches!(receipt.settlement(), Some(Ok(()))));
-    assert!(
-        call(
+    assert_eq!(a.receipt.settlement(), Some(Err(failure.to_owned())));
+    // the wait is cleaned up: a later success claim cannot revive it
+    assert!(a.renderer.acknowledge(&s, &a.token, true).is_err());
+    assert_eq!(a.receipt.settlement(), Some(Err(failure.to_owned())));
+    shell_contract::native_evidence::record(
+        "diagram:recovery-initialized",
+        &["failed-apply"],
+        &serde_json::json!({"failed-apply": {"answer": null, "settlement": {"error": failure}, "lateSuccessRefused": true}})
+            .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_diagram_recovery_initialized_is_refused_to_other_surfaces() {
+    let dir = temp_dir("diagram-recovery-surface");
+    let kit = Kit::new(&dir, crate::insert_fakes);
+    let mut table = shell_core::table::Table::default();
+    crate::register(&mut table, &kit.services).unwrap();
+    let dispatcher = shell_core::dispatch::Dispatcher::new(table);
+    let mut refused = serde_json::Map::new();
+    for (id, surface) in [(421, Surface::Docs), (422, Surface::Mindmap)] {
+        let foreign = kit.view(id, surface);
+        let (send, receive) = std::sync::mpsc::channel();
+        dispatcher.dispatch(
+            foreign,
+            shell_contract::ipc::ChannelKind::Invoke,
+            Some(shell_contract::RequestId(1)),
+            None,
             "diagram:recovery-initialized",
-            vec![string(token), IpcValue::Bool(true)]
-        )
-        .is_err()
+            vec![string("token"), IpcValue::Bool(true)],
+            Box::new(move |result| send.send(result).unwrap()),
+        );
+        let message = receive.try_recv().unwrap().unwrap_err().message;
+        assert!(
+            message.contains(&format!("not open to {surface:?}")),
+            "{message}"
+        );
+        refused.insert(format!("{surface:?}"), message.into());
+    }
+    shell_contract::native_evidence::record(
+        "diagram:recovery-initialized",
+        &["unauthorized-surface"],
+        &serde_json::json!({"unauthorized-surface": refused}).to_string(),
     );
 }
 

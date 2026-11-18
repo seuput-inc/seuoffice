@@ -3910,9 +3910,16 @@ fn discarded_recovery_worker_settles_the_core_callback_once() {
     assert_eq!(std::fs::read(path).unwrap(), b"unchanged");
 }
 
-#[test]
-fn blank_recovery_waits_for_authenticated_renderer_initialization() {
-    let mut t = T::new(json!({}));
+/// A blank recovery tab whose renderer consumed its seed: the native receipt,
+/// the authenticated renderer's native context and the receipt it must acknowledge
+struct BlankRecovery {
+    target: shell_contract::ipc::RecoveryOpenTarget,
+    receipt: shell_contract::ipc::RecoverySeedReceipt,
+    context: shell_contract::ipc::NativeContext,
+    token: IpcValue,
+}
+
+fn blank_recovery(t: &mut T) -> BlankRecovery {
     let source = t.rt.view(22, Surface::Shell);
     let generation =
         t.rt.services
@@ -3983,24 +3990,55 @@ fn blank_recovery_waits_for_authenticated_renderer_initialization() {
         .unwrap();
     assert!(refused.is_err());
     assert!(receipt.settlement().is_none());
-    let receiver = synthetic
+    let context = synthetic
         .capture_invocation_docs(t.a.view, &created, &provenance)
-        .unwrap();
+        .unwrap()
+        .context;
     let blank =
         t.rt.invoke_native(
             "docs:consume-new-blank",
             t.a,
             vec![],
-            receiver.context.clone(),
+            context.clone(),
             shell_contract::runtime::CancelToken::default(),
         )
         .take()
         .unwrap()
         .unwrap();
     assert!(receipt.settlement().is_none());
+    let token = get(&blank, "recoveryReceipt").clone();
+    BlankRecovery {
+        target,
+        receipt,
+        context,
+        token,
+    }
+}
+
+/// `docs:recovery-initialized` as the registered renderer's native call
+fn acknowledge_recovery(
+    t: &mut T,
+    args: Vec<IpcValue>,
+    context: shell_contract::ipc::NativeContext,
+) -> shell_contract::ipc::Reply {
+    t.rt.invoke_native(
+        "docs:recovery-initialized",
+        t.a,
+        args,
+        context,
+        shell_contract::runtime::CancelToken::default(),
+    )
+    .take()
+    .unwrap()
+}
+
+#[test]
+fn native_evidence_docs_recovery_initialized_failed_ack_settles_failure_once() {
+    let mut t = T::new(json!({}));
+    let seed = blank_recovery(&mut t);
     let drained = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let notified = drained.clone();
-    target
+    seed.target
         .drain_work(
             t.rt.services.core.clone(),
             Box::new(move || notified.store(true, std::sync::atomic::Ordering::SeqCst)),
@@ -4008,33 +4046,141 @@ fn blank_recovery_waits_for_authenticated_renderer_initialization() {
         .unwrap();
     t.rt.drain();
     assert!(!drained.load(std::sync::atomic::Ordering::SeqCst));
-    let token = get(&blank, "recoveryReceipt").clone();
-    let result =
-        t.rt.invoke_native(
-            "docs:recovery-initialized",
-            t.a,
-            vec![token.clone(), IpcValue::Bool(false), s("blank failed")],
-            receiver.context.clone(),
-            shell_contract::runtime::CancelToken::default(),
-        )
-        .take()
-        .unwrap();
-    assert!(result.is_ok());
+    let failed = acknowledge_recovery(
+        &mut t,
+        vec![seed.token.clone(), IpcValue::Bool(false), s("blank failed")],
+        seed.context.clone(),
+    );
+    assert_eq!(failed.unwrap(), IpcValue::Undefined);
     t.rt.drain();
     assert!(drained.load(std::sync::atomic::Ordering::SeqCst));
-    assert_eq!(receipt.settlement(), Some(Err("blank failed".into())));
-    let duplicate =
-        t.rt.invoke_native(
-            "docs:recovery-initialized",
-            t.a,
-            vec![token, IpcValue::Bool(true)],
-            receiver.context,
-            shell_contract::runtime::CancelToken::default(),
+    assert_eq!(seed.receipt.settlement(), Some(Err("blank failed".into())));
+    let duplicate = acknowledge_recovery(
+        &mut t,
+        vec![seed.token.clone(), IpcValue::Bool(true)],
+        seed.context.clone(),
+    )
+    .unwrap_err();
+    assert!(duplicate.message.contains("no longer pending"));
+    assert_eq!(seed.receipt.settlement(), Some(Err("blank failed".into())));
+    shell_contract::native_evidence::record(
+        "docs:recovery-initialized",
+        &["failed-apply", "duplicate-ack"],
+        &json!({
+            "failed-apply": {
+                "settlement": "Err(blank failed)",
+                "work-drained-after-ack": true,
+            },
+            "duplicate-ack": {
+                "error": duplicate.message,
+                "settlement-unchanged": "Err(blank failed)",
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_docs_recovery_initialized_settles_only_the_exact_authenticated_ack() {
+    let mut t = T::new(json!({}));
+    let seed = blank_recovery(&mut t);
+    let missing = acknowledge_recovery(&mut t, vec![], seed.context.clone()).unwrap_err();
+    assert!(missing.message.contains("receipt is missing"));
+    let valueless = acknowledge_recovery(
+        &mut t,
+        vec![IpcValue::Bool(true), IpcValue::Bool(true)],
+        seed.context.clone(),
+    )
+    .unwrap_err();
+    assert!(valueless.message.contains("receipt is missing"));
+    assert!(seed.receipt.settlement().is_none());
+    let foreign = acknowledge_recovery(
+        &mut t,
+        vec![s("foreign-recovery-receipt"), IpcValue::Bool(true)],
+        seed.context.clone(),
+    )
+    .unwrap_err();
+    assert!(foreign.message.contains("no longer pending"));
+    assert!(seed.receipt.settlement().is_none());
+    let other_renderer = shell_contract::ipc::NativeContext::with_renderer(
+        (),
+        shell_contract::runtime::RendererGeneration::new(),
+    );
+    let wrong_renderer = acknowledge_recovery(
+        &mut t,
+        vec![seed.token.clone(), IpcValue::Bool(true)],
+        other_renderer,
+    )
+    .unwrap_err();
+    assert!(seed.receipt.settlement().is_none());
+    let pdf_view = t.rt.view(2, Surface::Pdf);
+    let mut table = shell_core::table::Table::default();
+    let provided = shell_contract::ipc::Registry::provided(&table);
+    for entry in super::entries(&t.rt.services, &provided).unwrap() {
+        shell_contract::ipc::Registry::register(
+            &mut table,
+            shell_contract::Batch::D2,
+            entry.channel,
+            entry.kind,
+            entry.handler,
         )
-        .take()
         .unwrap();
-    assert!(duplicate.is_err());
-    assert_eq!(receipt.settlement(), Some(Err("blank failed".into())));
+    }
+    let dispatcher = shell_core::dispatch::Dispatcher::new(table);
+    let (send, receive) = std::sync::mpsc::channel();
+    dispatcher.dispatch(
+        pdf_view,
+        shell_contract::ipc::ChannelKind::Invoke,
+        Some(shell_contract::RequestId(1)),
+        None,
+        "docs:recovery-initialized",
+        vec![seed.token.clone(), IpcValue::Bool(true)],
+        Box::new(move |result| send.send(result).unwrap()),
+    );
+    let unauthorized = receive.try_recv().unwrap().unwrap_err();
+    assert!(unauthorized.message.contains("not open to Pdf"));
+    assert!(seed.receipt.settlement().is_none());
+    let acknowledged = acknowledge_recovery(
+        &mut t,
+        vec![seed.token.clone(), IpcValue::Bool(true)],
+        seed.context.clone(),
+    );
+    assert_eq!(acknowledged.unwrap(), IpcValue::Undefined);
+    assert_eq!(seed.receipt.settlement(), Some(Ok(())));
+    shell_contract::native_evidence::record(
+        "docs:recovery-initialized",
+        &[
+            "successful-ack",
+            "missing-receipt",
+            "foreign-receipt",
+            "foreign-renderer",
+            "unauthorized-surface",
+        ],
+        &json!({
+            "missing-receipt": {
+                "no-arguments": missing.message,
+                "non-string-receipt": valueless.message,
+                "settled-by-either": false,
+            },
+            "foreign-receipt": {
+                "error": foreign.message,
+                "pending-settled": false,
+            },
+            "foreign-renderer": {
+                "error": wrong_renderer.message,
+                "pending-settled": false,
+            },
+            "unauthorized-surface": {
+                "error": unauthorized.message,
+                "pending-settled": false,
+            },
+            "successful-ack": {
+                "answer": "undefined",
+                "settlement": "Ok",
+            },
+        })
+        .to_string(),
+    );
 }
 
 #[test]

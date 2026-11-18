@@ -1546,3 +1546,273 @@ fn renamed_files_keep_their_grants_and_tell_the_renderer() {
         vec![string("pdf")]
     )));
 }
+
+/// A mind map renderer: its view plus the native origin its calls carry
+struct Renderer {
+    sender: Sender,
+    origin: shell_contract::ipc::NativeRequestOwner,
+}
+
+impl Renderer {
+    fn new(h: &H, id: u32) -> Renderer {
+        let sender = h.kit.view(id, Surface::Mindmap);
+        h.app.create_view(sender.view, None);
+        let generation = h
+            .kit
+            .services
+            .views
+            .renderer_generation(sender.view)
+            .unwrap();
+        let origin = h
+            .kit
+            .host::<Arc<shell_contract::hosts::synthetic::SyntheticOwnedEffects>>()
+            .capture_invocation_root(
+                sender.view,
+                &generation,
+                &shell_contract::hosts::synthetic::SyntheticNativeOrigin::new(),
+            )
+            .unwrap();
+        Renderer { sender, origin }
+    }
+
+    fn call(&self, h: &H, channel: &str, args: Vec<IpcValue>) -> Result<IpcValue, IpcError> {
+        crate::testkit::start_with_owner(
+            &h.reg,
+            self.sender,
+            channel,
+            args,
+            &self.origin,
+            shell_contract::runtime::CancelToken::default(),
+        )
+        .try_recv()
+        .unwrap()
+    }
+
+    fn acknowledge(&self, h: &H, token: &str, ok: bool) -> Result<IpcValue, IpcError> {
+        self.call(
+            h,
+            "mindmap:recovery-initialized",
+            vec![string(token), IpcValue::Bool(ok)],
+        )
+    }
+}
+
+/// A recovery file the shell committed and the renderer opened: the renderer
+/// now owes `mindmap:recovery-initialized` with `token`
+struct Recovering {
+    renderer: Renderer,
+    receipt: shell_contract::ipc::RecoverySeedReceipt,
+    token: String,
+    // the closure and target must outlive the wait
+    _issuer: shell_contract::ipc::NativeClosureIssuer,
+    _target: shell_contract::ipc::RecoveryOpenTarget,
+}
+
+/// Drives the recovery open of mind map view `id` through the real handlers
+/// up to the token the renderer must acknowledge
+fn recover(h: &H, id: u32, name: &str) -> Recovering {
+    use main_core::packages::electron_utils::recovery_contract::{
+        RecoveryOpenDecision, RecoveryOpenFileRequest,
+    };
+    use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
+    use shell_contract::runtime::CancelToken;
+    let file = h.dir.join(name);
+    fs::write(&file, "XMIND-1").unwrap();
+    let path = path_str(&file);
+    let renderer = Renderer::new(h, id);
+    let view = renderer.sender.view;
+    let generation = h.kit.services.views.renderer_generation(view).unwrap();
+    let cancel = CancelToken::default();
+    let (issuer, closure, browser_owner) =
+        shell_contract::ipc::NativeClosureIssuer::new_with_owner(view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::Renderer {
+            source: renderer.origin.clone(),
+            participants: vec![],
+            cancel: cancel.clone(),
+            pending: cancel,
+        },
+        view,
+        generation,
+        closure,
+        browser_owner,
+    )
+    .unwrap();
+    let done = Rc::new(RefCell::new(None));
+    let completed = done.clone();
+    h.app.open_file_with_decision(
+        view,
+        &RecoveryOpenFileRequest {
+            file_path: path.clone(),
+            decision: RecoveryOpenDecision::Original,
+        },
+        &target,
+        Box::new(move |result| *completed.borrow_mut() = Some(result)),
+    );
+    assert!(done.borrow_mut().take().unwrap().is_ok());
+    let receipt = target.committed_seed().unwrap();
+    target
+        .retain_native_registration(renderer.origin.clone())
+        .unwrap();
+    assert_eq!(
+        renderer.call(h, "mindmap:consume-pending", vec![]).unwrap(),
+        string(path.clone())
+    );
+    let opened = renderer
+        .call(h, "mindmap:open-file", vec![string(path)])
+        .unwrap();
+    assert_eq!(field(&opened, "status"), &string("ok"));
+    let IpcValue::String(token) = field(&opened, "recoveryToken").clone() else {
+        panic!("no recovery token in {opened:?}");
+    };
+    assert!(receipt.settlement().is_none());
+    Recovering {
+        renderer,
+        receipt,
+        token,
+        _issuer: issuer,
+        _target: target,
+    }
+}
+
+#[test]
+fn native_evidence_mindmap_recovery_initialized_settles_only_the_exact_ack() {
+    let h = plain("mindmap-recovery-exact");
+    let a = recover(&h, 11, "a.xmind");
+    let b = recover(&h, 12, "b.xmind");
+    let bystander = Renderer::new(&h, 13);
+    let message = |result: Result<IpcValue, IpcError>| result.unwrap_err().message;
+
+    // missing-receipt: no token at all, a wrong argument type, and an
+    // acknowledgement from a view with no recovery pending
+    let no_token = message(a.renderer.call(&h, "mindmap:recovery-initialized", vec![]));
+    assert!(no_token.contains("token is required"), "{no_token}");
+    let no_text_token = message(a.renderer.call(
+        &h,
+        "mindmap:recovery-initialized",
+        vec![IpcValue::Bool(true)],
+    ));
+    assert!(
+        no_text_token.contains("token is required"),
+        "{no_text_token}"
+    );
+    let nothing_pending = message(bystander.acknowledge(&h, "any-token", true));
+    assert!(
+        nothing_pending.contains("No map recovery is awaiting"),
+        "{nothing_pending}"
+    );
+    assert!(a.receipt.settlement().is_none() && b.receipt.settlement().is_none());
+
+    // foreign-receipt: an unknown token, and the token of the other view's wait
+    let unknown = message(a.renderer.acknowledge(&h, "stale-token", true));
+    assert!(unknown.contains("belongs to another map"), "{unknown}");
+    let other_wait = message(b.renderer.acknowledge(&h, &a.token, true));
+    assert!(
+        other_wait.contains("belongs to another map"),
+        "{other_wait}"
+    );
+    assert!(a.receipt.settlement().is_none() && b.receipt.settlement().is_none());
+
+    // foreign-renderer: a mind map view that was never handed the recovery
+    // copy cannot settle it, even with the exact token
+    let foreign = message(bystander.acknowledge(&h, &a.token, true));
+    assert!(foreign.contains("No map recovery is awaiting"), "{foreign}");
+    assert!(a.receipt.settlement().is_none() && b.receipt.settlement().is_none());
+
+    // successful-ack: the exact acknowledgement settles only its own wait
+    assert_eq!(
+        a.renderer.acknowledge(&h, &a.token, true).unwrap(),
+        IpcValue::Null
+    );
+    assert!(matches!(a.receipt.settlement(), Some(Ok(()))));
+    assert!(b.receipt.settlement().is_none());
+
+    // duplicate-ack: a second acknowledgement changes nothing
+    let duplicate = message(a.renderer.acknowledge(&h, &a.token, false));
+    assert!(
+        duplicate.contains("No map recovery is awaiting"),
+        "{duplicate}"
+    );
+    assert!(matches!(a.receipt.settlement(), Some(Ok(()))));
+    assert!(b.receipt.settlement().is_none());
+
+    shell_contract::native_evidence::record(
+        "mindmap:recovery-initialized",
+        &[
+            "successful-ack",
+            "missing-receipt",
+            "foreign-receipt",
+            "foreign-renderer",
+            "duplicate-ack",
+        ],
+        &json!({
+            "missing-receipt": {"noToken": no_token, "nonTextToken": no_text_token, "nothingPending": nothing_pending, "settled": false},
+            "foreign-receipt": {"unknownToken": unknown, "otherWaitsToken": other_wait, "settled": false},
+            "foreign-renderer": {"error": foreign, "settled": false},
+            "successful-ack": {"answer": null, "settlement": "ok", "otherWaitSettled": false},
+            "duplicate-ack": {"error": duplicate, "settlement": "ok"},
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_mindmap_recovery_initialized_failed_apply_settles_the_wait_as_failure() {
+    let h = plain("mindmap-recovery-failed");
+    let a = recover(&h, 21, "a.xmind");
+    let failure = "the renderer could not apply the recovery copy";
+    assert_eq!(
+        a.renderer
+            .call(
+                &h,
+                "mindmap:recovery-initialized",
+                vec![string(&a.token), IpcValue::Bool(false), string(failure)],
+            )
+            .unwrap(),
+        IpcValue::Null
+    );
+    assert_eq!(a.receipt.settlement(), Some(Err(failure.to_owned())));
+    // the wait is cleaned up: a later success claim cannot revive it
+    assert!(a.renderer.acknowledge(&h, &a.token, true).is_err());
+    assert_eq!(a.receipt.settlement(), Some(Err(failure.to_owned())));
+    shell_contract::native_evidence::record(
+        "mindmap:recovery-initialized",
+        &["failed-apply"],
+        &json!({"failed-apply": {"answer": null, "settlement": {"error": failure}, "lateSuccessRefused": true}})
+            .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_mindmap_recovery_initialized_is_refused_to_other_surfaces() {
+    let dir = temp_dir("mindmap-recovery-surface");
+    let kit = Kit::new(&dir, crate::insert_fakes);
+    let mut table = shell_core::table::Table::default();
+    crate::register(&mut table, &kit.services).unwrap();
+    let dispatcher = shell_core::dispatch::Dispatcher::new(table);
+    let mut refused = serde_json::Map::new();
+    for (id, surface) in [(31, Surface::Docs), (32, Surface::Diagram)] {
+        let foreign = kit.view(id, surface);
+        let (send, receive) = std::sync::mpsc::channel();
+        dispatcher.dispatch(
+            foreign,
+            shell_contract::ipc::ChannelKind::Invoke,
+            Some(shell_contract::RequestId(1)),
+            None,
+            "mindmap:recovery-initialized",
+            vec![string("token"), IpcValue::Bool(true)],
+            Box::new(move |result| send.send(result).unwrap()),
+        );
+        let message = receive.try_recv().unwrap().unwrap_err().message;
+        assert!(
+            message.contains(&format!("not open to {surface:?}")),
+            "{message}"
+        );
+        refused.insert(format!("{surface:?}"), message.into());
+    }
+    shell_contract::native_evidence::record(
+        "mindmap:recovery-initialized",
+        &["unauthorized-surface"],
+        &json!({"unauthorized-surface": refused}).to_string(),
+    );
+}

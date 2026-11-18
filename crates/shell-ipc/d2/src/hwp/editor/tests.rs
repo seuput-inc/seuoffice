@@ -1922,3 +1922,323 @@ fn dont_save_drops_the_copy_and_asks_again_if_the_tab_stays() {
     t.rt.advance(Duration::from_millis(5_000));
     assert_eq!(channels(&t), vec![("hwp:recovery-reset", vec![])]);
 }
+
+/// A native-startup recovery seed committed to a Hangul tab and consumed by
+/// its renderer; the receipt is what the native wait settles on
+struct Seed {
+    from: Sender,
+    owner: shell_contract::ipc::NativeRequestOwner,
+    receipt: shell_contract::ipc::RecoverySeedReceipt,
+    path: String,
+    token: String,
+}
+
+fn seeded(t: &mut T, id: u32, name: &str) -> Seed {
+    use main_core::packages::electron_utils::recovery_contract::{
+        RecoveryOpenDecision, RecoveryOpenFileRequest,
+    };
+    use shell_contract::ipc::{
+        NativeClosureIssuer, NativeInvocationIssuer, NativeInvocationSelection,
+        NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget,
+    };
+    use shell_contract::runtime::CancelToken;
+    let path = file(&t.rt.dir, name, HWPX);
+    let from = tab(t, id, Some(&path));
+    let generation = t.rt.services.views.renderer_generation(from.view).unwrap();
+    let owner = t.rt.native_root(from.view);
+    let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
+        NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Hwp,
+            path: PathBuf::from(&path),
+            decision: NativeRecoveryDecision::Original,
+        },
+        CancelToken::default(),
+    );
+    let (_issuer, closure, browser) =
+        NativeClosureIssuer::new_with_owner(from.view, generation.clone());
+    let target = RecoveryOpenTarget::bind(
+        RecoveryOpenContext::NativeStartup(operation),
+        from.view,
+        generation,
+        closure,
+        browser,
+    )
+    .unwrap();
+    let result = Rc::new(RefCell::new(None));
+    let answer = result.clone();
+    t.editors.open_file_with_decision(
+        &from.view,
+        &RecoveryOpenFileRequest {
+            file_path: path.clone(),
+            decision: RecoveryOpenDecision::Original,
+        },
+        &target,
+        Box::new(move |value| *answer.borrow_mut() = Some(value)),
+    );
+    assert!(matches!(&*result.borrow(), Some(Ok(()))));
+    let receipt = target.committed_seed().unwrap();
+    target
+        .invocation_target()
+        .unwrap()
+        .register_from_native_admitted(owner.clone())
+        .unwrap();
+    target.retain_native_registration(owner.clone()).unwrap();
+    let seed =
+        t.rt.invoke_native(
+            "hwp:consume-recovery",
+            from,
+            vec![],
+            owner.context.clone(),
+            CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
+    assert_eq!(text(&seed, "path").as_deref(), Some(path.as_str()));
+    let token = text(&seed, "token").unwrap();
+    Seed {
+        from,
+        owner,
+        receipt,
+        path,
+        token,
+    }
+}
+
+/// `hwp:recovery-initialized` as the shell receives it with `native` attached
+fn acknowledge(
+    t: &mut T,
+    from: Sender,
+    args: Vec<IpcValue>,
+    native: shell_contract::ipc::NativeContext,
+) -> Result<IpcValue, IpcError> {
+    t.rt.invoke_native(
+        "hwp:recovery-initialized",
+        from,
+        args,
+        native,
+        shell_contract::runtime::CancelToken::default(),
+    )
+    .take()
+    .unwrap()
+}
+
+/// the renderer's `{ ok }` result
+fn applied(ok: bool) -> IpcValue {
+    obj([("ok", ok.into_ipc())])
+}
+
+fn read_recovery_input(t: &mut T, seed: &Seed) {
+    let read =
+        t.rt.invoke_native(
+            "hwp:read-file",
+            seed.from,
+            vec![s(&seed.path)],
+            seed.owner.context.clone(),
+            shell_contract::runtime::CancelToken::default(),
+        )
+        .take()
+        .unwrap()
+        .unwrap();
+    assert_eq!(read, bytes(HWPX));
+}
+
+#[test]
+fn native_evidence_hwp_recovery_ack_settles_only_the_exact_receipt() {
+    let mut t = t(json!({}));
+    let seed = seeded(&mut t, 11, "ack.hwpx");
+    let other = tab(&mut t, 12, None);
+    let other_generation = t.rt.services.views.renderer_generation(other.view).unwrap();
+    let foreign =
+        t.rt.services
+            .hosts
+            .get::<shell_contract::hosts::OwnedEffectsHost>()
+            .unwrap()
+            .capture_owner(other.view, &other_generation)
+            .unwrap();
+    let other_root = t.rt.native_root(other.view);
+    read_recovery_input(&mut t, &seed);
+    let ok = || vec![s(&seed.token), applied(true)];
+
+    let no_args = acknowledge(&mut t, seed.from, vec![], seed.owner.context.clone())
+        .unwrap_err()
+        .message;
+    assert!(no_args.contains("token is missing"), "{no_args}");
+    let no_result = acknowledge(
+        &mut t,
+        seed.from,
+        vec![s(&seed.token)],
+        seed.owner.context.clone(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(no_result.contains("result is invalid"), "{no_result}");
+    assert!(seed.receipt.settlement().is_none());
+
+    let stale = acknowledge(
+        &mut t,
+        seed.from,
+        vec![s("old"), applied(true)],
+        seed.owner.context.clone(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(stale.contains("does not match"), "{stale}");
+    assert!(seed.receipt.settlement().is_none());
+
+    let foreign_native = acknowledge(&mut t, seed.from, ok(), foreign.context)
+        .unwrap_err()
+        .message;
+    assert!(
+        foreign_native.contains("renderer owner mismatch"),
+        "{foreign_native}"
+    );
+    let foreign_view = acknowledge(&mut t, other, ok(), other_root.context)
+        .unwrap_err()
+        .message;
+    assert!(
+        foreign_view.contains("recovery seed is unavailable"),
+        "{foreign_view}"
+    );
+    assert!(seed.receipt.settlement().is_none());
+
+    let accepted = acknowledge(&mut t, seed.from, ok(), seed.owner.context.clone()).unwrap();
+    assert!(matches!(seed.receipt.settlement(), Some(Ok(()))));
+
+    let duplicate = acknowledge(&mut t, seed.from, ok(), seed.owner.context.clone())
+        .unwrap_err()
+        .message;
+    assert!(
+        duplicate.contains("recovery seed is unavailable"),
+        "{duplicate}"
+    );
+    assert!(matches!(seed.receipt.settlement(), Some(Ok(()))));
+
+    shell_contract::native_evidence::record(
+        "hwp:recovery-initialized",
+        &[
+            "successful-ack",
+            "missing-receipt",
+            "foreign-receipt",
+            "foreign-renderer",
+            "duplicate-ack",
+        ],
+        &json!({
+            "successful-ack": {
+                "answer": format!("{accepted:?}"),
+                "settled": format!("{:?}", seed.receipt.settlement()),
+            },
+            "missing-receipt": {
+                "withoutArguments": no_args,
+                "withoutResult": no_result,
+                "settledBefore": "None",
+            },
+            "foreign-receipt": { "error": stale, "settledBefore": "None" },
+            "foreign-renderer": {
+                "foreignNativeContext": foreign_native,
+                "tabWithoutRecovery": foreign_view,
+                "settledBefore": "None",
+            },
+            "duplicate-ack": {
+                "error": duplicate,
+                "settledAfter": format!("{:?}", seed.receipt.settlement()),
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_hwp_recovery_failed_apply_settles_failure() {
+    let mut t = t(json!({}));
+    let seed = seeded(&mut t, 13, "failed.hwpx");
+    assert!(seed.receipt.settlement().is_none());
+    let failed = obj([
+        ("ok", false.into_ipc()),
+        ("error", s("The document did not initialize")),
+    ]);
+    let answer = acknowledge(
+        &mut t,
+        seed.from,
+        vec![s(&seed.token), failed],
+        seed.owner.context.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        seed.receipt.settlement(),
+        Some(Err(reason)) if reason == "The document did not initialize"
+    ));
+    let again = acknowledge(
+        &mut t,
+        seed.from,
+        vec![s(&seed.token), applied(true)],
+        seed.owner.context.clone(),
+    )
+    .unwrap_err()
+    .message;
+    assert!(again.contains("recovery seed is unavailable"), "{again}");
+    assert!(matches!(seed.receipt.settlement(), Some(Err(_))));
+
+    shell_contract::native_evidence::record(
+        "hwp:recovery-initialized",
+        &["failed-apply"],
+        &json!({
+            "failed-apply": {
+                "answer": format!("{answer:?}"),
+                "settled": format!("{:?}", seed.receipt.settlement()),
+                "ackAfterFailure": again,
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_evidence_hwp_recovery_ack_is_refused_from_another_surface() {
+    let t = t(json!({}));
+    let foreign = t.rt.view(5, Surface::Docs);
+    let own = t.rt.view(6, Surface::Hwp);
+    let mut table = shell_core::table::Table::default();
+    let provided = shell_contract::ipc::Registry::provided(&table);
+    for entry in crate::hwp::entries(&t.rt.services, &provided).unwrap() {
+        shell_contract::ipc::Registry::register(
+            &mut table,
+            shell_contract::Batch::D2,
+            entry.channel,
+            entry.kind,
+            entry.handler,
+        )
+        .unwrap();
+    }
+    let dispatcher = shell_core::dispatch::Dispatcher::new(table);
+    let dispatch = |from: Sender| {
+        let (send, receive) = std::sync::mpsc::channel();
+        dispatcher.dispatch(
+            from,
+            shell_contract::ipc::ChannelKind::Invoke,
+            Some(shell_contract::RequestId(1)),
+            None,
+            "hwp:recovery-initialized",
+            vec![s("token"), applied(true)],
+            Box::new(move |result| send.send(result).unwrap()),
+        );
+        receive.try_recv().unwrap().unwrap_err().message
+    };
+    let refused = dispatch(foreign);
+    assert!(refused.contains("not open to Docs"), "{refused}");
+    let own_surface = dispatch(own);
+    assert!(!own_surface.contains("not open to"), "{own_surface}");
+
+    shell_contract::native_evidence::record(
+        "hwp:recovery-initialized",
+        &["unauthorized-surface"],
+        &json!({
+            "unauthorized-surface": {
+                "dispatchedFrom": "Docs",
+                "error": refused,
+                "sameCallFromHwp": own_surface,
+            },
+        })
+        .to_string(),
+    );
+}

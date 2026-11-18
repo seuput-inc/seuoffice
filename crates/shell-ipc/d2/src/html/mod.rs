@@ -8,6 +8,8 @@
 //! [`HtmlEngine`] (html2docx, odt-engine, file-parse, the hidden print window,
 //! the network) and [`HtmlShell`] (the shell's hooks).
 
+#[cfg(test)]
+pub(crate) mod ack_evidence;
 mod attach;
 pub(crate) mod odt_export;
 pub(crate) mod save;
