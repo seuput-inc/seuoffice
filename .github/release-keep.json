@@ -3,6 +3,7 @@
   "prerelease": 3,
   "keep": {
     "v0.12.37": "Electron baseline downloaded by .github/workflows/proto-measure.yml, proto-tauri2.yml, proto/common/stage-dist.sh and update-proof-mac.sh",
-    "v0.12.15": "install example URLs in docs/seuoffice/판-내기.md and packages/embed/README.md"
+    "v0.12.15": "install example URLs in docs/seuoffice/판-내기.md and packages/embed/README.md",
+    "v0.12.44": "the release YUYU pins for its web embed (web, embed and collab tarballs)"
   }
 }
