@@ -37,3 +37,34 @@ export function webEmbedded(): boolean {
 export function autoSaveOffered(): boolean {
   return !webEmbedded() || document.documentElement.getAttribute(WEB_AUTOSAVE_ATTRIBUTE) === 'on'
 }
+
+/**
+ * What a web embed host's `thumbnail` asks of the app: its first page on a canvas `width`
+ * pixels wide, the top `maxHeight` pixels at most. `signal` aborts once the host stopped
+ * waiting. The page's web bridge puts the canvas on white and encodes it.
+ */
+export interface WebThumbnailRequest {
+  width: number
+  maxHeight: number
+  signal: AbortSignal
+}
+
+export type WebThumbnailSource = (request: WebThumbnailRequest) => Promise<HTMLCanvasElement>
+
+/**
+ * What `read` returns once that is neither null nor undefined, asked again every `pollMs`.
+ * Rejects when `signal` aborts first. A host may ask for the first page as soon as the
+ * document's bytes were read, before the app has anything to draw.
+ */
+export async function whenLoaded<T>(
+  read: () => T | null | undefined,
+  signal: AbortSignal,
+  pollMs = 100,
+): Promise<T> {
+  for (;;) {
+    signal.throwIfAborted()
+    const value = read()
+    if (value !== null && value !== undefined) return value
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  }
+}
