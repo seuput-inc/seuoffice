@@ -877,7 +877,9 @@ jobs:
             tail -n 15 "$dir/run.log" || true
             # the next scenario starts from no app at all
             if [ "$RUNNER_OS" = Windows ]; then taskkill //F //T //IM SeuOffice.exe > /dev/null 2>&1 || true; else pkill -x SeuOffice || true; fi
-            rm -rf "$dir/userdata"
+            # WebView2's helpers can hold the profile's files a moment after the app is gone;
+            # the profile is not uploaded, so a cleanup that fails must not end the loop
+            rm -rf "$dir/userdata" || echo "::warning::$name: the profile could not be removed"
           done
 
       - name: check the records
