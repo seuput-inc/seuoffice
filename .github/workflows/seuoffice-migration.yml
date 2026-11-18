@@ -88,8 +88,15 @@ jobs:
       previous: ${{ steps.r.outputs.previous }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # no step here runs Electron: --ignore-scripts skips its download
       - name: Quit policy tests
-        run: npx --yes vitest@4.1.12 run --root tools/migration-test quit-policy
+        run: |
+          npm ci --ignore-scripts
+          npx vitest run --root tools/migration-test
       - id: t
         if: github.event_name == 'push'
         name: Targets of the pushed branch
