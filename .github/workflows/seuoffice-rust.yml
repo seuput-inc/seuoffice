@@ -68,6 +68,13 @@ on:
         description: A faults file for tools/ipc-diff/faults.mjs (the stage 3 IPC handlers), run beside the gates
         required: false
         default: ''
+      # The IPC comparison wants real-app evidence for the native-only channels. It comes from
+      # another workflow (the Mac and Windows runners and the app bundle are there), so the run
+      # is named here and must be of this same commit.
+      native_host_run:
+        description: Run id of the `seuoffice shell` gate=e2e run of this same commit; its native-host receipts go into the IPC comparison
+        required: false
+        default: ''
 
 concurrency:
   group: seuoffice-rust-${{ github.ref }}
@@ -198,6 +205,10 @@ jobs:
     if: ${{ !inputs.faults && !inputs.odt_faults && !inputs.rhwp_core }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    # actions: read fetches the artifacts of the run `native_host_run` names
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -311,6 +322,64 @@ jobs:
           mkdir -p "$SEUOFFICE_NATIVE_EVIDENCE" "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
           cargo test --manifest-path crates/Cargo.toml -p shell-ipc-d1 -p shell-ipc-d2 --no-fail-fast native_evidence_
           node tools/ipc-diff/native-evidence.mjs "$SEUOFFICE_NATIVE_EVIDENCE" tools/ipc-diff/out/native-evidence.json
+
+      # Their real-app evidence is the native-host receipts of a `seuoffice shell` gate=e2e
+      # run (crates/shell/ci/native-host-check.mjs), one set per OS. Only a run of this same
+      # commit is taken. Without the input, or when the run is refused here, nothing is
+      # merged: the IPC comparison below then reports native-host as pending and fails.
+      - name: Native-host run not given
+        if: ${{ !cancelled() && inputs.native_host_run == '' }}
+        run: echo "::notice::native_host_run is not set; the native-host evidence of the native-only channels stays pending"
+      - name: Native-host run of this commit
+        id: native_host
+        if: ${{ !cancelled() && inputs.native_host_run != '' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.native_host_run }}
+        run: |
+          case "$RUN_ID" in *[!0-9]*) echo "::error::native_host_run must be a run id"; exit 1 ;; esac
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")
+          sha=$(jq -r .head_sha <<<"$run")
+          workflow=$(jq -r .path <<<"$run")
+          echo "run $RUN_ID: $workflow at $sha, $(jq -r '.status + " " + (.conclusion // "")' <<<"$run")"
+          if [ "${workflow%%@*}" != .github/workflows/seuoffice-shell.yml ]; then
+            echo "::error::run $RUN_ID is not a seuoffice shell run; its receipts are not taken"
+            exit 1
+          fi
+          if [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::run $RUN_ID is of commit $sha, this run is of $GITHUB_SHA; its receipts are not taken"
+            exit 1
+          fi
+      - name: Fetch the macOS records
+        if: ${{ !cancelled() && steps.native_host.outcome == 'success' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-macOS
+          path: ${{ runner.temp }}/native-host/macOS
+          run-id: ${{ inputs.native_host_run }}
+          github-token: ${{ github.token }}
+      - name: Fetch the Windows records
+        if: ${{ !cancelled() && steps.native_host.outcome == 'success' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-Windows
+          path: ${{ runner.temp }}/native-host/Windows
+          run-id: ${{ inputs.native_host_run }}
+          github-token: ${{ github.token }}
+      # a scenario passes only where the macOS and the Windows receipt both pass it
+      - name: Native-host evidence
+        if: ${{ !cancelled() && steps.native_host.outcome == 'success' }}
+        shell: bash
+        run: |
+          mkdir -p tools/ipc-diff/out/native-host
+          for os in macOS Windows; do
+            report=$(find "$RUNNER_TEMP/native-host/$os" -path '*/native-host/receipts.json' 2>/dev/null | head -1 || true)
+            if [ -n "$report" ]; then cp "$report" "tools/ipc-diff/out/native-host/$os-receipts.json"; fi
+          done
+          npm --prefix tools/ipc-diff run native-host -- --sha "$GITHUB_SHA" \
+            --mac "$RUNNER_TEMP/native-host/macOS" --windows "$RUNNER_TEMP/native-host/Windows" \
+            --evidence "$PWD/tools/ipc-diff/out/native-evidence.json"
 
       # All six batches must cover their handlers and emitted events, and the
       # native-only contracts their synthetic and native-host evidence.

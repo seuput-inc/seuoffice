@@ -16,6 +16,7 @@
 //! document.
 
 pub(crate) mod native_owner;
+mod native_record;
 pub mod outlet;
 pub mod sync;
 
@@ -105,7 +106,8 @@ pub(crate) fn in_flight() -> Option<String> {
 }
 
 /// One message to its handler, on the core thread. `deliver` gets the answer
-/// once, from whichever thread the handler answers on.
+/// once, from whichever thread the handler answers on. A `--e2e` run records the
+/// native-only channels here (native_record.rs).
 pub(crate) fn dispatch(
     sender: Sender,
     kind: ChannelKind,
@@ -115,6 +117,16 @@ pub(crate) fn dispatch(
     args: Vec<IpcValue>,
     deliver: Box<dyn FnOnce(Reply) + Send>,
 ) {
+    let call = native_record::Call {
+        sender,
+        kind,
+        request,
+        native: native.is_some(),
+        channel: &channel,
+    };
+    let Some((args, deliver)) = native_record::observe(&call, args, deliver) else {
+        return;
+    };
     if sender.surface == shell_contract::Surface::Slides
         && !native
             .as_ref()

@@ -177,6 +177,13 @@ The gate validates receipt metadata and required scenario coverage; it does not 
 attest an artifact's contents. Evidence producers and reviewers own that provenance. A failed
 receipt remains a failure; supply receipts for the current run rather than an accumulated history.
 
+The native-host receipts come from the real app: the `gate=e2e` job of `seuoffice shell` drives the
+channels (`crates/shell/e2e/native-host`) and `crates/shell/ci/native-host-check.mjs` writes one
+`receipts.json` per OS. `native-host-evidence.ts` (`npm run native-host`) takes the two downloaded
+artifacts of one such run into the evidence file: it refuses receipts of another commit or OS,
+passes a scenario only where the macOS and the Windows receipt both pass it, and keeps every failed
+receipt. `seuoffice rust` runs it when its `native_host_run` input names that run.
+
 ## Hosts in the probe
 
 `crates/ipc-probe` builds a fresh `Services` per case: a real core thread, a UI thread, workers it

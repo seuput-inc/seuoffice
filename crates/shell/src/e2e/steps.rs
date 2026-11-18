@@ -251,14 +251,24 @@ impl Runner<'_> {
             .ok_or_else(|| format!("there is no webview {label}"))
     }
 
+    /// The active tab's editor. On the Home tab, which has no editor view, the shell window's
+    /// own page: the launch recovery list is answered there.
     fn target(&self) -> Result<Target, StepError> {
-        let active = self
-            .active()?
-            .ok_or_else(|| failed("there is no active tab"))?;
-        let webview = self.webview_of(active.view).map_err(failed)?;
+        let (kind, view) = match self.active()? {
+            Some(active) => (active.kind, active.view),
+            None => {
+                let shell = self
+                    .context
+                    .views
+                    .marked_main()
+                    .ok_or_else(|| failed("there is no active tab"))?;
+                ("home", shell.view)
+            }
+        };
+        let webview = self.webview_of(view).map_err(failed)?;
         let window = webview.window();
         Ok(Target {
-            kind: active.kind,
+            kind,
             webview,
             window,
         })

@@ -16,6 +16,7 @@ GitHub-hosted, every folder is below `RUNNER_TEMP`, and the app itself refuses `
 | `render-scenario.mjs` | replaces `${FIXTURES}` and `${WORK}` with forward-slash paths before the app runs it     |
 | `stage-resources.mjs` | the installer's resources that this runner builds, as a `--config` (macOS) or a copy     |
 | `../ci/e2e-check.mjs` | the checker; `e2e-disk.mjs` reads saved files back; `e2e-check.test.mjs` tests them      |
+| `native-host/`        | the native-only IPC channels in the real app: `specs.mjs` (the table), `run.mjs`         |
 
 Per scenario the workflow makes `<root>/<name>/{scenario.json, out/, work/, exit-code.txt,
 run.log}`; the checker reads exactly those. Every scenario edits its own copy of the fixtures in
@@ -52,3 +53,30 @@ Add `scenarios/<name>.json`, the fixture it opens to `make-fixtures.mjs`, and it
 `CHECKS` in `ci/e2e-check.mjs`. The checker test fails when a scenario has no checks or a check
 names a query the scenario does not have. Run the checker tests with
 `cd crates/shell/ci && npx vitest run`.
+
+## Native-host IPC evidence
+
+The 14 native-only IPC channels (`tools/shell-inventory/native-channels.ts`) have no Electron
+handler to compare with, so the IPC comparison of `seuoffice rust` asks for evidence from the real
+app. The same `gate=e2e` job produces it after the scenarios:
+
+- With `--e2e` the dispatcher writes every call of those channels to `<out>/native-ipc.jsonl`
+  (`src/ipc/native_record.rs`): who sent it, the shape of its arguments, the answer or refusal.
+  A text is written as its length only, so no receipt or token is in the file.
+- `native-host/specs.mjs` is the table of specs: runs of the app and what each must show. The
+  editing steps are read from `scenarios/<kind>-edit.json`. Two things a spec has that a scenario
+  has not: an `invoke` step (the active page sends a call through its own document bridge;
+  `run.mjs` writes it as a `query`), and `end: 'kill'` (`run.mjs` kills the app from outside once
+  the last step is on record, so the next run of the spec meets what a crash leaves).
+- `native-host/run.mjs` runs each spec into `<root>/native-host/<name>/run-<n>/`, on one throwaway
+  profile per spec. `../ci/native-host-check.mjs` reads those folders and writes
+  `<root>/native-host/receipts.json`, the receipts of this OS and commit; they are uploaded with the
+  test records, and `seuoffice rust` takes them through its `native_host_run` input.
+
+The workflow's `scenarios` input picks specs too: by name, or `native-host` for all of them. A
+required scenario no spec drives is listed with its reason in `UNDRIVEN` of `specs.mjs`; the checker
+test fails when the specs and that list stop matching the contracts.
+
+The restore runs answer the launch recovery list with a `click` on its confirm button, in the Home
+tab. The runner's `click` needs an active editor tab today, so those runs fail until `target()` of
+`src/e2e/steps.rs` falls back to the shell window's own view.

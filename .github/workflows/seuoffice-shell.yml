@@ -29,6 +29,12 @@ name: seuoffice shell
 #               driven; crates/shell/ci/e2e-check.mjs then prints PASS / FAIL / UNVERIFIED per
 #               check, reading the files the app saved with independent readers and the repo's
 #               own parsers. `scenarios` picks which (comma list, default all).
+#               The same job then runs the native-host specs (crates/shell/e2e/native-host): the
+#               native-only IPC channels driven in the real app, crashes and restores included.
+#               crates/shell/ci/native-host-check.mjs turns what the app's dispatcher recorded
+#               into receipts, uploaded with the test records; `seuoffice rust` takes them through
+#               its `native_host_run` input. `scenarios` picks the specs too: by name, or
+#               `native-host` for all of them.
 
 on:
   push:
@@ -53,7 +59,7 @@ on:
         description: "gate=probe: comma list of probes p1..p10, or all"
         default: all
       scenarios:
-        description: "gate=e2e: comma list of scenario names from crates/shell/e2e/scenarios, or all"
+        description: "gate=e2e: comma list of scenario names from crates/shell/e2e/scenarios and spec names from crates/shell/e2e/native-host/specs.mjs (native-host: every spec), or all"
         default: all
       source_sha:
         description: "gate=lock or fmt: the exact commit to work on (40 hex digits)"
@@ -895,6 +901,34 @@ jobs:
           status=${PIPESTATUS[0]}
           { echo "### Real-app tests on $RUNNER_OS"; cat "$root/report.md"; } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+
+      # The native-only IPC channels in the real app (e2e/native-host/specs.mjs): each spec runs
+      # the app once or twice on one throwaway profile, kills it where a crash is wanted, and the
+      # dispatcher records every call of those channels (src/ipc/native_record.rs).
+      - name: run the native-host specs
+        if: ${{ !cancelled() && env.SHELL_BIN != '' }}
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          node e2e/native-host/run.mjs --bin "$SHELL_BIN" --root "$base/e2e/native-host" --fixtures "$base/e2e-fixtures" --only "${SCENARIOS:-all}"
+      # The receipts of this OS and this commit. A failed scenario fails the step and gets a
+      # failed receipt; a spec that did not run gets none.
+      - name: native-host receipts
+        if: ${{ !cancelled() && env.SHELL_BIN != '' }}
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set +e
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          root="$base/e2e/native-host"
+          mkdir -p "$root"
+          node ci/native-host-check.mjs --root "$root" --os "$RUNNER_OS" --sha "$GITHUB_SHA" --only "${SCENARIOS:-all}" --markdown "$root/report.md" | tee "$root/report.txt"
+          status=${PIPESTATUS[0]}
+          { echo "### Native-host IPC evidence on $RUNNER_OS"; cat "$root/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - name: upload the test records
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -904,5 +938,6 @@ jobs:
             ${{ runner.temp }}/e2e/**
             ${{ runner.temp }}/e2e-ime-install.txt
             !${{ runner.temp }}/e2e/*/userdata/**
+            !${{ runner.temp }}/e2e/native-host/*/userdata/**
             !${{ runner.temp }}/e2e/*/work/big.xlsx
           if-no-files-found: warn
