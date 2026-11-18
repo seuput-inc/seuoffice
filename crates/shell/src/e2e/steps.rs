@@ -40,6 +40,12 @@ const SHELL_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// the core thread answers the runner's questions within this, or it is stuck in a job
 const CORE_STALL: Duration = Duration::from_secs(90);
 const QUIET_FOR_MS: u32 = 500;
+/// a `prep-` query that found nothing to act on is asked again after this
+const PREP_RETRY: Duration = Duration::from_millis(250);
+/// the page answers a focus or flush question within this, or the answer is dropped
+const FOCUS_QUERY: Duration = Duration::from_secs(3);
+/// the page has the OS focus within this of the request, or the keys go out anyway
+const FOCUS_WAIT: Duration = Duration::from_secs(5);
 const QUIET_TIMEOUT_MS: u32 = 10_000;
 /// a file written by an export must keep its size this long before it counts as complete
 const FILE_STABLE: Duration = Duration::from_millis(600);
@@ -276,12 +282,17 @@ impl Runner<'_> {
         .is_ok()
     }
 
-    /// Before the first step: the shell window has its first tab, and that page is ready
+    /// Before the first step: the shell window is up and its page is ready. The first tab is the
+    /// Home tab, which may name no editor view, so the window's own view is what counts then.
     fn wait_shell(&self) -> Result<(), String> {
         let deadline = Instant::now() + SHELL_START_TIMEOUT;
         loop {
-            if let Some(active) = self.active().map_err(StepError::into_text)?
-                && let Ok(webview) = self.webview_of(active.view)
+            let view = match self.active().map_err(StepError::into_text)? {
+                Some(active) => Some(active.view),
+                None => self.context.views.marked_main().map(|sender| sender.view),
+            };
+            if let Some(view) = view
+                && let Ok(webview) = self.webview_of(view)
                 && Self::is_ready(&webview)
             {
                 return Ok(());
@@ -316,6 +327,40 @@ impl Runner<'_> {
         }
     }
 
+    /// The editors with a control API (`window.__seuofficeControl`) install it, and answer
+    /// `not_ready`, after the bridge's render-ready: the document is still loading into the
+    /// engine. Scenarios query through that API, so `waitReady` waits for it to answer. The
+    /// state it ended in is the value: `ready`, `not_ready` (never answered within the step's
+    /// time), `absent` (never installed) or `none` (this editor has no control API).
+    fn wait_control(webview: &Webview, kind: &str, deadline: Instant) -> &'static str {
+        if !matches!(kind, "docs" | "sheets" | "slides" | "pdf") {
+            return "none";
+        }
+        let Ok(page) = webview.page() else {
+            return "absent";
+        };
+        let probe = "(async () => { const c = window.__seuofficeControl; \
+             if (typeof c !== 'function') return 'absent'; \
+             try { const r = await c({ cmd: 'selection' }); \
+             return r && r.status === 'not_ready' ? 'not_ready' : 'ready' } \
+             catch (error) { return 'ready' } })()";
+        let mut state = "absent";
+        loop {
+            let answer = page
+                .blocking(FOCUS_QUERY, |done| page.evaluate(probe, true, None, done))
+                .ok();
+            state = match answer.as_ref().and_then(Value::as_str) {
+                Some("ready") => return "ready",
+                Some("not_ready") => "not_ready",
+                _ => state,
+            };
+            if Instant::now() >= deadline {
+                return state;
+            }
+            sleep(POLL);
+        }
+    }
+
     fn wait_ready(&mut self, timeout: Duration) -> StepResult {
         let deadline = Instant::now() + timeout;
         let mut last = None;
@@ -327,12 +372,14 @@ impl Runner<'_> {
                 {
                     self.switch = None;
                     let quiet = Self::settle(&webview);
+                    let control = Self::wait_control(&webview, active.kind, deadline);
                     return Ok(Some(json!({
                         "kind": active.kind,
                         "view": active.view.0,
                         "title": active.title,
                         "file": active.file,
                         "quiet": quiet,
+                        "control": control,
                     })));
                 }
                 last = Some(active);
@@ -376,29 +423,47 @@ impl Runner<'_> {
             Step::WaitReady { timeout_ms } => self.wait_ready(Duration::from_millis(*timeout_ms)),
             Step::Type { text } => {
                 let target = self.target()?;
-                target.webview.set_focus().map_err(failed)?;
+                let focus = Self::focus_page(&target.webview)?;
                 let keys = typed_keys(text);
                 input::type_text(&self.context.ui, &target.window, &keys).map_err(unrunnable)?;
-                Ok(Some(json!({ "chars": keys.len(), "kind": target.kind })))
+                Self::flush_input(&target.webview);
+                let after = Self::focus_state(&target.webview);
+                Ok(Some(json!({
+                    "chars": keys.len(),
+                    "kind": target.kind,
+                    "focusBefore": focus,
+                    "focusAfter": after,
+                })))
             }
             Step::Ime { keys } => {
                 let target = self.target()?;
-                target.webview.set_focus().map_err(failed)?;
-                input::ime_ko_2set(&self.context.ui, &target.window, keys)
-                    .map(Some)
-                    .map_err(unrunnable)
+                Self::focus_page(&target.webview)?;
+                let value = input::ime_ko_2set(&self.context.ui, &target.window, keys)
+                    .map_err(unrunnable)?;
+                Self::flush_input(&target.webview);
+                Ok(Some(value))
             }
             Step::Shortcut(shortcut) => {
                 let target = self.target()?;
+                let focus = Self::focus_page(&target.webview)?;
                 input::shortcut(&self.context.ui, &target.window, *shortcut).map_err(unrunnable)?;
                 if *shortcut == Shortcut::Quit {
                     self.quitting = true;
                 }
-                Ok(Some(json!({ "kind": target.kind })))
+                Ok(Some(json!({ "kind": target.kind, "focusBefore": focus })))
             }
             Step::Clipboard { text, html } => self.set_clipboard(text.clone(), html.clone()),
-            Step::Query { js, timeout_ms, .. } => {
-                self.query(js, Duration::from_millis(*timeout_ms))
+            Step::Query {
+                name,
+                js,
+                timeout_ms,
+            } => {
+                let timeout = Duration::from_millis(*timeout_ms);
+                if name.starts_with("prep-") {
+                    self.query_prep(js, timeout)
+                } else {
+                    self.query(js, timeout)
+                }
             }
             Step::Dialog { answer, timeout_ms } => {
                 let ticket = dialog::push(answer.clone());
@@ -446,6 +511,44 @@ impl Runner<'_> {
         Ok(Some(json!({ "textBytes": written })))
     }
 
+    /// Whether the page has OS focus, and which element holds it, as the page itself says
+    fn focus_state(webview: &Webview) -> Option<Value> {
+        let page = webview.page().ok()?;
+        let expression = "(() => { const a = document.activeElement; return { hasFocus: \
+             document.hasFocus(), active: a ? a.tagName + (a.className ? '.' + \
+             String(a.className).split(' ')[0] : '') : null } })()";
+        page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, false, None, done))
+            .ok()
+    }
+
+    /// Keys go to the first responder. `set_focus` is asked of the UI thread and answers before
+    /// it has run, so the first keys of a `type` were lost: wait until the page says it has the
+    /// focus (the last state is returned either way; the checker sees what the keys met).
+    fn focus_page(webview: &Webview) -> Result<Option<Value>, StepError> {
+        webview.set_focus().map_err(failed)?;
+        let end = Instant::now() + FOCUS_WAIT;
+        loop {
+            let state = Self::focus_state(webview);
+            let focused = state
+                .as_ref()
+                .and_then(|state| state.get("hasFocus"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if focused || Instant::now() >= end {
+                return Ok(state);
+            }
+            sleep(POLL);
+        }
+    }
+
+    /// The page has handled the key events posted so far: a round trip that ends after a frame
+    /// and a timer, which the engine's own input handling queues behind
+    fn flush_input(webview: &Webview) {
+        let Ok(page) = webview.page() else { return };
+        let expression = "new Promise(done => requestAnimationFrame(() => setTimeout(done, 50)))";
+        let _ = page.blocking(FOCUS_QUERY, |done| page.evaluate(expression, true, None, done));
+    }
+
     /// The expression's value, awaited when it is a promise, as JSON
     fn query(&self, js: &str, timeout: Duration) -> StepResult {
         let target = self.target()?;
@@ -456,6 +559,27 @@ impl Runner<'_> {
             .blocking(timeout, |done| page.evaluate(&expression, true, None, done))
             .map_err(|error| failed(page_error_text(error)))?;
         Ok(Some(value))
+    }
+
+    /// A `prep-` query only moves the view (focus, a tab click, a goto), so running it again is
+    /// harmless; the page it targets may not have built that part yet when `waitReady` returns.
+    /// It runs until it answers with something other than `false`, `null`, `0` or an empty
+    /// string, or until its time is up; the last answer is the value either way.
+    fn query_prep(&self, js: &str, timeout: Duration) -> StepResult {
+        let end = Instant::now() + timeout;
+        loop {
+            let value = self.query(js, timeout)?;
+            let done = match &value {
+                None | Some(Value::Null | Value::Bool(false)) => false,
+                Some(Value::Number(number)) => number.as_f64() != Some(0.0),
+                Some(Value::String(text)) => !text.is_empty(),
+                Some(_) => true,
+            };
+            if done || Instant::now() + PREP_RETRY >= end {
+                return Ok(value);
+            }
+            sleep(PREP_RETRY);
+        }
     }
 
     fn export_pdf(&self, path: &Path, timeout: Duration) -> StepResult {

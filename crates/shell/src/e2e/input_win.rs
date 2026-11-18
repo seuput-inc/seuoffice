@@ -240,19 +240,13 @@ fn layout_language(layout: HKL) -> usize {
     layout.0 as usize & 0xffff
 }
 
-/// Asks the window's thread to switch to `layout` and waits until it did
+/// Asks the window's thread to switch to `layout` and waits until it did. The request is posted
+/// again every second: a window that was busy with its first paint after a new tab may drop it.
 fn request_layout(hwnd: HWND, thread: u32, layout: HKL) -> Result<(), String> {
-    // SAFETY: posts the documented input language change request to a window of this process.
-    unsafe {
-        PostMessageW(
-            Some(hwnd),
-            WM_INPUTLANGCHANGEREQUEST,
-            WPARAM(0),
-            LPARAM(layout.0 as isize),
-        )
-    }
-    .map_err(|error| format!("cannot request the keyboard layout: {error}"))?;
     let deadline = Instant::now() + LAYOUT_TIMEOUT;
+    let mut asked = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
     loop {
         // SAFETY: reads the keyboard layout of a thread id.
         let current = unsafe { GetKeyboardLayout(thread) };
@@ -260,7 +254,25 @@ fn request_layout(hwnd: HWND, thread: u32, layout: HKL) -> Result<(), String> {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err("the window's thread did not switch the keyboard layout".into());
+            return Err(format!(
+                "the window's thread did not switch the keyboard layout (it stayed at {:08x}, \
+                 wanted {:08x})",
+                current.0 as usize, layout.0 as usize
+            ));
+        }
+        if asked.elapsed() >= Duration::from_secs(1) {
+            asked = Instant::now();
+            // SAFETY: posts the documented input language change request to a window of this
+            // process.
+            unsafe {
+                PostMessageW(
+                    Some(hwnd),
+                    WM_INPUTLANGCHANGEREQUEST,
+                    WPARAM(0),
+                    LPARAM(layout.0 as isize),
+                )
+            }
+            .map_err(|error| format!("cannot request the keyboard layout: {error}"))?;
         }
         sleep(Duration::from_millis(50));
     }

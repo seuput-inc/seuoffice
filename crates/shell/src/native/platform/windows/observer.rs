@@ -112,6 +112,7 @@ fn failure(kind: COREWEBVIEW2_PROCESS_FAILED_KIND) -> Option<ProcessFailure> {
 }
 
 fn registered(what: &str, result: windows::core::Result<()>) -> Result<(), String> {
+    crate::trace::trace!("attach", "windows: {what} handler registered");
     result.map_err(|error| format!("The WebView2 {what} handler could not be registered: {error}"))
 }
 
@@ -128,6 +129,7 @@ impl Observe for Platform {
         let controller = platform.controller();
         // SAFETY: called on the UI thread, inside `Webview::with_webview`; every COM call below
         // is made on that thread, and the handlers it registers run there too.
+        crate::trace::trace!("attach", "windows: reading the WebView2 core");
         let core = unsafe { controller.CoreWebView2() }
             .map_err(|error| format!("The WebView2 core is unavailable: {error}"))?;
         let mut token = 0i64;

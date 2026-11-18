@@ -385,24 +385,48 @@ mod tis {
         }
         // SAFETY: `list` is a live CFArray.
         let count = unsafe { CFArrayGetCount(list) };
-        let mut outcome = Err(format!("the input source {id} is not installed"));
+        // a mode (`...Korean.2SetKorean`) belongs to an input method (`...Korean`) that must be
+        // enabled before the mode can be selected
+        let parent = id.rsplit_once('.').map_or("", |(parent, _)| parent);
+        let (mut parent_status, mut korean) = (None, Vec::new());
+        let mut outcome = Err(String::new());
         for index in 0..count {
             // SAFETY: `index` is below the count; the element is borrowed from the list.
+            let source = unsafe { CFArrayGetValueAtIndex(list, index) };
+            let Some(found) = source_id(source) else {
+                continue;
+            };
+            if found.contains("Korean") {
+                korean.push(found.clone());
+            }
+            if found == parent {
+                // SAFETY: `source` is a live input source of the list.
+                parent_status = Some(unsafe { TISEnableInputSource(source) });
+            }
+        }
+        for index in 0..count {
+            // SAFETY: as above.
             let source = unsafe { CFArrayGetValueAtIndex(list, index) };
             if source_id(source).as_deref() != Some(id) {
                 continue;
             }
             // SAFETY: `source` is a live input source of the list.
-            let status = unsafe {
-                let _ = TISEnableInputSource(source);
-                TISSelectInputSource(source)
-            };
+            let (enabled, status) =
+                unsafe { (TISEnableInputSource(source), TISSelectInputSource(source)) };
             outcome = if status == 0 {
                 Ok(())
             } else {
-                Err(format!("selecting {id} failed with OSStatus {status}"))
+                Err(format!(
+                    "selecting {id} failed with OSStatus {status} (enabling it: {enabled}, \
+                     enabling {parent}: {parent_status:?}; installed Korean sources: {korean:?})"
+                ))
             };
             break;
+        }
+        if matches!(&outcome, Err(text) if text.is_empty()) {
+            outcome = Err(format!(
+                "the input source {id} is not installed (installed Korean sources: {korean:?})"
+            ));
         }
         // SAFETY: balances the list created above.
         unsafe { CFRelease(list) };

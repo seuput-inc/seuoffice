@@ -79,6 +79,7 @@ impl PolicyOps for Platform {
 
         // SAFETY: UI thread, inside the `with_webview` closure that attached the observers; the
         // settings, the filter and the handler belong to this webview.
+        crate::trace::trace!("attach", "windows: applying the request policy");
         unsafe {
             let settings = core
                 .Settings()
@@ -86,6 +87,7 @@ impl PolicyOps for Platform {
             settings
                 .SetIsScriptEnabled(policy.javascript())
                 .map_err(failed("The page script policy could not be applied"))?;
+            crate::trace::trace!("attach", "windows: script policy applied");
 
             // Every request of every frame and worker goes through the policy, not only the
             // documents: the `_22` filter names the request sources, older runtimes take the
@@ -107,12 +109,15 @@ impl PolicyOps for Platform {
                     )
                     .map_err(filter)?,
             }
+            crate::trace::trace!("attach", "windows: request filter added");
 
             let mut token = 0i64;
             core.add_WebResourceRequested(&handler, &mut token)
                 .map_err(failed("The request policy handler could not be registered"))?;
         }
+        crate::trace::trace!("attach", "windows: policy filter and handler in place");
         browser.observe_policy_installed();
+        crate::trace::trace!("attach", "windows: policy installed");
         Ok(())
     }
 }

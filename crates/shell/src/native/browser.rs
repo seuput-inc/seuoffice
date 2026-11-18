@@ -471,10 +471,13 @@ impl BrowserCore {
             .unwrap_or_else(|error| error.into_inner()) = Some(control);
         let _ = self.window_label.set(window_label.into());
         self.lock().attached = true;
+        crate::trace::trace!("attach", "'{}': attached, completing the creation", self.label);
         self.close
             .complete_creation(BrowserCreationOutcome::Attached);
         self.ready_check();
+        crate::trace::trace!("attach", "'{}': replaying the held navigation", self.label);
         self.replay_held_navigation();
+        crate::trace::trace!("attach", "'{}': attach complete", self.label);
     }
 
     /// The OS webview enforces the request policy. Releases `Navigator::when_ready` and

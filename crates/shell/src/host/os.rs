@@ -80,9 +80,28 @@ fn exists(path: &str) -> bool {
     Path::new(path).exists()
 }
 
+/// What `--e2e <scenario.json> --out <dir>` names is the test runner's own input: the scenario
+/// is an existing file, and would otherwise be opened as a document at start-up (a Markdown tab
+/// that stays active under the scenario's own tabs).
+fn without_runner_arguments(argv: &[String]) -> Vec<String> {
+    if !argv.iter().any(|arg| arg == "--e2e") {
+        return argv.to_vec();
+    }
+    let mut kept = Vec::with_capacity(argv.len());
+    let mut args = argv.iter();
+    while let Some(arg) = args.next() {
+        if matches!(arg.as_str(), "--e2e" | "--out") {
+            args.next();
+        } else {
+            kept.push(arg.clone());
+        }
+    }
+    kept
+}
+
 /// `collectLaunchPaths(argv, additionalData)`, relative paths taken from `cwd`
 fn collect(argv: &[String], cwd: Option<&Path>) -> Vec<String> {
-    let absolute: Vec<String> = argv
+    let absolute: Vec<String> = without_runner_arguments(argv)
         .iter()
         .map(|arg| match cwd {
             Some(cwd) if !arg.starts_with('-') && Path::new(arg).is_relative() => {
@@ -322,6 +341,18 @@ fn bundled_node() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runner_arguments_are_not_launch_paths() {
+        let args = |list: &[&str]| list.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            without_runner_arguments(&args(&["--e2e", "s.json", "--out", "o", "doc.docx"])),
+            args(&["doc.docx"])
+        );
+        // without `--e2e` nothing is dropped
+        let plain = args(&["--out", "x.docx", "y.docx"]);
+        assert_eq!(without_runner_arguments(&plain), plain);
+    }
 
     #[test]
     fn a_later_launch_reaches_the_first_through_the_endpoint() {
