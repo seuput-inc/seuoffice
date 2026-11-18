@@ -542,9 +542,8 @@ impl Runner<'_> {
                         Self::key_arrived(&target.webview, "<Process>").map(|(seen, _)| seen)
                     }
                 };
-                let value =
-                    input::ime_ko_2set(&self.context.ui, &target.window, keys, &composing)
-                        .map_err(unrunnable)?;
+                let value = input::ime_ko_2set(&self.context.ui, &target.window, keys, &composing)
+                    .map_err(unrunnable)?;
                 Self::flush_input(&target.webview);
                 Ok(Some(value))
             }
