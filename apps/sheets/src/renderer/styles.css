@@ -308,6 +308,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* A web embed can be narrower than the desktop window's minimum (a phone): there the page follows
+   the frame instead of laying itself out 720px wide and cutting off what lies past the edge */
+html[data-web-host] body {
+  min-width: 0;
+}
+
 button,
 textarea {
   font: inherit;
@@ -480,7 +486,7 @@ html.seuoffice-popover-open .ribbon-tabs {
   padding-right: 150px;
 }
 
-.ribbon-tabs > button:not(.qa-btn) {
+.ribbon-tabs .ribbon-tab-strip > button {
   -webkit-app-region: no-drag;
   position: relative;
   border: 0;
@@ -609,18 +615,18 @@ html.seuoffice-popover-open .ribbon-tabs {
 }
 
 /* Hovering a tab tints the label, it doesn't paint a box */
-.ribbon-tabs > button:not(.qa-btn):hover {
+.ribbon-tabs .ribbon-tab-strip > button:hover {
   color: var(--accent-dark);
 }
 
-.ribbon-tabs > button:not(.qa-btn).active {
+.ribbon-tabs .ribbon-tab-strip > button.active {
   color: var(--accent-dark);
   font-weight: 600;
 }
 
 /* active underline: about the label's width (insets past the tab padding),
  * ends slightly rounded — same as the slides ribbon */
-.ribbon-tabs > button:not(.qa-btn).active::after {
+.ribbon-tabs .ribbon-tab-strip > button.active::after {
   position: absolute;
   right: 13px;
   bottom: -2.5px;
@@ -633,7 +639,7 @@ html.seuoffice-popover-open .ribbon-tabs {
 
 /* Contextual tabs (Chart Design) stand out even while inactive, with a
    colored caption. */
-.ribbon-tabs > button:not(.qa-btn).contextual {
+.ribbon-tabs .ribbon-tab-strip > button.contextual {
   color: var(--accent-dark);
   font-weight: 600;
 }
@@ -2006,7 +2012,7 @@ button.check-item:hover {
     display: none;
   }
 
-  .ribbon-tabs.qa-crowded > button:not(.qa-btn) {
+  .ribbon-tabs.qa-crowded .ribbon-tab-strip > button {
     padding-left: 6px;
     padding-right: 6px;
   }

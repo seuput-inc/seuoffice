@@ -238,6 +238,7 @@ export {
   aiPanelWidthAtPointer,
 } from './ai-panel-prefs-store'
 export { autoSaveOffered, markWebHost, webAiOff, webEmbedded, webViewMode } from './web-host-mode'
+export { appDialogs, setAppDialogs, type AppDialogs } from './app-dialogs'
 export {
   SPLIT_PANE_BRIDGE_KEY,
   effectiveAiPanelOpen,
@@ -310,6 +311,7 @@ export {
   type RibbonCollapseLabels,
   type RibbonDensity,
 } from './ribbon-collapse'
+export { RibbonTabStrip } from './ribbon-tab-strip'
 export { AiReplyProgress, AiTypingIndicator } from './AiTypingIndicator'
 export {
   IconArrowDown,

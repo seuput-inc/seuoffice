@@ -13,8 +13,13 @@ export default defineConfig({
   workers: 1,
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
-    // the view-mode page must also work in Safari's engine
-    { name: 'webkit', use: { ...devices['Desktop Safari'] }, testMatch: 'view-mode-ui.spec.ts' },
+    // the view-mode page, and an embed's narrow ribbon and in-page dialogs, must also work in
+    // Safari's engine
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+      testMatch: ['view-mode-ui.spec.ts', 'embed-narrow-ribbon.spec.ts', 'embed-dialogs.spec.ts'],
+    },
   ],
   use: { baseURL: `http://localhost:${port}/`, viewport: { width: 1400, height: 900 } },
   webServer: {

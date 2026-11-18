@@ -7,7 +7,7 @@ import {
 import type { AiSettings } from '@seuoffice/ai-provider'
 import type { Lang } from '@seuoffice/i18n'
 import { localContextLimit } from '@seuoffice/ai-provider/browser'
-import { aiContextConfirmText, aiRunErrorText } from '@seuoffice/ui'
+import { aiContextConfirmText, aiRunErrorText, appDialogs } from '@seuoffice/ui'
 import { t } from '../i18n/locale'
 
 /** What the panel learns from a turn besides its text: the cause of a failure, subscription usage, a cut input */
@@ -38,7 +38,7 @@ export function createElectronTransport(
     errorText: (cause) => aiRunErrorText(hooks.lang(), cause),
     // a local model's window: the transport warns at 80% and asks once per run
     contextLimit: (settings) => localContextLimit(settings),
-    confirmContext: (warning) => window.confirm(aiContextConfirmText(hooks.lang(), warning)),
+    confirmContext: (warning) => appDialogs.confirm(aiContextConfirmText(hooks.lang(), warning)),
     onStreamError: (error) => hooks.onStreamError?.(error),
     onSubscriptionUsage: (usage) => hooks.onSubscriptionUsage?.(usage),
     onInputTruncated: () => hooks.onInputTruncated?.(),

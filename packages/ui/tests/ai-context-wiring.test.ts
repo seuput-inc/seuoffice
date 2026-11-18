@@ -61,7 +61,8 @@ describe('every transport confirms a large prompt', () => {
   it.each(TRANSPORTS)('%s passes contextLimit and confirmContext', (path) => {
     const text = source(path)
     expect(text).toMatch(/contextLimit: \(settings\) => localContextLimit\(settings\)/)
-    expect(text).toMatch(/confirmContext: \(warning\) =>\s*window\.confirm\(/)
+    // the five editors with a web build ask through appDialogs, the others through the window
+    expect(text).toMatch(/confirmContext: \(warning\) =>\s*(window|appDialogs)\.confirm\(/)
     expect(text).toContain('aiContextConfirmText(')
   })
 })
@@ -97,8 +98,10 @@ describe('the deck generation calls confirm a large prompt', () => {
   it('apps/slides/src/renderer/ai/AiPanel.tsx checks the deck gate before ai:stream', () => {
     const text = source('apps/slides/src/renderer/ai/AiPanel.tsx')
     expect(text).toMatch(/contextLimit: \(settings\) => localContextLimit\(settings\)/)
-    expect(text).toMatch(/confirm: \(warning\) => window\.confirm\(aiContextConfirmText\(/)
-    const attempt = text.slice(text.indexOf('const runLlmAttempt = ('))
+    expect(text).toMatch(
+      /confirm: \(warning\) => (window|appDialogs)\.confirm\(aiContextConfirmText\(/,
+    )
+    const attempt = text.slice(text.search(/const runLlmAttempt = (async )?\(/))
     const check = attempt.indexOf('deckContextGate.allows(settings, system, user, signal)')
     const send = attempt.indexOf('.aiStream(')
     expect(check).toBeGreaterThan(0)

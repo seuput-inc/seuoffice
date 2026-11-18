@@ -33,6 +33,7 @@ import {
   templateDocumentOf,
   webAiOff,
   webViewMode,
+  appDialogs,
   type TemplateDocument,
 } from '@seuoffice/ui'
 import { commentAnchors, commentIdsAt, wordRangeAtCaret } from './editor/comments'
@@ -1827,10 +1828,12 @@ export function App() {
     dirtyRef.current = true
     return picked.length
   }
-  const setHfLink = (si: number, kind: 'header' | 'footer', variant: HfView, on: boolean) => {
+  const setHfLink = async (si: number, kind: 'header' | 'footer', variant: HfView, on: boolean) => {
     if (
       on &&
-      !window.confirm(t(kind === 'header' ? 'appHfLinkConfirmHeader' : 'appHfLinkConfirmFooter'))
+      !(await appDialogs.confirm(
+        t(kind === 'header' ? 'appHfLinkConfirmHeader' : 'appHfLinkConfirmFooter'),
+      ))
     )
       return
     // the open editor holds the strip being discarded: it must not commit it anywhere
@@ -6273,10 +6276,10 @@ export function App() {
 
   // Review > Editor, the Tools menu and Word's F7 all run the same AI proofread
   // behind the one-time whole-document-rewrite acknowledgement
-  const runAiProofread = useCallback(() => {
+  const runAiProofread = useCallback(async () => {
     if (
       localStorage.getItem(AI_REWRITE_ACK_KEY) !== '1' &&
-      !window.confirm(t('ribbonAiRewriteConfirm'))
+      !(await appDialogs.confirm(t('ribbonAiRewriteConfirm')))
     )
       return
     localStorage.setItem(AI_REWRITE_ACK_KEY, '1')

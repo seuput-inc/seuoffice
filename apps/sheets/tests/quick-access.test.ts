@@ -207,7 +207,7 @@ describe('quick-access row in the shell', () => {
     expect(shell).toContain("quickAccess.length > DEFAULT_QUICK_ACCESS.length ? ' qa-crowded' : ''")
     const css = read('src/renderer/styles.css')
     expect(css).toMatch(
-      /@media \(max-width: 840px\) \{\s*\.ribbon-tabs\.qa-crowded \.autosave-text \{\s*display: none;[\s\S]*?\.ribbon-tabs\.qa-crowded > button:not\(\.qa-btn\) \{\s*padding-left: 6px;\s*padding-right: 6px;/,
+      /@media \(max-width: 840px\) \{\s*\.ribbon-tabs\.qa-crowded \.autosave-text \{\s*display: none;[\s\S]*?\.ribbon-tabs\.qa-crowded \.ribbon-tab-strip > button \{\s*padding-left: 6px;\s*padding-right: 6px;/,
     )
   })
 

@@ -4,6 +4,7 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import { TextSelection, type Transaction } from '@tiptap/pm/state'
 import {
   SHAPE_GALLERY_GROUPS,
+  appDialogs,
   useDismissablePopover,
   wordArtSolidColor,
   type WordArtPreset,
@@ -903,9 +904,9 @@ export function ReviewTab({
   // One-time acknowledgement before whole-document AI rewrites:
   // Editor / Translate send the full document to the agent, consume credits and
   // may rewrite everything — say so once before the first run.
-  const confirmAiRewrite = () => {
+  const confirmAiRewrite = async () => {
     if (localStorage.getItem(AI_REWRITE_ACK_KEY) === '1') return true
-    if (!window.confirm(t('ribbonAiRewriteConfirm'))) return false
+    if (!(await appDialogs.confirm(t('ribbonAiRewriteConfirm')))) return false
     localStorage.setItem(AI_REWRITE_ACK_KEY, '1')
     return true
   }
@@ -920,9 +921,9 @@ export function ReviewTab({
             className="rb-big"
             disabled={!hasDoc}
             data-tip={t('ribbonEditorTip')}
-            onClick={() => {
+            onClick={async () => {
               if (hasRangeSelection()) onAiPreset(t('ribbonEditorSelectionPrompt'))
-              else if (confirmAiRewrite()) onAiPreset(t('ribbonEditorPrompt'))
+              else if (await confirmAiRewrite()) onAiPreset(t('ribbonEditorPrompt'))
             }}
           >
             <span className="rb-big-icon">
@@ -971,13 +972,13 @@ export function ReviewTab({
                 {TRANSLATE_LANGS.map(({ code }) => (
                   <button
                     key={code}
-                    onClick={() => {
+                    onClick={async () => {
                       setDropdown(() => null)
                       if (hasRangeSelection()) {
                         onAiPreset(
                           t('ribbonTranslateSelectionPrompt', { lang: t(ribbonLangKey(code)) }),
                         )
-                      } else if (confirmAiRewrite()) {
+                      } else if (await confirmAiRewrite()) {
                         onAiPreset(t('ribbonTranslatePrompt', { lang: t(ribbonLangKey(code)) }))
                       }
                     }}

@@ -252,4 +252,66 @@ describe('createIpcTransport context gate', () => {
     expect(secondConfirm).toHaveBeenCalledTimes(1)
     expect(second.started).toHaveLength(2)
   })
+
+  describe('with a dialog that answers later', () => {
+    // the answer travels through two promise hops before the transport reacts
+    const flush = async () => {
+      for (let hop = 0; hop < 5; hop++) await Promise.resolve()
+    }
+
+    it('starts only after the person says yes, and remembers the run', async () => {
+      let answer!: (yes: boolean) => void
+      const confirmContext = vi.fn(() => new Promise<boolean>((resolve) => (answer = resolve)))
+      const { started, stream } = setup({ contextLimit: limit, confirmContext })
+      stream(at90('run-1'))
+      await flush()
+      expect(started).toHaveLength(0)
+      answer(true)
+      await flush()
+      expect(started).toHaveLength(1)
+      stream(at90('run-1'))
+      expect(confirmContext).toHaveBeenCalledTimes(1)
+      expect(started).toHaveLength(2)
+    })
+
+    it('sends nothing and reports the limit after a no', async () => {
+      const seen: IpcStreamError[] = []
+      const { started, stream } = setup({
+        contextLimit: limit,
+        confirmContext: () => Promise.resolve(false),
+        onStreamError: (error) => seen.push(error),
+      })
+      const { cb } = stream(at90('run-1'))
+      await flush()
+      expect(started).toHaveLength(0)
+      expect(seen).toEqual([{ kind: 'context-limit', message: 'unknown error' }])
+      expect(cb.onError).toHaveBeenCalledTimes(1)
+    })
+
+    it('treats a rejected dialog as a no', async () => {
+      const { started, stream } = setup({
+        contextLimit: limit,
+        confirmContext: () => Promise.reject(new Error('no dialog')),
+      })
+      const { cb } = stream(at90('run-1'))
+      await flush()
+      expect(started).toHaveLength(0)
+      expect(cb.onError).toHaveBeenCalledTimes(1)
+    })
+
+    it('ends the turn without sending when stopped while the question is open', async () => {
+      let answer!: (yes: boolean) => void
+      const { started, stream } = setup({
+        contextLimit: limit,
+        confirmContext: () => new Promise<boolean>((resolve) => (answer = resolve)),
+      })
+      const { cb, handle } = stream(at90('run-1'))
+      handle.cancel()
+      expect(cb.onDone).toHaveBeenCalledTimes(1)
+      answer(true)
+      await flush()
+      expect(started).toHaveLength(0)
+      expect(cb.onError).not.toHaveBeenCalled()
+    })
+  })
 })

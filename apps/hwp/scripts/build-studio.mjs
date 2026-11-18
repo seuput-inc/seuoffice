@@ -30,6 +30,7 @@ import { build } from 'vite'
 import {
   AGENT_PLUGIN_MODULE,
   CLIPBOARD_HTML_MODULE,
+  DIALOGS_MODULE,
   FORMAT_COPY_MODULE,
   HANCOM_KEYS_MODULE,
   PC_FONTS_MODULE,
@@ -96,6 +97,7 @@ const FORMAT_COPY = join(PLUGIN_DIR, 'format-copy.mjs')
 const CLIPBOARD_HTML = join(PLUGIN_DIR, 'clipboard-html.mjs')
 const PC_FONTS = join(PLUGIN_DIR, 'pc-fonts.mjs')
 const READ_ONLY = join(PLUGIN_DIR, 'read-only.mjs')
+const DIALOGS = join(PLUGIN_DIR, 'dialogs.mjs')
 const HANJA_CACHE = join(APP, 'node_modules', '.cache', 'libhangul-hanja')
 const STAMP = join(OUT, '.stamp')
 
@@ -253,6 +255,7 @@ async function buildStudio() {
         [CLIPBOARD_HTML_MODULE]: CLIPBOARD_HTML,
         [PC_FONTS_MODULE]: PC_FONTS,
         [READ_ONLY_MODULE]: READ_ONLY,
+        [DIALOGS_MODULE]: DIALOGS,
       },
     },
     // upstream registers a service worker for its website build; this build

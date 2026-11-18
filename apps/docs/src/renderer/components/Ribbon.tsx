@@ -46,6 +46,7 @@ import {
   aiSubscriptionText,
   isSymbolFontFamily,
   useDismissablePopover,
+  RibbonTabStrip,
   useRibbonCollapse,
   useScrollWindow,
   webAiOff,
@@ -2275,81 +2276,83 @@ function RibbonInner({
           </div>
         )}
         {quickActions}
-        {TABS.filter((tabName) => tabName !== 'file').map((tabName) => (
-          <button
-            key={tabName}
-            className={`ribbon-tab ${collapse.tabClass(tab === tabName)}`}
-            data-tip={collapse.tabTip(tab === tabName)}
-            onClick={() => {
-              collapse.onTabPress(tab === tabName)
-              lastRegularTab.current = tabName
-              setTab(tabName)
-              setDropdown(null)
-            }}
-          >
-            {t(TAB_LABEL_KEYS[tabName])}
-          </button>
-        ))}
-        {/* contextual tabs render as plain tabs appended to the row, like current Word */}
-        {inTable &&
-          TABLE_TABS.map((tableTab) => (
+        <RibbonTabStrip active={tab}>
+          {TABS.filter((tabName) => tabName !== 'file').map((tabName) => (
             <button
-              key={tableTab}
-              className={`ribbon-tab ${collapse.tabClass(tab === tableTab)}`}
-              data-tip={collapse.tabTip(tab === tableTab)}
+              key={tabName}
+              className={`ribbon-tab ${collapse.tabClass(tab === tabName)}`}
+              data-tip={collapse.tabTip(tab === tabName)}
               onClick={() => {
-                collapse.onTabPress(tab === tableTab)
-                setTab(tableTab)
+                collapse.onTabPress(tab === tabName)
+                lastRegularTab.current = tabName
+                setTab(tabName)
                 setDropdown(null)
               }}
             >
-              {t(TAB_LABEL_KEYS[tableTab])}
+              {t(TAB_LABEL_KEYS[tabName])}
             </button>
           ))}
-        {inImage &&
-          IMAGE_TABS.map((imageTab) => (
-            <button
-              key={imageTab}
-              className={`ribbon-tab ${collapse.tabClass(tab === imageTab)}`}
-              data-tip={collapse.tabTip(tab === imageTab)}
-              onClick={() => {
-                collapse.onTabPress(tab === imageTab)
-                setTab(imageTab)
-                setDropdown(null)
-              }}
-            >
-              {t(TAB_LABEL_KEYS[imageTab])}
-            </button>
-          ))}
-        {inShape &&
-          SHAPE_TABS.map((shapeTab) => (
-            <button
-              key={shapeTab}
-              className={`ribbon-tab ${collapse.tabClass(tab === shapeTab)}`}
-              data-tip={collapse.tabTip(tab === shapeTab)}
-              onClick={() => {
-                collapse.onTabPress(tab === shapeTab)
-                setTab(shapeTab)
-                setDropdown(null)
-              }}
-            >
-              {t(TAB_LABEL_KEYS[shapeTab])}
-            </button>
-          ))}
-        {inHf &&
-          HF_TABS.map((hfTab) => (
-            <button
-              key={hfTab}
-              className={`ribbon-tab ${tab === hfTab ? 'active' : ''}`}
-              onClick={() => {
-                collapse.onTabPress(tab === hfTab)
-                setTab(hfTab)
-                setDropdown(null)
-              }}
-            >
-              {t(TAB_LABEL_KEYS[hfTab])}
-            </button>
-          ))}
+          {/* contextual tabs render as plain tabs appended to the row, like current Word */}
+          {inTable &&
+            TABLE_TABS.map((tableTab) => (
+              <button
+                key={tableTab}
+                className={`ribbon-tab ${collapse.tabClass(tab === tableTab)}`}
+                data-tip={collapse.tabTip(tab === tableTab)}
+                onClick={() => {
+                  collapse.onTabPress(tab === tableTab)
+                  setTab(tableTab)
+                  setDropdown(null)
+                }}
+              >
+                {t(TAB_LABEL_KEYS[tableTab])}
+              </button>
+            ))}
+          {inImage &&
+            IMAGE_TABS.map((imageTab) => (
+              <button
+                key={imageTab}
+                className={`ribbon-tab ${collapse.tabClass(tab === imageTab)}`}
+                data-tip={collapse.tabTip(tab === imageTab)}
+                onClick={() => {
+                  collapse.onTabPress(tab === imageTab)
+                  setTab(imageTab)
+                  setDropdown(null)
+                }}
+              >
+                {t(TAB_LABEL_KEYS[imageTab])}
+              </button>
+            ))}
+          {inShape &&
+            SHAPE_TABS.map((shapeTab) => (
+              <button
+                key={shapeTab}
+                className={`ribbon-tab ${collapse.tabClass(tab === shapeTab)}`}
+                data-tip={collapse.tabTip(tab === shapeTab)}
+                onClick={() => {
+                  collapse.onTabPress(tab === shapeTab)
+                  setTab(shapeTab)
+                  setDropdown(null)
+                }}
+              >
+                {t(TAB_LABEL_KEYS[shapeTab])}
+              </button>
+            ))}
+          {inHf &&
+            HF_TABS.map((hfTab) => (
+              <button
+                key={hfTab}
+                className={`ribbon-tab ${tab === hfTab ? 'active' : ''}`}
+                onClick={() => {
+                  collapse.onTabPress(tab === hfTab)
+                  setTab(hfTab)
+                  setDropdown(null)
+                }}
+              >
+                {t(TAB_LABEL_KEYS[hfTab])}
+              </button>
+            ))}
+        </RibbonTabStrip>
         <span className="ribbon-tabs-spacer" />
         <div className="ribbon-mode-cluster">
           <div className="ribbon-mode-split">

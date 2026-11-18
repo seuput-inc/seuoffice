@@ -4,7 +4,7 @@ import {
   type IpcTransportOptions,
 } from '@seuoffice/agent-core'
 import { localContextLimit } from '@seuoffice/ai-provider/browser'
-import { aiContextConfirmText, aiRunErrorText } from '@seuoffice/ui'
+import { aiContextConfirmText, aiRunErrorText, appDialogs } from '@seuoffice/ui'
 import type { AiSettings } from '../../shared/ipc'
 import { getLang, t } from '../i18n/locale'
 
@@ -33,7 +33,7 @@ export function createElectronTransport(
     errorText: (cause) => aiRunErrorText(getLang(), cause),
     // a local model's window: the transport warns at 80% and asks once per run
     contextLimit: (settings) => localContextLimit(settings),
-    confirmContext: (warning) => window.confirm(aiContextConfirmText(getLang(), warning)),
+    confirmContext: (warning) => appDialogs.confirm(aiContextConfirmText(getLang(), warning)),
     ...hooks,
   })
 }

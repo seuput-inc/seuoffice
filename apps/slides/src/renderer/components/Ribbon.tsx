@@ -18,11 +18,13 @@ import {
   useDismissablePopover,
   useRibbonCollapse,
   Dropdown,
+  appDialogs,
   THEME_COLORS,
   THEME_COLOR_SHADES,
   STANDARD_COLORS,
   canPickScreenColor,
   pickScreenColor,
+  RibbonTabStrip,
 } from '@seuoffice/ui'
 import {
   createRecentColorSession,
@@ -1609,9 +1611,9 @@ export function Ribbon({
   // One-time acknowledgement before whole-document AI rewrites:
   // Spelling / Translate send the full deck to the agent, consume credits and may
   // rewrite every slide — say so once before the first run.
-  const confirmAiRewrite = () => {
+  const confirmAiRewrite = async () => {
     if (localStorage.getItem(AI_REWRITE_ACK_KEY) === '1') return true
-    if (!window.confirm(t('ribbonAiRewriteConfirm'))) return false
+    if (!(await appDialogs.confirm(t('ribbonAiRewriteConfirm')))) return false
     localStorage.setItem(AI_REWRITE_ACK_KEY, '1')
     return true
   }
@@ -1917,33 +1919,35 @@ export function Ribbon({
           </label>
         )}
         <span className="qa-sep" aria-hidden="true" />
-        {TABS.filter((tb) => tb !== 'file').map((tb) => (
-          <button
-            key={tb}
-            className={`ribbon-tab ${collapse.tabClass(tab === tb)}`}
-            data-tip={collapse.tabTip(tab === tb)}
-            onClick={() => {
-              collapse.onTabPress(tab === tb)
-              setTab(tb)
-              setFileOpen(false)
-            }}
-          >
-            {t(TAB_LABEL[tb])}
-          </button>
-        ))}
-        {contextTab && (
-          <button
-            key={contextTab}
-            className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(tab === contextTab)}`}
-            onClick={() => {
-              collapse.onTabPress(tab === contextTab)
-              setTab(contextTab)
-            }}
-            data-tip={collapse.tabTip(tab === contextTab) ?? t(TAB_LABEL[contextTab])}
-          >
-            {t(TAB_LABEL[contextTab])}
-          </button>
-        )}
+        <RibbonTabStrip active={tab}>
+          {TABS.filter((tb) => tb !== 'file').map((tb) => (
+            <button
+              key={tb}
+              className={`ribbon-tab ${collapse.tabClass(tab === tb)}`}
+              data-tip={collapse.tabTip(tab === tb)}
+              onClick={() => {
+                collapse.onTabPress(tab === tb)
+                setTab(tb)
+                setFileOpen(false)
+              }}
+            >
+              {t(TAB_LABEL[tb])}
+            </button>
+          ))}
+          {contextTab && (
+            <button
+              key={contextTab}
+              className={`ribbon-tab ribbon-tab-context ${collapse.tabClass(tab === contextTab)}`}
+              onClick={() => {
+                collapse.onTabPress(tab === contextTab)
+                setTab(contextTab)
+              }}
+              data-tip={collapse.tabTip(tab === contextTab) ?? t(TAB_LABEL[contextTab])}
+            >
+              {t(TAB_LABEL[contextTab])}
+            </button>
+          )}
+        </RibbonTabStrip>
         <span className="ribbon-tabs-spacer" />
       </div>
 
@@ -2542,8 +2546,8 @@ export function Ribbon({
                 className="rb-big"
                 disabled={!hasDoc}
                 data-tip={`${t('ribbonSpellCheckTip')} — ${t('ribbonAiCreditNote')}`}
-                onClick={() => {
-                  if (confirmAiRewrite()) onAiPreset(t('ribbonSpellCheckPrompt'))
+                onClick={async () => {
+                  if (await confirmAiRewrite()) onAiPreset(t('ribbonSpellCheckPrompt'))
                 }}
               >
                 <span className="rb-big-icon">
@@ -2577,9 +2581,9 @@ export function Ribbon({
                     {TRANSLATE_TARGETS.map((lang) => (
                       <button
                         key={lang}
-                        onClick={() => {
+                        onClick={async () => {
                           setTranslateOpen(false)
-                          if (confirmAiRewrite()) {
+                          if (await confirmAiRewrite()) {
                             onAiPreset(t('ribbonTranslatePrompt', { lang: t(lang) }))
                           }
                         }}

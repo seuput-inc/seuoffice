@@ -8,7 +8,8 @@
  * deck tool call of one request shares. A yes lets the rest of that run send;
  * a no refuses every later call of that run without asking again, so a retry,
  * a repair round or the next page never brings the dialog back. A call with no
- * run asks on its own.
+ * run asks on its own. The answer is stored as a promise, so calls that arrive
+ * while the dialog is still open wait for it instead of opening another.
  */
 import { contextWarningFor, type ContextWarning } from '@seuoffice/agent-core'
 
@@ -16,21 +17,30 @@ export interface DeckContextGateOptions<S> {
   /** the selected model's window; undefined skips the check (not a local model) */
   contextLimit(settings: S): { limit: number; known: boolean } | undefined
   /** ask the person; anything but true is a decline */
-  confirm(warning: ContextWarning): boolean
+  confirm(warning: ContextWarning): boolean | Promise<boolean>
 }
 
 export interface DeckContextGate<S> {
-  /** true when this request may be sent; false means the model must not be called */
-  allows(settings: S, system: string, user: string, run: AbortSignal | undefined): boolean
+  /** resolves true when this request may be sent; false means the model must not be called */
+  allows(settings: S, system: string, user: string, run: AbortSignal | undefined): Promise<boolean>
 }
 
 export function createDeckContextGate<S>(options: DeckContextGateOptions<S>): DeckContextGate<S> {
-  /** each run's answer: true confirmed, false declined */
-  const answers = new WeakMap<AbortSignal, boolean>()
+  /** each run's answer: resolves true when confirmed, false when declined */
+  const answers = new WeakMap<AbortSignal, Promise<boolean>>()
+  const ask = async (warning: ContextWarning): Promise<boolean> => {
+    try {
+      return (await options.confirm(warning)) === true
+    } catch {
+      // a broken dialog declines: nothing is sent without a yes
+      return false
+    }
+  }
   return {
-    allows(settings, system, user, run) {
+    async allows(settings, system, user, run) {
+      const prior = run ? answers.get(run) : undefined
       // a declined run sends nothing more, large or small, as a declined job does
-      if (run && answers.get(run) === false) return false
+      if (prior && !(await prior)) return false
       const limit = options.contextLimit(settings)
       if (!limit) return true
       const warning = contextWarningFor(
@@ -41,16 +51,10 @@ export function createDeckContextGate<S>(options: DeckContextGateOptions<S>): De
         limit.known,
       )
       if (!warning) return true
-      if (run && answers.get(run) === true) return true
-      let confirmed: boolean
-      try {
-        confirmed = options.confirm(warning) === true
-      } catch {
-        // a broken dialog declines: nothing is sent without a yes
-        confirmed = false
-      }
-      if (run) answers.set(run, confirmed)
-      return confirmed
+      if (prior) return true
+      const asked = ask(warning)
+      if (run) answers.set(run, asked)
+      return asked
     },
   }
 }

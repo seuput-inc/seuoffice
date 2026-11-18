@@ -1,4 +1,5 @@
 import type {
+  AgentStreamHandle,
   AgentStreamRequest,
   AgentTokenUsage,
   AgentToolCall,
@@ -177,9 +178,11 @@ export interface IpcTransportOptions<S> {
   /**
    * Ask the person before sending a prompt close to that window. False means
    * the request must not be sent. Absent is treated as a decline: a limit is
-   * reported only to protect the person, never to send silently.
+   * reported only to protect the person, never to send silently. A dialog drawn
+   * in the page answers with a promise; the request starts once it settles, and
+   * stopping the turn meanwhile ends it without sending anything.
    */
-  confirmContext?(warning: ContextWarning): boolean
+  confirmContext?(warning: ContextWarning): boolean | Promise<boolean>
   /** confirmation memory shared across transports (see IpcContextGate) */
   contextGate?: IpcContextGate
 }
@@ -234,31 +237,10 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
     if (request.runId && gate().isConfirmed(request.runId)) return undefined
     return warning
   }
-  return {
+  /** Start the request; a context question, when there was one, is already answered yes */
+  const sender: AgentTransport = {
     stream(request: AgentStreamRequest, cb) {
       const requestId = crypto.randomUUID()
-      const warning = pendingWarning(request)
-      if (warning) {
-        let confirmed: boolean
-        try {
-          confirmed = options.confirmContext?.(warning) === true
-        } catch {
-          // a broken dialog declines: nothing is sent without a yes
-          confirmed = false
-        }
-        if (!confirmed) {
-          const message = causeText({ kind: 'context-limit' }, undefined)
-          try {
-            options.onStreamError?.({ kind: 'context-limit', message })
-          } catch {
-            // a broken listener must not swallow the refusal
-          }
-          cb.onError(message)
-          // nothing was started, so nothing needs cancelling
-          return { cancel: () => {} }
-        }
-        if (request.runId) gate().markConfirmed(request.runId)
-      }
       let settled = false
       let silenceTimer: ReturnType<typeof setTimeout> | undefined
       const settle = () => {
@@ -344,6 +326,56 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         fail(err instanceof Error ? err.message : options.unknownErrorText())
       }
       return { cancel: () => options.cancel(requestId) }
+    },
+  }
+  return {
+    stream(request, cb) {
+      const warning = pendingWarning(request)
+      if (!warning) return sender.stream(request, cb)
+      let answer: boolean | Promise<boolean> | undefined
+      try {
+        answer = options.confirmContext?.(warning)
+      } catch {
+        // a broken dialog declines: nothing is sent without a yes
+        answer = false
+      }
+      const proceed = (confirmed: boolean): AgentStreamHandle => {
+        if (!confirmed) {
+          const message = causeText({ kind: 'context-limit' }, undefined)
+          try {
+            options.onStreamError?.({ kind: 'context-limit', message })
+          } catch {
+            // a broken listener must not swallow the refusal
+          }
+          cb.onError(message)
+          // nothing was started, so nothing needs cancelling
+          return { cancel: () => {} }
+        }
+        if (request.runId) gate().markConfirmed(request.runId)
+        return sender.stream(request, cb)
+      }
+      // a dialog drawn in the page answers later; a plain boolean answers at once
+      if (typeof answer !== 'object') return proceed(answer === true)
+      let cancelled = false
+      let started: AgentStreamHandle | undefined
+      void answer
+        .then(
+          (yes) => yes === true,
+          // a broken dialog declines
+          () => false,
+        )
+        .then((confirmed) => {
+          if (!cancelled) started = proceed(confirmed)
+        })
+      return {
+        cancel: () => {
+          if (started) return started.cancel()
+          // stopped while the question is open: nothing is sent, and the turn still ends
+          if (cancelled) return
+          cancelled = true
+          cb.onDone()
+        },
+      }
     },
   }
 }

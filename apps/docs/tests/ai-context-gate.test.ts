@@ -133,11 +133,17 @@ beforeAll(() => {
   Element.prototype.scrollTo ??= () => {}
 })
 
+// the dialog answers through a promise: let the transport react before asserting
+const settle = async () => {
+  for (let hop = 0; hop < 5; hop++) await Promise.resolve()
+}
+
 describe('the docs transport context gate', () => {
-  it('declines without sending: one confirmation, no start, the shared context-limit text', () => {
+  it('declines without sending: one confirmation, no start, the shared context-limit text', async () => {
     const { started } = fakeDesktop()
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const turn = streamOnce(localSettings(), 'run-1')
+    await settle()
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(started).toHaveLength(0)
     expect(turn.streamErrors).toEqual([
@@ -146,22 +152,26 @@ describe('the docs transport context gate', () => {
     expect(turn.errors).toEqual([aiRunErrorText('en', { kind: 'context-limit' })])
   })
 
-  it('asks once for a run: the second turn of the same run starts without a dialog', () => {
+  it('asks once for a run: the second turn of the same run starts without a dialog', async () => {
     const { started } = fakeDesktop()
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const turn = makeTransport(localSettings())
     streamOnce(localSettings(), 'run-1', turn)
+    await settle()
     streamOnce(localSettings(), 'run-1', turn)
+    await settle()
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(started).toHaveLength(2)
   })
 
-  it('asks again for a new run', () => {
+  it('asks again for a new run', async () => {
     const { started } = fakeDesktop()
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const turn = makeTransport(localSettings())
     streamOnce(localSettings(), 'run-1', turn)
+    await settle()
     streamOnce(localSettings(), 'run-2', turn)
+    await settle()
     expect(confirm).toHaveBeenCalledTimes(2)
     expect(started).toHaveLength(2)
   })

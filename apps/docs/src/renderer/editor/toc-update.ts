@@ -2,6 +2,7 @@ import type { Editor } from '@tiptap/core'
 import type { Node as PmNode } from '@tiptap/pm/model'
 import { generateTocFieldXml, type Block, type TocEntry } from '@seuoffice/docx-engine'
 import { collectHeadings } from './headings'
+import { appDialogs } from '@seuoffice/ui'
 import { t } from '../i18n/locale'
 
 /**
@@ -198,13 +199,13 @@ export function updateTocField(
 ): boolean {
   const entries = collectTocEntriesWithPages(editor, headingPages)
   if (entries.length === 0) {
-    window.alert(t('ribbonTocNoHeadings'))
+    void appDialogs.alert(t('ribbonTocNoHeadings'))
     return false
   }
 
   const range = findTocRange(editor.state.doc, blocks)
   if (!range) {
-    window.alert(t('ribbonTocNotFound'))
+    void appDialogs.alert(t('ribbonTocNotFound'))
     return false
   }
 
