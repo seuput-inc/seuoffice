@@ -52,7 +52,7 @@ describe('SKILL_CARD_STRINGS', () => {
     expect(ko.saved).toBe('저장했습니다')
     expect(ko.openSettings).toBe('설정에서 보기')
     expect(ko.unsaved).toBe('저장하지 않은 스킬 제안')
-    expect(ko.cardEditTitle).toBe('스킬 고치기')
+    expect(ko.cardEditTitle).toBe('스킬 편집')
     expect(ko.templateCheck).toBe('이 문서를 양식으로 함께 저장')
     expect(ko.templateBlank).toBe('비운 양식 만들기')
     expect(ko.templateAsIs).toBe('원래 문서 그대로 저장')

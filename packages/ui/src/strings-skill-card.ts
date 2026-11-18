@@ -54,7 +54,7 @@ export const SKILL_CARD_STRINGS = defineStrings({
   en,
   ko: {
     cardNewTitle: '스킬 만들기',
-    cardEditTitle: '스킬 고치기',
+    cardEditTitle: '스킬 편집',
     fieldTitle: '제목',
     titleHint: '목록에 보이는 제목입니다. 어떤 언어로든 적을 수 있고, 비워 두면 이름이 보입니다',
     fieldDescription: '설명',
