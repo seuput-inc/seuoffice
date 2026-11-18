@@ -211,3 +211,10 @@ export const saveSidebarOpen = (open: boolean, storage: FlagStorage = localStora
     // storage unavailable: closing still works for this session
   }
 }
+
+/**
+ * A page this wide or narrower (a phone, a narrow embed) gives the sidebar at its default width
+ * a quarter of itself or more. The ribbon's tab row gets a line of its own from the same width
+ * down (packages/ui/src/ribbon-tab-strip.css).
+ */
+export const SIDEBAR_NARROW_MAX = 600

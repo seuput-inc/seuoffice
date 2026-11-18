@@ -508,6 +508,8 @@ async function bodyText(page: Page): Promise<string> {
         width,
         '.tb-page-input',
       )
+      // a phone-width page opens without the thumbnails: the button on the edge brings them
+      if (width === 390) await app.locator('.pdf-side-reopen').click()
       // a right click on a page thumbnail opens no page menu (rotate, delete, insert)
       await app.locator('.pdf-thumb').first().click({ button: 'right' })
       await page.waitForTimeout(400)

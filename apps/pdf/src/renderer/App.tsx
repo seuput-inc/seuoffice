@@ -311,6 +311,7 @@ import {
   templateDocumentOf,
   RibbonTabStrip,
   webAiOff,
+  webEmbedded,
   webViewMode,
   whenLoaded,
   appDialogs,
@@ -357,6 +358,7 @@ import {
   PAGE_GAP,
   SCROLL_PAD,
   SIDEBAR_W_KEY,
+  SIDEBAR_NARROW_MAX,
   SIDEBAR_CHROME,
   clampSidebarW,
   loadSidebarW,
@@ -566,6 +568,13 @@ type RibbonTab = (typeof RIBBON_TABS)[number]['id'] | 'fillForm' | 'formDesign' 
 const WEB_VIEW = webViewMode()
 /** the web embed's host offers no AI: no panel and no AI button */
 const WEB_AI_OFF = webAiOff()
+/**
+ * A web page as narrow as a phone opens without the sidebar; the desktop app's panes keep theirs.
+ * A page its host has not shown yet has no width at all, which says nothing about how wide it
+ * will be.
+ */
+const narrowWebPage = (): boolean =>
+  webEmbedded() && window.innerWidth > 0 && window.innerWidth <= SIDEBAR_NARROW_MAX
 
 /** Right-click menu of one markup annotation (pending or already in the file). */
 type MarkupMenu =
@@ -665,8 +674,11 @@ export default function App() {
   const [pageInput, setPageInput] = useState('1')
   const [sidebar, setSidebar] = useState<
     'thumbs' | 'outline' | 'notes' | 'compare' | 'attachments' | null
-  >(() => (loadSidebarOpen() ? 'thumbs' : null))
-  useEffect(() => saveSidebarOpen(sidebar !== null), [sidebar])
+  >(() => (!narrowWebPage() && loadSidebarOpen() ? 'thumbs' : null))
+  // what a narrow page does is not kept: it would decide how the next wide one opens
+  useEffect(() => {
+    if (!narrowWebPage()) saveSidebarOpen(sidebar !== null)
+  }, [sidebar])
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null)
   const [compareName, setCompareName] = useState<string | null>(null)
   const [compareBusy, setCompareBusy] = useState(false)
