@@ -1,7 +1,7 @@
 /**
  * `node tools/repro/ios/run-ios.mjs <site> <out>`: opens every case in Mobile Safari on an iPhone
- * simulator and keeps what the pages measured, with a screenshot of each as shown and one with
- * text autosizing switched off in place.
+ * simulator and keeps what the pages measured, with a screenshot of each as shown and one per
+ * variant the page tries in place (probe.js). REPRO_VARIANTS=none keeps to the page as shown.
  *
  * IOS_VERSION picks a runtime by its version prefix (default: the newest installed).
  */
@@ -20,7 +20,7 @@ const simctl = (...args) =>
   execFileSync('xcrun', ['simctl', ...args], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
 
 // 390 points wide first: the width the report came from
-const PHONES = ['iPhone 16e', 'iPhone 14', 'iPhone 13', 'iPhone 12', 'iPhone 17', 'iPhone 16', 'iPhone 15']
+const PHONES = ['iPhone 17e', 'iPhone 16e', 'iPhone 14', 'iPhone 13', 'iPhone 12', 'iPhone 17', 'iPhone 16', 'iPhone 15']
 
 function newPhone() {
   const version = (text) => text.split('.').map(Number)
@@ -74,21 +74,23 @@ try {
     console.log(`\n== ${test.name}`)
     server.begin(test.name)
     await open(server.pageUrl(test))
-    let measured = await server.waitFor(test.name, 'measure', 75_000)
-    if (!measured) {
+    let shown = await server.waitFor(test.name, 'as-shown', 75_000)
+    if (!shown) {
       // the host never heard `opened`: whatever the frames show is still worth its numbers
-      server.setPhase('measure')
-      measured = await server.waitFor(test.name, 'measure', 15_000)
+      server.setPhase('as-shown')
+      shown = await server.waitFor(test.name, 'as-shown', 15_000)
     }
     shot(`${test.name}.png`)
-    if (!measured) {
+    if (!shown) {
       console.log(`${test.name}: nothing measured`)
       continue
     }
-    server.setPhase('force')
-    await server.waitFor(test.name, 'force', 30_000)
-    await sleep(1000)
-    shot(`${test.name}.text-size-adjust-100.png`)
+    for (const variant of process.env.REPRO_VARIANTS === 'none' ? [] : test.variants) {
+      server.setPhase(variant)
+      await server.waitFor(test.name, variant, 30_000)
+      await sleep(500)
+      shot(`${test.name}.${variant}.png`)
+    }
   }
 } finally {
   writeFileSync(resolve(out, 'reports.json'), JSON.stringify(server.reports, null, 1))

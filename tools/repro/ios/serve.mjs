@@ -61,7 +61,7 @@ export async function start({ site, hostPort = 5310, bundlePort = 5311, settleMs
       // the document is on screen: let fonts and the first layout settle, then everyone measures
       if (report.frame === 'host' && report.case === state.case)
         setTimeout(() => {
-          if (report.case === state.case && state.phase === 'loading') state.phase = 'measure'
+          if (report.case === state.case && state.phase === 'loading') state.phase = 'as-shown'
         }, report.event === 'opened' ? settleMs : 0)
       response.writeHead(204).end()
       wake()
@@ -181,6 +181,9 @@ export async function start({ site, hostPort = 5310, bundlePort = 5311, settleMs
   }
 }
 
+/** what probe.js tries in place after the page as shown, by format */
+const TRIED = { docx: ['adjust-100', 'adjust-none', 'adjust-zoom'] }
+
 /** the documents of the repro: every format, for viewing and for editing */
 export const CASES = [
   ...[
@@ -192,7 +195,12 @@ export const CASES = [
     ['pdf', 'plain-sample.pdf'],
     ['hwp', 'memo.hwp'],
   ].flatMap(([format, file]) =>
-    ['view', 'edit'].map((mode) => ({ name: `${format}-${mode}`, file, mode })),
+    ['view', 'edit'].map((mode) => ({
+      name: `${format}-${mode}`,
+      file,
+      mode,
+      variants: TRIED[format.split('-')[0]] ?? ['adjust-100'],
+    })),
   ),
   // the host page cross-origin-embed.ts serves has no viewport meta: Safari lays it out 980 wide
   {
@@ -200,5 +208,6 @@ export const CASES = [
     file: '13-english-report.docx',
     mode: 'view',
     viewport: false,
+    variants: TRIED.docx,
   },
 ]

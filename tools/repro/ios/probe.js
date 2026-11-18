@@ -3,6 +3,17 @@
 ;(() => {
   const frame = location.pathname
   const DOC = '.ProseMirror, .textLayer, .reading-view, [contenteditable="true"]'
+
+  /** what the page is asked to try in place, by the phase the collector names */
+  const VARIANTS = {
+    'as-shown': () => '',
+    'adjust-100': () => 'html{-webkit-text-size-adjust:100%;text-size-adjust:100%}',
+    'adjust-none': () => 'html{-webkit-text-size-adjust:none;text-size-adjust:none}',
+    // the page's zoom as the percentage, on the element that carries the zoom
+    'adjust-zoom': () =>
+      `html{-webkit-text-size-adjust:100%}.doc-zoom{-webkit-text-size-adjust:${docZoom() * 100}%}`,
+  }
+
   const post = (body) =>
     fetch('/__report', { method: 'POST', body: JSON.stringify({ frame, ...body }) }).catch(() => {})
   const where = (el) => {
@@ -13,16 +24,23 @@
     }
     return parts.join('>')
   }
+  /** the docs page scales its paper with CSS zoom on this element */
+  const docZoom = () => {
+    const el = document.querySelector('.doc-zoom')
+    return el ? parseFloat(getComputedStyle(el).zoom) || 1 : 1
+  }
   const env = () => ({
     dpr: devicePixelRatio,
     visualViewport: window.visualViewport
       ? { width: visualViewport.width, height: visualViewport.height, scale: visualViewport.scale }
       : null,
     inner: [innerWidth, innerHeight],
-    client: [document.documentElement.clientWidth, document.documentElement.clientHeight],
     screen: [screen.width, screen.height],
     htmlTextSizeAdjust: getComputedStyle(document.documentElement).webkitTextSizeAdjust ?? null,
     htmlTextSizeAdjustStd: getComputedStyle(document.documentElement).textSizeAdjust ?? null,
+    docZoom: docZoom(),
+    // "3/12" in the status bar: how many pages the page laid the document out on
+    pages: document.body.innerText.match(/\b\d+\s*\/\s*\d+\b/)?.[0] ?? null,
     ua: navigator.userAgent,
   })
 
@@ -42,11 +60,12 @@
       if (style.visibility === 'hidden') continue
       const block = el.closest('p, li, td, th, h1, h2, h3, h4, div') ?? el
       out.push({
-        el,
         text,
         region: el.closest(DOC) ? 'doc' : 'ui',
         fontSize: parseFloat(style.fontSize),
         lineHeight: style.lineHeight,
+        adjust: style.webkitTextSizeAdjust ?? null,
+        editable: el.isContentEditable,
         rectHeight: Math.round(rects[0].height * 10) / 10,
         lines: new Set([...rects].map((r) => Math.round(r.top))).size,
         blockWidth: Math.round(block.getBoundingClientRect().width),
@@ -62,22 +81,10 @@
     for (const n of nodes) {
       const key = `${n.region}|${n.fontSize}`
       let g = map.get(key)
-      if (!g)
-        map.set(
-          key,
-          (g = {
-            region: n.region,
-            fontSize: n.fontSize,
-            chars: 0,
-            nodes: 0,
-            sample: n.text.slice(0, 40),
-            where: n.where,
-            lineHeight: n.lineHeight,
-            rectHeight: n.rectHeight,
-            lines: n.lines,
-            blockWidth: n.blockWidth,
-          }),
-        )
+      if (!g) {
+        const { text, ...first } = n
+        map.set(key, (g = { ...first, chars: 0, nodes: 0, sample: text.slice(0, 40) }))
+      }
       g.chars += n.text.length
       g.nodes++
     }
@@ -94,9 +101,10 @@
       return ''
     }
   })()
-  let done = ''
-  let measured = []
+  let done = 'loading'
+  let busy = false
   async function tick() {
+    if (busy) return
     let state
     try {
       state = await (await fetch('/__phase', { cache: 'no-store' })).json()
@@ -104,40 +112,29 @@
       return
     }
     // a tab of an earlier case keeps running in the background: it must stay silent
-    if (!mine || state.case !== mine || state.phase === done) return
-    if (state.phase === 'measure') {
-      done = 'measure'
-      measured = textNodes()
-      post({ case: mine, phase: 'measure', env: env(), groups: groups(measured) })
-    } else if (state.phase === 'force') {
-      done = 'force'
-      // the hypothesis, tested in place: with autosizing off the same nodes go back to their own size
-      document.documentElement.style.setProperty('-webkit-text-size-adjust', '100%')
-      document.documentElement.style.setProperty('text-size-adjust', '100%')
-      await new Promise((r) => setTimeout(r, 1500))
-      const changed = new Map()
-      for (const n of measured) {
-        if (!n.el.isConnected) continue
-        const now = parseFloat(getComputedStyle(n.el).fontSize)
-        if (Math.abs(now - n.fontSize) < 0.05) continue
-        const key = `${n.region}|${n.fontSize}|${now}`
-        let c = changed.get(key)
-        if (!c)
-          changed.set(
-            key,
-            (c = { region: n.region, from: n.fontSize, to: now, chars: 0, nodes: 0, sample: n.text.slice(0, 40), where: n.where }),
-          )
-        c.chars += n.text.length
-        c.nodes++
-      }
-      post({
-        case: mine,
-        phase: 'force',
-        env: env(),
-        groups: groups(textNodes()),
-        changed: [...changed.values()].sort((a, b) => b.chars - a.chars),
-      })
+    if (!mine || state.case !== mine || state.phase === done || !VARIANTS[state.phase]) return
+    busy = true
+    done = state.phase
+    document.getElementById('__probe_variant')?.remove()
+    const css = VARIANTS[state.phase]()
+    if (css) {
+      const style = document.createElement('style')
+      style.id = '__probe_variant'
+      style.textContent = css
+      document.head.appendChild(style)
     }
+    // the page lays the document out again (pagination follows the sizes): read it once it rests
+    let nodes = []
+    let last = ''
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 1000))
+      nodes = textNodes()
+      const now = nodes.map((n) => `${n.fontSize}:${n.lines}:${n.text.length}`).join()
+      if (now === last) break
+      last = now
+    }
+    post({ case: mine, phase: state.phase, css, env: env(), groups: groups(nodes) })
+    busy = false
   }
   setInterval(tick, 400)
 })()

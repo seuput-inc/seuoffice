@@ -54,7 +54,15 @@ jobs:
 
   iphone:
     needs: site
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-latest, ios: '26.5', xcode: '' }
+          # the version the report came from, and the newest
+          - { runner: xcode-27, ios: '27.0', xcode: '' }
+          - { runner: xcode-27, ios: '27.2', xcode: /Applications/Xcode_27.2.app }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -64,17 +72,20 @@ jobs:
       - run: tar -xf ios-repro-site.tar
       - name: what this runner has
         run: |
+          if [ -n "${{ matrix.xcode }}" ]; then sudo xcode-select -s "${{ matrix.xcode }}"; fi
           sw_vers
           ls /Applications | grep -i xcode
           xcodebuild -version
           xcrun simctl list runtimes
           node --version
       - name: open every case in Mobile Safari
+        env:
+          IOS_VERSION: ${{ matrix.ios }}
         run: node tools/repro/ios/run-ios.mjs ios-repro-site ios-repro-out
       - if: always()
         run: cat ios-repro-out/summary.md >> "$GITHUB_STEP_SUMMARY" || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-repro-out
+          name: ios-repro-out-${{ matrix.ios }}
           path: ios-repro-out
