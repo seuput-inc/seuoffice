@@ -339,12 +339,28 @@ impl EventSink for Recorder {
     }
 }
 
-/// Workers the probe can wait for
+/// Workers the probe can wait for, and the jobs the case posts to its UI thread
 #[derive(Default)]
 struct Tracked {
     active: Mutex<usize>,
     idle: Condvar,
+    /// worker jobs spawned and UI jobs posted: a drain follows a chain of hops
+    /// from the core to the UI thread and back through to its end (a UI job's
+    /// post to the core runs before the core barrier of the same round)
     spawned: AtomicUsize,
+}
+
+/// The UI thread as the case's services see it: every post is counted
+struct TrackedThread(Arc<CoreThread>, Arc<Tracked>);
+
+impl Thread for TrackedThread {
+    fn post(&self, job: Box<dyn FnOnce() + Send>) {
+        self.1.spawned.fetch_add(1, Ordering::SeqCst);
+        self.0.post(job);
+    }
+    fn is_current(&self) -> bool {
+        self.0.is_current()
+    }
 }
 
 struct TrackedWorkers(Arc<Tracked>);
@@ -532,7 +548,12 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     let register_views = case_views.clone();
     let shell_registration = Arc::new(shell_ipc_w::tabs::ProbeShellRegistration::default());
     let register_shell = shell_registration.clone();
+    // A case declares the views the shell will make (the ids the TypeScript world
+    // gives them) so that its calls can come from them: the shell's creation of
+    // such a view adopts the declared entry once, with the renderer it made.
+    let created: Mutex<Vec<ViewId>> = Mutex::default();
     let registrar: shell_ipc_w::tabs::ProbeViewRegistrar = Arc::new(move |sender, generation| {
+        let mut created = created.lock().map_err(|error| error.to_string())?;
         let mut views = register_views
             .views
             .lock()
@@ -541,15 +562,21 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
             .generations
             .lock()
             .map_err(|error| error.to_string())?;
-        if views.iter().any(|existing| existing.view == sender.view)
-            || generations.contains_key(&sender.view)
-        {
+        if created.contains(&sender.view) {
             return Err("Synthetic view was already registered".into());
         }
-        views.push(sender);
+        created.push(sender.view);
+        match views
+            .iter_mut()
+            .find(|existing| existing.view == sender.view)
+        {
+            Some(declared) => *declared = sender,
+            None => views.push(sender),
+        }
         generations.insert(sender.view, generation.clone());
         drop(generations);
         drop(views);
+        drop(created);
         register_shell.registered(sender, generation);
         Ok(())
     });
@@ -572,7 +599,7 @@ fn run_case(dir: &str, case: &Value) -> Result<Value, String> {
     }
     shell_ipc_d2::probe_hosts(&mut hosts, &given["d2"]);
     let services = shell_contract::hosts::synthetic::SyntheticOwnedEffects::install(Services {
-        ui: ui.clone(),
+        ui: Arc::new(TrackedThread(ui.clone(), tracked.clone())),
         core: core.clone(),
         workers: Arc::new(CatchingWorkers(Arc::new(TrackedWorkers(tracked.clone())))),
         events: recorder.clone(),
