@@ -303,6 +303,7 @@ const desktop: Partial<DesktopApi> = {
   signalMcpReady: undefined,
   kbList: undefined,
   aiToolCapabilities: undefined,
+  zoteroCommand: undefined,
 }
 
 /** An object whose listed members are explicitly absent: the renderer's `typeof x === 'function'` probes see no service. */
