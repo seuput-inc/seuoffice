@@ -1018,6 +1018,7 @@ describe('row-wide vertical cell margins (Word probe 2026-10-13)', () => {
     expect(css).toMatch(
       /\.doc-table \{[^}]*--doc-row-pad-t: initial;[^}]*--doc-row-pad-b: initial;/s,
     )
+    editor.destroy()
   })
 
   it('sizes a picture-only cell paragraph by the picture alone', async () => {
@@ -1033,5 +1034,6 @@ describe('row-wide vertical cell margins (Word probe 2026-10-13)', () => {
     expect(picOnly.style.lineHeight).toBe('')
     expect(picOnly.style.getPropertyValue('--doc-line-mult')).toBe('1.15')
     expect(withText.classList.contains('doc-p-pic')).toBe(false)
+    editor.destroy()
   })
 })

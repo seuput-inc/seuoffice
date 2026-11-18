@@ -48,18 +48,21 @@ describe('pasting a field', () => {
     const editor = makeEditor()
     editor.commands.insertContent(clipboardHtml(ZOTERO_INSTR, '(Smith, 2020)'))
     expect(fieldInstrs(editor)).toContain(ZOTERO_INSTR)
+    editor.destroy()
   })
 
   it('keeps a pasted plain field instruction', () => {
     const editor = makeEditor()
     editor.commands.insertContent(clipboardHtml(DATE_INSTR, '2026-01-01'))
     expect(fieldInstrs(editor)).toContain(DATE_INSTR)
+    editor.destroy()
   })
 
   it('does not invent an instruction for a span without one', () => {
     const editor = makeEditor()
     editor.commands.insertContent('<span class="doc-ref-field">plain</span>')
     expect(fieldInstrs(editor)).toEqual([])
+    editor.destroy()
   })
 })
 

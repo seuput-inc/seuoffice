@@ -304,6 +304,7 @@ describe('EditorContextMenu picture items', () => {
     expect(onViewImage).toHaveBeenCalledWith(src)
     expect(onSaveImageAs).toHaveBeenCalledWith(src)
     unmount()
+    editor.destroy()
   })
 })
 

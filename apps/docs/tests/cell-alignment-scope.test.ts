@@ -35,6 +35,7 @@ describe('cell alignment on a whole-table selection', () => {
     expect(enterSelectedTable(view.state, view.dispatch)).toBe(true)
     setCellAlignment('bottom', 'right')(view.state, view.dispatch)
     expect(cellAligns(editor)).toEqual(Array(4).fill(['bottom', 'right']))
+    editor.destroy()
   })
 
   it('a caret in the first cell only touches that cell (the old context-menu path)', async () => {
@@ -43,5 +44,6 @@ describe('cell alignment on a whole-table selection', () => {
     view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(1))))
     setCellAlignment('bottom', 'right')(view.state, view.dispatch)
     expect(cellAligns(editor).filter(([v]) => v === 'bottom')).toHaveLength(1)
+    editor.destroy()
   })
 })

@@ -33,5 +33,6 @@ describe('rewriting a table keeps the old cell look', () => {
     expect(vAligns(next)).toEqual(['center', 'center', 'center'])
     const merged = inheritTableFormatting(editor.state.doc.firstChild!, next, { anchor: true })
     expect(vAligns(merged)).toEqual([null, null, null])
+    editor.destroy()
   })
 })

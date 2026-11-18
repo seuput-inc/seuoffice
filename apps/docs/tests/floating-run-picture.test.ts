@@ -1,7 +1,7 @@
 import { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { parseDocx, saveDocx, type Run } from '@seuoffice/docx-engine'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
 import { blocksToPmDoc, pmDocToSavePlan, type PmNode } from '../src/renderer/editor/convert'
 import { editorExtensions } from '../src/renderer/editor/extensions'
@@ -145,5 +145,37 @@ describe('floating run pictures (anchored drawings sharing a text paragraph)', (
     expect(editor.state.selection instanceof NodeSelection).toBe(true)
     expect(editor.state.doc.nodeAt(picturePos)!.attrs).toEqual(before)
     editor.destroy()
+  })
+
+  it('the selection frame stops following the layout once the editor is destroyed', () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'],
+    })
+    const frames = vi.spyOn(globalThis, 'requestAnimationFrame')
+    const editor = new Editor({
+      element: document.createElement('div'),
+      extensions: editorExtensions,
+      content: '<p>Text</p>',
+    })
+    // an edit, then the frame it asked for at once: what stays pending is the
+    // look the frame takes again after pagination has settled the layout
+    const editAndPaint = () => {
+      editor.view.dispatch(editor.state.tr.insertText('x', 1))
+      vi.advanceTimersByTime(50)
+      frames.mockClear()
+    }
+    try {
+      editAndPaint()
+      vi.advanceTimersByTime(1000)
+      expect(frames).toHaveBeenCalled()
+
+      editAndPaint()
+      editor.destroy()
+      vi.advanceTimersByTime(1000)
+      expect(frames).not.toHaveBeenCalled()
+    } finally {
+      frames.mockRestore()
+      vi.useRealTimers()
+    }
   })
 })

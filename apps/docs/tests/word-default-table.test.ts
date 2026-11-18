@@ -43,6 +43,7 @@ describe('new tables look like Word Insert Table', () => {
     const editor = await openBlank()
     insertTableAt(editor, 2, 3)
     expectWordLook(editor.state.doc.firstChild!.toJSON() as PmNode)
+    editor.destroy()
   })
 
   it('AI <table> fragment: same look, header row keeps bold + fill', () => {
