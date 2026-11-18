@@ -99,11 +99,13 @@ const cases: Case[] = [
   },
   {
     ...base,
-    note: 'cancelling a call nobody made, and a cancel that is malformed, are harmless',
+    views: [...views, { view: 9, window: 9, surface: 'ShellAgent' }],
+    note: 'cancelling a call nobody made, and a cancel that is malformed, are harmless; the agent window has no tool calls to cancel',
     calls: [
       editor('mcp-tools:cancel', 'c1'),
       editor('mcp-tools:cancel', 5),
       editor('mcp-tools:cancel'),
+      { channel: 'mcp-tools:cancel', view: 9, args: ['c1'] },
     ],
   },
   {

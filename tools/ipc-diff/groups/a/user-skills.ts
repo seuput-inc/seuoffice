@@ -614,6 +614,7 @@ const bare: Case[] = [
       shell('skills:copy-to-mine', 'app:alpha'),
       shell('skills:copy-to-mine', 'app:alpha', true),
       shell('skills:copy-to-mine', 5),
+      shell('skills:copy-to-mine', 'app:absent'),
       shell('skills:remove', 'app:beta'),
       shell('skills:remove', 'app:beta'),
       shell('skills:remove', undef),

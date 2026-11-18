@@ -133,6 +133,15 @@ const cases: Case[] = [
     ],
   },
   {
+    note: 'a view with no recovery copy consumes nothing; the shell window has no HWP recovery',
+    views: [...HWP_VIEW, { view: 2, window: 2, surface: 'Shell' }],
+    calls: [
+      invoke('hwp:consume-recovery'),
+      invoke('hwp:consume-recovery', ['x']),
+      { ...invoke('hwp:consume-recovery'), view: 2 },
+    ],
+  },
+  {
     note: 'read-file refuses a path the view was not given, of any type',
     views: HWP_VIEW,
     files: { 'a.hwp': { hex: HWP } },

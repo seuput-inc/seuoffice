@@ -522,13 +522,14 @@ const cases: Case[] = [
     ],
   },
   {
-    note: 'settings save: a payload that is not settings changes nothing and tells nobody',
-    views,
+    note: 'settings save: a payload that is not settings changes nothing and tells nobody; the agent window cannot save them',
+    views: [...views, { view: 9, window: 9, surface: 'ShellAgent' }],
     files: file(stored),
     calls: [
       docs('ai:set-settings', 5),
       docs('ai:set-settings', { provider: 'nope', providers: {} }),
       docs('ai:set-settings'),
+      { channel: 'ai:set-settings', view: 9, args: [{ provider: 'deepseek', providers: {} }] },
       docs('ai:get-settings'),
     ],
   },
