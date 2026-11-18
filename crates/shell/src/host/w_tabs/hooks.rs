@@ -4611,33 +4611,6 @@ impl shell_ipc_w::tabs::TabHooks for Hooks {
             .next()
             .is_some_and(|service| service.reopen(path, Box::new(|_| {})))
     }
-    fn route_path_native(&self, path: String, done: Box<dyn FnOnce(Result<bool, String>)>) {
-        let Some(tabs) = self
-            .provided
-            .all::<shell_ipc_w::tabs::TabsState>()
-            .into_iter()
-            .next()
-        else {
-            return done(Err("The tab manager is not available".into()));
-        };
-        let cancel = shell_contract::runtime::CancelToken::default();
-        let command = shell_contract::ipc::NativeEditorCommand::OpenFile {
-            surface: shell_ipc_w::tabs::native_open_surface(&path),
-            path: std::path::PathBuf::from(&path),
-        };
-        let operation = match crate::host::native_commands::issue(command, cancel.clone()) {
-            Ok(operation) => operation,
-            Err(error) => return done(Err(error)),
-        };
-        tabs.route_document_path_native(
-            path,
-            operation,
-            Box::new(move |result| {
-                drop(cancel);
-                done(result);
-            }),
-        );
-    }
     fn issue_native_command(
         &self,
         command: shell_contract::ipc::NativeEditorCommand,

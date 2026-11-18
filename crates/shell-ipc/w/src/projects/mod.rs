@@ -470,6 +470,10 @@ impl Projects {
                         "project services are unavailable".into(),
                     ))));
                 };
+                // `openDocument` and `showHome` follow the page they show
+                if let Ok(Some(view)) = &result {
+                    projects.track(*view);
+                }
                 let step = projects.guarded_core(&reply, || {
                     let target = result.map_err(Thrown)?.map(|view| i64::from(view.0));
                     projects.serve(|ipc, deps| {
@@ -1637,8 +1641,12 @@ impl Projects {
         result
     }
 
-    /// `trackProjectContents(contents)`: follow the view's close and reloads
+    /// `trackProjectContents(contents)`: follow the view's close and reloads; a destroyed
+    /// page is not followed again
     fn track(&self, view: ViewId) {
+        if self.shell.host.page_destroyed(view) {
+            return;
+        }
         if self.tracked.borrow_mut().insert(view) {
             self.shell.host.track(view);
         }

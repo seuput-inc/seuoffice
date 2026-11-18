@@ -472,7 +472,7 @@ impl TabsState {
                 "The saved editor reservation does not match its manager plan".into(),
             )));
         }
-        let prepared = {
+        let mut prepared = {
             let mut inner = self.inner.borrow_mut();
             let super::super::state::Inner {
                 manager, bridge, ..
@@ -489,8 +489,11 @@ impl TabsState {
         }?;
         let commit = {
             let mut inner = self.inner.borrow_mut();
-            match inner.manager.as_mut() {
-                Some(manager) => manager.prepare_editor_adoption_commit(&prepared),
+            let super::super::state::Inner {
+                manager, bridge, ..
+            } = &mut *inner;
+            match manager.as_mut() {
+                Some(manager) => manager.prepare_editor_adoption_commit(bridge, &mut prepared),
                 None => Err("The shell window is unavailable".into()),
             }
         };
@@ -1177,10 +1180,16 @@ impl TabsState {
                         diagram,
                     );
                 }
+                let mut prepared = prepared;
                 let commit = {
                     let mut inner = state.inner.borrow_mut();
-                    match inner.manager.as_mut() {
-                        Some(manager) => manager.prepare_editor_adoption_commit(&prepared),
+                    let super::super::state::Inner {
+                        manager, bridge, ..
+                    } = &mut *inner;
+                    match manager.as_mut() {
+                        Some(manager) => {
+                            manager.prepare_editor_adoption_commit(bridge, &mut prepared)
+                        }
                         None => Err("The shell window is unavailable".into()),
                     }
                 };
@@ -2148,6 +2157,43 @@ impl TabsState {
         );
     }
 
+    /// `activateTab(id)` of a renderer request: an unknown id changes nothing, and home shows
+    /// the shell view itself; any other tab is revealed (loaded first when it is unloaded)
+    pub fn activate_tab_owned(
+        &self,
+        id: &str,
+        owner: NativeRequestOwner,
+        cancel: CancelToken,
+        done: Box<dyn FnOnce(Result<(), String>)>,
+    ) {
+        let (kind, shell) = {
+            let inner = self.inner.borrow();
+            let kind = inner.manager.as_ref().map(|manager| {
+                manager
+                    .list()
+                    .into_iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| tab.kind)
+            });
+            (kind, inner.bridge.shell)
+        };
+        match (kind, shell) {
+            (Some(None), _) => done(Ok(())),
+            (Some(Some(TabKind::Home)), Some(shell)) => self.reveal_owned(
+                id.to_owned(),
+                shell.view,
+                false,
+                true,
+                owner,
+                cancel,
+                self.manager_epoch.get(),
+                None,
+                Box::new(move |result| done(result.map(|_| ()))),
+            ),
+            _ => self.reveal_tab_owned(id, owner, cancel, done),
+        }
+    }
+
     fn activate_owned(
         &self,
         id: String,
@@ -2467,6 +2513,8 @@ impl TabsState {
             done(Err("the shell window is not available".into()));
             return;
         };
+        // `showHome`: the window comes up first, then home is the active tab
+        self.reveal_shell_window();
         self.reveal_owned(
             "home".into(),
             shell.view,

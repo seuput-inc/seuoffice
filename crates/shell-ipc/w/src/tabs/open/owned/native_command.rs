@@ -44,6 +44,42 @@ impl TabsState {
         self.route_native_selected(path, operation, expected, None, done);
     }
 
+    /// `tabManager.openSheetsTab(backing)` of a new sheet: its temp workbook opens in a tab of
+    /// its own under the native `OpenFile` command and gets no recent-file entry, since there is
+    /// no user-visible file until it is saved. `done` runs once.
+    pub(crate) fn open_new_sheet_native(
+        &self,
+        backing: String,
+        done: Box<dyn FnOnce(Result<bool, String>)>,
+    ) {
+        let cancel = shell_contract::runtime::CancelToken::default();
+        let expected = NativeEditorCommand::OpenFile {
+            surface: native_open_surface(&backing),
+            path: std::path::PathBuf::from(&backing),
+        };
+        let operation = match self
+            .hooks
+            .issue_native_command(expected.clone(), cancel.clone())
+        {
+            Ok(operation) => operation,
+            Err(error) => return done(Err(error)),
+        };
+        let Some(request) =
+            editor_request_for_path(main_core::shell::tab_manager::TabKind::Sheets, &backing)
+        else {
+            return done(Ok(false));
+        };
+        self.open_native_editor(
+            request,
+            operation,
+            expected,
+            Box::new(move |result| {
+                drop(cancel);
+                done(result.map(|_| true));
+            }),
+        );
+    }
+
     fn route_native_selected(
         &self,
         path: String,

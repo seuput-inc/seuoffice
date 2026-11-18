@@ -54,6 +54,8 @@ struct State {
     events: Option<Arc<dyn PageEvents>>,
     tracked: HashSet<ViewId>,
     watching: HashSet<ViewId>,
+    /// the pages whose `destroyed` was emitted: Electron's `isDestroyed()`
+    destroyed: HashSet<ViewId>,
     /// the timers set and not cleared, oldest first
     timers: Vec<ProjectTimer>,
     /// draws so far, by number of bytes
@@ -84,7 +86,8 @@ impl FakeHost {
                 .then_some(PageEvent::Focus(view))
                 .into_iter()
                 .collect(),
-            "destroyed" => (tracked || watching)
+            // emitted once, as the fake `webContents` of the TypeScript does
+            "destroyed" => (state.destroyed.insert(view) && (tracked || watching))
                 .then_some(PageEvent::Destroyed(view))
                 .into_iter()
                 .collect(),
@@ -145,8 +148,8 @@ impl ProjectsHost for FakeHost {
         self.state.lock().unwrap().tracked.insert(view);
     }
 
-    fn page_destroyed(&self, _view: ViewId) -> bool {
-        false
+    fn page_destroyed(&self, view: ViewId) -> bool {
+        self.state.lock().unwrap().destroyed.contains(&view)
     }
 
     fn watch_return(&self, view: ViewId) {

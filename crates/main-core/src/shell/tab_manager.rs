@@ -968,6 +968,9 @@ pub struct PreparedEditorAdoption<V, B> {
     pub file_path: Option<String>,
     pub workbook: Option<String>,
     pub reused: bool,
+    /// a diagram opened from a path reads its identity once its view is placed and
+    /// listened to, as `openDiagramTab` does: at [`TabManager::prepare_editor_adoption_commit`]
+    diagram_identity: bool,
 }
 
 pub struct PreparedEditorAdoptionCommit<V> {
@@ -1674,25 +1677,11 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 self.title_for(host, path.as_deref(), TabKind::Mindmap, "Mind Map"),
             ),
             EditorOpen::Epub { path } => (TabKind::Epub, Some(path.clone()), basename(path, None)),
-            EditorOpen::Diagram { path } => {
-                let identity = if truthy(path.as_deref()).is_some() {
-                    let wc = host.view_id(&view);
-                    host.diagram_tab_identity(wc)
-                } else {
-                    None
-                };
-                let imported = identity.as_ref().is_some_and(|identity| identity.imported);
-                let title = if imported {
-                    identity.map(|identity| identity.title).unwrap_or_default()
-                } else {
-                    self.title_for(host, path.as_deref(), TabKind::Diagram, "Diagram")
-                };
-                (
-                    TabKind::Diagram,
-                    if imported { None } else { path.clone() },
-                    title,
-                )
-            }
+            EditorOpen::Diagram { path } => (
+                TabKind::Diagram,
+                path.clone(),
+                self.title_for(host, path.as_deref(), TabKind::Diagram, "Diagram"),
+            ),
             EditorOpen::Hwp { path, copy } => {
                 let title = copy
                     .as_ref()
@@ -1711,6 +1700,7 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
                 )));
             }
         };
+        let diagram_identity = matches!(&plan.request, EditorOpen::Diagram { path } if truthy(path.as_deref()).is_some());
         Ok(PreparedEditorAdoption {
             plan,
             view,
@@ -1719,13 +1709,26 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
             file_path,
             workbook,
             reused,
+            diagram_identity,
         })
     }
 
     pub fn prepare_editor_adoption_commit(
         &mut self,
-        prepared: &PreparedEditorAdoption<V, B>,
+        host: &mut dyn TabHost<V, B>,
+        prepared: &mut PreparedEditorAdoption<V, B>,
     ) -> Result<PreparedEditorAdoptionCommit<V>, String> {
+        // an imported diagram is titled after its source and has no file of its own
+        if std::mem::take(&mut prepared.diagram_identity) {
+            let wc = host.view_id(&prepared.view);
+            if let Some(identity) = host
+                .diagram_tab_identity(wc)
+                .filter(|identity| identity.imported)
+            {
+                prepared.title = identity.title;
+                prepared.file_path = None;
+            }
+        }
         let expected_id = self.next_id;
         expected_id
             .checked_add(1)
@@ -1826,40 +1829,6 @@ impl<V: Clone + PartialEq, B: Clone + PartialEq> TabManager<V, B> {
         register()?;
         self.tabs[index].binding = Some(replacement);
         Ok(())
-    }
-
-    pub fn commit_editor_adoption(
-        &mut self,
-        prepared: PreparedEditorAdoption<V, B>,
-        binding: B,
-    ) -> String {
-        let PreparedEditorAdoption {
-            plan: _,
-            view,
-            kind,
-            title,
-            file_path,
-            ..
-        } = prepared;
-        let id = self.alloc_id();
-        if !self.full_screen_tracked.contains(&view) {
-            self.full_screen_tracked.push(view.clone());
-        }
-        if !self.pane_focus_tracked.contains(&view) {
-            self.pane_focus_tracked.push(view.clone());
-        }
-        self.tabs.push(TabRecord {
-            id: id.clone(),
-            kind,
-            view: Some(view),
-            binding: Some(binding),
-            title,
-            file_path,
-            present: false,
-            opener: None,
-            lazy: None,
-        });
-        id
     }
 
     pub fn prepare_editor_open(

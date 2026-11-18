@@ -1063,9 +1063,6 @@ pub trait TabHooks {
     // ---- documents the shell routes by extension ----
     /// `driveService?.reopen(path)`: `true` when Drive took the reopen
     fn drive_reopen(&self, path: &str) -> bool;
-    /// `routeDocumentPath` as a native `OpenFile` command: `done` runs once on the core thread
-    /// with `Ok(true)` when a tab opened or was focused, `Ok(false)` when nothing did
-    fn route_path_native(&self, path: String, done: Box<dyn FnOnce(Result<bool, String>)>);
     /// Mints the root native operation of `command` (a menu or OS entry point has no renderer
     /// owner); `cancel` must outlive the operation
     fn issue_native_command(

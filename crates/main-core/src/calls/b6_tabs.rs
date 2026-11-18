@@ -2506,7 +2506,7 @@ fn adopt_editor(
     }
     w.listen_html_full_screen(&view);
     w.listen_pane_focus(&view);
-    let prepared = match tm.prepare_editor_adoption(w, plan, view) {
+    let mut prepared = match tm.prepare_editor_adoption(w, plan, view) {
         Ok(prepared) => prepared,
         Err(failed) => {
             let (plan, error) = *failed;
@@ -2514,7 +2514,7 @@ fn adopt_editor(
             return Err(error);
         }
     };
-    let commit = match tm.prepare_editor_adoption_commit(&prepared) {
+    let commit = match tm.prepare_editor_adoption_commit(w, &mut prepared) {
         Ok(commit) => commit,
         Err(error) => {
             tm.cancel_editor_open(w, prepared.into_plan());
