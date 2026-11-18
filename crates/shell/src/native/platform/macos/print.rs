@@ -1,19 +1,21 @@
 //! `PrintOps` over `NSPrintOperation`: the system print dialog, and the file print job behind
 //! `print_pdf`. WebKit's `createPDF` only renders one page, so PDFs come from a print job
-//! that saves to a file. Both jobs run through `runOperationModalForWindow`: WebKit's printing
-//! view computes its pages from a thread AppKit spawns for such a job, and answers from the
-//! UI thread's run loop, so a job run synchronously on the UI thread never gets its pages.
+//! that saves to a file. Both jobs run through `runOperationModalForWindow`: a job run
+//! synchronously on the UI thread never finishes (WebKit's printing view waits for the main
+//! run loop that the job itself blocks; reproduced with a plain WKWebView and `runOperation`).
+//! The completion arrives on AppKit's print thread and is moved to the UI thread before
+//! anything is touched.
 //! A header and footer, which WebKit cannot print, are stamped onto the finished document
 //! (`header_footer.rs`); the page ranges are applied last.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use objc2::rc::Retained;
-use objc2::runtime::Bool;
+use objc2::runtime::{AnyObject, Bool};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSPaperOrientation, NSPrintInfo, NSPrintJobSavingURL, NSPrintOperation, NSPrintSaveJob,
@@ -341,6 +343,8 @@ pub(super) fn save_pdf(surface: &Surface<'_>, spec: PdfSpec, done: Done<Vec<u8>>
 
 struct Answer {
     finish: RefCell<Option<Box<dyn FnOnce(bool)>>>,
+    /// written on AppKit's print thread, read on the UI thread after the hop
+    success: Cell<bool>,
 }
 
 define_class!(
@@ -352,11 +356,29 @@ define_class!(
     struct PrintAnswer;
 
     impl PrintAnswer {
+        /// AppKit calls this on the thread that ran the job (observed: not the main thread),
+        /// where windows, web views and the caller's `Done` must not be touched: the answer
+        /// is passed on to the UI thread.
         #[unsafe(method(printOperationDidRun:success:contextInfo:))]
         fn did_run(&self, _operation: &NSPrintOperation, success: Bool, _context: *mut c_void) {
+            self.ivars().success.set(success.as_bool());
+            // SAFETY: `finishOnMain` is defined below with no arguments; the receiver stays
+            // retained until the selector has run.
+            unsafe {
+                let _: () = msg_send![
+                    self,
+                    performSelectorOnMainThread: sel!(finishOnMain),
+                    withObject: None::<&AnyObject>,
+                    waitUntilDone: Bool::NO
+                ];
+            }
+        }
+
+        #[unsafe(method(finishOnMain))]
+        fn finish_on_main(&self) {
             let finish = self.ivars().finish.borrow_mut().take();
             if let Some(finish) = finish {
-                finish(success.as_bool());
+                finish(self.ivars().success.get());
             }
             // SAFETY: balances the retain `run_modal` leaked so the object lives until now;
             // nothing touches `self` afterwards.
@@ -369,6 +391,7 @@ impl PrintAnswer {
     fn new(mtm: MainThreadMarker, finish: Box<dyn FnOnce(bool)>) -> Retained<Self> {
         let answer = Answer {
             finish: RefCell::new(Some(finish)),
+            success: Cell::new(false),
         };
         let this = mtm.alloc::<Self>().set_ivars(answer);
         // SAFETY: NSObject's plain `init`.
@@ -376,8 +399,8 @@ impl PrintAnswer {
     }
 }
 
-/// Run `operation` for `window` without holding the UI thread; `finish` runs on it with
-/// whether the job went through.
+/// Run `operation` for `window` without holding the UI thread; `finish` runs on the UI thread
+/// with whether the job went through.
 fn run_modal(
     mtm: MainThreadMarker,
     operation: &NSPrintOperation,
@@ -385,7 +408,7 @@ fn run_modal(
     finish: Box<dyn FnOnce(bool)>,
 ) {
     let answer = PrintAnswer::new(mtm, finish);
-    // One retain is leaked on purpose: AppKit does not retain the delegate, and `did_run`
+    // One retain is leaked on purpose: AppKit does not retain the delegate, and `finish_on_main`
     // releases it.
     let _ = Retained::into_raw(answer.clone());
     // SAFETY: the selector is implemented by `PrintAnswer` with the signature AppKit calls

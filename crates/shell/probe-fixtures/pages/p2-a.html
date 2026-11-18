@@ -15,8 +15,11 @@
       bridge: typeof window.__seuofficeCheck,
     })
     addEventListener('pageshow', (event) => {
-      P.log('p2.pageshow', { doc: 'a', phase, persisted: event.persisted })
-      if (phase === 'back') P.done({ how: event.persisted ? 'page-cache' : 'fresh-load' })
+      // a page restored from the page cache does not run this script again, so the phase
+      // this closure captured is stale: the phase the pages left in sessionStorage is current
+      const now = sessionStorage.getItem('p2.phase') || '0'
+      P.log('p2.pageshow', { doc: 'a', phase: now, loaded_phase: phase, persisted: event.persisted })
+      if (now === 'back') P.done({ how: event.persisted ? 'page-cache' : 'fresh-load' })
     })
     if (phase !== '0') return
     sessionStorage.setItem('p2.phase', '1')
