@@ -1,0 +1,93 @@
+name: repro mac quit
+
+# Temporary: builds the Electron mac app of this branch the way seuoffice-desktop.yml's
+# mac job does (ad hoc signed, --dir output) and asks it to quit the way the Dock does,
+# without and with a Word document open. A hang captures a process sample, the
+# DevTools page list and the main-process quit trace (SEUOFFICE_QUIT_TRACE).
+
+on:
+  push:
+    branches: ['repro/mac-quit-**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repro-mac-quit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+          targets: wasm32-wasip1
+
+      - name: Cache cargo (xlsx-sidecar, office-wasm)
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            apps/sheets/native/xlsx-engine
+            crates
+
+      - name: Cache electron binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-mac-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-mac-${{ runner.arch }}-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build apps
+        run: npm run build:all
+
+      - name: Package (ad hoc, directory only)
+        working-directory: apps/shell
+        run: |
+          npm run notices
+          npx electron-builder --mac --dir --config electron-builder.seuoffice.cjs --publish never
+
+      - name: Install the app where a user has it
+        run: |
+          set -euo pipefail
+          ditto apps/shell/release/mac-arm64/SeuOffice.app /Applications/SeuOffice.app
+          codesign --verify --deep --strict /Applications/SeuOffice.app
+
+      - name: Quit control
+        run: bash tools/repro-mac-quit/quit-control.sh /Applications/SeuOffice.app "$RUNNER_TEMP/qc-out"
+
+      - name: Show the results
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/qc-out/result.txt" || true
+          for f in "$RUNNER_TEMP"/qc-out/trace-*.log; do echo "== $f"; cat "$f"; done
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qc-out
+          path: ${{ runner.temp }}/qc-out/
+          if-no-files-found: warn
+          retention-days: 7
