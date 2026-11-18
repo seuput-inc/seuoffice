@@ -710,6 +710,15 @@ jobs:
             done
           done
 
+      # the release notes and their checker: this job builds nothing
+      - name: Checkout the release notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            tools/check-release-notes.mjs
+            docs/seuoffice/판-노트
+          sparse-checkout-cone-mode: false
+
       # first, before any release is touched: the notes say how each platform is signed.
       # The app shows these notes in its update dialog, so they hold only what a
       # person installing or updating needs; what the maintainer needs goes to the
