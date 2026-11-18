@@ -6288,6 +6288,8 @@ function floatingRunPicturePlugin(): Plugin {
       }
       let raf = 0
       let settleTimer = 0
+      const live = ((globalThis as { __liveFrameViews?: Set<unknown> }).__liveFrameViews ??= new Set())
+      live.add(view)
       const place = () => {
         raf = 0
         const hit = view.editable && view.hasFocus() ? selectedFloatingRunPicture(view) : null
@@ -6340,6 +6342,7 @@ function floatingRunPicturePlugin(): Plugin {
           settleTimer = window.setTimeout(schedule, 150)
         },
         destroy: () => {
+          live.delete(view)
           cancelAnimationFrame(raf)
           window.clearTimeout(settleTimer)
           window.removeEventListener('scroll', schedule, true)
