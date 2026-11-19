@@ -1,7 +1,10 @@
 import {
   workbookFileSchema,
+  workbookMediaResultSchema,
   workbookRangeResultSchema,
   workbookRedactionsResultSchema,
+  type WorkbookMediaRequest,
+  type WorkbookMediaResult,
   type WorkbookRangeRequest,
   type WorkbookRangeResult,
   type WorkbookRedactionsResult,
@@ -86,6 +89,15 @@ export class WasmSidecarClient {
       range: request.range,
     })
     return workbookRangeResultSchema.parse(result)
+  }
+
+  /** The bytes of one picture of the open workbook, by the id its visual, cell or note carries */
+  async readMedia(request: WorkbookMediaRequest): Promise<WorkbookMediaResult> {
+    const result = await this.send('read_media', {
+      sessionId: request.sessionId,
+      visualId: request.visualId,
+    })
+    return workbookMediaResultSchema.parse(result)
   }
 
   async close(sessionId: string): Promise<void> {
