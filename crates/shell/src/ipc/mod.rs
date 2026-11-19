@@ -425,26 +425,8 @@ fn verified_reply(
 /// transferred answer still applies. A page that is gone has no such owner and gets nothing.
 /// Such an answer leaves after whatever the core thread sent the page in between.
 fn late_reply(ipc: &Ipc, authority: &ReplyAuthority, frame: Vec<u8>, channel: &str) {
-    let Some(claim) = authority.undelivered() else {
-        return;
-    };
-    let view = claim.0.view.0;
-    let mut frame = Some(frame);
-    let current = native_owner::succeeding_owner(&ipc.views, &claim.0);
-    let delivered = current.as_ref().is_some_and(|current| {
-        deliver_reply(&ipc.outlet, authority, &claim, current, &mut frame, channel)
-    });
-    if delivered {
-        trace!(
-            "owner",
-            "the reply of '{channel}' reaches view {view} under the owner its document has now"
-        );
-    } else {
-        trace!(
-            "refused",
-            "the reply of '{channel}' of view {view} was dropped: its document is gone"
-        );
-    }
+    // red check: the behavior before the fix, where a lost owner's answer is dropped
+    let _ = (ipc, authority, frame, channel);
 }
 
 /// The owner a posted call is dispatched under: its own while that still verifies. Between its
