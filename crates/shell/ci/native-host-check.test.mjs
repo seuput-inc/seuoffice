@@ -11,6 +11,7 @@ import {
   compileRun,
   damage,
   damageCopies,
+  recoveryCopies,
   invokeQuery,
   minimalEpub,
   seedSettings,
@@ -19,6 +20,7 @@ import {
 import {
   ACKS,
   LIST_PRESS,
+  LIST_SHOWN,
   PROBE_BASE,
   SPECS,
   UNDRIVEN,
@@ -233,6 +235,10 @@ function simulate(name, spec = SPECS[name], tamper = () => {}) {
       wanted: run.end ?? 'exit',
       awaited,
       records: records.length,
+      // a run that answers the launch list finds the copy the run before it left
+      copies: run.steps.some((step) => step.as === LIST_PRESS)
+        ? ['userdata/docs-autosave/a-copy']
+        : [],
       damaged: [run.damage ?? []]
         .flat()
         .map((entry) => (entry === 'copies' ? 'userdata/docs-autosave/a-copy' : `work/${entry}`)),
@@ -358,6 +364,45 @@ describe('the specs against the contracts', () => {
     expect(press(page(button, button))).toEqual({ pressed: '.recovery-confirm' })
     expect(press(page(button, label))).toEqual({ pressed: '.recovery-confirm' })
     expect(clicks).toBe(2)
+  })
+
+  it('says afterwards what the page showed of that button, and never presses it', () => {
+    for (const name of ['docs-recovery', 'docs-damaged']) {
+      const { steps } = SPECS[name].runs[1]
+      const at = steps.findIndex((step) => step.as === LIST_SHOWN)
+      expect(at, name).toBe(steps.findIndex((step) => step.as === LIST_PRESS) + 1)
+      // the page that answers may be a tab that is still loading
+      expect(steps[at].timeoutMs, name).toBeLessThanOrEqual(2000)
+    }
+    const { js } = SPECS['docs-recovery'].runs[1].steps.find((step) => step.as === LIST_SHOWN)
+    const location = { href: 'genoffice-app://shell/index.html?mode=home' }
+    const seen = (document) =>
+      new Function('document', 'location', `return ${js}`)(document, location).button
+    let clicks = 0
+    const label = {}
+    const button = {
+      disabled: false,
+      getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 40 }),
+      contains: (node) => node === label,
+      click: () => (clicks += 1),
+    }
+    const page = (found, top) => ({
+      querySelector: (selector) => (selector === '.recovery-confirm' ? found : null),
+      elementFromPoint: (x, y) => (x === 60 && y === 40 ? top : null),
+    })
+    expect(
+      new Function('document', 'location', `return ${js}`)(page(null, null), location),
+    ).toEqual({ page: 'genoffice-app://shell/index.html', button: 'absent' })
+    expect(seen(page({ ...button, disabled: true }, button))).toBe('disabled')
+    expect(seen(page(button, { tagName: 'DIV', className: ' onb-overlay open ' }))).toBe(
+      'covered by DIV.onb-overlay',
+    )
+    // an SVG node's class is no string, and nothing may lie at the point at all
+    expect(seen(page(button, { tagName: 'svg', className: {} }))).toBe('covered by svg')
+    expect(seen(page(button, null))).toBe('covered by nothing')
+    expect(seen(page(button, button))).toBe('free')
+    expect(seen(page(button, label))).toBe('free')
+    expect(clicks).toBe(0)
   })
 
   it('types into the HWP editor only once its page shows the document', () => {
@@ -558,10 +603,45 @@ describe('the rules', () => {
 
     // run 44418489799: the onboarding lay over the list for the whole wait
     simulate('markdown-recovery', undefined, (number, _lines, records) => {
-      if (number === 2) records[0].value = false
+      if (number !== 2) return
+      records[0].value = false
+      records.find((record) => record.as === LIST_SHOWN).value = {
+        page: 'genoffice-app://shell/index.html',
+        button: 'covered by DIV.onb-overlay',
+      }
     })
     expect(rowOf(check('markdown-recovery'), channel, 'successful-ack').evidence).toBe(
-      'the button of the launch recovery list was absent or covered until the end',
+      'the button of the launch recovery list was absent or covered until the end ' +
+        '(the profile held 1 recovery copy; afterwards genoffice-app://shell/index.html ' +
+        'showed the button covered by DIV.onb-overlay)',
+    )
+
+    // validation round S121, Windows: the page of the first run never opened its document, so
+    // nothing was typed, no copy was written and the next launch had no list at all
+    simulate('markdown-recovery', undefined, (number, _lines, records, exit) => {
+      if (number === 1) {
+        records.find((record) => record.op === 'waitReady').value.control = 'not_ready'
+        records.find((record) => record.as === 'markdown-before').value = null
+        return
+      }
+      exit.copies = []
+      records[0].value = false
+    })
+    expect(rowOf(check('markdown-recovery'), channel, 'successful-ack').evidence).toBe(
+      'the launch had no recovery list to answer: the profile held no recovery copy when the ' +
+        'run began; in the first run the document was not ready when waitReady gave up, ' +
+        'markdown-before did not show SEU-E2E-markdown (null)',
+    )
+
+    // a first run that shows nothing wrong: the missing copy is all there is to say
+    simulate('markdown-recovery', undefined, (number, _lines, records, exit) => {
+      if (number !== 2) return
+      exit.copies = []
+      records[0].value = false
+    })
+    expect(rowOf(check('markdown-recovery'), channel, 'successful-ack').evidence).toBe(
+      'the launch had no recovery list to answer: the profile held no recovery copy when the ' +
+        'run began',
     )
 
     // the restored tab never became ready: the second tab's acknowledgement is not taken for it
@@ -878,6 +958,15 @@ describe('the helpers', () => {
     fs.writeFileSync(path.join(root, 'docs-autosave', 'abc.docx.meta.json'), '{}')
     fs.writeFileSync(path.join(copies, 'id.docx'), 'copy')
     fs.writeFileSync(path.join(root, 'Cache', 'kept'), 'kept')
+    // what the launch recovery list is made of: the copies, without their metadata
+    expect(recoveryCopies(root).map((file) => path.relative(root, file).split(path.sep))).toEqual(
+      expect.arrayContaining([
+        ['docs-autosave', 'abc.docx'],
+        ['docs-autosave', 'untitled', 'id.docx'],
+      ]),
+    )
+    expect(recoveryCopies(root)).toHaveLength(2)
+    expect(recoveryCopies(path.join(root, 'none'))).toEqual([])
     expect(
       damageCopies(root)
         .map((file) => path.basename(file))

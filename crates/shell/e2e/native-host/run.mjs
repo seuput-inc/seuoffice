@@ -148,25 +148,33 @@ export async function minimalEpub() {
 }
 
 /**
- * Overwrites every recovery copy of the profile (`<kind>-autosave/**`, recovery-store.ts) and
- * leaves its metadata, so the launch still offers the copy. Answers the files it overwrote.
+ * The recovery copies of the profile (`<kind>-autosave/**`, recovery-store.ts), without their
+ * metadata. The launch recovery list offers these and nothing else: a profile without one shows
+ * no list.
  */
-export function damageCopies(userData) {
-  const damaged = []
+export function recoveryCopies(userData) {
+  const copies = []
   const visit = (folder) => {
     for (const entry of readdirSync(folder, { withFileTypes: true })) {
       const path = join(folder, entry.name)
       if (entry.isDirectory()) visit(path)
-      else if (!entry.name.endsWith('.meta.json') && !entry.name.endsWith('.tmp')) {
-        writeFileSync(path, DAMAGE)
-        damaged.push(path)
-      }
+      else if (!entry.name.endsWith('.meta.json') && !entry.name.endsWith('.tmp')) copies.push(path)
     }
   }
-  if (!existsSync(userData)) return damaged
+  if (!existsSync(userData)) return copies
   for (const entry of readdirSync(userData, { withFileTypes: true })) {
     if (entry.isDirectory() && entry.name.endsWith('-autosave')) visit(join(userData, entry.name))
   }
+  return copies
+}
+
+/**
+ * Overwrites every recovery copy of the profile and leaves its metadata, so the launch still
+ * offers the copy. Answers the files it overwrote.
+ */
+export function damageCopies(userData) {
+  const damaged = recoveryCopies(userData)
+  for (const path of damaged) writeFileSync(path, DAMAGE)
   return damaged
 }
 
@@ -275,6 +283,8 @@ async function runSpec(name, spec, { bin, root, fixtures }) {
     const number = index + 1
     const runDir = join(dir, `run-${number}`)
     mkdirSync(join(runDir, 'out'), { recursive: true })
+    // what the launch of this run has to offer, before any of it is damaged
+    const copies = recoveryCopies(userData)
     const damaged = damage(run.damage, { userData, work })
     const { scenario, awaited } = compileRun(run, number)
     const rendered = render(scenario, { FIXTURES: slash(fixtures), WORK: slash(work) })
@@ -296,7 +306,13 @@ async function runSpec(name, spec, { bin, root, fixtures }) {
     // a run without a native call still names its record: an empty one
     const record = join(runDir, 'out', 'native-ipc.jsonl')
     if (!existsSync(record)) writeFileSync(record, '')
-    const exit = { ...result, awaited, wanted: run.end ?? 'exit', damaged: damaged.map(slash) }
+    const exit = {
+      ...result,
+      awaited,
+      wanted: run.end ?? 'exit',
+      copies: copies.map(slash),
+      damaged: damaged.map(slash),
+    }
     writeFileSync(join(runDir, 'exit.json'), `${JSON.stringify(exit, null, 2)}\n`)
     console.log(
       `${name} run ${number}: ${result.ended} (code ${result.code}), ` +

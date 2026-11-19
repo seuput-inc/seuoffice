@@ -113,6 +113,17 @@ button's `click()` only while the button is what lies at its own centre, and ans
 otherwise; the checker fails a list that was not pressed. These two steps are setup, not evidence
 of user input: the evidence is what the restored page then sends by itself.
 
+The list is made of the profile's recovery copies (`<userData>/<kind>-autosave/**`): a launch
+without one shows no list and opens the tabs of the last session by itself. So `run.mjs` writes
+the copies the profile held when a run began into that run's `exit.json` (`copies`), and a
+`diag-list` query after the press says what the page showed of the button then. A list that was
+not answered fails with one of two texts. "the launch had no recovery list to answer" means no
+copy was there: the first run is where to look, and the checker names what its records show (a
+failed step, a document that was not ready when `waitReady` gave up, a `prep-` query that stayed
+false, a `<kind>-before` without the typed text). "the button … was absent or covered" means a
+copy was there, and the text quotes the page and the button's state (absent, disabled, covered
+by which element, or free).
+
 `waitReady` ends when the page is registered and its network has been quiet for a moment. The HWP
 page loads its editor frame after that, so the HWP specs wait in a `prep-` query until the page
 shows the document (`data-phase="ready"`) before they type and before they read a restored one.

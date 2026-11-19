@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 import {
   ACKS,
   LIST_PRESS,
+  LIST_SHOWN,
   PROBE_BASE,
   SPECS,
   selected,
@@ -146,6 +147,56 @@ function lostWhere(first, { before, marker }) {
 }
 
 /**
+ * What in the first run kept the edit from reaching a document, as its records show it: a step
+ * that failed, a document that was not ready when `waitReady` gave up, a `prep-` query that
+ * stayed false, an edited page that did not show the typed text. Empty when they show nothing.
+ */
+function editTrouble(first) {
+  const marker = first.steps.find(
+    (step) => step.op === 'type' && String(step.text).startsWith('SEU-E2E-'),
+  )?.text
+  const found = first.records.flatMap((record) => {
+    const step = first.steps[record.step]
+    const name = step?.as ?? record.op
+    if (!record.ok) return [`${name} failed (${clip(String(record.error), 80)})`]
+    if (record.op === 'waitReady' && record.value?.control === 'not_ready')
+      return ['the document was not ready when waitReady gave up']
+    if (record.op !== 'query') return []
+    if (name.startsWith('prep-') && record.value === false) return [`${name} stayed false`]
+    if (marker && name.endsWith('-before') && !proofHolds(record.value, marker))
+      return [`${name} did not show ${marker} (${clip(JSON.stringify(record.value ?? null), 60)})`]
+    return []
+  })
+  return found.length ? `; in the first run ${found.join(', ')}` : ''
+}
+
+/**
+ * Why the launch recovery list was not answered. The list is made of the profile's recovery
+ * copies, so a profile without one shows none: then the first run is where to look, not Home
+ * (validation round S121, Windows: the Docs page of the first run never opened its document,
+ * nothing was typed, and no copy was written). With a copy there, the button itself was not to
+ * be had, and what the page showed of it afterwards is quoted.
+ */
+function listUnanswered(run, first) {
+  const { copies } = run.exit
+  if (copies?.length === 0)
+    return (
+      'the launch had no recovery list to answer: the profile held no recovery copy ' +
+      `when the run began${editTrouble(first)}`
+    )
+  const seen = stepRecord(run, (step) => step.op === 'query' && step.as === LIST_SHOWN)?.value
+  const held = copies
+    ? `the profile held ${copies.length} recovery cop${copies.length === 1 ? 'y' : 'ies'}`
+    : ''
+  const after = seen?.button ? `afterwards ${seen.page} showed the button ${seen.button}` : ''
+  const detail = [held, after].filter(Boolean).join('; ')
+  return (
+    'the button of the launch recovery list was absent or covered until the end' +
+    (detail ? ` (${detail})` : '')
+  )
+}
+
+/**
  * Where a page asked the shell for the document it then failed to acknowledge or show, what
  * that request was answered: a refusal of the request is why no page ever had the document.
  */
@@ -205,8 +256,7 @@ const RULES = {
       if (!press?.ok)
         return fail(`the launch recovery list was not answered: ${press?.error ?? 'no record'}`)
       // the step presses the button only when nothing lies over it, and says `false` otherwise
-      if (!press.value?.pressed)
-        return fail('the button of the launch recovery list was absent or covered until the end')
+      if (!press.value?.pressed) return fail(listUnanswered(run, runs[0]))
     }
     // every part of the damage the spec names was there to damage
     const untouched = [spec.runs[run.number - 1].damage ?? []]

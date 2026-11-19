@@ -28,6 +28,8 @@ export const PROBE_BASE = 4_000_000_000
 const LIST_CONFIRM = '.recovery-confirm'
 /** The step that presses it, by its name: the checker reads that step's record. */
 export const LIST_PRESS = 'prep-list'
+/** The step that says what the page showed of the button afterwards, by its name. */
+export const LIST_SHOWN = 'diag-list'
 /**
  * The Skip button of the first-run onboarding (apps/shell Onboarding.tsx). A new profile shows it
  * over Home, the launch recovery list included; a spec that answers the list dismisses it in its
@@ -107,6 +109,31 @@ const press = (as, selector, timeoutMs) => ({
     'if (top !== button && !button.contains(top)) return false; ' +
     `button.click(); return { pressed: ${JSON.stringify(selector)} } })()`,
 })
+/**
+ * What the page shows of that button once the press has ended, for the checker to quote when
+ * the press was not made: which page answered, and whether the button was absent, disabled,
+ * covered (and by what) or free. After a press that was made the list is gone, and the page
+ * that answers may be the restored tab's, still loading: the step is given little time.
+ */
+const shown = (as, selector) => ({
+  op: 'query',
+  as,
+  timeoutMs: 2000,
+  js:
+    `(() => { const button = document.querySelector(${JSON.stringify(selector)}); ` +
+    "const name = (node) => !node ? 'nothing' : node.tagName + " +
+    "(typeof node.className === 'string' && node.className.trim() ? '.' + node.className.trim().split(/\\s+/)[0] : ''); " +
+    "let state = 'absent'; " +
+    'if (button) { const box = button.getBoundingClientRect(); ' +
+    'const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2); ' +
+    "state = button.disabled ? 'disabled' : top === button || button.contains(top) ? 'free' : 'covered by ' + name(top) } " +
+    "return { page: location.href.split('?')[0], button: state } })()",
+})
+/**
+ * The launch recovery list is answered with Restore. The list is made of the profile's recovery
+ * copies: a launch without one shows no list and opens the tabs of the last session by itself.
+ */
+const answerList = [press(LIST_PRESS, LIST_CONFIRM, 60000), shown(LIST_SHOWN, LIST_CONFIRM)]
 /** The first launch of a profile, before anything else: the onboarding is skipped. */
 const firstLaunch = [press('prep-onboarding', ONBOARDING_SKIP, 30000), wait(1000)]
 
@@ -227,7 +254,7 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
       },
       {
         steps: [
-          press(LIST_PRESS, LIST_CONFIRM, 60000),
+          ...answerList,
           { op: 'waitReady', timeoutMs: ready },
           ...loaded(kind, `${kind}-restored`, ready),
           ...base.read,
@@ -290,7 +317,7 @@ function damagedVariant(kind, channel, { both = false } = {}) {
       },
       {
         damage: both ? ['copies', base.file] : 'copies',
-        steps: [press(LIST_PRESS, LIST_CONFIRM, 60000), wait(20000)],
+        steps: [...answerList, wait(20000)],
       },
     ],
     expect: [
