@@ -333,6 +333,7 @@ import { saveUntilPersisted } from './save-until-persisted'
 import { SPELLCHECK_KEY, spellcheckEnabled } from './spellcheck-pref'
 import { cachedByDoc } from './doc-cache'
 import { useShallowStable, useStableCallbacks } from './use-stable'
+import { useCanvasExtents } from './use-canvas-extents'
 import { FindPanel } from './components/FindPanel'
 import { ZoomDialog } from './components/ZoomDialog'
 import { TrackChangesOptionsDialog } from './components/TrackChangesOptionsDialog'
@@ -8267,6 +8268,8 @@ export function App() {
       grid.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
     return gridTop + slot.top * (zoom / 100)
   }, [mpLayout, mpActiveIdx, zoom])
+  // before the effects below: they place the scroller against the scaled page
+  useCanvasExtents(zoom / 100, `${doc ? 1 : 0}${splitView ? 1 : 0}`)
   // a caret-driven page turn may land on a slot outside the viewport (zoom
   // changes keep their own anchoring below)
   const mpSeenActiveRef = useRef<number | null>(null)
