@@ -4,6 +4,7 @@ use std::rc::Rc;
 use tauri::Url;
 use tauri::webview::PlatformWebview;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
+    COREWEBVIEW2_KEY_EVENT_KIND, COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
     COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
     COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
     COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
@@ -26,8 +27,12 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_WEB_ERROR_STATUS_VALID_PROXY_AUTHENTICATION_REQUIRED,
 };
 use webview2_com::{
-    FocusChangedEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler,
-    ProcessFailedEventHandler, SourceChangedEventHandler, take_pwstr,
+    AcceleratorKeyPressedEventHandler, FocusChangedEventHandler, NavigationCompletedEventHandler,
+    NavigationStartingEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
+    take_pwstr,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -114,6 +119,24 @@ fn failure(kind: COREWEBVIEW2_PROCESS_FAILED_KIND) -> Option<ProcessFailure> {
 fn registered(what: &str, result: windows::core::Result<()>) -> Result<(), String> {
     crate::trace::trace!("attach", "windows: {what} handler registered");
     result.map_err(|error| format!("The WebView2 {what} handler could not be registered: {error}"))
+}
+
+/// Whether `key` is held down now
+fn held(key: VIRTUAL_KEY) -> bool {
+    // SAFETY: a plain read of the keyboard state of the calling thread.
+    unsafe { GetKeyState(i32::from(key.0)) < 0 }
+}
+
+/// The menu accelerator of the Save shortcut being pressed: Ctrl+S or Ctrl+Shift+S
+fn file_shortcut() -> Option<&'static str> {
+    if !held(VK_CONTROL) || held(VK_MENU) {
+        return None;
+    }
+    Some(if held(VK_SHIFT) {
+        "CmdOrCtrl+Shift+S"
+    } else {
+        "CmdOrCtrl+S"
+    })
 }
 
 impl Observe for Platform {
@@ -251,6 +274,35 @@ impl Observe for Platform {
         // SAFETY: as above.
         registered("LostFocus", unsafe {
             controller.add_LostFocus(&handler, &mut token)
+        })?;
+
+        // WebView2 passes no unhandled key on to the window, so the menu's accelerators are dead
+        // while a page has the focus; the Save shortcuts of the pages that have none are taken
+        // here and run as the menu item they belong to.
+        let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let (mut kind, mut key) = (COREWEBVIEW2_KEY_EVENT_KIND::default(), 0u32);
+            // SAFETY: `args` is live for this callback.
+            unsafe {
+                args.KeyEventKind(&mut kind)?;
+                args.VirtualKey(&mut key)?;
+            }
+            if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN || key != u32::from(b'S') {
+                return Ok(());
+            }
+            if let Some(shortcut) = file_shortcut()
+                && crate::host::menu::run_file_accelerator(shortcut)
+            {
+                // SAFETY: as above.
+                unsafe { args.SetHandled(true)? };
+            }
+            Ok(())
+        }));
+        // SAFETY: as above.
+        registered("AcceleratorKeyPressed", unsafe {
+            controller.add_AcceleratorKeyPressed(&handler, &mut token)
         })?;
 
         Ok(())

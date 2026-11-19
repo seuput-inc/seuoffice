@@ -1697,18 +1697,24 @@ pub(crate) fn authorize_target(
         .iter()
         .filter(|(_, target)| target.browser.is_same_browser(browser))
         .map(|(token, _)| token.clone());
+    macro_rules! refuse {
+        ($why:expr) => {{
+            crate::trace::trace!("asset", "a target request was refused ({}): {}", $why, uri);
+            return Ok(None);
+        }};
+    }
     let Some(token) = matches.next() else {
-        return Ok(None);
+        refuse!("no target of this browser");
     };
     if matches.next().is_some() {
-        return Ok(None);
+        refuse!("more than one target of this browser");
     }
     let Some(target) = targets.get_mut(&token) else {
-        return Ok(None);
+        refuse!("the target is gone");
     };
     let root = url.scheme() == "html-asset" && authority == token && url.path() == target.root_path;
     if !root && !target_asset_url(target.permit.kind, &url, &token) {
-        return Ok(None);
+        refuse!("not the root and not an asset URL of the target");
     }
     if root {
         if target
@@ -1716,14 +1722,14 @@ pub(crate) fn authorize_target(
             .as_ref()
             .is_some_and(|bound| bound != navigation)
         {
-            return Ok(None);
+            refuse!("the root is bound to another navigation");
         }
         if target.browser.navigation().as_ref() != Some(navigation) {
-            return Ok(None);
+            refuse!("the root request is not of the browser's latest navigation");
         }
         target.root_navigation = Some(navigation.clone());
     } else if target.root_navigation.as_ref() != Some(navigation) {
-        return Ok(None);
+        refuse!("an asset of a navigation whose root was not served");
     }
     if target
         .cancel
@@ -1732,19 +1738,19 @@ pub(crate) fn authorize_target(
         || !target.browser.is_same_browser(browser)
         || target.browser.navigation().as_ref() != Some(navigation)
     {
-        return Ok(None);
+        refuse!("cancelled, or another browser or navigation");
     }
     let document = context.document().cloned();
     if let Some(document) = &document {
         if target.browser.document().as_ref() != Some(document) {
-            return Ok(None);
+            refuse!("the request's document is not the browser's committed one");
         }
         if target.ready.as_ref().is_some_and(|ready| ready != document) {
-            return Ok(None);
+            refuse!("the target was served to another document");
         }
         target.ready = Some(document.clone());
     } else if target.ready.is_some() {
-        return Ok(None);
+        refuse!("a request without a document after the first");
     }
     Ok(Some(TargetPermit {
         token,

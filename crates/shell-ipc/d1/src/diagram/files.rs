@@ -339,6 +339,11 @@ impl DiagramViews {
                 .get(&cx.sender.view)
                 .and_then(|v| v.open_path.clone())
         });
+        eprintln!(
+            "[diagram] view {}: consume-pending answers {:?}",
+            cx.sender.view.0,
+            path.as_deref()
+        );
         Ok(path.map_or(IpcValue::Null, string))
     }
 
@@ -389,8 +394,15 @@ impl DiagramViews {
             ]));
         }
         let name = basename(path, None);
+        eprintln!("[diagram] view {}: open-file {path:?}", view.0);
         let restored = self.resolve_view_open(view, path, Some(cx.sender.window));
         let bytes = std::fs::read(path).ok();
+        eprintln!(
+            "[diagram] view {}: read {:?} bytes, restored copy: {}, asking the engine to open it",
+            view.0,
+            bytes.as_ref().map(Vec::len),
+            restored.is_some()
+        );
         let copy = match restored {
             Some(restored) => self
                 .0

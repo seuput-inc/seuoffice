@@ -3036,6 +3036,53 @@ fn recent_documents(services: &Services) -> Vec<String> {
 
 // ---- clicks ----
 
+/// The Save item of the menu now set that has `accelerator`
+#[cfg(windows)]
+fn save_item_with(nodes: &[Node], accelerator: &str) -> Option<String> {
+    for node in nodes {
+        match node {
+            Node::Item(item)
+                if item.enabled
+                    && item.accelerator.as_deref() == Some(accelerator)
+                    && matches!(item.act, Some(Act::Save(_))) =>
+            {
+                return item.id.clone();
+            }
+            Node::Menu { items, .. } => {
+                if let Some(id) = save_item_with(items, accelerator) {
+                    return Some(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Runs the Save item a shortcut (`CmdOrCtrl+S`, `CmdOrCtrl+Shift+S`) names, for a webview that
+/// took the key from the native menu. WebView2 hands a key it does not handle to nothing: the
+/// window's menu accelerators never see it while the page has the focus, so a Sheets or Slides
+/// tab (whose pages have no Save key) could not be saved from the keyboard. Docs, Markdown,
+/// HTML and Mindmap pages handle the key themselves and are left alone. True when it ran.
+#[cfg(windows)]
+pub(crate) fn run_file_accelerator(accelerator: &str) -> bool {
+    let id = {
+        let shown = lock(&SHOWN);
+        let Some(shown) = shown.as_ref() else {
+            return false;
+        };
+        if !matches!(shown.kind, TabKind::Sheets | TabKind::Slides) {
+            return false;
+        }
+        save_item_with(&shown.menus, accelerator)
+    };
+    let (Some(id), Some(shell)) = (id, SHELL.get()) else {
+        return false;
+    };
+    dispatch(&shell.app, &id);
+    true
+}
+
 fn dispatch(app: &AppHandle, id: &str) {
     if !id.starts_with(ID_PREFIX) {
         return;

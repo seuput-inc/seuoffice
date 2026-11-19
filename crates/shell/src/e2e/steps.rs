@@ -38,6 +38,8 @@ use super::input_win as input;
 const POLL: Duration = Duration::from_millis(50);
 /// how often a key the page did not record is sent before it counts as lost
 const KEY_TRIES: u32 = 4;
+/// how long a key the page has not recorded yet is given before it counts as lost
+const KEY_LATE: Duration = Duration::from_millis(400);
 /// the shell window and its first tab are up within this, or nothing can run
 const SHELL_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// the core thread answers the runner's questions within this, or it is stuck in a job
@@ -506,7 +508,14 @@ impl Runner<'_> {
                         .map_err(unrunnable)?;
                         let Some(want) = &want else { break };
                         Self::flush_input(&target.webview);
-                        match Self::key_arrived(&target.webview, want) {
+                        let mut arrival = Self::key_arrived(&target.webview, want);
+                        if matches!(arrival, Some((false, _))) {
+                            // a key still on its way would be typed twice by a resend
+                            sleep(KEY_LATE);
+                            Self::flush_input(&target.webview);
+                            arrival = Self::key_arrived(&target.webview, want);
+                        }
+                        match arrival {
                             Some((true, _)) => {
                                 observed = true;
                                 break;

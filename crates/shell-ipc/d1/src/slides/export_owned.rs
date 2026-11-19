@@ -471,8 +471,15 @@ impl App {
                 .map(Some)
         }) {
             Ok(value) => value,
-            Err(error) => return responder.reply(Err(error)),
+            Err(error) => {
+                eprintln!("[slides] the PDF was not published: {}", error.message);
+                return responder.reply(Err(error));
+            }
         };
+        eprintln!(
+            "[slides] the PDF is published: {}",
+            if published.is_some() { "yes" } else { "no (headless)" }
+        );
         if self.shell.is_headless() {
             return responder.reply(Ok(obj([
                 ("ok", IpcValue::Bool(true)),

@@ -29,6 +29,11 @@
       "ms": 600
     },
     {
+      "op": "query",
+      "as": "diag-mindmap-editing",
+      "js": "(() => { const a = document.activeElement; const box = document.querySelector('#input-box'); return { active: a ? a.tagName + '.' + String(a.className).split(' ')[0] : null, box: box ? { text: box.innerText, focused: box === a, visible: box.offsetParent !== null } : null, topics: [...document.querySelectorAll('me-tpc')].map((e) => e.textContent), selected: [...document.querySelectorAll('.selected')].map((e) => e.tagName + ':' + e.textContent) } })()"
+    },
+    {
       "op": "type",
       "text": "SEU-E2E-mindmap"
     },
