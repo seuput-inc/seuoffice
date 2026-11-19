@@ -123,6 +123,40 @@ export function pageIndexAtY(pages: ThumbPage[], y: number): number {
   return idx
 }
 
+/** The classes of a page that is drawn again from a snapshot: the canvas's own rules lay it out */
+export const THUMB_PAGE_CLASS = 'nav-thumb-page doc-page ProseMirror'
+
+/**
+ * Fills `root` with copies of the blocks on `page`, each where the canvas has it. Returns the
+ * blocks it copied, as they are on the canvas.
+ */
+export function fillThumbPage(
+  root: HTMLElement,
+  snap: ThumbSnapshot,
+  page: ThumbPage,
+): HTMLElement[] {
+  root.replaceChildren()
+  const copied: HTMLElement[] = []
+  const bottom = page.top + page.height
+  for (const b of snap.blocks) {
+    if (b.top >= bottom || b.top + b.height <= page.top) continue
+    copied.push(b.el)
+    const slot = document.createElement('div')
+    slot.className = 'nav-thumb-slot'
+    slot.style.top = `${b.top - page.top}px`
+    slot.style.left = `${b.left}px`
+    slot.style.width = `${b.width}px`
+    const clone = b.el.cloneNode(true) as HTMLElement
+    // the slot already sits where the block's margins and transforms put it
+    clone.style.margin = '0'
+    clone.style.transform = 'none'
+    clone.removeAttribute('contenteditable')
+    slot.appendChild(clone)
+    root.appendChild(slot)
+  }
+  return copied
+}
+
 function Thumb({
   snap,
   index,
@@ -158,23 +192,7 @@ function Thumb({
   useLayoutEffect(() => {
     const root = pageRef.current
     if (!root || !visible) return
-    root.replaceChildren()
-    const bottom = page.top + page.height
-    for (const b of snap.blocks) {
-      if (b.top >= bottom || b.top + b.height <= page.top) continue
-      const slot = document.createElement('div')
-      slot.className = 'nav-thumb-slot'
-      slot.style.top = `${b.top - page.top}px`
-      slot.style.left = `${b.left}px`
-      slot.style.width = `${b.width}px`
-      const clone = b.el.cloneNode(true) as HTMLElement
-      // the slot already sits where the block's margins and transforms put it
-      clone.style.margin = '0'
-      clone.style.transform = 'none'
-      clone.removeAttribute('contenteditable')
-      slot.appendChild(clone)
-      root.appendChild(slot)
-    }
+    fillThumbPage(root, snap, page)
     return () => root.replaceChildren()
   }, [snap, page, visible])
 
@@ -195,7 +213,7 @@ function Thumb({
       {visible && (
         <div
           ref={pageRef}
-          className="nav-thumb-page doc-page ProseMirror"
+          className={THUMB_PAGE_CLASS}
           style={{
             width: snap.pageW,
             height: page.height,
