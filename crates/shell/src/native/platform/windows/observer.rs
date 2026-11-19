@@ -32,7 +32,7 @@ use webview2_com::{
     take_pwstr,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
+    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
 };
 use windows::core::{BOOL, PWSTR};
 
@@ -123,8 +123,9 @@ fn registered(what: &str, result: windows::core::Result<()>) -> Result<(), Strin
 
 /// Whether `key` is held down now
 fn held(key: VIRTUAL_KEY) -> bool {
-    // SAFETY: a plain read of the keyboard state of the calling thread.
-    unsafe { GetKeyState(i32::from(key.0)) < 0 }
+    // SAFETY: a plain read of the keyboard's physical state; the calling thread's own key state
+    // does not follow keys that WebView2 took from its input queue.
+    unsafe { GetAsyncKeyState(i32::from(key.0)) < 0 }
 }
 
 /// The menu accelerator of the Save shortcut being pressed: Ctrl+S or Ctrl+Shift+S
@@ -292,9 +293,10 @@ impl Observe for Platform {
             if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN || key != u32::from(b'S') {
                 return Ok(());
             }
-            if let Some(shortcut) = file_shortcut()
-                && crate::host::menu::run_file_accelerator(shortcut)
-            {
+            let shortcut = file_shortcut();
+            let handled = shortcut.is_some_and(crate::host::menu::run_file_accelerator);
+            crate::trace::trace!("accel", "S pressed: shortcut {shortcut:?}, handled {handled}");
+            if handled {
                 // SAFETY: as above.
                 unsafe { args.SetHandled(true)? };
             }

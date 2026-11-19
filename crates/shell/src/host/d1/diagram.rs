@@ -157,8 +157,22 @@ impl DiagramEngine for Engine {
         bytes: &[u8],
     ) -> Result<Result<DiagramFile, OpenFailure>, String> {
         let input = serde_json::json!({ "fileName": name, "bytesBase64": jscompat::base64(bytes) });
+        eprintln!("[diagram] engine diagram.open: calling for {name:?} ({} bytes)", bytes.len());
+        let started = std::time::Instant::now();
         let value = seu_host::call("diagram.open", &input)
+            .inspect_err(|error| {
+                eprintln!(
+                    "[diagram] engine diagram.open failed after {} ms: {}: {}",
+                    started.elapsed().as_millis(),
+                    error.name,
+                    error.message
+                )
+            })
             .map_err(|error| format!("{}: {}", error.name, error.message))?;
+        eprintln!(
+            "[diagram] engine diagram.open answered after {} ms",
+            started.elapsed().as_millis()
+        );
         decode_open(&value)
     }
 

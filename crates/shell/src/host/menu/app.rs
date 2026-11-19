@@ -3069,16 +3069,20 @@ pub(crate) fn run_file_accelerator(accelerator: &str) -> bool {
     let id = {
         let shown = lock(&SHOWN);
         let Some(shown) = shown.as_ref() else {
+            crate::trace::trace!("accel", "{accelerator}: no menu is set");
             return false;
         };
         if !matches!(shown.kind, TabKind::Sheets | TabKind::Slides) {
+            crate::trace::trace!("accel", "{accelerator}: the menu is a {:?} menu", shown.kind);
             return false;
         }
         save_item_with(&shown.menus, accelerator)
     };
     let (Some(id), Some(shell)) = (id, SHELL.get()) else {
+        crate::trace::trace!("accel", "{accelerator}: no Save item has it");
         return false;
     };
+    crate::trace::trace!("accel", "{accelerator}: running {id}");
     dispatch(&shell.app, &id);
     true
 }

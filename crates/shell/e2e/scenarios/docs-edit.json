@@ -13,6 +13,11 @@
       "ms": 800
     },
     {
+      "op": "query",
+      "as": "diag-docs-state",
+      "js": "(() => ({ editor: (document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null), status: [...document.querySelectorAll('[class*=status], [role=status], [class*=toast], [class*=notice]')].map((e) => e.innerText).filter(Boolean).slice(0, 6), errors: window.__e2eErrors || [], title: document.title }))()"
+    },
+    {
       "op": "type",
       "text": "SEU-E2E-docs"
     },

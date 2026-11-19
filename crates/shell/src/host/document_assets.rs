@@ -1673,6 +1673,31 @@ pub(crate) fn is_target_browser(
         .any(|target| target.browser.is_same_browser(browser)))
 }
 
+/// The logical URL of a request to a target's asset scheme. Besides the two shapes
+/// `crate::native::url` translates, wry hands a handler on Windows `<scheme>://localhost/<path>`
+/// for the page's `http://<scheme>.localhost/<path>`, with the authority still the first path
+/// segment; without this the root request never matched its token on Windows.
+fn asset_logical(url: tauri::Url) -> tauri::Url {
+    let url = crate::native::url::into_logical(url);
+    if cfg!(windows)
+        && matches!(url.scheme(), "html-asset" | "md-asset")
+        && url.host_str() == Some("localhost")
+    {
+        let rest = url.path().strip_prefix('/').unwrap_or("");
+        let (authority, path) = match rest.split_once('/') {
+            Some((authority, path)) => (authority, format!("/{path}")),
+            None => (rest, "/".to_owned()),
+        };
+        if let Ok(mut out) = tauri::Url::parse(&format!("{}://{authority}/", url.scheme())) {
+            out.set_path(&path);
+            out.set_query(url.query());
+            out.set_fragment(url.fragment());
+            return out;
+        }
+    }
+    url
+}
+
 /// Authenticate hidden requests by the exact native browser lifetime and
 /// controlled root navigation. Only the initial root uses the secret URL. Such a browser
 /// admits one controlled navigation, so its navigation at intake is the root binding.
@@ -1681,7 +1706,7 @@ pub(crate) fn authorize_target(
     context: &crate::native::SchemeRequestContext,
 ) -> Result<Option<TargetPermit>, String> {
     let url = match tauri::Url::parse(uri) {
-        Ok(url) => crate::native::url::into_logical(url),
+        Ok(url) => asset_logical(url),
         Err(_) => return Ok(None),
     };
     let Some(authority) = url.host_str() else {
@@ -1773,7 +1798,7 @@ pub(crate) fn handle_target(
     range_header: Option<&str>,
 ) -> Result<MediaAnswer, String> {
     let url = match tauri::Url::parse(uri) {
-        Ok(url) => crate::native::url::into_logical(url),
+        Ok(url) => asset_logical(url),
         Err(_) => return Ok(status(400)),
     };
     if uri != request.uri {

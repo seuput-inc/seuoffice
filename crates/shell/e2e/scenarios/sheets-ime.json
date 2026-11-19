@@ -22,6 +22,11 @@
       "ms": 500
     },
     {
+      "op": "query",
+      "as": "prep-comp",
+      "js": "(() => { if (window.__comp) return true; window.__comp = []; for (const type of ['keydown', 'compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input', 'focusin', 'focusout']) document.addEventListener(type, (e) => window.__comp.push(type + ':' + (type === 'keydown' ? e.key + '/' + e.keyCode : (e.data === undefined || e.data === null ? '' : e.data)) + ':' + (e.target.tagName || '') + (e.target.className ? '.' + String(e.target.className).split(' ')[0] : '')), true); return true })()"
+    },
+    {
       "op": "type",
       "text": "x"
     },
@@ -39,8 +44,8 @@
     },
     {
       "op": "query",
-      "as": "prep-comp",
-      "js": "(() => { if (window.__comp) return true; window.__comp = []; for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'input', 'focusin']) document.addEventListener(type, (e) => window.__comp.push(type + ':' + (e.data === undefined || e.data === null ? '' : e.data) + ':' + (e.target.tagName || '') + (e.target.className ? '.' + String(e.target.className).split(' ')[0] : '')), true); return true })()"
+      "as": "diag-sheets-editor",
+      "js": "(() => { const a = document.activeElement; return a ? { tag: a.tagName, cls: String(a.className).slice(0, 60), editable: a.isContentEditable, text: (a.value ?? a.textContent ?? '').slice(0, 40) } : null })()"
     },
     {
       "op": "ime",

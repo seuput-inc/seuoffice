@@ -45,7 +45,14 @@ pub(crate) fn register(registry: &mut dyn Registry, cx: &Rc<Ctx>) -> Result<(), 
             let families = as_serde(arg(&args, 0));
             let fonts = cx.fonts.clone();
             cx.services.workers.spawn(Box::new(move || {
-                reply.reply(Ok(from_serde(&fonts.family_info_for(&families))))
+                let started = std::time::Instant::now();
+                let info = fonts.family_info_for(&families);
+                // the Docs page waits for this answer before its editor mounts
+                eprintln!(
+                    "[fonts] app:font-family-info answered after {} ms",
+                    started.elapsed().as_millis()
+                );
+                reply.reply(Ok(from_serde(&info)))
             }));
         }
     })?;
