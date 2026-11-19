@@ -13,6 +13,8 @@
 //   runs[n].damage  before the run: 'copies' overwrites the recovery copies the app wrote,
 //                   a file name overwrites that file of the work folder, a list does each
 //   copies          files of the work folder made from a fixture before the first run
+//   settings        fields of the profile's settings file (app-settings.json), written before the
+//                   first run; `${WORK}` in a value is the work folder
 //   expect          {channel, scenario, rule}: the contract scenario a rule proves
 //
 // The editing steps are the ones of ../scenarios/<kind>-edit.json, read from there: a recovery
@@ -317,6 +319,103 @@ const savedInput = (app) => () => {
   return { first: probes.steps, expect: probes.expect }
 }
 
+/**
+ * The copies the shell writes and hands to their editor: the format the Word page asks for, the
+ * text of the copy, and what the copy's page shows of it, asked until it does. The answer is
+ * `false` while another page is the active one: the copy's tab becomes active only once its
+ * page acknowledged the text (shell-ipc/w, finish_saved_creation). The HTML page is read in
+ * its source pane, as html-edit.json reads it.
+ */
+const SAVED_COPIES = {
+  markdown: {
+    type: 'md',
+    second: 'markdown.md',
+    content: (marker) => `# ${marker}\n\nA copy the shell wrote.\n`,
+    shown: (marker) =>
+      "(() => { if (typeof window.markdownApi !== 'object') return false; " +
+      "const text = document.querySelector('.ProseMirror')?.textContent ?? ''; " +
+      `return text.includes(${JSON.stringify(marker)}) ? { text } : false })()`,
+  },
+  html: {
+    type: 'html',
+    second: 'html.html',
+    content: (marker) =>
+      '<!doctype html>\n<html>\n<head><meta charset="utf-8"><title>SeuOffice e2e</title></head>\n' +
+      `<body><p>${marker}</p></body>\n</html>\n`,
+    shown: (marker) =>
+      "(() => { if (typeof window.htmlApi !== 'object') return false; " +
+      'document.querySelectorAll(\'button.rb-view[role="tab"]\')[2]?.click(); ' +
+      "const text = document.querySelector('.cm-content')?.textContent ?? ''; " +
+      `return text.includes(${JSON.stringify(marker)}) ? { text } : false })()`,
+  },
+}
+
+/** How long the Word page's request for a copy is waited for before the run goes on without its answer */
+const ASK_WAIT_MS = 4000
+
+/**
+ * The Word page asks for a new document, as its AI's create_document tool does
+ * (`window.desktop.createDocument`, `docs:create-document`). The answer comes once the new tab
+ * is the active one, so the step waits a moment for it and no longer: it answers what the shell
+ * said (`{answer}`, or `{refused}` with the reason), or `{pending: true}`.
+ */
+const askForCopy = (request) =>
+  `(() => { const asked = window.desktop.createDocument(${JSON.stringify(request)}).then(` +
+  '(answer) => ({ answer }), (error) => ({ refused: String(error?.message ?? error) })); ' +
+  'const late = new Promise((done) => setTimeout(() => done({ pending: true }), ' +
+  `${ASK_WAIT_MS})); return Promise.race([asked, late]) })()`
+
+/**
+ * A copy the shell wrote and handed to its editor. On the Word page's request for a Markdown or
+ * HTML document the shell writes the file as a save it owns, into the default save folder, and
+ * opens it from the bytes it kept. The page of the new tab acknowledges that text; the same
+ * receipt again, and from the page of another file, is refused.
+ */
+function savedCopyVariant(app) {
+  const channel = `${app}:saved-input-applied`
+  const form = ACKS[channel]
+  const copy = SAVED_COPIES[app]
+  const marker = `SEU-E2E-saved-${app}`
+  const asked = `${app}-saved-create`
+  const shown = `prep-${app}-saved-shown`
+  const request = { type: copy.type, title: `seu-e2e-saved-${app}`, content: copy.content(marker) }
+  return {
+    about: `${app}: the Word page has a copy written, the shell hands it to its editor`,
+    settings: { defaultSaveDir: '${WORK}' },
+    runs: [
+      {
+        steps: [
+          ...baseSteps('docs-edit').open,
+          wait(1500),
+          { op: 'query', as: asked, timeoutMs: ASK_WAIT_MS + 10000, js: askForCopy(request) },
+          { op: 'query', as: shown, timeoutMs: 90000, js: copy.shown(marker) },
+          wait(1500),
+          invoke(`${app}-saved-twice`, channel, form.with(replay('self', ...form.path))),
+          ...openFile(copy.second),
+          invoke(`${app}-saved-other-renderer`, channel, form.with(replay('other', ...form.path))),
+        ],
+      },
+    ],
+    expect: [
+      {
+        channel,
+        scenario: 'successful-ack',
+        rule: { kind: 'ack', run: 1, verdict: true, asked, proof: { query: shown, marker } },
+      },
+      {
+        channel,
+        scenario: 'duplicate-ack',
+        rule: { kind: 'replayRefused', run: 1, probe: `${app}-saved-twice`, of: 'self' },
+      },
+      {
+        channel,
+        scenario: 'foreign-renderer',
+        rule: { kind: 'replayRefused', run: 1, probe: `${app}-saved-other-renderer`, of: 'other' },
+      },
+    ],
+  }
+}
+
 /** Docs also answers the PDF of a closing save: without its pending save token it refuses. */
 const ownedPrint = () => {
   const channel = 'docs:owned-print-pdf-buffer'
@@ -537,6 +636,8 @@ export const SPECS = {
     second: 'html-b.html',
     extra: savedInput('html'),
   }),
+  'markdown-saved-copy': savedCopyVariant('markdown'),
+  'html-saved-copy': savedCopyVariant('html'),
   'pdf-restore': restoredVariant('pdf', 'pdf.pdf', {
     fixture: 'multipage.pdf',
     channel: 'pdf:recovery-initialized',
@@ -579,19 +680,18 @@ export function selected(only, names = Object.keys(SPECS)) {
 }
 
 /**
- * A save the shell owns hands its token to the page that writes it, and a Markdown or HTML copy
- * it wrote to the editor that opens it. The PDF print and the two acknowledgements below need
- * such a save to write a copy in another format. The menu's Save As is the page's own save
- * (`menu:command`, no token; in run 44446306292 its key started nothing either), and the save
- * of a closing tab writes the document itself.
+ * The Word page prints page groups itself, under the token of a save the shell owns, only when
+ * a Save As of such a save picks PDF for a document of more than one paper size or more than
+ * ten pages (apps/docs file-actions.ts, printGroupsMerged). The shell asks a Word page for a
+ * save it owns in Save mode alone (a closing tab, the source of Generate): that mode writes the
+ * document itself, and turns into a Save As with the export formats only when the person
+ * answers the box about content hidden from AI with Word. The menu's Save As is the page's own
+ * save (`menu:command`, no token). The runner has no step that asks for a Save As the shell owns.
  */
-const OWNED_SAVE = 'needs a copy in another format written inside a save the shell owns'
-const SAVED_INPUT = {
-  'successful-ack': OWNED_SAVE,
-  'duplicate-ack': OWNED_SAVE,
-  'foreign-renderer': OWNED_SAVE,
-  'failed-apply': 'no text makes the editor fail to apply a file',
-}
+const OWNED_SAVE_AS =
+  'needs a Save As the shell owns that picks PDF: no menu, key or page call makes the shell ' +
+  'ask a Word page for one, and the runner has no step for it'
+const SAVED_INPUT = { 'failed-apply': 'no text makes the editor fail to apply a file' }
 
 /**
  * Required scenarios no spec drives yet, with the reason. The checker writes no receipt for
@@ -600,7 +700,7 @@ const SAVED_INPUT = {
  */
 export const UNDRIVEN = {
   'docs:owned-print-pdf-buffer': {
-    'normal-completion': OWNED_SAVE,
+    'normal-completion': OWNED_SAVE_AS,
     'owner-loss': 'needs the tab closed while the copy is being printed',
     'effect-failure': 'needs the print of the page itself to fail',
   },

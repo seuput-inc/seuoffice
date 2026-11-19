@@ -45,6 +45,7 @@ const DEADLINE_MS = 900000
 const GUARD_MS = 1200000
 const POLL_MS = 500
 const MARKER = '.seuoffice-e2e-profile'
+const SETTINGS = 'app-settings.json'
 const EPUB = 'epub.epub'
 const DAMAGE = Buffer.from('SEU-E2E damaged on purpose\n')
 
@@ -227,6 +228,17 @@ function prepareWork(work, fixtures, copies = {}) {
   for (const [name, source] of Object.entries(copies)) cpSync(join(work, source), join(work, name))
 }
 
+/**
+ * A spec's `settings` as the profile's settings file, before the first run: what a person set
+ * in Settings. `${WORK}` in a value is the work folder, absolute and as the OS spells it (the
+ * app takes a default save folder only as an absolute path).
+ */
+export function seedSettings(userData, settings, work) {
+  if (!settings) return
+  const fields = render(settings, { WORK: resolve(work) })
+  writeFileSync(join(userData, SETTINGS), `${JSON.stringify(fields, null, 2)}\n`)
+}
+
 async function runSpec(name, spec, { bin, root, fixtures }) {
   const dir = join(root, name)
   rmSync(dir, { recursive: true, force: true })
@@ -235,6 +247,7 @@ async function runSpec(name, spec, { bin, root, fixtures }) {
   prepareWork(work, fixtures, spec.copies)
   mkdirSync(userData, { recursive: true })
   writeFileSync(join(userData, MARKER), '')
+  seedSettings(userData, spec.settings, work)
   for (const [index, run] of spec.runs.entries()) {
     const number = index + 1
     const runDir = join(dir, `run-${number}`)

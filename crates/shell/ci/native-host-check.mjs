@@ -119,7 +119,7 @@ function probeCall(run, name) {
   return { call }
 }
 
-/** Whether the proof query of a restored document shows the text that was never saved */
+/** Whether the proof query of an acknowledged document shows the text the page was handed */
 function proofHolds(value, marker) {
   if (value && typeof value === 'object' && typeof value.count === 'number') return value.count > 0
   return JSON.stringify(value ?? null).includes(marker)
@@ -137,6 +137,16 @@ function lostWhere(first, { before, marker }) {
     return '; the edited page showed it before the crash, so the restore lost it'
   const shown = clip(JSON.stringify(edited?.value ?? edited?.error ?? null), 80)
   return `; the edited page did not show it before the crash either (${shown}), so the edit never reached the document`
+}
+
+/**
+ * Where a page asked the shell for the document it then failed to acknowledge or show, what
+ * that request was answered: a refusal of the request is why no page ever had the document.
+ */
+function askedFor(run, { asked }) {
+  if (!asked) return ''
+  const record = stepRecord(run, (step) => step.op === 'query' && step.as === asked)
+  return `; ${asked} was answered ${clip(JSON.stringify(record?.value ?? record?.error ?? null))}`
 }
 
 const RULES = {
@@ -220,7 +230,8 @@ const RULES = {
         .map((call) => `view ${call.view} ${ACKS[on].verdict(call.args)}/${call.reply?.ok}`)
       return fail(
         `no accepted ${rule.verdict ? 'success' : 'failure'} acknowledgement on ${on}` +
-          `${view === undefined ? '' : ` from view ${view}`} (the page's calls: ${seen.join(', ') || 'none'})`,
+          `${view === undefined ? '' : ` from view ${view}`} (the page's calls: ${seen.join(', ') || 'none'})` +
+          askedFor(run, rule),
       )
     }
     if (rule.after) {
@@ -236,8 +247,9 @@ const RULES = {
       const read = stepRecord(run, (step) => step.op === 'query' && step.as === query)
       if (!read?.ok || !marker || !proofHolds(read.value, marker))
         return fail(
-          `the restored page does not show ${marker}: ${clip(JSON.stringify(read?.value ?? read?.error ?? null))}` +
-            lostWhere(runs[0], rule.proof),
+          `the page does not show ${marker}: ${clip(JSON.stringify(read?.value ?? read?.error ?? null))}` +
+            lostWhere(runs[0], rule.proof) +
+            askedFor(run, rule),
         )
       proof = `; the page shows ${marker}`
     }

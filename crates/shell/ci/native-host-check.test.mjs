@@ -13,6 +13,7 @@ import {
   damageCopies,
   invokeQuery,
   minimalEpub,
+  seedSettings,
 } from '../e2e/native-host/run.mjs'
 import {
   ACKS,
@@ -92,8 +93,9 @@ const hasReplay = (value) =>
 
 /**
  * Writes what a spec leaves when the app keeps every contract: a restored tab acknowledges its
- * copy, a tab opened on any other file acknowledges nothing, a Home button is pressed, and each
- * probe is refused. `tamper(run number, lines, records, exit)` may change that.
+ * copy, a tab opened on any other file acknowledges nothing, a copy the Word page had written
+ * opens in a tab that acknowledges its text and becomes the active one, a Home button is
+ * pressed, and each probe is refused. `tamper(run number, lines, records, exit)` may change that.
  */
 function simulate(name, spec = SPECS[name], tamper = () => {}) {
   let nextView = 10
@@ -147,6 +149,20 @@ function simulate(name, spec = SPECS[name], tamper = () => {}) {
       if (restored) ownCall(tab, RESTORED[tab.surface], ackArgs(RESTORED[tab.surface], !damaged))
       return tab
     }
+    // the shell writes the copy a page asked for and opens it in a tab of the copy's editor
+    const openCopy = (channel) => {
+      const tab = { view: (nextView += 1), surface: surfaceOf(channel) }
+      ownCall(tab, channel, ackArgs(channel, true))
+      return tab
+    }
+    const asks = new Map(
+      spec.expect.flatMap(({ channel, rule }) => (rule.asked ? [[rule.asked, channel]] : [])),
+    )
+    const shown = new Map(
+      spec.expect.flatMap(({ rule }) =>
+        rule.proof ? [[rule.proof.query, rule.proof.marker]] : [],
+      ),
+    )
     // a restored tab loads by itself, whether or not a step waits for it
     if (pending && !scenario.steps.some((step) => step.op === 'waitReady')) becomeReady(pending)
     for (const [step, spelled] of scenario.steps.entries()) {
@@ -160,8 +176,15 @@ function simulate(name, spec = SPECS[name], tamper = () => {}) {
       if (spelled.op === 'query') {
         record.as = spelled.as
         const probe = run.steps[step]?.op === 'invoke' ? run.steps[step] : undefined
-        if (spelled.as.startsWith('prep-')) record.value = { pressed: true }
-        else if (!probe)
+        if (spelled.as.startsWith('prep-'))
+          record.value = shown.has(spelled.as)
+            ? { text: `text with ${shown.get(spelled.as)}` }
+            : { pressed: true }
+        else if (asks.has(spelled.as)) {
+          // the answer comes once the copy's tab is the active one: the step did not wait for it
+          active = openCopy(asks.get(spelled.as))
+          record.value = { pending: true }
+        } else if (!probe)
           record.value = `text with ${spec.expect.map((e) => e.rule.proof?.marker).find(Boolean)}`
         else {
           const id = Number(/request: (\d+)/.exec(spelled.js)[1])
@@ -276,6 +299,7 @@ describe('the specs against the contracts', () => {
           expect(run.steps.some(matches), `${name}: ${JSON.stringify(rule)}`).toBe(true)
         if (rule.probe) has((step) => step.op === 'invoke' && step.as === rule.probe)
         if (rule.list) has((step) => step.op === 'query' && step.as === LIST_PRESS)
+        if (rule.asked) has((step) => step.op === 'query' && step.as === rule.asked)
         if (rule.proof) {
           has((step) => step.op === 'query' && step.as === rule.proof.query)
           expect(rule.proof.marker, name).toMatch(/^SEU-E2E-/)
@@ -355,6 +379,75 @@ describe('the specs against the contracts', () => {
     expect(SPECS['docs-recovery'].runs[0].steps.some((step) => /-loaded$/.test(step.as))).toBe(
       false,
     )
+  })
+
+  it('has the Word page ask for a copy and reads it only on the page of that copy', async () => {
+    const read = (js, window, document) =>
+      new Function('window', 'document', `return ${js}`)(window, document)
+    let presses = 0
+    const views = [{}, {}, { click: () => (presses += 1) }]
+    const page = (selector, textContent) => ({
+      querySelector: (asked) =>
+        asked === selector && textContent !== undefined ? { textContent } : null,
+      querySelectorAll: () => views,
+    })
+    for (const [app, type, api, editor] of [
+      ['markdown', 'md', 'markdownApi', '.ProseMirror'],
+      ['html', 'html', 'htmlApi', '.cm-content'],
+    ]) {
+      const spec = SPECS[`${app}-saved-copy`]
+      const { steps } = spec.runs[0]
+      const marker = `SEU-E2E-saved-${app}`
+      const order = [
+        `${app}-saved-create`,
+        `prep-${app}-saved-shown`,
+        `${app}-saved-twice`,
+        `${app}-saved-other-renderer`,
+      ].map((as) => steps.findIndex((step) => step.as === as))
+      expect(order, app).toEqual([...order].sort((a, b) => a - b))
+      expect(order[0], app).toBeGreaterThan(steps.findIndex((step) => step.op === 'waitReady'))
+      // the receipt is presented from another page only after that page's file was opened
+      expect(steps.findLastIndex((step) => step.op === 'waitReady')).toBeGreaterThan(order[2])
+      // the copy lands in the work folder, not in the runner's Documents
+      expect(spec.settings).toEqual({ defaultSaveDir: '${WORK}' })
+
+      // the request is the Word page's own call; the step says what it was answered, and goes
+      // on without the answer when a tab is still opening
+      const create = steps[order[0]]
+      const requests = []
+      const timers = []
+      const ask = (createDocument) =>
+        new Function('window', 'setTimeout', `return ${create.js}`)(
+          { desktop: { createDocument: (request) => (requests.push(request), createDocument()) } },
+          (done, ms) => timers.push([done, ms]),
+        )
+      const answer = { ok: true, path: '/work/copy' }
+      expect(await ask(async () => answer)).toEqual({ answer })
+      expect(requests).toEqual([
+        { type, title: `seu-e2e-saved-${app}`, content: expect.stringContaining(marker) },
+      ])
+      const refused = Promise.reject(new Error('the Word document owner does not match'))
+      expect(await ask(() => refused)).toEqual({
+        refused: 'the Word document owner does not match',
+      })
+      const slow = ask(() => new Promise(() => {}))
+      const [late, ms] = timers.at(-1)
+      expect(ms, app).toBeLessThan(create.timeoutMs)
+      late({ pending: true })
+      expect(await slow).toEqual({ pending: true })
+
+      const { js, timeoutMs } = steps[order[1]]
+      expect(timeoutMs, app).toBeGreaterThanOrEqual(60000)
+      const text = `a title ${marker} and the rest`
+      // the Word page has an editor of its own, and its tabs are left alone
+      expect(read(js, {}, page(editor, text))).toBe(false)
+      expect(presses, app).toBe(0)
+      expect(read(js, { [api]: {} }, page(editor, undefined))).toBe(false)
+      expect(read(js, { [api]: {} }, page(editor, 'the text of another file'))).toBe(false)
+      expect(read(js, { [api]: {} }, page(editor, text))).toEqual({ text })
+    }
+    // only the HTML page has its source pane behind a view tab
+    expect(presses).toBe(3)
   })
 })
 
@@ -500,6 +593,71 @@ describe('the rules', () => {
       status: 'FAIL',
       evidence: expect.stringContaining('no accepted success acknowledgement'),
     })
+  })
+
+  it('fail a copy its page did not acknowledge, does not show, or whose receipt was taken again', () => {
+    const name = 'markdown-saved-copy'
+    const saved = 'markdown:saved-input-applied'
+    const own = (lines) =>
+      lines.findIndex(
+        (line) => line.event === 'call' && line.channel === saved && line.request < PROBE_BASE,
+      )
+    const verdict = (scenario) => rowOf(check(name), saved, scenario)
+    simulate(name)
+    expect(verdict('successful-ack').evidence).toMatch(
+      /^Markdown view \d+ acknowledged true, accepted; the page shows SEU-E2E-saved-markdown$/,
+    )
+
+    simulate(name, undefined, (_, lines) => lines.splice(own(lines), 2))
+    expect(verdict('successful-ack')).toMatchObject({
+      status: 'FAIL',
+      evidence:
+        `no accepted success acknowledgement on ${saved} (the page's calls: none); ` +
+        'markdown-saved-create was answered {"pending":true}',
+    })
+
+    // the shell refused the Word page's request: no page ever had the copy, and the reason is said
+    simulate(name, undefined, (_, lines, records) => {
+      lines.splice(own(lines), 2)
+      records.find((record) => record.as === 'markdown-saved-create').value = {
+        refused: 'the Word document owner does not match the target',
+      }
+    })
+    expect(verdict('successful-ack').evidence).toContain(
+      'markdown-saved-create was answered {"refused":"the Word document owner does not match the target"}',
+    )
+
+    // the page could not apply the text and said so
+    simulate(name, undefined, (_, lines) => {
+      lines[own(lines)].args[0].fields.outcome = { type: 'string', length: 6, word: 'failed' }
+    })
+    expect(verdict('successful-ack').evidence).toMatch(/the page's calls: view \d+ false\/true/)
+
+    // the copy's tab never became the active one: the step answered `false` until its time was up
+    simulate(name, undefined, (_, _lines, records) => {
+      records.find((record) => record.as === 'prep-markdown-saved-shown').value = false
+    })
+    expect(verdict('successful-ack').evidence).toBe(
+      'the page does not show SEU-E2E-saved-markdown: false; ' +
+        'markdown-saved-create was answered {"pending":true}',
+    )
+
+    simulate(name, undefined, (_, lines) => {
+      const twice = lines.find((line) => line.event === 'call' && line.replayed?.[0].of === 'self')
+      const reply = lines.find((line) => line.event === 'reply' && line.seq === twice.seq)
+      Object.assign(reply, { ok: true, error: undefined, value: { type: 'undefined' } })
+    })
+    expect(verdict('duplicate-ack')).toMatchObject({
+      status: 'FAIL',
+      evidence: expect.stringContaining('was accepted'),
+    })
+    expect(verdict('foreign-renderer').status).toBe('PASS')
+
+    // the probe went out while the Word page was still the active one
+    simulate(name, undefined, (_, lines) => {
+      lines.find((line) => line.replayed?.[0].of === 'self').surface = 'Docs'
+    })
+    expect(verdict('duplicate-ack').evidence).toMatch(/^it was sent from Docs view \d+$/)
   })
 
   it('fail a replay that found no receipt or was accepted', () => {
@@ -698,6 +856,15 @@ describe('the helpers', () => {
       expect.arrayContaining(['abc.docx', 'id.docx', 'map.xmind']),
     )
     expect(fs.readFileSync(path.join(work, 'map.xmind'), 'utf8')).toContain('damaged')
+  })
+
+  it("write a spec's settings into the profile, with the work folder spelled in full", () => {
+    seedSettings(root, undefined, 'work')
+    expect(fs.existsSync(path.join(root, 'app-settings.json'))).toBe(false)
+    seedSettings(root, SPECS['html-saved-copy'].settings, path.join(root, 'none', '..', 'work'))
+    expect(JSON.parse(fs.readFileSync(path.join(root, 'app-settings.json'), 'utf8'))).toEqual({
+      defaultSaveDir: path.join(root, 'work'),
+    })
   })
 
   it('build an EPUB whose first entry is its uncompressed mimetype', async () => {
