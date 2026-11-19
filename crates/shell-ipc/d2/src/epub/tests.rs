@@ -1587,6 +1587,84 @@ fn native_recovery_never_queues_into_another_created_view() {
     );
 }
 
+/// The host commits the browser's owner when it makes the view, and the recovery is queued only
+/// under that owner. A browser nobody committed, and one whose owner was replaced after the
+/// host committed it, are refused: no seed, and nothing queued for the renderer.
+#[test]
+fn native_recovery_is_queued_only_under_the_browser_owner_the_host_committed() {
+    use shell_contract::ipc::{
+        NativeClosureIssuer, NativeInvocationIssuer, NativeInvocationSelection,
+        NativeRecoveryDecision, RecoveryOpenContext, RecoveryOpenTarget,
+    };
+    use shell_contract::runtime::CancelToken;
+    let (mut rt, _) = rt(Value::Null);
+    let commit = |target: &RecoveryOpenTarget| {
+        target
+            .closure_reservation()
+            .with_initial_owner(target.browser_owner(), |_| Ok(()))
+            .unwrap();
+    };
+    let replace = |target: &RecoveryOpenTarget| {
+        commit(target);
+        let _successor = target
+            .closure_reservation()
+            .prepare_replacement(target.browser_owner())
+            .unwrap()
+            .commit(|_, _| Ok(()))
+            .unwrap();
+    };
+    let leave = |_: &RecoveryOpenTarget| {};
+    let cases: [(u32, &dyn Fn(&RecoveryOpenTarget), bool); 3] = [
+        (206, &commit, true),
+        (207, &leave, false),
+        (208, &replace, false),
+    ];
+    for (id, owner, accepted) in cases {
+        let path = rt.dir.join(format!("owner{id}.epub"));
+        std::fs::write(&path, b"BOOK").unwrap();
+        let sender = rt.view(id, Surface::Epub);
+        let generation = rt.services.views.renderer_generation(sender.view).unwrap();
+        let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
+            NativeInvocationSelection::RecoveryFile {
+                surface: Surface::Epub,
+                path: path.clone(),
+                decision: NativeRecoveryDecision::Original,
+            },
+            CancelToken::default(),
+        );
+        let (_issuer, closure, browser_owner) =
+            NativeClosureIssuer::new_with_owner(sender.view, generation.clone());
+        let target = RecoveryOpenTarget::bind(
+            RecoveryOpenContext::NativeStartup(operation),
+            sender.view,
+            generation,
+            closure,
+            browser_owner,
+        )
+        .unwrap();
+        owner(&target);
+        let answer = Rc::new(RefCell::new(None));
+        let result = answer.clone();
+        editors(&rt).queue_recovery_direct(
+            sender.view,
+            &target,
+            path_str(&path),
+            Box::new(move |value| *result.borrow_mut() = Some(value)),
+        );
+        let taken = answer.borrow().as_ref().map(Result::is_ok);
+        assert_eq!(taken, Some(accepted), "view {id}");
+        assert_eq!(target.committed_seed().is_some(), accepted, "view {id}");
+        if !accepted {
+            assert_eq!(
+                rt.invoke_now("epub:consume-pending", sender, vec![])
+                    .unwrap(),
+                IpcValue::Null,
+                "view {id}"
+            );
+        }
+    }
+}
+
 /// A native-startup recovery seed committed to a fresh EPUB view and consumed
 /// by its renderer; the receipt is what the native wait settles on
 struct Seed {

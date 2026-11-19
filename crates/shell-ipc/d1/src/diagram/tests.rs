@@ -1300,16 +1300,21 @@ impl Setup {
         Renderer { tab, origin }
     }
 
-    /// Drives the recovery open of diagram view `id` through the real
-    /// handlers up to the token the renderer must acknowledge
-    fn recover(&self, id: u32, name: &str) -> Recovering {
-        use main_core::packages::electron_utils::recovery_contract::{
-            RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
-        };
+    /// Diagram view `id` on a recovery file, and the target the host hands the editor for
+    /// it. The browser's owner is not committed yet: the host does that before the hand-over.
+    fn recovery_target(
+        &self,
+        id: u32,
+        name: &str,
+    ) -> (
+        Renderer,
+        String,
+        shell_contract::ipc::NativeClosureIssuer,
+        shell_contract::ipc::RecoveryOpenTarget,
+    ) {
         use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
         use shell_contract::runtime::CancelToken;
         let (tab, path) = self.tab(id, Some((name, DIAGRAM)));
-        let path = path.unwrap();
         let renderer = self.renderer(tab);
         let generation = self
             .kit
@@ -1333,23 +1338,38 @@ impl Setup {
             browser_owner,
         )
         .unwrap();
+        (renderer, path.unwrap(), issuer, target)
+    }
+
+    /// The shell's recovery open of `path` into the target's view; whether the editor took it
+    fn start_recovery(&self, path: &str, target: &shell_contract::ipc::RecoveryOpenTarget) -> bool {
+        use main_core::packages::electron_utils::recovery_contract::{
+            RecoveryEditorContract, RecoveryOpenDecision, RecoveryOpenFileRequest,
+        };
+        let done = Rc::new(RefCell::new(None));
+        let completed = done.clone();
+        views().unwrap().open_file_with_decision(
+            &target.view(),
+            &RecoveryOpenFileRequest {
+                file_path: path.to_owned(),
+                decision: RecoveryOpenDecision::Original,
+            },
+            target,
+            Box::new(move |result| *completed.borrow_mut() = Some(result)),
+        );
+        done.borrow_mut().take().unwrap().is_ok()
+    }
+
+    /// Drives the recovery open of diagram view `id` through the real
+    /// handlers up to the token the renderer must acknowledge
+    fn recover(&self, id: u32, name: &str) -> Recovering {
+        let (renderer, path, issuer, target) = self.recovery_target(id, name);
         // the host commits the browser's owner before it hands the target to the editor
         target
             .closure_reservation()
             .with_initial_owner(target.browser_owner(), |_| Ok(()))
             .unwrap();
-        let done = Rc::new(RefCell::new(None));
-        let completed = done.clone();
-        views().unwrap().open_file_with_decision(
-            &tab.view,
-            &RecoveryOpenFileRequest {
-                file_path: path.clone(),
-                decision: RecoveryOpenDecision::Original,
-            },
-            &target,
-            Box::new(move |result| *completed.borrow_mut() = Some(result)),
-        );
-        assert!(done.borrow_mut().take().unwrap().is_ok());
+        assert!(self.start_recovery(&path, &target));
         let receipt = target.committed_seed().unwrap();
         target
             .retain_native_registration(renderer.origin.clone())
@@ -1374,6 +1394,46 @@ impl Setup {
             _target: target,
         }
     }
+}
+
+/// The host commits the browser's owner when it makes the view, and a recovery is staged only
+/// under that owner. A browser nobody committed, and one whose owner was replaced after the
+/// host committed it, are refused: no seed, and nothing staged for the view.
+#[test]
+fn a_recovery_is_staged_only_under_the_browser_owner_the_host_committed() {
+    let s = setup("diagram-recovery-owner");
+    let staged = |view: ViewId| {
+        views().unwrap().with_state(|state| {
+            state.views.get(&view).is_some_and(|entry| {
+                entry.recovery_preparing.is_some()
+                    || entry.recovery_seed.is_some()
+                    || entry.recovery_applying.is_some()
+            })
+        })
+    };
+
+    let (renderer, path, _issuer, target) = s.recovery_target(411, "uncommitted.drawio");
+    assert!(!s.start_recovery(&path, &target));
+    assert!(target.committed_seed().is_none());
+    assert!(!staged(renderer.tab.view));
+
+    let (renderer, path, _issuer, target) = s.recovery_target(412, "replaced.drawio");
+    let reservation = target.closure_reservation();
+    reservation
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
+    let _successor = reservation
+        .prepare_replacement(target.browser_owner())
+        .unwrap()
+        .commit(|_, _| Ok(()))
+        .unwrap();
+    assert!(!s.start_recovery(&path, &target));
+    assert!(target.committed_seed().is_none());
+    assert!(!staged(renderer.tab.view));
+
+    // the same start under the owner the host committed is taken
+    let committed = s.recover(413, "committed.drawio");
+    assert!(committed.receipt.settlement().is_none());
 }
 
 #[test]

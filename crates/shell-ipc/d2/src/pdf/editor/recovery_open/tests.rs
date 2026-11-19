@@ -763,3 +763,97 @@ fn native_evidence_recovery_routes_reject_foreign_surface_in_the_real_dispatcher
         );
     }
 }
+
+/// The host commits the browser's owner when it makes the view, and the recovery slot is made
+/// only under that owner. A browser nobody committed, and one whose owner was replaced after
+/// the host committed it, are refused before any work: no slot, no seed, no worker job, and
+/// the copy is left as it was.
+#[test]
+fn a_recovery_slot_is_made_only_under_the_browser_owner_the_host_committed() {
+    let mut rt = Rt::new(|hosts| {
+        hosts.insert::<PdfEngineHost>(fakes::engine(&serde_json::Value::Null));
+        hosts.insert::<PdfShellHost>(fakes::shell(&serde_json::Value::Null));
+        hosts.insert(Arc::new(Mutex::new(
+            main_core::packages::electron_utils::recovery_store::SharedRecoveryState::new("test"),
+        )));
+        crate::pdf::tools::fakes(hosts, &serde_json::Value::Null);
+    });
+    let workers = Arc::new(Deferred::default());
+    rt.services.workers = workers.clone();
+    rt.register(crate::pdf::entries).unwrap();
+    let source = rt.view(1, Surface::Shell);
+    let source_generation = rt.services.views.renderer_generation(source.view).unwrap();
+    let owner = rt
+        .services
+        .hosts
+        .get::<OwnedEffectsHost>()
+        .unwrap()
+        .capture_owner(source.view, &source_generation)
+        .unwrap();
+    let editor = rt.provided().all::<PdfEditors>().pop().unwrap();
+    for (id, replaced) in [(2, false), (3, true)] {
+        let destination = rt.view(id, Surface::Pdf);
+        let created = rt
+            .services
+            .views
+            .renderer_generation(destination.view)
+            .unwrap();
+        let (_issuer, reservation, browser_owner) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(
+                destination.view,
+                created.clone(),
+            );
+        let target = RecoveryOpenTarget::bind(
+            RecoveryOpenContext::Renderer {
+                source: owner.clone(),
+                participants: vec![],
+                cancel: CancelToken::default(),
+                pending: CancelToken::default(),
+            },
+            destination.view,
+            created,
+            reservation,
+            browser_owner,
+        )
+        .unwrap();
+        if replaced {
+            let reservation = target.closure_reservation();
+            reservation
+                .with_initial_owner(target.browser_owner(), |_| Ok(()))
+                .unwrap();
+            let _successor = reservation
+                .prepare_replacement(target.browser_owner())
+                .unwrap()
+                .commit(|_, _| Ok(()))
+                .unwrap();
+        }
+        let identity = file_identity(&format!("/owner-{id}.pdf"));
+        let copy =
+            recovery_copy_path(&rt.dir.join("userData").to_string_lossy(), &identity).unwrap();
+        std::fs::create_dir_all(std::path::Path::new(&copy).parent().unwrap()).unwrap();
+        std::fs::write(&copy, b"%PDF kept").unwrap();
+        let request = RecoveryOpenUntitledRequest {
+            copy: identity,
+            title: "Recovery".into(),
+            save_as_default_path: None,
+        };
+        let answer = Rc::new(RefCell::new(None));
+        let answered = answer.clone();
+        <PdfEditors as RecoveryEditorContract<_, RecoveryOpenTarget>>::open_untitled_copy(
+            &editor,
+            &destination.view,
+            &request,
+            &target,
+            Box::new(move |result| *answered.borrow_mut() = Some(result)),
+        );
+        assert!(matches!(&*answer.borrow(), Some(Err(_))), "view {id}");
+        assert!(target.committed_seed().is_none(), "view {id}");
+        assert!(
+            !editor.0.st.borrow().views.contains_key(&destination.view),
+            "view {id}"
+        );
+        assert!(!editor.0.rec.borrow().has_view_state(destination.view));
+        assert!(workers.0.lock().unwrap().is_empty(), "view {id}");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"%PDF kept");
+    }
+}

@@ -1608,17 +1608,22 @@ struct Recovering {
     _target: shell_contract::ipc::RecoveryOpenTarget,
 }
 
-/// Drives the recovery open of mind map view `id` through the real handlers
-/// up to the token the renderer must acknowledge
-fn recover(h: &H, id: u32, name: &str) -> Recovering {
-    use main_core::packages::electron_utils::recovery_contract::{
-        RecoveryOpenDecision, RecoveryOpenFileRequest,
-    };
+/// Mind map view `id` on a recovery file, and the target the host hands the editor for it. The
+/// browser's owner is not committed yet: the host does that before the hand-over.
+fn recovery_target(
+    h: &H,
+    id: u32,
+    name: &str,
+) -> (
+    Renderer,
+    String,
+    shell_contract::ipc::NativeClosureIssuer,
+    shell_contract::ipc::RecoveryOpenTarget,
+) {
     use shell_contract::ipc::{RecoveryOpenContext, RecoveryOpenTarget};
     use shell_contract::runtime::CancelToken;
     let file = h.dir.join(name);
     fs::write(&file, "XMIND-1").unwrap();
-    let path = path_str(&file);
     let renderer = Renderer::new(h, id);
     let view = renderer.sender.view;
     let generation = h.kit.services.views.renderer_generation(view).unwrap();
@@ -1638,23 +1643,38 @@ fn recover(h: &H, id: u32, name: &str) -> Recovering {
         browser_owner,
     )
     .unwrap();
+    (renderer, path_str(&file), issuer, target)
+}
+
+/// The shell's recovery open of `path` into the target's view; whether the editor took it
+fn start_recovery(h: &H, path: &str, target: &shell_contract::ipc::RecoveryOpenTarget) -> bool {
+    use main_core::packages::electron_utils::recovery_contract::{
+        RecoveryOpenDecision, RecoveryOpenFileRequest,
+    };
+    let done = Rc::new(RefCell::new(None));
+    let completed = done.clone();
+    h.app.open_file_with_decision(
+        target.view(),
+        &RecoveryOpenFileRequest {
+            file_path: path.to_owned(),
+            decision: RecoveryOpenDecision::Original,
+        },
+        target,
+        Box::new(move |result| *completed.borrow_mut() = Some(result)),
+    );
+    done.borrow_mut().take().unwrap().is_ok()
+}
+
+/// Drives the recovery open of mind map view `id` through the real handlers
+/// up to the token the renderer must acknowledge
+fn recover(h: &H, id: u32, name: &str) -> Recovering {
+    let (renderer, path, issuer, target) = recovery_target(h, id, name);
     // the host commits the browser's owner before it hands the target to the editor
     target
         .closure_reservation()
         .with_initial_owner(target.browser_owner(), |_| Ok(()))
         .unwrap();
-    let done = Rc::new(RefCell::new(None));
-    let completed = done.clone();
-    h.app.open_file_with_decision(
-        view,
-        &RecoveryOpenFileRequest {
-            file_path: path.clone(),
-            decision: RecoveryOpenDecision::Original,
-        },
-        &target,
-        Box::new(move |result| *completed.borrow_mut() = Some(result)),
-    );
-    assert!(done.borrow_mut().take().unwrap().is_ok());
+    assert!(start_recovery(h, &path, &target));
     let receipt = target.committed_seed().unwrap();
     target
         .retain_native_registration(renderer.origin.clone())
@@ -1678,6 +1698,45 @@ fn recover(h: &H, id: u32, name: &str) -> Recovering {
         _issuer: issuer,
         _target: target,
     }
+}
+
+/// The host commits the browser's owner when it makes the view, and a recovery is staged only
+/// under that owner. A browser nobody committed, and one whose owner was replaced after the
+/// host committed it, are refused: no seed, no pending recovery, no request number taken.
+#[test]
+fn a_recovery_is_staged_only_under_the_browser_owner_the_host_committed() {
+    let h = plain("mindmap-recovery-owner");
+    let staged = |view: ViewId| {
+        let state = h.app.0.state.borrow();
+        (state.recovery_preparing.contains_key(&view), state.next_gen)
+    };
+
+    let (renderer, path, _issuer, target) = recovery_target(&h, 21, "uncommitted.xmind");
+    let before = staged(renderer.sender.view);
+    assert!(!start_recovery(&h, &path, &target));
+    assert!(target.committed_seed().is_none());
+    assert_eq!(staged(renderer.sender.view), before);
+    assert!(!before.0);
+
+    let (renderer, path, _issuer, target) = recovery_target(&h, 22, "replaced.xmind");
+    let reservation = target.closure_reservation();
+    reservation
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
+    let _successor = reservation
+        .prepare_replacement(target.browser_owner())
+        .unwrap()
+        .commit(|_, _| Ok(()))
+        .unwrap();
+    let before = staged(renderer.sender.view);
+    assert!(!start_recovery(&h, &path, &target));
+    assert!(target.committed_seed().is_none());
+    assert_eq!(staged(renderer.sender.view), before);
+    assert!(!before.0);
+
+    // the same start under the owner the host committed is taken
+    let committed = recover(&h, 23, "committed.xmind");
+    assert!(committed.receipt.settlement().is_none());
 }
 
 #[test]
