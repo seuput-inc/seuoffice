@@ -99,6 +99,10 @@
       "path": "${WORK}/html-export.pdf"
     },
     {
+      "op": "wait",
+      "ms": 4000
+    },
+    {
       "op": "screenshot",
       "name": "html-after"
     }

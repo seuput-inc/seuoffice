@@ -383,6 +383,7 @@ pub(super) fn ime_ko_2set(
     _ui: &Arc<dyn Thread>,
     window: &Window,
     keys: &str,
+    _prime: bool,
     composing: &dyn Fn(bool) -> Option<bool>,
 ) -> Result<Value, String> {
     let hwnd = hwnd_of(window)?;

@@ -50,7 +50,8 @@
     {
       "op": "ime",
       "source": "ko-2set",
-      "keys": "gksrmf"
+      "keys": "gksrmf",
+      "prime": true
     },
     {
       "op": "wait",

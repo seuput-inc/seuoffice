@@ -547,7 +547,7 @@ impl Runner<'_> {
                     "unconfirmed": unconfirmed,
                 })))
             }
-            Step::Ime { keys } => {
+            Step::Ime { keys, prime } => {
                 let target = self.target()?;
                 Self::focus_page(&target.webview)?;
                 // `true` clears the page's key record; `false` says whether the last key the page
@@ -561,7 +561,13 @@ impl Runner<'_> {
                         Self::key_arrived(&target.webview, "<Process>").map(|(seen, _)| seen)
                     }
                 };
-                let value = input::ime_ko_2set(&self.context.ui, &target.window, keys, &composing)
+                let value = input::ime_ko_2set(
+                    &self.context.ui,
+                    &target.window,
+                    keys,
+                    *prime,
+                    &composing,
+                )
                     .map_err(unrunnable)?;
                 Self::flush_input(&target.webview);
                 Ok(Some(value))

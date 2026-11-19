@@ -72,6 +72,10 @@
       "path": "${WORK}/markdown-export.pdf"
     },
     {
+      "op": "wait",
+      "ms": 4000
+    },
+    {
       "op": "screenshot",
       "name": "markdown-after"
     }

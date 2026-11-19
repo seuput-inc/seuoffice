@@ -2426,6 +2426,13 @@ pub(super) fn entries(docs: &Rc<Docs>) -> Vec<Entry> {
 
     let d = docs.clone();
     all.push(kit::invoke("docs:consume-new-blank", move |cx, _args| {
+        eprintln!(
+            "[docs] view {}: consume-new-blank (recovery blank token: {}, owned new blank: {}, plain new blank: {})",
+            cx.sender.view.0,
+            d.recovery_blank_token(cx.sender.view).is_some(),
+            d.owned_new_blank.get(cx.sender.view).is_some(),
+            d.new_blank.borrow().contains(&cx.sender.view)
+        );
         if let Some(token) = d.recovery_blank_token(cx.sender.view) {
             let scope = d
                 .capture_recovery_load_scope(cx, &token)

@@ -358,10 +358,13 @@ fn verified_reply(
                 state.delivered = true;
                 accepted = true;
                 if let (Some(renderer), Some(frame)) = (owner.context.renderer(), frame.take()) {
-                    queued = outlet
-                        .enqueue_generation_fenced(owner.view, renderer, frame)
-                        .ok()
-                        .flatten();
+                    queued = match outlet.enqueue_generation_fenced(owner.view, renderer, frame) {
+                        Ok(ticket) => ticket,
+                        Err(_) => {
+                            trace!("refused", "the reply of '{channel}' could not be queued");
+                            None
+                        }
+                    };
                 }
             });
             if accepted {
@@ -374,6 +377,9 @@ fn verified_reply(
                 !state.delivered
                     && (state.transferred != transferred || !same_reply_owner(&state.owner, &owner))
             });
+            if !changed {
+                trace!("refused", "the reply of '{channel}' was dropped: its owner is no longer valid");
+            }
             if !changed {
                 return;
             }

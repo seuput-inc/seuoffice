@@ -1227,11 +1227,35 @@ fn render_pdf(
                                     script,
                                     user_gesture,
                                     race_ms,
-                                } => RendererAnswer::Executed(job.window().0.execute_javascript(
-                                    script,
-                                    user_gesture,
-                                    race_ms,
-                                )),
+                                } => {
+                                    // The print window is hidden, and a hidden WKWebView never
+                                    // runs `requestAnimationFrame`: the ready probe would wait
+                                    // for its two frames until the watchdog. The timer ends it.
+                                    const READY: &str = r##"Promise.all([
+  document.fonts.ready,
+  ...Array.from(document.images).map((i) => i.decode().catch(() => {})),
+  ...Array.from(document.querySelectorAll('svg image')).map((el) => {
+    const href = el.getAttribute('href') || el.getAttribute('xlink:href')
+    if (!href) return Promise.resolve()
+    const img = new Image()
+    img.src = href
+    return img.decode().catch(() => {})
+  }),
+]).then(() => new Promise((r) => {
+  requestAnimationFrame(() => requestAnimationFrame(r))
+  setTimeout(r, 300)
+}))"##;
+                                    let script = if script == pdf_export::PRINT_READY_SCRIPT {
+                                        READY
+                                    } else {
+                                        script
+                                    };
+                                    RendererAnswer::Executed(
+                                        job.window()
+                                            .0
+                                            .execute_javascript(script, user_gesture, race_ms),
+                                    )
+                                }
                                 RendererCall::PrintToPdf { options } => RendererAnswer::Pdf(
                                     job.window()
                                         .0

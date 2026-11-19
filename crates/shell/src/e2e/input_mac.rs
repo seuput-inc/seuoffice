@@ -445,6 +445,7 @@ pub(super) fn ime_ko_2set(
     ui: &Arc<dyn Thread>,
     window: &Window,
     keys: &str,
+    prime: bool,
     _composing: &dyn Fn(bool) -> Option<bool>,
 ) -> Result<Value, String> {
     let previous =
@@ -455,10 +456,25 @@ pub(super) fn ime_ko_2set(
     sleep(SETTLE);
     let active = on_ui(ui, tis::current_id);
     let typed = if active.as_deref() == Some(tis::KOREAN_2SET) {
-        keys.chars().try_for_each(|c| {
-            let result = send_backed(ui, window, stroke_of(&TypedKey::Char(c)));
-            sleep(IME_KEY_GAP);
-            result
+        // the first key after a source switch reaches some editors as plain text: send one and
+        // erase it, so the real keys all compose
+        let primed: Result<(), String> = if prime {
+            keys.chars().next().map_or(Ok(()), |first| {
+                send_backed(ui, window, stroke_of(&TypedKey::Char(first)))?;
+                sleep(IME_KEY_GAP);
+                send_backed(ui, window, stroke_of(&TypedKey::Backspace))?;
+                sleep(IME_KEY_GAP);
+                Ok(())
+            })
+        } else {
+            Ok(())
+        };
+        primed.and_then(|()| {
+            keys.chars().try_for_each(|c| {
+                let result = send_backed(ui, window, stroke_of(&TypedKey::Char(c)));
+                sleep(IME_KEY_GAP);
+                result
+            })
         })
     } else {
         Err(format!(

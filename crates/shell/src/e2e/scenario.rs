@@ -164,8 +164,11 @@ pub(super) enum Step {
     Type {
         text: String,
     },
+    /// `prime`: the first key of a source switch is sent once and erased before the real keys,
+    /// for an editor that takes it as plain text (a cell editor on macOS)
     Ime {
         keys: String,
+        prime: bool,
     },
     Shortcut(Shortcut),
     Clipboard {
@@ -309,6 +312,15 @@ impl Fields<'_> {
         }
     }
 
+    /// An optional true/false field; false when it is left out
+    fn flag(&self, key: &str) -> Result<bool, String> {
+        match self.object.get(key) {
+            None | Some(Value::Null) => Ok(false),
+            Some(Value::Bool(flag)) => Ok(*flag),
+            Some(_) => Err(format!("{key} must be true or false")),
+        }
+    }
+
     /// A position inside an element, from its top left (0) to its bottom right (1)
     fn fraction(&self, key: &str, default: f64) -> Result<f64, String> {
         match self.object.get(key) {
@@ -377,7 +389,10 @@ fn parse_step(raw: &Value, env: Env<'_>) -> Result<Step, String> {
             if keys.is_empty() || !keys.chars().all(|c| c.is_ascii_alphabetic()) {
                 return Err("keys must be one or more ASCII letters".into());
             }
-            Step::Ime { keys }
+            Step::Ime {
+                keys,
+                prime: fields.flag("prime")?,
+            }
         }
         "shortcut" => {
             let name = fields.string("name")?;

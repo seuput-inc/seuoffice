@@ -5,6 +5,8 @@ use tauri::Url;
 use tauri::webview::PlatformWebview;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_KEY_EVENT_KIND, COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+    COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP, COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
+    COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP,
     COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
     COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
     COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
@@ -31,9 +33,7 @@ use webview2_com::{
     NavigationStartingEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
     take_pwstr,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_MENU, VK_SHIFT,
-};
+use std::sync::atomic::{AtomicU8, Ordering};
 use windows::core::{BOOL, PWSTR};
 
 use super::Platform;
@@ -121,19 +121,31 @@ fn registered(what: &str, result: windows::core::Result<()>) -> Result<(), Strin
     result.map_err(|error| format!("The WebView2 {what} handler could not be registered: {error}"))
 }
 
-/// Whether `key` is held down now
-fn held(key: VIRTUAL_KEY) -> bool {
-    // SAFETY: a plain read of the keyboard's physical state; the calling thread's own key state
-    // does not follow keys that WebView2 took from its input queue.
-    unsafe { GetAsyncKeyState(i32::from(key.0)) < 0 }
+/// The modifiers held, as the key events of this handler have shown them. The handler runs
+/// after the key has been posted, so the keyboard's own state is no guide: a runner sends
+/// Ctrl, S and both releases at once, and Ctrl is long up when S arrives here.
+static MODIFIERS: AtomicU8 = AtomicU8::new(0);
+const CTRL: u8 = 1;
+const SHIFT: u8 = 2;
+const ALT: u8 = 4;
+
+/// The bit of a modifier key's virtual-key code; the generic and the left/right codes
+fn modifier_bit(key: u32) -> Option<u8> {
+    match key {
+        0x11 | 0xA2 | 0xA3 => Some(CTRL),
+        0x10 | 0xA0 | 0xA1 => Some(SHIFT),
+        0x12 | 0xA4 | 0xA5 => Some(ALT),
+        _ => None,
+    }
 }
 
 /// The menu accelerator of the Save shortcut being pressed: Ctrl+S or Ctrl+Shift+S
 fn file_shortcut() -> Option<&'static str> {
-    if !held(VK_CONTROL) || held(VK_MENU) {
+    let held = MODIFIERS.load(Ordering::Relaxed);
+    if held & CTRL == 0 || held & ALT != 0 {
         return None;
     }
-    Some(if held(VK_SHIFT) {
+    Some(if held & SHIFT != 0 {
         "CmdOrCtrl+Shift+S"
     } else {
         "CmdOrCtrl+S"
@@ -289,6 +301,18 @@ impl Observe for Platform {
             unsafe {
                 args.KeyEventKind(&mut kind)?;
                 args.VirtualKey(&mut key)?;
+            }
+            let down = kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
+                || kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN;
+            let up = kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP
+                || kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP;
+            if let Some(bit) = modifier_bit(key) {
+                if down {
+                    MODIFIERS.fetch_or(bit, Ordering::Relaxed);
+                } else if up {
+                    MODIFIERS.fetch_and(!bit, Ordering::Relaxed);
+                }
+                return Ok(());
             }
             if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN || key != u32::from(b'S') {
                 return Ok(());
