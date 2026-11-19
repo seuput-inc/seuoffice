@@ -404,7 +404,11 @@ mod tests {
         assert!(!move_again(true, &denied(), MOVE_RETRY));
         assert!(!move_again(false, &denied(), Duration::ZERO));
         // any other refusal stands at once
-        assert!(!move_again(true, &io::Error::from_raw_os_error(2), Duration::ZERO));
+        assert!(!move_again(
+            true,
+            &io::Error::from_raw_os_error(2),
+            Duration::ZERO
+        ));
         let named = io::Error::new(io::ErrorKind::InvalidData, "not the captured object");
         assert!(!move_again(true, &named, Duration::ZERO));
     }

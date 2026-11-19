@@ -343,10 +343,7 @@ impl Observe for Platform {
             } else if key == u32::from(b'W') {
                 let close = held() == CTRL;
                 let handled = close && crate::host::menu::run_close_accelerator();
-                crate::trace::trace!(
-                    "accel",
-                    "W pressed: Ctrl alone {close}, handled {handled}"
-                );
+                crate::trace::trace!("accel", "W pressed: Ctrl alone {close}, handled {handled}");
                 handled
             } else {
                 return Ok(());
