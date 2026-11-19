@@ -569,7 +569,7 @@ const WORD_COUNT_THROTTLE_MS = 400
 /** consecutive follow-up passes a pass may schedule for itself */
 /** 30s recovery ticks skipped after a failed copy write (as the slides editor does) */
 const RECOVERY_BACKOFF_TICKS = 10
-import { runHeadlessDocumentExport, waitForDocumentSettled } from './headless-export'
+import { fontFacesIdle, runHeadlessDocumentExport, waitForDocumentSettled } from './headless-export'
 import { drawFirstPage } from './first-page-image'
 import { installMcpBridge } from './mcp-bridge'
 import { odtOffProps, refuseInOdt, useOdtSession } from './odt-gate'
@@ -3256,7 +3256,11 @@ export function App() {
   useEffect(() => {
     if (!editor) return
     return window.desktop.onThumbnailRequest?.(async (request) => {
-      await waitForDocumentSettled(documentReadiness, { signal: request.signal })
+      const { signal } = request
+      await waitForDocumentSettled(documentReadiness, {
+        signal,
+        fontsSettled: () => fontFacesIdle(signal),
+      })
       return drawFirstPage(editor.view.dom, cutsNow(), request)
     })
   }, [editor, cutsNow, documentReadiness])

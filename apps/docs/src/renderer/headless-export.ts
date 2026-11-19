@@ -35,17 +35,35 @@ export interface DocumentReadiness {
 const UNREADABLE = 'the input document did not open (corrupt, unsupported or password-protected)'
 
 /**
+ * Resolves when no font face of the page is loading any more. For a caller on a short budget
+ * in a browser of its user's choice: WebKit can leave `document.fonts.ready` pending for good
+ * once a face failed to load, so the faces are asked themselves.
+ */
+export async function fontFacesIdle(signal: AbortSignal, pollMs = 50): Promise<void> {
+  while (Array.from(document.fonts).some((face) => face.status === 'loading')) {
+    await headlessSleep(pollMs)
+    signal.throwIfAborted()
+  }
+}
+
+export interface DocumentWaitOptions extends HeadlessWaitOptions {
+  /** rejects the wait as soon as it aborts: whoever asked stopped waiting */
+  signal?: AbortSignal
+  /** how the page's font loads are waited for; the headless export's own way when absent */
+  fontsSettled?: () => Promise<unknown>
+}
+
+/**
  * Resolves once a document is open and its pagination has produced the same
  * page cuts (start, end, lead, header/footer variant, window facts) twice in
  * a row, so headless exports the layout the editor would have shown. A page
- * count alone can repeat while the pass chain still moves a cut. Rejects as
- * soon as `signal` aborts: whoever asked stopped waiting.
+ * count alone can repeat while the pass chain still moves a cut.
  */
 export async function waitForDocumentSettled(
   readiness: () => DocumentReadiness,
-  options: HeadlessWaitOptions & { signal?: AbortSignal } = {},
+  options: DocumentWaitOptions = {},
 ): Promise<void> {
-  const { timeoutMs = 180_000, pollMs = 300, signal } = options
+  const { timeoutMs = 180_000, pollMs = 300, signal, fontsSettled = documentFontsSettled } = options
   const deadline = Date.now() + timeoutMs
   // A corrupt input is answered with a blank untitled document, not an error;
   // waiting out the full budget for it would only delay the same verdict.
@@ -64,7 +82,7 @@ export async function waitForDocumentSettled(
   await fontAliasesSettled()
   // Async @font-face loads change line-break points, so pagination is only
   // trustworthy once the faces the document asked for have settled.
-  await documentFontsSettled()
+  await fontsSettled()
   let stable = 0
   let last = ''
   while (Date.now() <= deadline) {

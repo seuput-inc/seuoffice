@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { runHeadlessDocumentExport, waitForDocumentSettled } from '../src/renderer/headless-export'
+import {
+  fontFacesIdle,
+  runHeadlessDocumentExport,
+  waitForDocumentSettled,
+} from '../src/renderer/headless-export'
 import type { DocumentReadiness } from '../src/renderer/headless-export'
 
 /**
@@ -92,6 +96,66 @@ describe('waitForDocumentSettled', () => {
     const timer = setInterval(() => setSlices(++n), 1)
     await expect(waitForDocumentSettled(ready, fast)).resolves.toBeUndefined()
     clearInterval(timer)
+  })
+})
+
+describe('waitForDocumentSettled for a caller on a short budget', () => {
+  /** the page's font set: its faces, and a `ready` that never comes (WebKit after a failed face) */
+  function pageFonts(faces: { status: string }[]): void {
+    vi.stubGlobal('document', { fonts: Object.assign(faces, { ready: new Promise(() => {}) }) })
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('settles on a page that never reports its fonts ready, once no face is loading', async () => {
+    pageFonts([{ status: 'loaded' }, { status: 'error' }, { status: 'unloaded' }])
+    setSlices(2)
+    const { signal } = new AbortController()
+    await expect(
+      waitForDocumentSettled(ready, { ...fast, signal, fontsSettled: () => fontFacesIdle(signal) }),
+    ).resolves.toBeUndefined()
+  })
+
+  it('waits for a face that is still loading', async () => {
+    let asked = 0
+    const face = {
+      // loading the first three times it is asked
+      get status() {
+        return ++asked > 3 ? 'loaded' : 'loading'
+      },
+    }
+    pageFonts([{ status: 'loaded' }, face])
+    setSlices(2)
+    const { signal } = new AbortController()
+    await waitForDocumentSettled(ready, {
+      ...fast,
+      signal,
+      fontsSettled: () => fontFacesIdle(signal, 1),
+    })
+    expect(asked).toBe(4)
+  })
+
+  it('stops waiting for a face when the caller gives up', async () => {
+    const caller = new AbortController()
+    let asked = 0
+    const face = {
+      // never loaded; the caller gives up the third time it is asked
+      get status() {
+        if (++asked === 3) caller.abort(new Error('the caller gave up'))
+        return 'loading'
+      },
+    }
+    pageFonts([face])
+    setSlices(2)
+    await expect(
+      waitForDocumentSettled(ready, {
+        ...fast,
+        signal: caller.signal,
+        fontsSettled: () => fontFacesIdle(caller.signal, 1),
+      }),
+    ).rejects.toThrow('the caller gave up')
   })
 })
 
