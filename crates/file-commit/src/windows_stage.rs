@@ -153,7 +153,7 @@ fn child(
             &mut handle,
             // CreateFileW adds FILE_READ_ATTRIBUTES itself; here only what is asked for is
             // granted, and comparing two handles by identity reads attributes through both
-            access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
+            access | SYNCHRONIZE,
             &attributes,
             &mut status_block,
             ptr::null(),
