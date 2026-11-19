@@ -50,22 +50,22 @@ on:
         options: [full, check, test, lock, fmt, probe, e2e]
         default: full
       owned:
-        description: "gate=check: comma-separated path prefixes whose diagnostics must be zero"
+        description: 'gate=check: comma-separated path prefixes whose diagnostics must be zero'
         default: crates/shell/src/native/,crates/shell/src/main.rs
       test_args:
-        description: "gate=test: arguments after `--` for the test harness (a filter, --skip NAME, --exact)"
+        description: 'gate=test: arguments after `--` for the test harness (a filter, --skip NAME, --exact)'
         default: ''
       probes:
-        description: "gate=probe: comma list of probes p1..p10, or all"
+        description: 'gate=probe: comma list of probes p1..p10, or all'
         default: all
       scenarios:
-        description: "gate=e2e: comma list of scenario names from crates/shell/e2e/scenarios and spec names from crates/shell/e2e/native-host/specs.mjs (native-host: every spec), or all"
+        description: 'gate=e2e: comma list of scenario names from crates/shell/e2e/scenarios and spec names from crates/shell/e2e/native-host/specs.mjs (native-host: every spec), or all'
         default: all
       source_sha:
-        description: "gate=lock or fmt: the exact commit to work on (40 hex digits)"
+        description: 'gate=lock or fmt: the exact commit to work on (40 hex digits)'
         default: ''
       regenerate:
-        description: "gate=lock: use `cargo generate-lockfile` (newest of everything) instead of `cargo update --workspace`"
+        description: 'gate=lock: use `cargo generate-lockfile` (newest of everything) instead of `cargo update --workspace`'
         type: boolean
         default: false
       bundle:

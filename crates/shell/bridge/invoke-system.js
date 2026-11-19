@@ -220,7 +220,13 @@
       if (start + length > buffer.byteLength)
         throw new NativeError('native outbox frame is truncated')
       const body = apply(bufferSlice, buffer, [start, start + length])
-      deliver(callback, (flags & 2) !== 0, body, (flags & 1) !== 0 ? index : undefined, (flags & 4) !== 0)
+      deliver(
+        callback,
+        (flags & 2) !== 0,
+        body,
+        (flags & 1) !== 0 ? index : undefined,
+        (flags & 4) !== 0,
+      )
       at = start + length
     }
   }
@@ -237,10 +243,10 @@
       pullAgain = false
       const headers = new HeadersNative()
       apply(headersSet, headers, [DOC_HEADER, current.nonce])
-      const request = fetchNative(
-        convertFileSrc(`outbox/${current.document}`, 'seuoffice-ipc'),
-        { method: 'GET', headers },
-      )
+      const request = fetchNative(convertFileSrc(`outbox/${current.document}`, 'seuoffice-ipc'), {
+        method: 'GET',
+        headers,
+      })
       const finish = () => {
         if (pullAgain && current === state) step()
         else pulling = false
@@ -280,7 +286,8 @@
     if (state.document !== undefined && id === state.document) pull(state)
   })
   define('__seuofficeDeliver', (id, callback, raw, body, index, end) => {
-    if (state.document !== undefined && id === state.document) deliver(callback, raw, body, index, end)
+    if (state.document !== undefined && id === state.document)
+      deliver(callback, raw, body, index, end)
   })
 
   /** Re-send `ipc_listen` on a fresh output Channel after the document was restored. */
@@ -418,8 +425,14 @@
     if (event.defaultPrevented || state.document === undefined) return
     const target = event.target
     const element = target && target.nodeType === 1 ? target : target && target.parentElement
-    const editable = !!(element && (element.isContentEditable || /^(INPUT|TEXTAREA)$/.test(element.tagName)))
-    const selection = String(window.getSelection ? window.getSelection() : '').slice(0, MAX_SELECTION)
+    const editable = !!(
+      element &&
+      (element.isContentEditable || /^(INPUT|TEXTAREA)$/.test(element.tagName))
+    )
+    const selection = String(window.getSelection ? window.getSelection() : '').slice(
+      0,
+      MAX_SELECTION,
+    )
     let srcUrl = null
     let mediaType = 'none'
     if (element && element.tagName === 'IMG') {

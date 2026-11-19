@@ -34,7 +34,7 @@ crates/shell/ci/check-local.sh test          # 순수한 상태 기계의 시험
 |                               | 뜻                                                                                                                                                                           |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SEUOFFICE_SHELL_PARTIAL=1`   | 채널 표가 덜 찼어도 시작한다. 없으면 `Completeness::Complete`라서 처리기가 없는 채널이 하나라도 있으면 시작하지 않고 목록을 찍는다. 묶음이 다 차기 전에는 이것이 있어야 뜬다 |
-| `SEUOFFICE_USER_DATA`         | userData 폴더를 바꾼다(Electron 판의 시험 몰이꾼과 같다). 웹뷰 저장소는 Windows에서 그 아래 `webview2/`에, macOS에서는 폴더 경로에서 만든 데이터 저장소 식별자에 둔다 |
+| `SEUOFFICE_USER_DATA`         | userData 폴더를 바꾼다(Electron 판의 시험 몰이꾼과 같다). 웹뷰 저장소는 Windows에서 그 아래 `webview2/`에, macOS에서는 폴더 경로에서 만든 데이터 저장소 식별자에 둔다        |
 | `SEUOFFICE_APPS_DIR`          | `apps` 폴더. 기본은 빌드한 체크아웃이다. 렌더러는 `<apps>/<앱>/out/renderer`에서 읽는다                                                                                      |
 | `--measure-dialog <out.json>` | 아래 측정                                                                                                                                                                    |
 | `SEUOFFICE_SHELL_TRACE=1`     | 시각이 붙은 IPC 길 기록(`src/trace.rs`)을 stderr에 남긴다. `--measure-dialog`은 늘 켠다                                                                                      |

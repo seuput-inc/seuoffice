@@ -309,7 +309,9 @@ describe('what makes a check FAIL', () => {
   it('a printed text wrapped over two lines is the text, a text with a blank in it is not', async () => {
     const wrapped = rowsOf(await docsRun({ engine: engineFinds('Title SEU-E2E-\ndocs\nmore') }))
     expect(wrapped['docs-edit/pdfText:docs-export.pdf'].status).toBe('PASS')
-    expect(wrapped['docs-edit/pdfText:docs-export.pdf'].evidence).toMatch(/wrapped over a line break/)
+    expect(wrapped['docs-edit/pdfText:docs-export.pdf'].evidence).toMatch(
+      /wrapped over a line break/,
+    )
     const spaced = rowsOf(await docsRun({ engine: engineFinds('Title SEU-E2E- docs') }))
     expect(spaced['docs-edit/pdfText:docs-export.pdf'].status).toBe('FAIL')
   })

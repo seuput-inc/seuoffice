@@ -176,14 +176,18 @@ it('holds protected calls until registration and keeps them in order', async () 
     ready: 'loading',
     route: {
       fetch: (url) =>
-        url.endsWith('ipc_register') ? gate.then(() => answer({ document: 5, bridge: 'invoke' })) : undefined,
+        url.endsWith('ipc_register')
+          ? gate.then(() => answer({ document: 5, bridge: 'invoke' }))
+          : undefined,
     },
   })
   internals.postMessage({ cmd: 'ipc_send', callback: 1, error: 2, payload: new Uint8Array([1]) })
   internals.postMessage({ cmd: 'ipc_send', callback: 3, error: 4, payload: new Uint8Array([2]) })
   await vi.waitFor(() => expect(commands(requests)).toEqual(['ipc_register']))
   release()
-  await vi.waitFor(() => expect(commands(requests)).toEqual(['ipc_register', 'ipc_send', 'ipc_send']))
+  await vi.waitFor(() =>
+    expect(commands(requests)).toEqual(['ipc_register', 'ipc_send', 'ipc_send']),
+  )
   expect(requests.map((request) => request.headers.get('Tauri-Callback'))).toEqual(['0', '1', '3'])
 })
 
@@ -319,9 +323,7 @@ it('keeps native denial distinct from a zero-byte sync answer', () => {
   const accepted = setup({ route: { xhr: () => ({ status: 200, text: '' }) } })
   expect(accepted.window.__seuofficeNativeSendSync('safe', new Uint8Array())).toHaveLength(0)
   const denied = setup({ route: { xhr: () => ({ status: 403, text: 'no' }) } })
-  expect(() => denied.window.__seuofficeNativeSendSync('safe', new Uint8Array())).toThrow(
-    'refused',
-  )
+  expect(() => denied.window.__seuofficeNativeSendSync('safe', new Uint8Array())).toThrow('refused')
 })
 
 it('exposes sync only to documents Rust registered as preload', async () => {
@@ -354,7 +356,9 @@ it('rebinds only the output Channel before restored page traffic', async () => {
   const first = requests.find((request) => request.url.endsWith('ipc_listen'))
   const firstChannel = JSON.parse(first.body).onFrame
   const firstId = Number(firstChannel.slice('__CHANNEL__:'.length))
-  await vi.waitFor(() => expect(callbacks.some(([id]) => id === Number(first.headers.get('Tauri-Callback')))).toBe(true))
+  await vi.waitFor(() =>
+    expect(callbacks.some(([id]) => id === Number(first.headers.get('Tauri-Callback')))).toBe(true),
+  )
   window.crypto.getRandomValues = () => {
     throw new Error('authored crypto replacement ran')
   }
