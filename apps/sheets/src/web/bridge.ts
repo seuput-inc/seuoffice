@@ -347,6 +347,7 @@ const desktopApi: WebDesktopApi = {
     reportOpened()
     return result
   },
+  readWorkbookMedia: (request) => engine().readMedia(request),
   readWorkbookRedactions: async (request) => {
     const session = current
     if (!session || session.sessionId !== request.sessionId) {

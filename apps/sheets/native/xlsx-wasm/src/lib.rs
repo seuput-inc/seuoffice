@@ -44,6 +44,11 @@ enum Command {
         session_id: String,
     },
     #[serde(rename_all = "camelCase")]
+    ReadMedia {
+        session_id: String,
+        visual_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
     ArchiveManifest { path: PathBuf },
     #[serde(rename_all = "camelCase")]
     ReadEntries {
@@ -180,6 +185,12 @@ fn handle(request: Request) -> Response {
             Command::Close { session_id } => sessions
                 .close(&session_id)
                 .and_then(|()| to_json_value(serde_json::json!({ "closed": true }))),
+            Command::ReadMedia {
+                session_id,
+                visual_id,
+            } => sessions
+                .read_media(&session_id, &visual_id)
+                .and_then(to_json_value),
             Command::ArchiveManifest { path } => archive_manifest(&path)
                 .and_then(|entries| to_json_value(serde_json::json!({ "entries": entries }))),
             Command::ReadEntries {
