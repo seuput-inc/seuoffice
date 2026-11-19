@@ -11,7 +11,7 @@
 //                   (crates/shell/src/ipc/native_record/replay.rs).
 //   runs[n].end     'kill': the app is killed after the last step, as a crash leaves it
 //   runs[n].damage  before the run: 'copies' overwrites the recovery copies the app wrote,
-//                   a file name overwrites that file of the work folder
+//                   a file name overwrites that file of the work folder, a list does each
 //   copies          files of the work folder made from a fixture before the first run
 //   expect          {channel, scenario, rule}: the contract scenario a rule proves
 //
@@ -243,15 +243,20 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
  */
 const intact = (spec) => ({ spec, scenario: 'successful-ack' })
 
-/** The same crash, with the recovery copy overwritten before the restore. */
-function damagedVariant(kind, channel) {
+/**
+ * The same crash, with the recovery copy overwritten before the restore. Diagram and Mindmap
+ * read the copy in the shell and open the saved file instead when the copy does not parse
+ * (run 44487876611: both pages acknowledged a success). Their page reports a failure only when
+ * the saved file does not parse either, so `both` overwrites that too.
+ */
+function damagedVariant(kind, channel, { both = false } = {}) {
   const base = baseSteps(`${kind}-edit`)
   return {
     about: `${kind}: edit, crash, restore a damaged recovery copy`,
     runs: [
       { end: 'kill', steps: [...firstLaunch, ...base.open, ...base.edit, wait(COPY_WAIT_MS)] },
       {
-        damage: 'copies',
+        damage: both ? ['copies', base.file] : 'copies',
         steps: [press(LIST_PRESS, LIST_CONFIRM, 60000), wait(20000)],
       },
     ],
@@ -513,9 +518,8 @@ export const SPECS = {
     names: RECEIPT,
   }),
   'docs-damaged': damagedVariant('docs', 'docs:recovery-initialized'),
-  'slides-damaged': damagedVariant('slides', 'slides:recovery-initialized'),
-  'diagram-damaged': damagedVariant('diagram', 'diagram:recovery-initialized'),
-  'mindmap-damaged': damagedVariant('mindmap', 'mindmap:recovery-initialized'),
+  'diagram-damaged': damagedVariant('diagram', 'diagram:recovery-initialized', { both: true }),
+  'mindmap-damaged': damagedVariant('mindmap', 'mindmap:recovery-initialized', { both: true }),
   'hwp-damaged': damagedVariant('hwp', 'hwp:recovery-initialized'),
   'pdf-damaged': unreadableVariant('pdf', 'pdf.pdf', {
     fixture: 'multipage.pdf',
@@ -568,6 +572,11 @@ export const UNDRIVEN = {
     'normal-completion': OWNED_SAVE,
     'owner-loss': 'needs the tab closed while the copy is being printed',
     'effect-failure': 'needs the print of the page itself to fail',
+  },
+  'slides:recovery-initialized': {
+    'failed-apply':
+      'the shell parses the presentation itself: a copy that does not parse fails the open ' +
+      'before any page is handed a receipt',
   },
   'pdf:consume-recovery-pending': {
     'preparation-loss': 'needs the restored tab revoked while its document is being prepared',

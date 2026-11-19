@@ -1963,7 +1963,8 @@ impl Docs {
                                             .collect::<Vec<_>>()
                                             .join(", ")
                                     ),
-                                    Ok(_) => format!("a value that is no object (opened: {opened})"),
+                                    Ok(_) =>
+                                        format!("a value that is no object (opened: {opened})"),
                                     Err(error) => format!("an error: {}", error.message),
                                 }
                             );

@@ -7,7 +7,13 @@ import path from 'node:path'
 import JSZip from 'jszip'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { NATIVE_CHANNEL_CONTRACTS } from '../../../tools/shell-inventory/native-channels.ts'
-import { compileRun, damageCopies, invokeQuery, minimalEpub } from '../e2e/native-host/run.mjs'
+import {
+  compileRun,
+  damage,
+  damageCopies,
+  invokeQuery,
+  minimalEpub,
+} from '../e2e/native-host/run.mjs'
 import {
   ACKS,
   LIST_PRESS,
@@ -195,7 +201,9 @@ function simulate(name, spec = SPECS[name], tamper = () => {}) {
       wanted: run.end ?? 'exit',
       awaited,
       records: records.length,
-      damaged: run.damage ? ['a-copy'] : [],
+      damaged: [run.damage ?? []]
+        .flat()
+        .map((entry) => (entry === 'copies' ? 'userdata/docs-autosave/a-copy' : `work/${entry}`)),
     }
     tamper(number, lines, records, exit)
     const jsonl = (rows) => rows.map((row) => `${JSON.stringify(row)}\n`).join('')
@@ -507,6 +515,16 @@ describe('the rules', () => {
       if (number === 2) exit.damaged = []
     })
     expect(check('docs-damaged')[0].evidence).toContain('nothing to damage')
+    // Diagram's page fails only when the saved file is unreadable too: both must be damaged
+    simulate('diagram-recovery')
+    simulate('diagram-damaged')
+    expect(check('diagram-damaged')[0].status).toBe('PASS')
+    simulate('diagram-damaged', undefined, (number, _lines, _records, exit) => {
+      if (number === 2) exit.damaged = exit.damaged.filter((file) => !file.includes('-autosave/'))
+    })
+    expect(check('diagram-damaged')[0].evidence).toBe(
+      'there was nothing to damage before the run (copies)',
+    )
   })
 
   it('count a failed restore as the damage only where the intact restore passes', () => {
@@ -628,6 +646,16 @@ describe('the helpers', () => {
     )
     expect(fs.readFileSync(path.join(root, 'Cache', 'kept'), 'utf8')).toBe('kept')
     expect(damageCopies(path.join(root, 'none'))).toEqual([])
+    // a run's damage: the copies, a file of the work folder, or a list of both
+    const work = path.join(root, 'work')
+    fs.mkdirSync(work)
+    fs.writeFileSync(path.join(work, 'map.xmind'), 'saved')
+    const places = { userData: root, work }
+    expect(damage(undefined, places)).toEqual([])
+    expect(damage(['copies', 'map.xmind'], places).map((file) => path.basename(file))).toEqual(
+      expect.arrayContaining(['abc.docx', 'id.docx', 'map.xmind']),
+    )
+    expect(fs.readFileSync(path.join(work, 'map.xmind'), 'utf8')).toContain('damaged')
   })
 
   it('build an EPUB whose first entry is its uncompressed mimetype', async () => {

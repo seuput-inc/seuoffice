@@ -842,6 +842,37 @@ impl Opening {
         self.finish_if_ready();
     }
 
+    /// The owner the opened document has now. The target keeps the owner of the page's first
+    /// registration. A Docs owner carries the media permit of the document its page shows, and
+    /// loading the recovered document retires that permit: the registered owner is then lost
+    /// though the native document and the renderer are the same (run 44487876611). The current
+    /// owner of that same native document stands for it, as it does in the page's own calls;
+    /// the admission still compares it with the registered one.
+    fn document_owner(
+        &self,
+        registered: &shell_contract::ipc::NativeRequestOwner,
+    ) -> Result<shell_contract::ipc::NativeRequestOwner, String> {
+        if registered
+            .loss_token()
+            .is_some_and(|loss| !loss.is_cancelled())
+        {
+            return Ok(registered.clone());
+        }
+        let current =
+            native_owner::capture_owner(&self.cx.views, self.target.view(), self.target.created())?;
+        let same_document = self.origin.get().is_some_and(|origin| {
+            current
+                .context
+                .authority_ref::<NativeOwnerAuthority>()
+                .is_some_and(|authority| &authority.origin == origin)
+        });
+        if same_document {
+            Ok(current)
+        } else {
+            Err("The recovery document was replaced before it became ready".into())
+        }
+    }
+
     fn finish_if_ready(self: &Arc<Self>) {
         if self.settled.load(Ordering::Acquire)
             || !self.constructed.load(Ordering::Acquire)
@@ -854,8 +885,12 @@ impl Opening {
             Ok(snapshot) => snapshot,
             Err(error) => return self.fail(error),
         };
-        let Some(owner) = snapshot.registered.clone() else {
+        let Some(registered) = snapshot.registered.clone() else {
             return self.fail("The recovery document did not register".into());
+        };
+        let owner = match self.document_owner(&registered) {
+            Ok(owner) => owner,
+            Err(error) => return self.fail(error),
         };
         let Some(browser) = self.browser.get().cloned() else {
             return self.fail("The original recovery browser is unavailable".into());
@@ -950,9 +985,16 @@ impl Opening {
                     return;
                 }
             };
-            let Some(owner) = snapshot.registered.clone() else {
+            let Some(registered) = snapshot.registered.clone() else {
                 eprintln!("[recovery] final document registration is unavailable");
                 return;
+            };
+            let owner = match self.document_owner(&registered) {
+                Ok(owner) => owner,
+                Err(error) => {
+                    eprintln!("[recovery] final document owner is unavailable: {error}");
+                    return;
+                }
             };
             let exact_origin = self.origin.get().is_some_and(|origin| {
                 owner

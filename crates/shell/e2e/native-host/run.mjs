@@ -146,6 +146,18 @@ export function damageCopies(userData) {
   return damaged
 }
 
+/**
+ * What a run's `damage` names, overwritten: 'copies' is every recovery copy of the profile, any
+ * other name a file of the work folder; a list is each of its entries. Answers the files.
+ */
+export function damage(what, { userData, work }) {
+  return [what ?? []].flat().flatMap((entry) => {
+    if (entry === 'copies') return damageCopies(userData)
+    writeFileSync(join(work, entry), DAMAGE)
+    return [join(work, entry)]
+  })
+}
+
 const slash = (dir) => dir.replaceAll('\\', '/').replace(/\/+$/, '')
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 
@@ -227,12 +239,7 @@ async function runSpec(name, spec, { bin, root, fixtures }) {
     const number = index + 1
     const runDir = join(dir, `run-${number}`)
     mkdirSync(join(runDir, 'out'), { recursive: true })
-    let damaged = []
-    if (run.damage === 'copies') damaged = damageCopies(userData)
-    else if (run.damage) {
-      writeFileSync(join(work, run.damage), DAMAGE)
-      damaged = [join(work, run.damage)]
-    }
+    const damaged = damage(run.damage, { userData, work })
     const { scenario, awaited } = compileRun(run, number)
     const rendered = render(scenario, { FIXTURES: slash(fixtures), WORK: slash(work) })
     writeFileSync(join(runDir, 'scenario.json'), `${JSON.stringify(rendered, null, 2)}\n`)

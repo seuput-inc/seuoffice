@@ -178,8 +178,16 @@ const RULES = {
       if (!press.value?.pressed)
         return fail('the button of the launch recovery list was absent or covered until the end')
     }
-    if (spec.runs[run.number - 1].damage && run.exit.damaged.length === 0)
-      return fail('there was nothing to damage before the run')
+    // every part of the damage the spec names was there to damage
+    const untouched = [spec.runs[run.number - 1].damage ?? []]
+      .flat()
+      .find(
+        (entry) =>
+          !run.exit.damaged.some((file) =>
+            entry === 'copies' ? file.includes('-autosave/') : file.endsWith(`/${entry}`),
+          ),
+      )
+    if (untouched) return fail(`there was nothing to damage before the run (${untouched})`)
     let view
     if (rule.view) {
       view = readyViews(run)[rule.view - 1]
