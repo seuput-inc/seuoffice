@@ -99,8 +99,7 @@ fn foreground_holder(hwnd: HWND) -> String {
         format!(
             "the foreground window is {:#x} of class '{class}' in process {process} (this is \
              process {own}, the app window {:#x} is visible: {visible})",
-            holder.0 as usize,
-            hwnd.0 as usize
+            holder.0 as usize, hwnd.0 as usize
         )
     }
 }
