@@ -160,6 +160,7 @@ pub(crate) fn dispatch(
 }
 
 /// What the commands and the scheme handler share; managed by Tauri
+#[derive(Clone)]
 pub struct Ipc {
     pub core: Arc<dyn Thread>,
     pub views: Arc<ViewTable>,
@@ -325,68 +326,125 @@ impl ReplyAuthority {
         state.transferred = true;
         Ok(value)
     }
+
+    /// Who the answer is owed to, until it was delivered.
+    fn undelivered(&self) -> Option<ReplyClaim> {
+        let state = self.state.lock().ok()?;
+        (!state.delivered).then(|| (state.owner.clone(), state.transferred, state.cancel.clone()))
+    }
+}
+
+/// What an answer is delivered against: the owner of its request, whether the answer was
+/// transferred to the owner of a document its call loaded, and the cancellation such a
+/// transfer stays bound to.
+type ReplyClaim = (NativeRequestOwner, bool, Option<shell_contract::runtime::CancelToken>);
+
+/// Hands `frame` to the page inside the gates of `under`, if the request is still as `claim`
+/// read it. `true`: this was the one delivery of the request's answer.
+fn deliver_reply(
+    outlet: &TauriOutlet,
+    authority: &ReplyAuthority,
+    (owner, transferred, cancel): &ReplyClaim,
+    under: &NativeRequestOwner,
+    frame: &mut Option<Vec<u8>>,
+    channel: &str,
+) -> bool {
+    let mut accepted = false;
+    let mut queued = None;
+    with_verified_reply(under, cancel.as_ref(), || {
+        let Ok(mut state) = authority.state.lock() else {
+            return;
+        };
+        if state.delivered
+            || state.transferred != *transferred
+            || !same_reply_owner(&state.owner, owner)
+        {
+            return;
+        }
+        state.delivered = true;
+        accepted = true;
+        if let (Some(renderer), Some(frame)) = (under.context.renderer(), frame.take()) {
+            queued = match outlet.enqueue_generation_fenced(under.view, renderer, frame) {
+                Ok(ticket) => ticket,
+                Err(_) => {
+                    trace!("refused", "the reply of '{channel}' could not be queued");
+                    None
+                }
+            };
+        }
+    });
+    if let Some(ticket) = queued {
+        let _ = ticket.drain();
+    }
+    accepted
 }
 
 fn verified_reply(
-    outlet: Arc<TauriOutlet>,
+    ipc: &Ipc,
     authority: Arc<ReplyAuthority>,
     id: RequestId,
     channel: String,
 ) -> Box<dyn FnOnce(Reply) + Send> {
+    let ipc = ipc.clone();
     Box::new(move |reply| {
+        if authority.request != id {
+            return;
+        }
         let mut frame = Some(reply_frame(id, &channel, &reply));
         for _ in 0..2 {
-            let (owner, transferred, cancel) = match authority.state.lock() {
-                Ok(state) if !state.delivered && authority.request == id => {
-                    (state.owner.clone(), state.transferred, state.cancel.clone())
-                }
-                _ => return,
+            let Some(claim) = authority.undelivered() else {
+                return;
             };
-            let mut accepted = false;
-            let mut queued = None;
-            with_verified_reply(&owner, cancel.as_ref(), || {
-                let Ok(mut state) = authority.state.lock() else {
-                    return;
-                };
-                if state.delivered
-                    || state.transferred != transferred
-                    || !same_reply_owner(&state.owner, &owner)
-                {
-                    return;
-                }
-                state.delivered = true;
-                accepted = true;
-                if let (Some(renderer), Some(frame)) = (owner.context.renderer(), frame.take()) {
-                    queued = match outlet.enqueue_generation_fenced(owner.view, renderer, frame) {
-                        Ok(ticket) => ticket,
-                        Err(_) => {
-                            trace!("refused", "the reply of '{channel}' could not be queued");
-                            None
-                        }
-                    };
-                }
-            });
-            if accepted {
-                if let Some(ticket) = queued {
-                    let _ = ticket.drain();
-                }
+            if deliver_reply(&ipc.outlet, &authority, &claim, &claim.0, &mut frame, &channel) {
                 return;
             }
-            let changed = authority.state.lock().ok().is_some_and(|state| {
-                !state.delivered
-                    && (state.transferred != transferred || !same_reply_owner(&state.owner, &owner))
+            let changed = authority.undelivered().is_some_and(|(owner, transferred, _)| {
+                transferred != claim.1 || !same_reply_owner(&owner, &claim.0)
             });
-            if !changed {
-                trace!(
-                    "refused",
-                    "the reply of '{channel}' was dropped: its owner is no longer valid"
-                );
+            if changed {
+                continue;
             }
-            if !changed {
+            // The owner is lost. Whoever answers may hold gates of its own here, so the owner
+            // the page's document has now is looked for in a job of the core thread, which
+            // starts with none.
+            let Some(frame) = frame.take() else {
                 return;
-            }
+            };
+            let core = ipc.core.clone();
+            core.post(Box::new(move || late_reply(&ipc, &authority, frame, &channel)));
+            return;
         }
     })
+}
+
+/// The answer of a call whose owner was lost after its dispatch, on the core thread. A page
+/// that loads a document takes the owner from the calls it has in progress and still waits for
+/// their answers (S121, macOS `docs-edit`: `app:font-family-info`). The owner its native
+/// document has now then admits the answer in the lost one's place: same view, same renderer,
+/// same native document ([`native_owner::succeeding_owner`]), and the cancellation of a
+/// transferred answer still applies. A page that is gone has no such owner and gets nothing.
+/// Such an answer leaves after whatever the core thread sent the page in between.
+fn late_reply(ipc: &Ipc, authority: &ReplyAuthority, frame: Vec<u8>, channel: &str) {
+    let Some(claim) = authority.undelivered() else {
+        return;
+    };
+    let view = claim.0.view.0;
+    let mut frame = Some(frame);
+    let current = native_owner::succeeding_owner(&ipc.views, &claim.0);
+    let delivered = current.as_ref().is_some_and(|current| {
+        deliver_reply(&ipc.outlet, authority, &claim, current, &mut frame, channel)
+    });
+    if delivered {
+        trace!(
+            "owner",
+            "the reply of '{channel}' reaches view {view} under the owner its document has now"
+        );
+    } else {
+        trace!(
+            "refused",
+            "the reply of '{channel}' of view {view} was dropped: its document is gone"
+        );
+    }
 }
 
 /// The owner a posted call is dispatched under: its own while that still verifies. Between its
@@ -444,18 +502,18 @@ pub(crate) fn invoke_verified(
         && measure.handles(&channel)
     {
         let authority = Arc::new(ReplyAuthority::new(id, owner));
-        let deliver = verified_reply(ipc.outlet.clone(), authority, id, channel.clone());
+        let deliver = verified_reply(ipc, authority, id, channel.clone());
         measure.invoke(ipc, sender.view, id, &channel, args, deliver);
         return Ok(());
     }
-    let (views, outlet) = (ipc.views.clone(), ipc.outlet.clone());
+    let shell = ipc.clone();
     ipc.core.post(Box::new(move || {
-        let Some(mut owner) = posted_owner(&views, owner, "invoke", &channel) else {
+        let Some(mut owner) = posted_owner(&shell.views, owner, "invoke", &channel) else {
             return;
         };
         let authority = Arc::new(ReplyAuthority::new(id, owner.clone()));
         owner.context = owner.context.with_request_authority(authority.clone());
-        let deliver = verified_reply(outlet, authority, id, channel.clone());
+        let deliver = verified_reply(&shell, authority, id, channel.clone());
         dispatch(
             sender,
             ChannelKind::Invoke,
@@ -874,8 +932,11 @@ mod posted_call_tests {
     use super::*;
     use crate::native::browser::testing::{TEST_NONCE, registered_context, url};
     use main_core::docs::byte_handoff::MediaViewLease;
+    use shell_contract::ipc::{CallContext, Handler, Registry, Responder};
     use shell_contract::runtime::RendererGeneration;
+    use shell_core::table::Table;
     use shell_core::wire::{Encoder, frame};
+    use std::rc::Rc;
 
     struct Inline;
 
@@ -962,17 +1023,41 @@ mod posted_call_tests {
 
         /// The page invokes a channel: the call arrives and waits for the core thread.
         fn invokes(&self, id: u64) {
+            self.invokes_channel(id, "docs:consume-new-blank");
+        }
+
+        fn invokes_channel(&self, id: u64, channel: &str) {
             let (views, view) = (&self.ipc.views, self.sender.view);
             let owner = native_owner::capture_owner(views, view, &self.created).unwrap();
             let mut encoder = Encoder::default();
             let args = encoder.values(&[]);
-            let header = serde_json::json!({
-                "id": id,
-                "channel": "docs:consume-new-blank",
-                "args": args,
-            });
+            let header = serde_json::json!({ "id": id, "channel": channel, "args": args });
             let bytes = frame(&header, &encoder.buffers);
             invoke_verified(&self.ipc, self.sender, owner, &bytes).unwrap();
+        }
+
+        /// The page invokes a channel whose handler keeps its responder, as one that answers
+        /// when a worker is done does. The call is dispatched; its answer is the test's to give.
+        fn invokes_a_slow_channel(&self, id: u64) -> Responder {
+            const SLOW: &str = "app:font-family-info";
+            struct Keeps(Rc<RefCell<Option<Responder>>>);
+            impl Handler for Keeps {
+                fn call(&self, _: &CallContext, _: Vec<IpcValue>, reply: Responder) {
+                    *self.0.borrow_mut() = Some(reply);
+                }
+            }
+            let kept = Rc::new(RefCell::new(None));
+            let mut table = Table::default();
+            let batch = shell_core::table::spec_of(SLOW).unwrap().batch;
+            let handler = Rc::new(Keeps(kept.clone()));
+            table.register(batch, SLOW, ChannelKind::Invoke, handler).unwrap();
+            install_dispatcher(Dispatcher::new(table));
+            self.invokes_channel(id, SLOW);
+            self.core_thread_runs();
+            // a later test of this thread starts without a table again
+            DISPATCHER.with(|dispatcher| *dispatcher.borrow_mut() = None);
+            let answer = kept.borrow_mut().take();
+            answer.expect("the call was dispatched")
         }
 
         fn core_thread_runs(&self) {
@@ -1019,6 +1104,53 @@ mod posted_call_tests {
         let page = DocsPage::open("posted-call-closed");
         page.invokes(9);
         page.lease.revoke();
+        page.core_thread_runs();
+        assert!(page.answered().is_empty());
+    }
+
+    #[test]
+    fn an_answer_that_comes_after_its_page_loaded_a_document_still_reaches_the_page() {
+        // with nothing in between, the answer arrives
+        let page = DocsPage::open("late-answer-at-once");
+        let answer = page.invokes_a_slow_channel(20);
+        assert!(page.answered().is_empty());
+        answer.reply(Ok(IpcValue::Null));
+        page.core_thread_runs();
+        assert_eq!(page.answered(), [20]);
+
+        // the page loads a document while the handler works, as the open of its tab does
+        let page = DocsPage::open("late-answer-document-load");
+        let answer = page.invokes_a_slow_channel(21);
+        let next = page.lease.stage_document().unwrap();
+        page.lease.commit_document(&next).unwrap();
+        answer.reply(Ok(IpcValue::Null));
+        page.core_thread_runs();
+        assert_eq!(page.answered(), [21]);
+    }
+
+    #[test]
+    fn an_answer_to_a_page_that_is_gone_reaches_nobody() {
+        // the page left its document, and a successor took the view at the very same address
+        let page = DocsPage::open("late-answer-navigation");
+        let answer = page.invokes_a_slow_channel(22);
+        let address = url("https://example.test/a");
+        assert!(page.browser.core.admit_navigation(&address));
+        page.browser.core.commit(&address);
+        let successor = page.browser.core.register_document(TEST_NONCE).unwrap();
+        assert!(page.ipc.views.bind_verified_native_origin(
+            page.sender.view,
+            &page.created,
+            &successor
+        ));
+        answer.reply(Ok(IpcValue::Null));
+        page.core_thread_runs();
+        assert!(page.answered().is_empty());
+
+        // the view ended its document session
+        let page = DocsPage::open("late-answer-closed");
+        let answer = page.invokes_a_slow_channel(23);
+        page.lease.revoke();
+        answer.reply(Ok(IpcValue::Null));
         page.core_thread_runs();
         assert!(page.answered().is_empty());
     }
