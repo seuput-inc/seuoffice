@@ -174,6 +174,9 @@ const RULES = {
       const click = stepRecord(run, (s) => s.op === 'click' && s.selector === LIST_CONFIRM)
       if (!click?.ok)
         return fail(`the launch recovery list was not answered: ${click?.error ?? 'no record'}`)
+      // the page says what is at the clicked point: something over the list takes the click
+      if (!String(click.value?.hit).startsWith('BUTTON'))
+        return fail(`the click on the launch recovery list landed on ${click.value?.hit}`)
     }
     if (spec.runs[run.number - 1].damage && run.exit.damaged.length === 0)
       return fail('there was nothing to damage before the run')
@@ -232,6 +235,22 @@ const RULES = {
     return matches
       ? pass(`${where(call)} was answered ${rule.value}`)
       : fail(`${where(call)} was answered ${shown}, not ${rule.value}`)
+  },
+
+  /** Every call the page made from a tab was answered without an error, and it made one. */
+  completed(run, rule, channel) {
+    const view = readyViews(run)[rule.view - 1]
+    if (view === undefined) return fail(`tab ${rule.view} of the run was never ready`)
+    const calls = run.calls.filter((call) => own(call, channel) && call.view === view)
+    if (calls.length === 0) return fail(`view ${view} made no call of its own`)
+    const failed = calls.find((call) => call.reply?.ok !== true)
+    if (failed)
+      return fail(
+        `${where(failed)} was answered ${failed.reply ? clip(failed.reply.error) : 'nothing'}`,
+      )
+    return pass(
+      `${where(calls[0])}: ${calls.length} call(s) answered ${calls[0].reply.value?.type}`,
+    )
   },
 
   /** A second request from the page did not hand the document over again. */

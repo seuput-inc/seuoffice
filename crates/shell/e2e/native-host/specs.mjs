@@ -24,6 +24,12 @@ import { readFileSync } from 'node:fs'
 export const PROBE_BASE = 4_000_000_000
 /** The button of the launch recovery list (apps/shell RecoveryList.tsx); every row starts at Restore. */
 export const LIST_CONFIRM = '.recovery-confirm'
+/**
+ * The Skip button of the first-run onboarding (apps/shell Onboarding.tsx). A new profile shows it
+ * over Home, the launch recovery list included; a spec that comes back to Home dismisses it in
+ * its first run, as a person does before anything else.
+ */
+const ONBOARDING_SKIP = '.onb-skip'
 /** How long after an edit the app is killed: every editor writes its recovery copy each 30 s. */
 const COPY_WAIT_MS = 45000
 const UNKNOWN = 'seu-e2e-unknown-receipt'
@@ -71,6 +77,8 @@ const openFile = (file, timeoutMs = 60000) => [
   wait(1000),
 ]
 const replay = (of, ...path) => ({ e2eReplay: of, path })
+/** The first launch of a profile, before anything else: the onboarding is skipped. */
+const firstLaunch = [{ op: 'click', selector: ONBOARDING_SKIP, timeoutMs: 30000 }, wait(1000)]
 
 /** A recorded flag (`{type: 'boolean', value}`), or undefined when the argument is something else. */
 const flag = (shape) => (shape?.type === 'boolean' ? shape.value : undefined)
@@ -156,7 +164,7 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
   const base = baseSteps(`${kind}-edit`)
   const form = ACKS[channel]
   const probes = tokenProbes(kind, channel, RECEIPT)
-  const more = { first: [], back: [], expect: [], ...extra(base) }
+  const more = { first: [], expect: [], ...extra(base) }
   const ready = base.open.at(-1).timeoutMs
   return {
     about: `${kind}: edit, crash, restore the recovery copy`,
@@ -164,7 +172,14 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
     runs: [
       {
         end: 'kill',
-        steps: [...base.open, ...base.edit, ...probes.steps, ...more.first, wait(COPY_WAIT_MS)],
+        steps: [
+          ...firstLaunch,
+          ...base.open,
+          ...base.edit,
+          ...probes.steps,
+          ...more.first,
+          wait(COPY_WAIT_MS),
+        ],
       },
       {
         steps: [
@@ -174,7 +189,6 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
           invoke(`${kind}-twice`, channel, form.with(replay('self', ...form.path))),
           ...openFile(second, ready),
           invoke(`${kind}-other-renderer`, channel, form.with(replay('other', ...form.path))),
-          ...(more.back.length > 0 ? [...openFile(base.file, ready), ...more.back] : []),
         ],
       },
     ],
@@ -206,7 +220,7 @@ function damagedVariant(kind, channel) {
   return {
     about: `${kind}: edit, crash, restore a damaged recovery copy`,
     runs: [
-      { end: 'kill', steps: [...base.open, ...base.edit, wait(COPY_WAIT_MS)] },
+      { end: 'kill', steps: [...firstLaunch, ...base.open, ...base.edit, wait(COPY_WAIT_MS)] },
       {
         damage: 'copies',
         steps: [{ op: 'click', selector: LIST_CONFIRM, timeoutMs: 60000 }, wait(20000)],
@@ -223,38 +237,75 @@ function damagedVariant(kind, channel) {
 }
 
 /**
- * The text editors also acknowledge the saved text of an ordinary open
- * (`<app>:saved-input-applied`): the first run shows that channel, the second its foreign renderer.
+ * Docs' Save As to another format writes a copy under the authority of the save itself: the
+ * menu's Save As is a save the shell owns. A Markdown or HTML copy is published and opened in
+ * its own editor, whose page acknowledges the text it was handed (`<app>:saved-input-applied`).
  */
-function savedInput(kind) {
-  const channel = `${kind}:saved-input-applied`
+function savedCopy(app, ext, other) {
+  const channel = `${app}:saved-input-applied`
   const form = ACKS[channel]
-  const probes = tokenProbes(`${kind}-saved`, channel, RECEIPT)
-  return () => ({
-    first: [
-      ...probes.steps,
-      invoke(`${kind}-saved-twice`, channel, form.with(replay('self', ...form.path))),
+  const base = baseSteps('docs-edit')
+  const copy = `docs-copy.${ext}`
+  const probes = tokenProbes(`${app}-saved`, channel, RECEIPT)
+  return {
+    about: `docs: Save As a ${ext} copy, which opens in the ${app} editor`,
+    runs: [
+      {
+        steps: [
+          ...base.open,
+          ...base.edit,
+          { op: 'shortcut', name: 'saveAs' },
+          { op: 'dialog', answer: `path:\${WORK}/${copy}`, timeoutMs: 30000 },
+          wait(8000),
+          ...openFile(copy),
+          ...probes.steps,
+          invoke(`${app}-saved-twice`, channel, form.with(replay('self', ...form.path))),
+          ...openFile(other),
+          invoke(`${app}-saved-other`, channel, form.with(replay('other', ...form.path))),
+        ],
+      },
     ],
-    back: [invoke(`${kind}-saved-other`, channel, form.with(replay('other', ...form.path)))],
     expect: [
+      { channel, scenario: 'successful-ack', rule: { kind: 'ack', run: 1, verdict: true } },
       ...probes.expect,
       {
         channel,
-        scenario: 'successful-ack',
-        rule: { kind: 'ack', run: 1, view: 1, verdict: true },
-      },
-      {
-        channel,
         scenario: 'duplicate-ack',
-        rule: { kind: 'replayRefused', run: 1, probe: `${kind}-saved-twice`, of: 'self' },
+        rule: { kind: 'replayRefused', run: 1, probe: `${app}-saved-twice`, of: 'self' },
       },
       {
         channel,
         scenario: 'foreign-renderer',
-        rule: { kind: 'replayRefused', run: 2, probe: `${kind}-saved-other`, of: 'other' },
+        rule: { kind: 'replayRefused', run: 1, probe: `${app}-saved-other`, of: 'other' },
       },
     ],
-  })
+  }
+}
+
+/** The same Save As to a PDF copy: the page prints it with the token of that save. */
+function savedPdfCopy() {
+  const base = baseSteps('docs-edit')
+  return {
+    about: 'docs: Save As a PDF copy, printed under the save',
+    runs: [
+      {
+        steps: [
+          ...base.open,
+          ...base.edit,
+          { op: 'shortcut', name: 'saveAs' },
+          { op: 'dialog', answer: 'path:${WORK}/docs-copy.pdf', timeoutMs: 30000 },
+          wait(15000),
+        ],
+      },
+    ],
+    expect: [
+      {
+        channel: 'docs:owned-print-pdf-buffer',
+        scenario: 'normal-completion',
+        rule: { kind: 'completed', run: 1, view: 1 },
+      },
+    ],
+  }
 }
 
 /** Docs also answers the PDF of a closing save: without its pending save token it refuses. */
@@ -288,7 +339,7 @@ function restoredVariant(kind, file, { fixture, channel, names, extra = () => ({
     about: `${kind}: open, crash, the tab comes back`,
     copies: { ...fixtureCopy(file, fixture), [second]: fixture },
     runs: [
-      { end: 'kill', steps: [...openFile(file), ...probes.steps, wait(3000)] },
+      { end: 'kill', steps: [...firstLaunch, ...openFile(file), ...probes.steps, wait(3000)] },
       {
         steps: [
           { op: 'waitReady', timeoutMs: 90000 },
@@ -328,7 +379,7 @@ function unreadableVariant(kind, file, { fixture, channel, scenario }) {
     about: `${kind}: open, crash, the tab comes back on a damaged file`,
     copies: fixtureCopy(file, fixture),
     runs: [
-      { end: 'kill', steps: [...openFile(file), wait(3000)] },
+      { end: 'kill', steps: [...firstLaunch, ...openFile(file), wait(3000)] },
       { damage: file, steps: [wait(30000)] },
     ],
     expect: [{ channel, scenario, rule: { kind: 'ack', run: 2, verdict: false } }],
@@ -464,13 +515,14 @@ export const SPECS = {
   'markdown-recovery': recoveryVariant('markdown', {
     channel: 'markdown:recovery-applied',
     second: 'markdown-b.md',
-    extra: savedInput('markdown'),
   }),
   'html-recovery': recoveryVariant('html', {
     channel: 'html:recovery-applied',
     second: 'html-b.html',
-    extra: savedInput('html'),
   }),
+  'docs-copy-pdf': savedPdfCopy(),
+  'docs-copy-markdown': savedCopy('markdown', 'md', 'markdown.md'),
+  'docs-copy-html': savedCopy('html', 'html', 'html.html'),
   'pdf-restore': restoredVariant('pdf', 'pdf.pdf', {
     fixture: 'multipage.pdf',
     channel: 'pdf:recovery-initialized',
@@ -520,10 +572,8 @@ export function selected(only, names = Object.keys(SPECS)) {
  */
 export const UNDRIVEN = {
   'docs:owned-print-pdf-buffer': {
-    'normal-completion':
-      'needs a closing save that exports a PDF (the Save As mode of the close prompt)',
-    'owner-loss': 'needs the tab closed while that export runs',
-    'effect-failure': 'needs that export pointed at a folder that cannot be written',
+    'owner-loss': 'needs the tab closed while the copy is being printed',
+    'effect-failure': 'needs the print of the page itself to fail',
   },
   'pdf:consume-recovery-pending': {
     'preparation-loss': 'needs the restored tab revoked while its document is being prepared',

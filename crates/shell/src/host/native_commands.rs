@@ -71,6 +71,20 @@ impl Factory {
         self.issuer
             .issue_command_recovery_child(command, selection, cancel)
     }
+
+    fn issue_tab_recovery_child(
+        &self,
+        command: &NativeInvocationOperation,
+        tab_id: &str,
+        selection: shell_contract::ipc::NativeInvocationSelection,
+        cancel: CancelToken,
+    ) -> Result<NativeInvocationOperation, String> {
+        if self.shutdown.is_cancelled() || cancel.is_cancelled() {
+            return Err("The native recovery command is no longer available.".into());
+        }
+        self.issuer
+            .issue_tab_recovery_child(command, tab_id, selection, cancel)
+    }
 }
 
 static FACTORY: OnceLock<Factory> = OnceLock::new();
@@ -128,6 +142,19 @@ pub(super) fn issue_recovery_child(
         .get()
         .ok_or("The native command factory is not installed.")?
         .issue_recovery_child(command, selection, cancel)
+}
+
+/// The selection of an unloaded tab remains bound to the native load that names the tab.
+pub(super) fn issue_tab_recovery_child(
+    command: &NativeInvocationOperation,
+    tab_id: &str,
+    selection: shell_contract::ipc::NativeInvocationSelection,
+    cancel: CancelToken,
+) -> Result<NativeInvocationOperation, String> {
+    FACTORY
+        .get()
+        .ok_or("The native command factory is not installed.")?
+        .issue_tab_recovery_child(command, tab_id, selection, cancel)
 }
 
 #[cfg(test)]

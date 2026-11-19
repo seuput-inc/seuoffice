@@ -1110,6 +1110,90 @@ fn native_recovery_activation_retains_its_exact_command_root() {
     );
 }
 
+/// A restored tab is unloaded until something needs its view. A native load of it (the launch
+/// bringing the front tab back, a menu, a service) runs under a tab command, which must be
+/// able to open that tab's recovery selection and no other.
+#[test]
+fn native_tab_load_opens_only_the_recovery_selection_of_the_tab_it_names() {
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
+    let selection = NativeInvocationSelection::RecoveryBlank {
+        surface: Surface::Docs,
+        title: "Cached".into(),
+    };
+    let issue = |root: &NativeInvocationOperation, tab: &str| {
+        issuer.issue_tab_recovery_child(root, tab, selection.clone(), CancelToken::default())
+    };
+    let named = |tab_id: &str| {
+        [
+            NativeEditorCommand::HydrateTab {
+                tab_id: tab_id.into(),
+            },
+            NativeEditorCommand::ActivateTab {
+                tab_id: tab_id.into(),
+            },
+        ]
+    };
+    for command in named("tab-1") {
+        let root = issuer.issue_command(command, CancelToken::default());
+        let child = issue(&root, "tab-1").unwrap();
+        assert!(child.is_child_of(&root));
+        assert_eq!(child.selection(), &selection);
+        assert!(issue(&root, "tab-2").is_err());
+        // the open-file issuer stays closed to a tab command
+        assert!(
+            issuer
+                .issue_command_recovery_child(&root, selection.clone(), CancelToken::default())
+                .is_err()
+        );
+        // another process lifetime
+        assert!(
+            NativeInvocationIssuer::new(CancelToken::default())
+                .issue_tab_recovery_child(&root, "tab-1", selection.clone(), CancelToken::default())
+                .is_err()
+        );
+        // only a recovery selection
+        let not_recovery = NativeInvocationSelection::NativeCommand(NativeEditorCommand::OpenHome);
+        assert!(
+            issuer
+                .issue_tab_recovery_child(&root, "tab-1", not_recovery, CancelToken::default())
+                .is_err()
+        );
+    }
+    for command in [
+        NativeEditorCommand::OpenHome,
+        NativeEditorCommand::OpenFile {
+            surface: Surface::Docs,
+            path: "cached.docx".into(),
+        },
+    ] {
+        let root = issuer.issue_command(command, CancelToken::default());
+        assert!(issue(&root, "tab-1").is_err());
+    }
+
+    // the child binds to its view under the tab command, as one of a native open does
+    let [hydrate, _] = named("tab-1");
+    let root = issuer.issue_command(hydrate, CancelToken::default());
+    let child = issue(&root, "tab-1").unwrap();
+    let created = RendererGeneration::new();
+    let (_, closure, owner) =
+        super::super::NativeClosureIssuer::new_with_owner(ViewId(22), created.clone());
+    let target = RecoveryOpenTarget::bind_command(
+        RecoveryOpenContext::NativeStartup(child.clone()),
+        ViewId(22),
+        created,
+        closure,
+        owner,
+        CommandRecoveryConstraint {
+            command: root,
+            participants: Vec::new(),
+            cancel: CancelToken::default(),
+            pending: CancelToken::default(),
+        },
+    )
+    .unwrap();
+    assert!(child.is_child_of(&target.command_constraint().unwrap().command));
+}
+
 #[test]
 fn triple_recovery_binding_keeps_exact_lineage_and_browser_owner() {
     let issuer = NativeInvocationIssuer::new(CancelToken::default());

@@ -84,6 +84,7 @@ turn on; the job checks that its executable has the marker (`ci/replay-guard.sh 
 default build hands a marker to the handler as an ordinary object, and the bundle job fails when
 an executable it built or installed has the marker's bytes (`ci/replay-guard.sh absent`).
 
-The restore runs answer the launch recovery list with a `click` on its confirm button, in the Home
-tab. The runner's `click` needs an active editor tab today, so those runs fail until `target()` of
-`src/e2e/steps.rs` falls back to the shell window's own view.
+The restore runs answer the launch recovery list with a `click` on its confirm button, on Home (the
+runner uses the shell window's own view there). A new profile shows the first-run onboarding over
+Home, the list included, so the first run of such a spec starts by clicking its Skip button, and
+the checker fails a list click that landed on anything but a button.

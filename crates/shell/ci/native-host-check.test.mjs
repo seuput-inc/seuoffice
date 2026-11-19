@@ -84,9 +84,14 @@ const hasReplay = (value) =>
   typeof value === 'object' &&
   ('e2eReplay' in value ? value : Object.values(value).map(hasReplay).find(Boolean))
 
+/** The file a Docs Save As wrote in another format, which the app opens in that format's editor */
+const isCopy = (file) => file.startsWith('docs-copy.')
+
 /**
- * Writes what a spec leaves when the app keeps every contract: each tab acknowledges what it was
- * handed, each probe is refused. `tamper(run number, lines, records)` may change that.
+ * Writes what a spec leaves when the app keeps every contract: a restored tab acknowledges its
+ * copy, a tab opened on a Save As copy acknowledges that text, a tab opened on any other file
+ * acknowledges nothing, and each probe is refused. `tamper(run number, lines, records, exit)`
+ * may change that.
  */
 function simulate(name, spec = SPECS[name], tamper = () => {}) {
   let nextView = 10
@@ -138,7 +143,7 @@ function simulate(name, spec = SPECS[name], tamper = () => {}) {
         })
       }
       if (restored) ownCall(tab, RESTORED[tab.surface], ackArgs(RESTORED[tab.surface], !damaged))
-      else if (tab.surface === 'Markdown' || tab.surface === 'Html')
+      else if (isCopy(file) && tab.surface !== 'Pdf')
         ownCall(
           tab,
           `${tab.surface.toLowerCase()}:saved-input-applied`,
@@ -151,6 +156,14 @@ function simulate(name, spec = SPECS[name], tamper = () => {}) {
     for (const [step, spelled] of scenario.steps.entries()) {
       const record = { step, op: spelled.op, ok: true, ms: 1 }
       if (spelled.op === 'open') pending = path.basename(spelled.path)
+      // the page reports what is at the clicked point
+      if (spelled.op === 'click') record.value = { selector: spelled.selector, hit: 'BUTTON.btn' }
+      // a PDF copy is printed by the page that asked for the Save As, under that save
+      if (spelled.op === 'dialog' && spelled.answer.endsWith('.pdf'))
+        ownCall(active, 'docs:owned-print-pdf-buffer', [{ type: 'number' }, text()], {
+          ok: true,
+          value: text(4096),
+        })
       if (spelled.op === 'waitReady') {
         active = becomeReady(pending)
         firstFile ??= pending
@@ -386,6 +399,14 @@ describe('the rules', () => {
       evidence: expect.stringContaining('launch recovery list was not answered'),
     })
 
+    // run 44418489799: the onboarding lay over the list and took the click
+    simulate('markdown-recovery', undefined, (number, _lines, records) => {
+      if (number === 2) records[0].value.hit = 'DIV.onb-slide'
+    })
+    expect(rowOf(check('markdown-recovery'), channel, 'successful-ack').evidence).toBe(
+      'the click on the launch recovery list landed on DIV.onb-slide',
+    )
+
     // the restored tab never became ready: the second tab's acknowledgement is not taken for it
     simulate('markdown-recovery', undefined, (number, _lines, records) => {
       if (number !== 2) return
@@ -466,6 +487,36 @@ describe('the rules', () => {
     expect(rowOf(rows, 'pdf:recovery-initialized', 'successful-ack').status).toBe('PASS')
   })
 
+  it('want every print of a PDF copy answered, and the copy acknowledged by its own editor', () => {
+    const print = 'docs:owned-print-pdf-buffer'
+    simulate('docs-copy-pdf')
+    expect(check('docs-copy-pdf')[0]).toMatchObject({
+      status: 'PASS',
+      scenario: 'normal-completion',
+    })
+    simulate('docs-copy-pdf', undefined, (_, lines) => {
+      Object.assign(
+        lines.find((line) => line.event === 'reply'),
+        { ok: false, error: 'lost' },
+      )
+    })
+    expect(check('docs-copy-pdf')[0].evidence).toContain('was answered lost')
+    simulate('docs-copy-pdf', undefined, (_, lines) => lines.splice(0))
+    expect(rowOf(check('docs-copy-pdf'), print, 'normal-completion').evidence).toContain(
+      'made no call of its own',
+    )
+
+    // the copy opened as an ordinary file: its page has nothing to acknowledge
+    const saved = 'markdown:saved-input-applied'
+    simulate('docs-copy-markdown', undefined, (_, lines) => {
+      const own = lines.findIndex((line) => line.event === 'call' && line.channel === saved)
+      lines.splice(own, 2)
+    })
+    const rows = check('docs-copy-markdown')
+    expect(rowOf(rows, saved, 'successful-ack').evidence).toContain("the page's calls: none")
+    expect(rowOf(rows, saved, 'missing-receipt').status).toBe('PASS')
+  })
+
   it('want something damaged before a damaged restore counts', () => {
     simulate('docs-damaged', undefined, (number, _lines, _records, exit) => {
       if (number === 2) exit.damaged = []
@@ -525,7 +576,7 @@ describe('the receipts', () => {
       const contract = NATIVE_CHANNEL_CONTRACTS.find((c) => c.name === receipt.channel)
       expect(receipt.scenarios.every((s) => contract.requiredScenarios.includes(s))).toBe(true)
     }
-    expect(summary(rows)).toMatch(/^\d+ PASS, 1 FAIL, 10 MISSING of 20 native-host scenarios$/)
+    expect(summary(rows)).toMatch(/^4 PASS, 1 FAIL, 5 MISSING of 10 native-host scenarios$/)
     expect(markdown(rows)).toContain('| FAIL | markdown-recovery | markdown:recovery-applied |')
     expect(exitCodeOf(rows)).toBe(1)
   })

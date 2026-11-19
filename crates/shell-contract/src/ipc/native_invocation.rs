@@ -324,6 +324,41 @@ impl NativeInvocationIssuer {
             parent: Some(command.clone()),
         })))
     }
+    /// A trusted native load of one unloaded tab (`ActivateTab`, `HydrateTab`) opens that
+    /// tab's recovery selection. The command must name `tab_id`, the tab whose entry supplies
+    /// the selection: a command for another tab, or any other command, is refused.
+    pub fn issue_tab_recovery_child(
+        &self,
+        command: &NativeInvocationOperation,
+        tab_id: &str,
+        selection: NativeInvocationSelection,
+        cancel: CancelToken,
+    ) -> Result<NativeInvocationOperation, String> {
+        let names_tab = match command.selection() {
+            NativeInvocationSelection::NativeCommand(
+                NativeEditorCommand::ActivateTab { tab_id: named }
+                | NativeEditorCommand::HydrateTab { tab_id: named },
+            ) => named == tab_id,
+            _ => false,
+        };
+        if !command.is_root_native_command()
+            || !names_tab
+            || !command.shutdown().same_token(&self.shutdown)
+            || selection.purpose() != NativeInvocationPurpose::Recovery
+        {
+            return Err("The recovery child does not belong to this native tab command.".into());
+        }
+        Ok(NativeInvocationOperation(Arc::new(Invocation {
+            selection,
+            cancel,
+            shutdown: self.shutdown.clone(),
+            lifetime: RendererGeneration::new(),
+            target: Mutex::new(None),
+            startup_owner: None,
+            native_command: false,
+            parent: Some(command.clone()),
+        })))
+    }
     /// A remembered startup command may hydrate its exact cached recovery entry.
     /// Consumers must admit all three retained operations together.
     pub fn issue_startup_command_recovery_child(

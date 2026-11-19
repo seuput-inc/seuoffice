@@ -1011,11 +1011,21 @@ pub(crate) fn prepare_open_command(
         if plan.guard().with_active(|| ()).is_none() {
             return Err("The selected recovery plan is no longer active".into());
         }
-        let child = super::native_commands::issue_recovery_child(
-            command,
-            plan.selection().clone(),
-            cancel,
-        )?;
+        let selection = plan.selection().clone();
+        // a native load of one tab opens that tab's own selection; a native open, the
+        // selection of its surface
+        let child = match command.selection() {
+            shell_contract::ipc::NativeInvocationSelection::NativeCommand(
+                shell_contract::ipc::NativeEditorCommand::ActivateTab { .. }
+                | shell_contract::ipc::NativeEditorCommand::HydrateTab { .. },
+            ) => super::native_commands::issue_tab_recovery_child(
+                command,
+                &context.tab_id,
+                selection,
+                cancel,
+            )?,
+            _ => super::native_commands::issue_recovery_child(command, selection, cancel)?,
+        };
         if plan.guard().with_active(|| ()).is_none() {
             child.finish();
             return Err("The selected recovery plan is no longer active".into());
