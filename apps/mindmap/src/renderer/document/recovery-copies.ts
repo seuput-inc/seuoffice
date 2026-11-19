@@ -79,6 +79,7 @@ export class RecoveryCopier {
   #saves = 0
   #lastInput = Number.NEGATIVE_INFINITY
   #running: Promise<RecoveryCopyOutcome> | null = null
+  #lastError: unknown = null
   #retry: ReturnType<typeof setTimeout> | null = null
   #stopped = false
 
@@ -120,7 +121,9 @@ export class RecoveryCopier {
   /** the OS is ending the session: a copy now, typed title included, after any copy under way */
   async writeNow(): Promise<RecoveryCopyOutcome> {
     if (this.#running) await this.#running
-    return this.#attempt(true)
+    const outcome = await this.#attempt(true)
+    if (outcome === 'failed') throw this.#lastError
+    return outcome
   }
 
   /** the main process dropped the last copy and the tab stayed open: the next tick copies again */
@@ -173,6 +176,7 @@ export class RecoveryCopier {
       this.#copied = revision
       return 'written'
     } catch (err) {
+      this.#lastError = err
       console.warn('[mindmap] the recovery copy could not be written:', err)
       this.#backoff = this.#timing.backoffTicks
       return 'failed'
@@ -245,8 +249,21 @@ export function useRecoveryCopies(options: RecoveryCopiesOptions): RecoveryCopie
   useEffect(() => {
     if (!ready) return
     const id = window.setInterval(() => void current.tick(), RECOVERY_COPY_TIMING.intervalMs)
-    const off = window.mindmapApi.onRecoveryCopyNow?.(() => {
-      void current.writeNow().finally(() => window.mindmapApi.sendRecoveryCopyNowDone())
+    const off = window.mindmapApi.onRecoveryCopyNow?.((generation) => {
+      void current.writeNow().then(
+        (outcome) =>
+          window.mindmapApi.sendRecoveryCopyNowDone(
+            generation,
+            outcome === 'written' || outcome === 'clean' || outcome === 'unchanged'
+              ? null
+              : `Recovery copy ${outcome}`,
+          ),
+        (error: unknown) =>
+          window.mindmapApi.sendRecoveryCopyNowDone(
+            generation,
+            error instanceof Error ? error.message : String(error),
+          ),
+      )
     })
     const offReset = window.mindmapApi.onRecoveryReset?.(() => current.reset())
     return () => {

@@ -1,0 +1,126 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p8 main</title>
+<body>
+  <p id="plain">plain text for a selection</p>
+  <div id="editable" contenteditable="true" style="width: 300px; border: 1px solid #888">
+    teh quik brown fox
+  </div>
+  <textarea id="area" rows="2" cols="30">textarea text</textarea>
+  <img
+    id="img"
+    width="40"
+    height="40"
+    alt=""
+    src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+  />
+  <iframe id="studio" src="studio/p8-child.html" width="300" height="100"></iframe>
+</body>
+<script src="probe.js"></script>
+<script>
+  // P8: the JavaScript `contextmenu` path. The shell's bridge listens for the event in the main
+  // frame, cancels it and posts it to `ipc_context_menu`; a child frame (the HWP studio) has no
+  // bridge. The events are synthetic: what is asked is what the listener does with them.
+  ;(async () => {
+    await P.loaded()
+    await P.until(() => typeof window.__seuofficeCheck === 'function', 8000)
+    // the registration answer reaches the bridge a moment after the function exists
+    await P.sleep(1500)
+    const center = (element) => {
+      const rect = element.getBoundingClientRect()
+      return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      }
+    }
+    const click = (name, element) => {
+      const { x, y } = center(element)
+      if (name === 'area') element.setSelectionRange(2, 6)
+      const event = new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: x,
+        clientY: y,
+        button: 2,
+      })
+      const returned = element.dispatchEvent(event)
+      P.log('p8.click', {
+        name,
+        x,
+        y,
+        defaultPrevented: event.defaultPrevented,
+        dispatchReturned: returned,
+      })
+    }
+    P.log('p8.env', {
+      bridge: typeof window.__seuofficeCheck,
+      internals: typeof window.__TAURI_INTERNALS__,
+      caretRangeFromPoint: typeof document.caretRangeFromPoint,
+      caretPositionFromPoint: typeof document.caretPositionFromPoint,
+    })
+    click('plain', document.getElementById('plain'))
+    click('editable', document.getElementById('editable'))
+    click('area', document.getElementById('area'))
+    click('img', document.getElementById('img'))
+
+    // what the misspelling replacement relies on: the caret under a point, and insertText
+    const editable = document.getElementById('editable')
+    const { x, y } = center(editable)
+    const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null
+    const record = {
+      rangeNode: range ? range.startContainer.nodeType : null,
+      rangeText: range ? range.startContainer.data : null,
+      offset: range ? range.startOffset : null,
+    }
+    editable.focus()
+    const selection = getSelection()
+    selection.removeAllRanges()
+    const target = document.createRange()
+    target.setStart(editable.firstChild, 0)
+    target.setEnd(editable.firstChild, 3)
+    selection.addRange(target)
+    record.selected = String(selection)
+    record.insertText = document.execCommand('insertText', false, 'the')
+    record.after = editable.textContent
+    P.log('p8.caret', record)
+    const area = document.getElementById('area')
+    area.focus()
+    area.setSelectionRange(0, 8)
+    record.areaInsert = document.execCommand('insertText', false, 'TEXT')
+    P.log('p8.area', { insert: record.areaInsert, value: area.value })
+
+    // the command itself, with the payload the bridge builds: the nonce rides along
+    let invoked
+    try {
+      invoked = {
+        ok: true,
+        value: await window.__TAURI_INTERNALS__.invoke('ipc_context_menu', {
+          isEditable: true,
+          selectionText: '',
+          srcUrl: null,
+          mediaType: 'none',
+          x: 10,
+          y: 10,
+          editFlags: { canCut: false, canCopy: false, canPaste: true, canSelectAll: true },
+          word: 'teh',
+        }),
+      }
+    } catch (error) {
+      invoked = { ok: false, error: String(error) }
+    }
+    P.log('p8.invoke', invoked)
+
+    // the child frame: no bridge there; the shell reads its location and calls its window
+    await P.until(() => window.__childReady === true, 5000)
+    const frame = document.getElementById('studio')
+    const child = { ready: window.__childReady === true }
+    try {
+      child.href = frame.contentWindow.location.href
+      child.answer = frame.contentWindow.__fire()
+    } catch (error) {
+      child.error = String(error)
+    }
+    P.log('p8.child', child)
+    P.done({})
+  })()
+</script>

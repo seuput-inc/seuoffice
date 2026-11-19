@@ -11,6 +11,7 @@ import { buildBlankDocx } from '@seuoffice/docx-engine'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 import type { DocState } from '../src/renderer/doc-state'
 import type { OpenDocxResult } from '../src/shared/ipc'
+import { loadFile, save, exportSaveAsCopy, exportPdf } from '../src/renderer/file-actions'
 import {
   hwpExportFilters,
   hwpExportTarget,
@@ -54,7 +55,6 @@ vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
 }))
 vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url', () => ({ default: 'worker.js' }))
 
-const { loadFile, save } = await import('../src/renderer/file-actions')
 type Ctx = Parameters<typeof loadFile>[0]
 
 const label = (key: string) => `<${key}>`
@@ -321,15 +321,16 @@ describe('Save As into another format', () => {
     vi.restoreAllMocks()
   })
 
-  it('asks with the exports offered on Save As, without them on a first save', async () => {
+  it('offers exports when saving an existing document under a new name', async () => {
     const ctx = await openEdited()
-    await save(ctx, true)
-    expect(desktop.pickSaveAsPath).toHaveBeenLastCalledWith(
+    expect(await save(ctx, true)).toBe(false)
+    expect(desktop.pickSaveAsPath.mock.calls[0].slice(0, 4)).toEqual([
       'report.docx',
       '/docs/report.docx',
       'docx',
       true,
-    )
+    ])
+    expectUntouched(ctx)
   })
 
   it('a Word pick still saves the document to the new path', async () => {
@@ -409,5 +410,137 @@ describe('Save As into another format', () => {
       'report-03.png',
     ])
     expectUntouched(ctx)
+  })
+
+  it.each([true, false])('owned full Save As waits for the actual copy result %s', async (ok) => {
+    const ctx = await openEdited()
+    ctx.ownedSaveRequestId = 'captured-close-save'
+    pick = { path: '/out/report.html', kind: 'html' }
+    let finish: ((value: { ok: boolean; path: string }) => void) | undefined
+    desktop.exportHtml.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    let completed = false
+    const saving = save(ctx, true).then((result) => {
+      completed = true
+      return result
+    })
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    expect(completed).toBe(false)
+    expect(desktop.exportHtml.mock.calls[0][3]).toBe('captured-close-save')
+    finish!({ ok, path: '/out/report.html' })
+    expect(await saving).toBe(ok)
+    expectUntouched(ctx)
+  })
+
+  it.each([
+    ['pdf', 'exportPdf', 6],
+    ['html', 'exportHtml', 3],
+    ['md', 'exportMarkdown', 4],
+    ['hwp', 'exportHwp', 4],
+    ['hwpx', 'exportHwp', 4],
+  ] as const)('keeps the owned save token through a %s copy', async (kind, method, tokenIndex) => {
+    const ctx = await openEdited()
+    ctx.ownedSaveRequestId = 'captured-close-save'
+    expect(await exportSaveAsCopy(ctx, { path: `/out/report.${kind}`, kind })).toBe(true)
+    expect(desktop[method].mock.calls[0][tokenIndex]).toBe('captured-close-save')
+    expectUntouched(ctx)
+  })
+
+  it('keeps the owned token through every PNG stage and page write', async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb) {
+      cb(new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }))
+    })
+    pdfPages = 3
+    const ctx = await openEdited()
+    ctx.ownedSaveRequestId = 'captured-close-save'
+    expect(
+      await exportSaveAsCopy(ctx, {
+        path: '/out/report.png',
+        kind: 'png',
+        dir: '/out',
+        pdfPath: '/tmp/owned.pdf',
+      }),
+    ).toBe(true)
+    expect(desktop.exportPdf.mock.calls[0][6]).toBe('captured-close-save')
+    expect(desktop.takeExportPdf).toHaveBeenCalledWith('/tmp/owned.pdf', 'captured-close-save')
+    expect(desktop.writeExportImage.mock.calls.map((call) => [call[1], call[3]])).toEqual([
+      ['report-01.png', 'captured-close-save'],
+      ['report-02.png', 'captured-close-save'],
+      ['report-03.png', 'captured-close-save'],
+    ])
+    expectUntouched(ctx)
+  })
+
+  it('keeps the owned token through failed whole-print and bisected chunk retries', async () => {
+    const sheet = document.querySelector('.pv-page')!
+    document.body.append(sheet.cloneNode(true))
+    desktop.exportPdf.mockResolvedValue({
+      ok: false,
+      error: 'print failed',
+      path: '/out/report.pdf',
+    })
+    desktop.printPdfBuffer = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, error: 'retry smaller' })
+      .mockResolvedValue({ ok: true, base64: btoa('%PDF') })
+    desktop.saveMergedPdf = vi.fn(async () => ({ ok: true, path: '/out/report.pdf' }))
+    const ctx = await openEdited()
+    ctx.ownedSaveRequestId = 'captured-close-save'
+    expect(await exportSaveAsCopy(ctx, { path: '/out/report.pdf', kind: 'pdf' })).toBe(true)
+    expect(desktop.exportPdf.mock.calls[0][6]).toBe('captured-close-save')
+    expect(desktop.printPdfBuffer).toHaveBeenCalledTimes(3)
+    expect(desktop.printPdfBuffer.mock.calls.map((call) => call[3])).toEqual([
+      'captured-close-save',
+      'captured-close-save',
+      'captured-close-save',
+    ])
+    expect(desktop.saveMergedPdf.mock.calls[0][1]).toHaveLength(2)
+    expect(desktop.saveMergedPdf.mock.calls[0][4]).toBe('captured-close-save')
+    expect(document.querySelectorAll('.pv-print-skip, .pv-print-tail')).toHaveLength(0)
+  })
+
+  it('does not complete a deferred owned export before the actual preview print result', async () => {
+    document.querySelectorAll('.pv-page').forEach((sheet) => sheet.remove())
+    const ctx = await openEdited()
+    ctx.ownedSaveRequestId = 'captured-close-save'
+    let completed = false
+    const saving = exportSaveAsCopy(ctx, { path: '/out/report.pdf', kind: 'pdf' }).then(
+      (result) => {
+        completed = true
+        return result
+      },
+    )
+    await vi.waitFor(() => expect(ctx.pendingMixedExportRef.current).toBeTruthy())
+    const pending = ctx.pendingMixedExportRef.current
+    if (!pending) throw new Error('missing preview export')
+    expect(pending.how.ownedSaveRequestId).toBe('captured-close-save')
+    expect(pending.awaitingPreviewMount).toBe(true)
+    expect(completed).toBe(false)
+    expect(desktop.exportPdf).not.toHaveBeenCalled()
+    const sheet = document.createElement('div')
+    sheet.className = 'pv-page'
+    sheet.style.width = '816px'
+    sheet.style.height = '1056px'
+    document.body.append(sheet)
+    let printDone: ((value: { ok: boolean; path: string }) => void) | undefined
+    desktop.exportPdf.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          printDone = resolve
+        }),
+    )
+    ctx.pendingMixedExportRef.current = false
+    const printing = exportPdf(ctx, pending.outPath, pending.how)
+    await vi.waitFor(() => expect(printDone).toBeDefined())
+    expect(completed).toBe(false)
+    expect(desktop.exportPdf.mock.calls[0][6]).toBe('captured-close-save')
+    printDone!({ ok: true, path: '/out/report.pdf' })
+    pending.resolve(await printing)
+    expect(await saving).toBe(true)
   })
 })

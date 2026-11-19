@@ -182,7 +182,9 @@ fn carries_cell_formatting_from_ods() {
         "{styles}"
     );
     assert!(
-        styles.contains(r#"<font><b/><i/><sz val="14"/><color rgb="FF0000FF"/><name val="맑은 고딕"/></font>"#),
+        styles.contains(
+            r#"<font><b/><i/><sz val="14"/><color rgb="FF0000FF"/><name val="맑은 고딕"/></font>"#
+        ),
         "{styles}"
     );
     assert!(
@@ -193,15 +195,24 @@ fn carries_cell_formatting_from_ods() {
         styles.contains(r#"<border><left style="thin"><color rgb="FF000000"/></left><right style="thin"><color rgb="FF000000"/></right><top style="thin"><color rgb="FF000000"/></top><bottom style="double"><color rgb="FFFF0000"/></bottom><diagonal/></border>"#),
         "{styles}"
     );
-    assert!(styles.contains(r#"<numFmt numFmtId="165" formatCode="yyyy-mm-dd"/>"#), "{styles}");
+    assert!(
+        styles.contains(r#"<numFmt numFmtId="165" formatCode="yyyy-mm-dd"/>"#),
+        "{styles}"
+    );
     // xf 4 is the yellow column, xf 5 the styled number
     assert!(
         styles.contains(r#"<xf numFmtId="4" fontId="1" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>"#),
         "{styles}"
     );
     let sheet = read_entry(&target, "xl/worksheets/sheet1.xml");
-    assert!(sheet.contains(r#"<c r="A1" s="5"><v>1234.5</v></c>"#), "{sheet}");
-    assert!(sheet.contains(r#"<c r="B1" s="5"/>"#), "a styled empty cell exists: {sheet}");
+    assert!(
+        sheet.contains(r#"<c r="A1" s="5"><v>1234.5</v></c>"#),
+        "{sheet}"
+    );
+    assert!(
+        sheet.contains(r#"<c r="B1" s="5"/>"#),
+        "a styled empty cell exists: {sheet}"
+    );
     // the column's default cell style reaches a cell that names none
     let yellow = sheet
         .split(r#"<c r="C1" s=""#)
@@ -209,7 +220,12 @@ fn carries_cell_formatting_from_ods() {
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_else(|| panic!("C1 has no style: {sheet}"))
         .to_owned();
-    assert!(sheet.contains(&format!(r#"<col min="3" max="3" width="8.43" style="{yellow}"/>"#)), "{sheet}");
+    assert!(
+        sheet.contains(&format!(
+            r#"<col min="3" max="3" width="8.43" style="{yellow}"/>"#
+        )),
+        "{sheet}"
+    );
     // a date keeps its style's date format; without one it takes the fallback
     let dated = sheet
         .split(r#"<c r="D1" s=""#)
@@ -217,11 +233,23 @@ fn carries_cell_formatting_from_ods() {
         .and_then(|rest| rest.split('"').next())
         .unwrap()
         .to_owned();
-    assert!(sheet.contains(&format!(r#"<c r="D1" s="{dated}"><v>46086</v></c>"#)), "{sheet}");
-    assert!(sheet.contains(r#"<c r="E1" s="1"><v>46086</v></c>"#), "{sheet}");
-    assert!(!sheet.contains(r#"<c r="F1" s="5">"#), "a number format gives way on a date: {sheet}");
+    assert!(
+        sheet.contains(&format!(r#"<c r="D1" s="{dated}"><v>46086</v></c>"#)),
+        "{sheet}"
+    );
+    assert!(
+        sheet.contains(r#"<c r="E1" s="1"><v>46086</v></c>"#),
+        "{sheet}"
+    );
+    assert!(
+        !sheet.contains(r#"<c r="F1" s="5">"#),
+        "a number format gives way on a date: {sheet}"
+    );
     // the row's default cell style is the row's style and its cell's
-    assert!(sheet.contains(r#"<row r="2" s=""#) && sheet.contains(r#"customFormat="1""#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<row r="2" s=""#) && sheet.contains(r#"customFormat="1""#),
+        "{sheet}"
+    );
 
     // the engine reads back what the importer wrote
     let mut sessions = WorkbookSessions::new();
@@ -274,31 +302,52 @@ fn carries_structure_and_the_saved_window_from_ods() {
             "<autoFilter ",
         ],
     );
-    assert!(sheet.contains(r#"<sheetPr><tabColor rgb="FF00FF00"/></sheetPr>"#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<sheetPr><tabColor rgb="FF00FF00"/></sheetPr>"#),
+        "{sheet}"
+    );
     assert!(
         sheet.contains(r#"<sheetViews><sheetView showGridLines="0" rightToLeft="1" tabSelected="1" zoomScale="150" workbookViewId="0"><pane xSplit="1" ySplit="1" topLeftCell="D2" activePane="bottomRight" state="frozen"/><selection pane="bottomRight"/></sheetView></sheetViews>"#),
         "{sheet}"
     );
     // the rows above a hidden tail are written; the default row is the hidden one
     assert!(
-        sheet.contains(r#"outlineLevelRow="1""#) && sheet.contains(r#"outlineLevelCol="1""#) && sheet.contains(r#"zeroHeight="1""#),
+        sheet.contains(r#"outlineLevelRow="1""#)
+            && sheet.contains(r#"outlineLevelCol="1""#)
+            && sheet.contains(r#"zeroHeight="1""#),
         "{sheet}"
     );
     assert!(
         sheet.contains(r#"<cols><col min="1" max="1" width="13.00" customWidth="1"/><col min="2" max="3" width="13.00" customWidth="1" hidden="1" outlineLevel="1"/><col min="4" max="4" width="13.00" customWidth="1" collapsed="1"/></cols>"#),
         "{sheet}"
     );
-    assert!(sheet.contains(r#"<row r="2" hidden="1" outlineLevel="1">"#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<row r="2" hidden="1" outlineLevel="1">"#),
+        "{sheet}"
+    );
     assert!(sheet.contains(r#"<row r="3" outlineLevel="1">"#), "{sheet}");
-    assert!(sheet.contains(r#"<row r="5">"#), "the row below the group is not hidden: {sheet}");
-    assert!(sheet.len() < 4_000, "a million hidden rows stay one flag: {}", sheet.len());
-    assert!(sheet.contains(r#"<sheetProtection sheet="1" objects="1" scenarios="1"/>"#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<row r="5">"#),
+        "the row below the group is not hidden: {sheet}"
+    );
+    assert!(
+        sheet.len() < 4_000,
+        "a million hidden rows stay one flag: {}",
+        sheet.len()
+    );
+    assert!(
+        sheet.contains(r#"<sheetProtection sheet="1" objects="1" scenarios="1"/>"#),
+        "{sheet}"
+    );
     assert!(
         sheet.contains(r#"<autoFilter ref="A1:D4"><filterColumn colId="0"><filters><filter val="y"/></filters></filterColumn><filterColumn colId="1"><customFilters><customFilter operator="greaterThan" val="5"/><customFilter operator="lessThan" val="2"/></customFilters></filterColumn></autoFilter>"#),
         "{sheet}"
     );
     let workbook = read_entry(&target, "xl/workbook.xml");
-    assert!(workbook.contains(r#"<bookViews><workbookView activeTab="1"/></bookViews><sheets>"#), "{workbook}");
+    assert!(
+        workbook.contains(r#"<bookViews><workbookView activeTab="1"/></bookViews><sheets>"#),
+        "{workbook}"
+    );
     assert!(
         workbook.contains(r#"<definedName name="_xlnm._FilterDatabase" localSheetId="1" hidden="1">'Data'!$A$1:$D$4</definedName>"#),
         "{workbook}"
@@ -309,7 +358,10 @@ fn carries_structure_and_the_saved_window_from_ods() {
     let data = &metadata.sheets[1];
     assert!(data.right_to_left && !data.show_grid_lines);
     assert_eq!(data.zoom_scale, Some(150));
-    assert_eq!(data.tab_color.as_deref().map(str::to_uppercase).as_deref(), Some("#00FF00"));
+    assert_eq!(
+        data.tab_color.as_deref().map(str::to_uppercase).as_deref(),
+        Some("#00FF00")
+    );
     assert!(data.freeze.is_some());
     assert_eq!((data.outline_level_row, data.outline_level_col), (1, 1));
     let _ = sessions.close(&metadata.session_id);
@@ -331,11 +383,17 @@ fn carries_links_notes_and_text_runs_from_ods() {
         ..Package::default()
     });
     let sheet = read_entry(&target, "xl/worksheets/sheet1.xml");
-    assert!(sheet.contains(r#"<t xml:space="preserve">site</t>"#), "the note is not part of the value: {sheet}");
+    assert!(
+        sheet.contains(r#"<t xml:space="preserve">site</t>"#),
+        "the note is not part of the value: {sheet}"
+    );
     // link text is shown in the link colour, which the cell format has to say
     let styles = read_entry(&target, "xl/styles.xml");
     assert!(styles.contains(r#"<color rgb="FF0000FF"/>"#), "{styles}");
-    assert!(sheet.contains(r#"<c r="A1" s="4" t="inlineStr">"#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<c r="A1" s="4" t="inlineStr">"#),
+        "{sheet}"
+    );
     assert!(
         sheet.contains(r#"<hyperlinks><hyperlink ref="A1" r:id="rIdL1"/><hyperlink ref="B1" location="'My sheet'!B3"/></hyperlinks>"#),
         "{sheet}"
@@ -346,7 +404,9 @@ fn carries_links_notes_and_text_runs_from_ods() {
     );
     // spaces, tabs and line breaks ODF writes as elements stay in the text
     assert!(
-        sheet.contains("<c r=\"D1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">  a  b\tc\nd\ne</t></is></c>"),
+        sheet.contains(
+            "<c r=\"D1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">  a  b\tc\nd\ne</t></is></c>"
+        ),
         "{sheet}"
     );
     assert_in_order(&sheet, &["<sheetData>", "<hyperlinks>", "<legacyDrawing "]);
@@ -355,16 +415,25 @@ fn carries_links_notes_and_text_runs_from_ods() {
         rels.contains(r#"<Relationship Id="rIdL1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/?a=1&amp;b=2" TargetMode="External"/>"#),
         "{rels}"
     );
-    assert!(rels.contains(r#"Target="../comments1.xml""#) && rels.contains(r#"Target="../drawings/vmlDrawing1.vml""#), "{rels}");
+    assert!(
+        rels.contains(r#"Target="../comments1.xml""#)
+            && rels.contains(r#"Target="../drawings/vmlDrawing1.vml""#),
+        "{rels}"
+    );
     let comments = read_entry(&target, "xl/comments1.xml");
     assert!(
         comments.contains("<authors><author>Kim &amp; Lee</author></authors>")
-            && comments.contains(r#"<comment ref="A1" authorId="0"><text><r><t xml:space="preserve">first line"#)
+            && comments.contains(
+                r#"<comment ref="A1" authorId="0"><text><r><t xml:space="preserve">first line"#
+            )
             && comments.contains("second &lt;line&gt;</t>"),
         "{comments}"
     );
     let vml = read_entry(&target, "xl/drawings/vmlDrawing1.vml");
-    assert!(vml.contains("<x:Row>0</x:Row><x:Column>0</x:Column>"), "{vml}");
+    assert!(
+        vml.contains("<x:Row>0</x:Row><x:Column>0</x:Column>"),
+        "{vml}"
+    );
     let types = read_entry(&target, "[Content_Types].xml");
     assert!(
         types.contains(r#"<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>"#)
@@ -376,7 +445,10 @@ fn carries_links_notes_and_text_runs_from_ods() {
     let mut sessions = WorkbookSessions::new();
     let metadata = sessions.open(&target).unwrap();
     assert_eq!(metadata.sheets[0].comments.len(), 1);
-    assert_eq!(metadata.sheets[0].comments[0].text, "first line\nsecond <line>");
+    assert_eq!(
+        metadata.sheets[0].comments[0].text,
+        "first line\nsecond <line>"
+    );
     let _ = sessions.close(&metadata.session_id);
 }
 
@@ -417,7 +489,10 @@ fn carries_the_print_setup_from_ods() {
             "<colBreaks ",
         ],
     );
-    assert!(sheet.contains(r#"<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>"#), "{sheet}");
+    assert!(
+        sheet.contains(r#"<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>"#),
+        "{sheet}"
+    );
     assert!(
         sheet.contains(r#"<printOptions horizontalCentered="1" verticalCentered="1" headings="1" gridLines="1"/>"#),
         "{sheet}"
@@ -469,7 +544,14 @@ fn carries_validations_and_conditional_formats_from_ods() {
         ..Package::default()
     });
     let sheet = read_entry(&target, "xl/worksheets/sheet1.xml");
-    assert_in_order(&sheet, &["<sheetData>", "<conditionalFormatting ", "<dataValidations "]);
+    assert_in_order(
+        &sheet,
+        &[
+            "<sheetData>",
+            "<conditionalFormatting ",
+            "<dataValidations ",
+        ],
+    );
     assert!(
         sheet.contains(concat!(
             r#"<conditionalFormatting sqref="A1:A4 A6:A7">"#,
@@ -522,7 +604,11 @@ fn repeats_become_column_and_row_styles_and_merges_spread_their_frame() {
         ..Package::default()
     });
     let sheet = read_entry(&target, "xl/worksheets/sheet1.xml");
-    assert!(sheet.len() < 3_000, "repeats are not written cell by cell: {}", sheet.len());
+    assert!(
+        sheet.len() < 3_000,
+        "repeats are not written cell by cell: {}",
+        sheet.len()
+    );
     let cell_style = |reference: &str| -> String {
         sheet
             .split(&format!(r#"<c r="{reference}" s=""#))
@@ -571,11 +657,24 @@ fn repeats_become_column_and_row_styles_and_merges_spread_their_frame() {
             .to_owned()
     };
     let top_right = border_of(&cell_style("C1"));
-    assert!(top_right.contains(r#"<right style="thin">"#) && top_right.contains(r#"<top style="thin">"#), "{top_right}");
-    assert!(top_right.contains("<left/>") && top_right.contains("<bottom/>"), "{top_right}");
+    assert!(
+        top_right.contains(r#"<right style="thin">"#)
+            && top_right.contains(r#"<top style="thin">"#),
+        "{top_right}"
+    );
+    assert!(
+        top_right.contains("<left/>") && top_right.contains("<bottom/>"),
+        "{top_right}"
+    );
     let bottom_middle = border_of(&cell_style("B2"));
-    assert!(bottom_middle.contains(r#"<bottom style="thin">"#), "{bottom_middle}");
-    assert!(bottom_middle.contains("<left/><right/><top/>"), "{bottom_middle}");
+    assert!(
+        bottom_middle.contains(r#"<bottom style="thin">"#),
+        "{bottom_middle}"
+    );
+    assert!(
+        bottom_middle.contains("<left/><right/><top/>"),
+        "{bottom_middle}"
+    );
     assert!(sheet.contains(r#"<mergeCell ref="A1:C2"/>"#), "{sheet}");
 }
 
@@ -647,7 +746,11 @@ fn carries_pictures_shapes_and_charts_from_ods() {
     let sheet = read_entry(&target, "xl/worksheets/sheet1.xml");
     assert_in_order(
         &sheet,
-        &["</sheetData>", r#"<drawing r:id="rId1"/>"#, r#"<legacyDrawing r:id="rIdV1"/>"#],
+        &[
+            "</sheetData>",
+            r#"<drawing r:id="rId1"/>"#,
+            r#"<legacyDrawing r:id="rIdV1"/>"#,
+        ],
     );
     let sheet_rels = read_entry(&target, "xl/worksheets/_rels/sheet1.xml.rels");
     assert!(
@@ -703,7 +806,9 @@ fn carries_pictures_shapes_and_charts_from_ods() {
         second.contains(r#"<xdr:absoluteAnchor><xdr:pos x="1080000" y="1440000"/><xdr:ext cx="720000" cy="360000"/><xdr:pic>"#),
         "{second}"
     );
-    assert!(read_entry(&target, "xl/drawings/_rels/drawing2.xml.rels").contains("../media/image1.png"));
+    assert!(
+        read_entry(&target, "xl/drawings/_rels/drawing2.xml.rels").contains("../media/image1.png")
+    );
 
     // ---- the chart part and every content type
     let chart = read_entry(&target, "xl/charts/chart1.xml");
@@ -733,11 +838,22 @@ fn carries_pictures_shapes_and_charts_from_ods() {
     // ---- the engine reads back what the importer wrote
     let mut sessions = WorkbookSessions::new();
     let metadata = sessions.open(&target).unwrap();
-    let kinds: Vec<&str> = metadata.visuals.iter().map(|visual| visual.kind.as_str()).collect();
-    assert_eq!(kinds, ["shape", "image", "shape", "chart", "image"], "{kinds:?}");
+    let kinds: Vec<&str> = metadata
+        .visuals
+        .iter()
+        .map(|visual| visual.kind.as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["shape", "image", "shape", "chart", "image"],
+        "{kinds:?}"
+    );
     let logo = &metadata.visuals[1];
     assert_eq!(logo.alt_text.as_deref(), Some("회사 & 로고"));
-    assert_eq!(logo.hyperlink.as_deref(), Some("https://example.com/?a=1&b=2"));
+    assert_eq!(
+        logo.hyperlink.as_deref(),
+        Some("https://example.com/?a=1&b=2")
+    );
     assert_eq!((logo.anchor.from_row, logo.anchor.from_column), (1, 1));
     assert_eq!((logo.anchor.to_row, logo.anchor.to_column), (4, 3));
     let chart = metadata.visuals[3].chart.as_ref().unwrap();
@@ -763,16 +879,23 @@ fn a_document_without_drawings_gets_no_drawing_parts() {
     assert!(!read_entry(&target, "[Content_Types].xml").contains("drawing"));
     // Nor a pivot cache.
     assert!(!read_entry(&target, "xl/workbook.xml").contains("pivotCaches"));
-    assert!(!has_entry(&target, "xl/pivotCache/pivotCacheDefinition1.xml"));
+    assert!(!has_entry(
+        &target,
+        "xl/pivotCache/pivotCacheDefinition1.xml"
+    ));
 }
 
 #[test]
 fn carries_pivot_tables_from_ods() {
     let text = |value: &str| {
-        format!(r#"<table:table-cell office:value-type="string"><text:p>{value}</text:p></table:table-cell>"#)
+        format!(
+            r#"<table:table-cell office:value-type="string"><text:p>{value}</text:p></table:table-cell>"#
+        )
     };
     let number = |value: &str| {
-        format!(r#"<table:table-cell office:value-type="float" office:value="{value}"><text:p>{value}</text:p></table:table-cell>"#)
+        format!(
+            r#"<table:table-cell office:value-type="float" office:value="{value}"><text:p>{value}</text:p></table:table-cell>"#
+        )
     };
     let row = |cells: &[String]| format!("<table:table-row>{}</table:table-row>", cells.concat());
     let pilot = concat!(
@@ -809,7 +932,9 @@ fn carries_pivot_tables_from_ods() {
     assert!(!has_entry(&target, "xl/pivotCache/pivotCacheRecords1.xml"));
     let workbook = read_entry(&target, "xl/workbook.xml");
     assert!(
-        workbook.ends_with(r#"<pivotCaches><pivotCache cacheId="1" r:id="rId4"/></pivotCaches></workbook>"#),
+        workbook.ends_with(
+            r#"<pivotCaches><pivotCache cacheId="1" r:id="rId4"/></pivotCaches></workbook>"#
+        ),
         "{workbook}"
     );
     assert!(
@@ -870,7 +995,9 @@ fn carries_pivot_tables_from_ods() {
     assert_eq!(result.dropped.pivots, 0);
     let content = read_entry(&back, "content.xml");
     assert!(
-        content.contains(&format!("<table:data-pilot-tables>{pilot}</table:data-pilot-tables>")),
+        content.contains(&format!(
+            "<table:data-pilot-tables>{pilot}</table:data-pilot-tables>"
+        )),
         "{content}"
     );
 }

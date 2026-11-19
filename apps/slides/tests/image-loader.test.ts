@@ -152,6 +152,22 @@ describe('metafile rasterization waits for private fonts', () => {
     expect(flushed(apply)).toEqual([[url]])
   })
 
+  it('fetches lazy EMF bytes under the WebView2 form of the URL too', async () => {
+    const bytes = new Uint8Array([1, 0, 0, 0])
+    const url = 'http://seuoffice-slide-media.localhost/archive/test?mime=image%2Fx-emf'
+    const fetchMedia = vi.fn(async () => ({
+      ok: true,
+      headers: new Headers({ 'Content-Length': String(bytes.length) }),
+      arrayBuffer: async () => bytes.buffer,
+    }))
+    vi.stubGlobal('fetch', fetchMedia)
+    const loader = createImageLoader(vi.fn())
+    loader.load([url])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMedia).toHaveBeenCalledWith(url)
+    expect(metafileToDataUrl).toHaveBeenCalledWith(bytes, 'image/x-emf', { maxSidePx: 2048 })
+  })
+
   it('refuses oversized lazy metafiles from the response length before reading bytes', async () => {
     const arrayBuffer = vi.fn()
     vi.stubGlobal(
@@ -202,4 +218,25 @@ it('sets anonymous CORS before assigning slide media sources only', () => {
     ['seuoffice-slide-media://archive/image', 'anonymous'],
     ['data:image/png;base64,AA==', null],
   ])
+})
+
+it('treats the WebView2 form of a slide media URL as slide media', () => {
+  const crossOriginAtAssignment = (url: string): string | null => {
+    let seen: string | null = 'unset'
+    const image = {
+      crossOrigin: null as string | null,
+      set src(_url: string) {
+        seen = this.crossOrigin
+      },
+    }
+    setImageSource(image as HTMLImageElement, url)
+    return seen
+  }
+  expect(
+    crossOriginAtAssignment(
+      'http://seuoffice-slide-media.localhost/archive/image?mime=image%2Fpng',
+    ),
+  ).toBe('anonymous')
+  expect(crossOriginAtAssignment('http://example.org/a.png')).toBeNull()
+  expect(crossOriginAtAssignment('http://other.localhost/archive/image')).toBeNull()
 })

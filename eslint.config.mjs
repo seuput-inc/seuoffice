@@ -88,4 +88,10 @@ export default tseslint.config(
       '@typescript-eslint/no-require-imports': 'off',
     },
   },
+  {
+    files: ['crates/shell/bridge/invoke-system.js'],
+    languageOptions: {
+      globals: { ...globals.browser, __INVOKE_KEY__: 'readonly' },
+    },
+  },
 )

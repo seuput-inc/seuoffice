@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p9 main</title>
+<body>
+  <iframe id="child" src="p9-child.html" width="300" height="100"></iframe>
+</body>
+<script src="probe.js"></script>
+<script>
+  // P9: the popups a page asks for. Each variant is run by the shell on demand
+  // (`window.__variant(name)`); the shell's `on_new_window` hook sees the request.
+  const target = (variant) => location.origin + '/probe/p9-target.html?v=' + variant
+  window.__variant = (name) => {
+    let opened
+    if (name === 'open') {
+      opened = window.open(target('open'))
+    } else if (name === 'features') {
+      opened = window.open(target('features'), 'probePopup', 'width=300,height=200')
+    } else if (name === 'anchor') {
+      const anchor = document.createElement('a')
+      anchor.href = target('anchor')
+      anchor.target = '_blank'
+      document.body.appendChild(anchor)
+      anchor.click()
+      opened = 'clicked'
+    } else if (name === 'iframe') {
+      opened = document.getElementById('child').contentWindow.__open(target('iframe'))
+    }
+    P.log('p9.variant', {
+      name,
+      returned: opened === null ? 'null' : typeof opened,
+      userActivation: navigator.userActivation ? navigator.userActivation.isActive : null,
+    })
+    return true
+  }
+  // a keydown is a user activation: the popup asked from it is not an automatic one
+  addEventListener('keydown', (event) => {
+    if (event.key === 'x') {
+      const opened = window.open(target('key'))
+      P.log('p9.variant', {
+        name: 'key',
+        trusted: event.isTrusted,
+        returned: opened === null ? 'null' : typeof opened,
+      })
+    }
+  })
+  ;(async () => {
+    await P.loaded()
+    await P.until(() => typeof window.__seuofficeCheck === 'function', 8000)
+    await P.sleep(1200)
+    P.log('p9.ready', { bridge: typeof window.__seuofficeCheck })
+    P.done({})
+  })()
+</script>

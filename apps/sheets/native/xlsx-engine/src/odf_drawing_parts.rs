@@ -20,8 +20,8 @@ use zip::ZipArchive;
 use crate::SidecarError;
 use crate::odf_chart_parts;
 use crate::odf_drawings::{
-    CustomPath, DrawStyle, DrawStyles, EMU_PER_POINT, Family, Gradient, Outline, PathCommand, Shape,
-    ShapeKind, SheetDrawings, Span, media_extension,
+    CustomPath, DrawStyle, DrawStyles, EMU_PER_POINT, Family, Gradient, Outline, PathCommand,
+    Shape, ShapeKind, SheetDrawings, Span, media_extension,
 };
 use crate::xlsx_package::{SheetArt, escape_xml};
 use crate::xml_util::{copy_entry_bounded, decode_uri_path};
@@ -114,8 +114,13 @@ impl Axis {
             remaining -= f64::from(count) * size;
             cursor = last + 1;
         }
-        within(cursor, self.limit.saturating_sub(cursor), self.default, remaining)
-            .unwrap_or((self.limit - 1, 0.0))
+        within(
+            cursor,
+            self.limit.saturating_sub(cursor),
+            self.default,
+            remaining,
+        )
+        .unwrap_or((self.limit - 1, 0.0))
     }
 }
 
@@ -164,7 +169,11 @@ impl SheetGeometry {
                 default_column,
                 MAX_COLUMN,
             ),
-            rows: Axis::new(sheet.rows.iter().map(shown(default_row)), default_row, MAX_ROW),
+            rows: Axis::new(
+                sheet.rows.iter().map(shown(default_row)),
+                default_row,
+                MAX_ROW,
+            ),
         }
     }
 }
@@ -180,9 +189,21 @@ struct Marker {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Anchor {
-    TwoCell { from: Marker, to: Marker },
-    OneCell { from: Marker, width: f64, height: f64 },
-    Absolute { x: f64, y: f64, width: f64, height: f64 },
+    TwoCell {
+        from: Marker,
+        to: Marker,
+    },
+    OneCell {
+        from: Marker,
+        width: f64,
+        height: f64,
+    },
+    Absolute {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
 }
 
 /// Where a drawing goes: its anchor, and the unturned frame from the sheet's
@@ -229,12 +250,12 @@ fn settle(index: u32, offset: f64, source: &Axis, target: &Axis) -> Settled {
     };
     // The far edge of a cell is the near edge of the next one, which is how
     // Excel names it.
-    let (index, offset) = if to > 0.0 && to - offset < EMU_PER_PIXEL / 2.0 && index + 1 < source.limit
-    {
-        (index + 1, 0.0)
-    } else {
-        (index, offset)
-    };
+    let (index, offset) =
+        if to > 0.0 && to - offset < EMU_PER_PIXEL / 2.0 && index + 1 < source.limit {
+            (index + 1, 0.0)
+        } else {
+            (index, offset)
+        };
     Settled {
         index,
         offset,
@@ -373,13 +394,22 @@ fn anchor_xml(anchor: &Anchor, object: &str) -> String {
             marker_xml("from", from),
             marker_xml("to", to),
         ),
-        Anchor::OneCell { from, width, height } => format!(
+        Anchor::OneCell {
+            from,
+            width,
+            height,
+        } => format!(
             r#"<xdr:oneCellAnchor>{}<xdr:ext cx="{}" cy="{}"/>{object}<xdr:clientData/></xdr:oneCellAnchor>"#,
             marker_xml("from", from),
             emu(*width),
             emu(*height),
         ),
-        Anchor::Absolute { x, y, width, height } => format!(
+        Anchor::Absolute {
+            x,
+            y,
+            width,
+            height,
+        } => format!(
             r#"<xdr:absoluteAnchor><xdr:pos x="{}" y="{}"/><xdr:ext cx="{}" cy="{}"/>{object}<xdr:clientData/></xdr:absoluteAnchor>"#,
             emu(*x),
             emu(*y),
@@ -392,7 +422,13 @@ fn anchor_xml(anchor: &Anchor, object: &str) -> String {
 /// XML cannot carry control characters; a line break in a name is a space.
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|character| if character == '\n' || character == '\r' { ' ' } else { character })
+        .map(|character| {
+            if character == '\n' || character == '\r' {
+                ' '
+            } else {
+                character
+            }
+        })
         .filter(|character| *character == '\t' || (*character as u32) >= 0x20)
         .collect()
 }
@@ -511,7 +547,10 @@ fn fill_xml(style: &DrawStyle, filled: bool, styles: &DrawStyles) -> String {
 /// angle in sixty-thousandths of a degree.
 fn gradient_fill(gradient: &Gradient, opacity: Option<f64>) -> String {
     let alpha = match opacity.filter(|opacity| (0.0..1.0).contains(opacity)) {
-        Some(opacity) => format!(r#"<a:alpha val="{}"/>"#, (opacity * 100_000.0).round() as i64),
+        Some(opacity) => format!(
+            r#"<a:alpha val="{}"/>"#,
+            (opacity * 100_000.0).round() as i64
+        ),
         None => String::new(),
     };
     let stops: String = gradient
@@ -686,7 +725,10 @@ fn text_body(shape: &Shape, graphic: &DrawStyle, styles: &DrawStyles) -> String 
             if !attributes.is_empty() || !children.is_empty() {
                 body.push_str(&format!("<a:rPr{attributes}>{children}</a:rPr>"));
             }
-            body.push_str(&format!("<a:t>{}</a:t></a:r>", escape_xml(&printable(&run.text))));
+            body.push_str(&format!(
+                "<a:t>{}</a:t></a:r>",
+                escape_xml(&printable(&run.text))
+            ));
         }
         body.push_str("</a:p>");
     }
@@ -753,7 +795,10 @@ impl DrawingWriter {
 
     /// The chart part for the chart document in `directory`.
     fn chart(&mut self, directory: &str) -> Option<String> {
-        let mut entry = self.archive.by_name(&format!("{directory}/content.xml")).ok()?;
+        let mut entry = self
+            .archive
+            .by_name(&format!("{directory}/content.xml"))
+            .ok()?;
         let declared = entry.size();
         if declared > MAX_CHART_BYTES {
             return None;
@@ -797,7 +842,10 @@ impl DrawingWriter {
             };
             let mut described = String::new();
             if let Some(description) = &shape.description {
-                described.push_str(&format!(r#" descr="{}""#, escape_xml(&printable(description))));
+                described.push_str(&format!(
+                    r#" descr="{}""#,
+                    escape_xml(&printable(description))
+                ));
             }
             if let Some(title) = &shape.title {
                 described.push_str(&format!(r#" title="{}""#, escape_xml(&printable(title))));
@@ -826,7 +874,8 @@ impl DrawingWriter {
                     let embed = match relationships.media.get(&part) {
                         Some(id) => id.clone(),
                         None => {
-                            let target = format!("../media/{}", part.rsplit('/').next().unwrap_or(""));
+                            let target =
+                                format!("../media/{}", part.rsplit('/').next().unwrap_or(""));
                             let id = relationships.add("image", &target, false);
                             relationships.media.insert(part, id.clone());
                             id
@@ -995,7 +1044,10 @@ mod tests {
         let pixel = EMU_PER_PIXEL;
         assert_eq!(geometry.columns.size(1), 64.0 * pixel);
         assert_eq!(geometry.columns.size(2), 100.0 * pixel);
-        assert_eq!(geometry.columns.origin(4), (64.0 + 64.0 + 100.0 + 64.0) * pixel);
+        assert_eq!(
+            geometry.columns.origin(4),
+            (64.0 + 64.0 + 100.0 + 64.0) * pixel
+        );
         assert_eq!(geometry.rows.origin(3), (20.0 + 40.0 + 40.0) * pixel);
         let locate = |position: f64| geometry.columns.locate(position);
         assert_eq!(locate(0.0), (0, 0.0));
@@ -1009,7 +1061,16 @@ mod tests {
         let geometry = geometry();
         let pixel = EMU_PER_PIXEL;
         // Inside the cell: kept as written, with the size as an extent.
-        let placed = place(&shape(Some((1, 2)), 10.0 * pixel, 5.0 * pixel, 50.0 * pixel, 30.0 * pixel), &geometry);
+        let placed = place(
+            &shape(
+                Some((1, 2)),
+                10.0 * pixel,
+                5.0 * pixel,
+                50.0 * pixel,
+                30.0 * pixel,
+            ),
+            &geometry,
+        );
         assert_eq!(
             placed.anchor,
             Anchor::OneCell {
@@ -1025,7 +1086,10 @@ mod tests {
         );
         assert_eq!((placed.x, placed.y), (138.0 * pixel, 25.0 * pixel));
         // From A1 with an offset three columns wide.
-        let placed = place(&shape(Some((0, 0)), 240.0 * pixel, 70.0 * pixel, pixel, pixel), &geometry);
+        let placed = place(
+            &shape(Some((0, 0)), 240.0 * pixel, 70.0 * pixel, pixel, pixel),
+            &geometry,
+        );
         match placed.anchor {
             Anchor::OneCell { from, .. } => {
                 assert_eq!((from.column, from.column_offset), (3, 12.0 * pixel));
@@ -1034,7 +1098,10 @@ mod tests {
             other => panic!("{other:?}"),
         }
         // A negative offset walks back.
-        let placed = place(&shape(Some((1, 1)), -10.0 * pixel, -5.0 * pixel, pixel, pixel), &geometry);
+        let placed = place(
+            &shape(Some((1, 1)), -10.0 * pixel, -5.0 * pixel, pixel, pixel),
+            &geometry,
+        );
         match placed.anchor {
             Anchor::OneCell { from, .. } => {
                 assert_eq!((from.column, from.column_offset), (0, 54.0 * pixel));
@@ -1076,7 +1143,13 @@ mod tests {
         );
         // An end cell before the start is not an end: the far corner of the
         // frame says where it ends.
-        let mut line = shape(Some((0, 0)), 300.0 * pixel, 100.0 * pixel, 60.0 * pixel, 80.0 * pixel);
+        let mut line = shape(
+            Some((0, 0)),
+            300.0 * pixel,
+            100.0 * pixel,
+            60.0 * pixel,
+            80.0 * pixel,
+        );
         line.end = Some(EndMarker {
             row: 0,
             column: 0,
@@ -1094,7 +1167,10 @@ mod tests {
         }
         // Without an end cell the size stands.
         line.end = None;
-        assert!(matches!(place(&line, &geometry).anchor, Anchor::OneCell { .. }));
+        assert!(matches!(
+            place(&line, &geometry).anchor,
+            Anchor::OneCell { .. }
+        ));
         // Pinned to the page.
         let pinned = place(&shape(None, 7.0, 9.0, 11.0, 13.0), &geometry);
         assert_eq!(
@@ -1142,7 +1218,10 @@ mod tests {
         });
         // 30 pixels down from the top is half way into the third row as
         // the document counts, and stays half way into it.
-        let placed = place(&shape(Some((0, 0)), 0.0, 30.0 * pixel, pixel, pixel), &geometry);
+        let placed = place(
+            &shape(Some((0, 0)), 0.0, 30.0 * pixel, pixel, pixel),
+            &geometry,
+        );
         match placed.anchor {
             Anchor::OneCell { from, .. } => {
                 assert_eq!((from.row, from.row_offset), (2, 10.0 * pixel));
@@ -1151,7 +1230,10 @@ mod tests {
         }
         assert_eq!(placed.y, 50.0 * pixel);
         // The hidden row takes no room on either grid.
-        let placed = place(&shape(Some((0, 0)), 0.0, 36.0 * pixel, pixel, pixel), &geometry);
+        let placed = place(
+            &shape(Some((0, 0)), 0.0, 36.0 * pixel, pixel, pixel),
+            &geometry,
+        );
         match placed.anchor {
             Anchor::OneCell { from, .. } => assert_eq!((from.row, from.row_offset), (4, 0.0)),
             other => panic!("{other:?}"),
@@ -1163,11 +1245,21 @@ mod tests {
     fn a_shape_on_its_side_is_anchored_around_its_turned_frame() {
         let geometry = geometry();
         let pixel = EMU_PER_PIXEL;
-        let mut turned = shape(Some((0, 0)), 20.0 * pixel, 40.0 * pixel, 100.0 * pixel, 20.0 * pixel);
+        let mut turned = shape(
+            Some((0, 0)),
+            20.0 * pixel,
+            40.0 * pixel,
+            100.0 * pixel,
+            20.0 * pixel,
+        );
         turned.rotation = 90.0;
         let placed = place(&turned, &geometry);
         match placed.anchor {
-            Anchor::OneCell { from, width, height } => {
+            Anchor::OneCell {
+                from,
+                width,
+                height,
+            } => {
                 assert_eq!((width, height), (20.0 * pixel, 100.0 * pixel));
                 assert_eq!((from.column, from.column_offset), (0, 60.0 * pixel));
                 assert_eq!((from.row, from.row_offset), (0, 0.0));
@@ -1213,7 +1305,10 @@ mod tests {
             fill_xml(&style, true, &DrawStyles::default()),
             r#"<a:solidFill><a:srgbClr val="00FF00"><a:alpha val="50000"/></a:srgbClr></a:solidFill>"#
         );
-        assert_eq!(fill_xml(&style, false, &DrawStyles::default()), "<a:noFill/>");
+        assert_eq!(
+            fill_xml(&style, false, &DrawStyles::default()),
+            "<a:noFill/>"
+        );
         let bare = DrawStyle::default();
         assert_eq!(
             line_xml(&bare, false, &DrawStyles::default()),
@@ -1224,7 +1319,10 @@ mod tests {
             fill: Some("none".into()),
             ..DrawStyle::default()
         };
-        assert_eq!(line_xml(&none, true, &DrawStyles::default()), "<a:ln><a:noFill/></a:ln>");
+        assert_eq!(
+            line_xml(&none, true, &DrawStyles::default()),
+            "<a:ln><a:noFill/></a:ln>"
+        );
         assert_eq!(fill_xml(&none, true, &DrawStyles::default()), "<a:noFill/>");
     }
 
@@ -1243,7 +1341,10 @@ mod tests {
         // A plain shape with wrapped text: top, lines from the edge.
         let wrapped = DrawStyle::default();
         let body = text_body(&figure, &wrapped, &styles);
-        assert!(body.starts_with("<xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r>"), "{body}");
+        assert!(
+            body.starts_with("<xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r>"),
+            "{body}"
+        );
         // A custom shape puts its text in the middle of its height, and
         // unwrapped text that fills the width is centred.
         figure.figure = true;
@@ -1273,12 +1374,18 @@ mod tests {
     #[test]
     fn writes_the_dash_and_the_gradient_a_style_names() {
         let mut styles = DrawStyles::default();
-        styles.dashes.insert("Long_20_Dash_20_Dot".into(), "lgDashDot");
+        styles
+            .dashes
+            .insert("Long_20_Dash_20_Dot".into(), "lgDashDot");
         styles.gradients.insert(
             "Sky".into(),
             Gradient {
                 angle: 90.0,
-                stops: vec![(0.0, "FF0000".into()), (0.5, "FFFFFF".into()), (1.0, "0000FF".into())],
+                stops: vec![
+                    (0.0, "FF0000".into()),
+                    (0.5, "FFFFFF".into()),
+                    (1.0, "0000FF".into()),
+                ],
             },
         );
         let style = DrawStyle {

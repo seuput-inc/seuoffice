@@ -18,6 +18,18 @@ function applyTheme(theme: DocPickerTheme): void {
   else document.documentElement.setAttribute('data-theme', theme)
 }
 
+function ReadyPicker({ lang }: { lang: Parameters<typeof DocPickerWindow>[0]['lang'] }) {
+  React.useEffect(() => {
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        void api.ready()
+      })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [])
+  return <DocPickerWindow lang={lang} api={api} />
+}
+
 const api = window.aiOfficeDocPicker
 // language and theme land before first paint so the window never flashes the other one
 void api.getInit().then(({ lang, theme }) => {
@@ -27,7 +39,7 @@ void api.getInit().then(({ lang, theme }) => {
   document.documentElement.dir = htmlDir(lang)
   createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-      <DocPickerWindow lang={lang} api={api} />
+      <ReadyPicker lang={lang} />
     </React.StrictMode>,
   )
 })

@@ -43,8 +43,8 @@ use crate::ods_styles::{DEFAULT_CELL_STYLE, ResolvedStyle, StyleRegistry, ValueK
 use crate::xlsx_package::escape_xml;
 use crate::{
     CellRange, CellRecord, CellStyle, CellValue, CommentInfo, FilterColumnCriteria, MergedRange,
-    RangeResult, RichRun, RowProperty, SheetMetadata, SidecarError, VisualObject,
-    WorkbookMetadata, WorkbookSessions,
+    RangeResult, RichRun, RowProperty, SheetMetadata, SidecarError, VisualObject, WorkbookMetadata,
+    WorkbookSessions,
 };
 
 /// Excel's grid limits, the same ones the reader enforces.
@@ -244,7 +244,8 @@ fn sheet_frames(
         }
     }
     for image in &sheet.cell_images {
-        if let Some(frame) = drawings.cell_image(&geometry, image.row, image.column, &image.media_path)
+        if let Some(frame) =
+            drawings.cell_image(&geometry, image.row, image.column, &image.media_path)
         {
             frames
                 .entry((image.row, image.column))
@@ -409,7 +410,12 @@ fn write_document(
     // The names a pivot table may read from are looked up once, and only for
     // a workbook that has a pivot table.
     let pivot_sources: NamedSources = match package.as_deref() {
-        Some(package) if metadata.sheets.iter().any(|sheet| !sheet.pivot_tables.is_empty()) => {
+        Some(package)
+            if metadata
+                .sheets
+                .iter()
+                .any(|sheet| !sheet.pivot_tables.is_empty()) =>
+        {
             let parts: Vec<(String, String)> = metadata
                 .sheets
                 .iter()
@@ -435,7 +441,10 @@ fn write_document(
                 .and_then(|(package, part)| worksheet_tail(&package, &part));
             let extras = tail.as_deref().map(parse_print_extras).unwrap_or_default();
             let rule_extras = tail.as_deref().map(parse_rule_extras).unwrap_or_default();
-            let sparkline_extras = tail.as_deref().map(parse_sparkline_extras).unwrap_or_default();
+            let sparkline_extras = tail
+                .as_deref()
+                .map(parse_sparkline_extras)
+                .unwrap_or_default();
             drop(tail);
             let (areas, lost) = validations.register(&sheet.name, &wide.data_validations, &names);
             counters.dropped.validations += lost;
@@ -460,12 +469,9 @@ fn write_document(
             counters.dropped.sparklines = counters.dropped.sparklines.saturating_sub(written);
             for pivot in &sheet.pivot_tables {
                 // A pivot table that is written leaves the count of losses.
-                if let Some(xml) = package
-                    .as_deref()
-                    .and_then(|package| {
-                        pivot_table_xml(package, &sheet.name, pivot, &pivot_sources)
-                    })
-                {
+                if let Some(xml) = package.as_deref().and_then(|package| {
+                    pivot_table_xml(package, &sheet.name, pivot, &pivot_sources)
+                }) {
                     data_pilots.push_str(&xml);
                     counters.dropped.pivots = counters.dropped.pivots.saturating_sub(1);
                 }
@@ -604,7 +610,9 @@ fn write_content_xml(
         // The null date tells a reader how to read every numeric date it will
         // meet; without it the 1904 workbook's serials would land four years
         // and a day off.
-        header.push_str(r#"><table:null-date table:date-value="1904-01-01"/></table:calculation-settings>"#);
+        header.push_str(
+            r#"><table:null-date table:date-value="1904-01-01"/></table:calculation-settings>"#,
+        );
     } else {
         header.push_str("/>");
     }
@@ -695,7 +703,8 @@ fn sparkline_groups_xml(
             }
             None => {}
         }
-        attributes.push_str(r#" calcext:min-axis-type="individual" calcext:max-axis-type="individual""#);
+        attributes
+            .push_str(r#" calcext:min-axis-type="individual" calcext:max-axis-type="individual""#);
         // The series colour and the colour of negative points come resolved
         // from the model; Excel's own stand in where neither says.
         let stated = |slot: &str| {
@@ -709,14 +718,16 @@ fn sparkline_groups_xml(
         };
         attributes.push_str(&format!(
             r#" calcext:color-series="{}" calcext:color-negative="{}""#,
-            escape_xml(&hex(group.color.as_deref().or(stated("color-series")).unwrap_or("#376092"))),
-            escape_xml(&hex(
-                group
-                    .negative_color
-                    .as_deref()
-                    .or(stated("color-negative"))
-                    .unwrap_or("#d00000")
-            )),
+            escape_xml(&hex(group
+                .color
+                .as_deref()
+                .or(stated("color-series"))
+                .unwrap_or("#376092"))),
+            escape_xml(&hex(group
+                .negative_color
+                .as_deref()
+                .or(stated("color-negative"))
+                .unwrap_or("#d00000"))),
         ));
         // Every colour is written, as a reader of the format writes them:
         // one left out would come back as whatever the next writer assumes.
@@ -786,8 +797,16 @@ fn settings_xml(metadata: &WorkbookMetadata) -> String {
             // Split mode 2 is "frozen". The pane positions say where each
             // pane starts scrolling: without them the lower right pane would
             // begin at A1 again and show the frozen cells twice.
-            items.push_str(&config_item("HorizontalSplitMode", "short", if columns > 0 { 2 } else { 0 }));
-            items.push_str(&config_item("VerticalSplitMode", "short", if rows > 0 { 2 } else { 0 }));
+            items.push_str(&config_item(
+                "HorizontalSplitMode",
+                "short",
+                if columns > 0 { 2 } else { 0 },
+            ));
+            items.push_str(&config_item(
+                "VerticalSplitMode",
+                "short",
+                if rows > 0 { 2 } else { 0 },
+            ));
             items.push_str(&config_item("HorizontalSplitPosition", "int", columns));
             items.push_str(&config_item("VerticalSplitPosition", "int", rows));
             let active = match (columns > 0, rows > 0) {
@@ -946,7 +965,10 @@ struct StagingFiles {
 
 impl StagingFiles {
     fn new(target: &Path) -> Self {
-        let directory = target.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let directory = target
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         let stem = target
             .file_name()
             .and_then(|name| name.to_str())
@@ -1342,7 +1364,10 @@ fn export_box(sheet: &SheetMetadata) -> (usize, usize) {
     let mut columns = sheet.column_count.clamp(1, MAX_COLUMNS);
     if rows.saturating_mul(columns) > MAX_EXPORT_CELLS {
         rows = sheet.value_row_count.unwrap_or(rows).clamp(1, rows);
-        columns = sheet.value_column_count.unwrap_or(columns).clamp(1, columns);
+        columns = sheet
+            .value_column_count
+            .unwrap_or(columns)
+            .clamp(1, columns);
     }
     (rows, columns)
 }
@@ -1441,7 +1466,11 @@ impl Nesting {
             out.push_str(&format!(
                 "<{}{}>",
                 self.group,
-                if collapsed { r#" table:display="false""# } else { "" }
+                if collapsed {
+                    r#" table:display="false""#
+                } else {
+                    ""
+                }
             ));
             self.depth += 1;
         }
@@ -1542,7 +1571,11 @@ fn write_table(
             run += 1;
         }
         if !nesting.matches(entry.level, entry.title) {
-            out.write_all(nesting.enter(entry.level, entry.title, entry.hidden).as_bytes())?;
+            out.write_all(
+                nesting
+                    .enter(entry.level, entry.title, entry.hidden)
+                    .as_bytes(),
+            )?;
         }
         let mut attributes = String::new();
         // A column without a width still says one: left unsaid, a reader
@@ -1780,7 +1813,11 @@ fn write_table(
         if next <= row {
             break;
         }
-        let cells = empty_row_cells(&validation_spans(&area_active), &column_defaults, styled_columns);
+        let cells = empty_row_cells(
+            &validation_spans(&area_active),
+            &column_defaults,
+            styled_columns,
+        );
         sink.empty_rows(next - row, &cells)?;
         row = next;
     }
@@ -1966,7 +2003,9 @@ impl RowContext<'_> {
     /// The style index of a cell elsewhere in the window, when it has one.
     fn style_index_at(&self, row: usize, column: usize) -> Option<usize> {
         let cells = self.window.get(&row)?;
-        let index = cells.binary_search_by_key(&column, |cell| cell.column).ok()?;
+        let index = cells
+            .binary_search_by_key(&column, |cell| cell.column)
+            .ok()?;
         cells[index].style_index.filter(|index| *index != 0)
     }
 }
@@ -1988,8 +2027,10 @@ fn merged_style(
             .style_index_at(row, column)
             .and_then(|index| context.styles.get(index))
     };
-    let right = style_at(merge.start_row, merge.end_column).and_then(|style| style.border_right.clone());
-    let bottom = style_at(merge.end_row, merge.start_column).and_then(|style| style.border_bottom.clone());
+    let right =
+        style_at(merge.start_row, merge.end_column).and_then(|style| style.border_right.clone());
+    let bottom =
+        style_at(merge.end_row, merge.start_column).and_then(|style| style.border_bottom.clone());
     if right.is_none() && bottom.is_none() {
         return own;
     }
@@ -2005,7 +2046,11 @@ fn merged_style(
                 .flatten()
         })
         .unwrap_or(0);
-    let mut style = context.styles.get(index).cloned().unwrap_or_else(|| context.base.clone());
+    let mut style = context
+        .styles
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| context.base.clone());
     let mut changed = false;
     if style.border_right.is_none() && right.is_some() {
         style.border_right = right;
@@ -2090,9 +2135,9 @@ fn write_row<W: Write>(
     }
     // A row with its own default style paints every cell of the row, so its
     // empty cells have to be there to carry it.
-    let row_style_name = row_context.row_style.and_then(|index| {
-        style_at(index, context, registry, resolved).name
-    });
+    let row_style_name = row_context
+        .row_style
+        .and_then(|index| style_at(index, context, registry, resolved).name);
     if row_style_name.is_some() {
         last = Some(last.map_or(row_context.columns - 1, |last| {
             last.max(row_context.columns - 1)
@@ -2150,8 +2195,14 @@ fn write_row<W: Write>(
                     .copied()
                 {
                     cell_index += 1;
-                    let style =
-                        resolve_style(Some(record), row_context, column, context, registry, resolved);
+                    let style = resolve_style(
+                        Some(record),
+                        row_context,
+                        column,
+                        context,
+                        registry,
+                        resolved,
+                    );
                     push_cell(
                         &mut xml,
                         "table:covered-table-cell",
@@ -2420,8 +2471,7 @@ fn push_cell(
         }
     }
     let formula = record.and_then(|record| record.formula.as_deref());
-    let translated =
-        formula.and_then(|formula| odf_formula::to_odf_with(formula, context.names));
+    let translated = formula.and_then(|formula| odf_formula::to_odf_with(formula, context.names));
     if formula.is_some() && translated.is_none() {
         counters.formulas_dropped += 1;
     }
@@ -2439,10 +2489,7 @@ fn push_cell(
                 range.end_row - range.start_row + 1,
             ));
         }
-        attributes.push_str(&format!(
-            r#" table:formula="{}""#,
-            escape_xml(translated)
-        ));
+        attributes.push_str(&format!(r#" table:formula="{}""#, escape_xml(translated)));
     }
     let key = (row_context.row, column);
     let link = row_context.links.get(&key).and_then(|target| {
@@ -2469,7 +2516,9 @@ fn push_cell(
             attributes.push_str(r#" office:value-type="string""#);
             let runs = record
                 .and_then(|record| record.rich.as_deref())
-                .filter(|runs| runs.iter().map(|run| run.text.as_str()).collect::<String>() == *text);
+                .filter(|runs| {
+                    runs.iter().map(|run| run.text.as_str()).collect::<String>() == *text
+                });
             text_paragraphs(text, runs, link.as_deref(), registry)
         }
         Some(CellValue::Boolean(flag)) => {
@@ -2580,7 +2629,11 @@ fn is_iso_date(text: &str) -> bool {
             .get(range)
             .is_some_and(|part| part.iter().all(u8::is_ascii_digit))
     };
-    if !(digits(0..4) && bytes.get(4) == Some(&b'-') && digits(5..7) && bytes.get(7) == Some(&b'-') && digits(8..10))
+    if !(digits(0..4)
+        && bytes.get(4) == Some(&b'-')
+        && digits(5..7)
+        && bytes.get(7) == Some(&b'-')
+        && digits(8..10))
     {
         return false;
     }
@@ -2593,10 +2646,13 @@ fn is_iso_date(text: &str) -> bool {
                 && digits(14..16)
                 && bytes[16] == b':'
                 && digits(17..19)
-                && bytes[19..]
-                    .iter()
-                    .enumerate()
-                    .all(|(index, byte)| if index == 0 { *byte == b'.' } else { byte.is_ascii_digit() })
+                && bytes[19..].iter().enumerate().all(|(index, byte)| {
+                    if index == 0 {
+                        *byte == b'.'
+                    } else {
+                        byte.is_ascii_digit()
+                    }
+                })
         }
         _ => false,
     }
@@ -2653,7 +2709,11 @@ fn serial_parts(serial: f64, date1904: bool) -> Option<(i64, u32, u32, f64)> {
 /// Days since 1970-01-01 → the civil date (Howard Hinnant's algorithm).
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
-    let era = if shifted >= 0 { shifted } else { shifted - 146_096 } / 146_097;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
     let day_of_era = shifted - era * 146_097;
     let year_of_era =
         (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
@@ -2748,7 +2808,11 @@ fn text_paragraphs(
         ),
         None => "<text:p>".to_owned(),
     };
-    let close = if link.is_some() { "</text:a></text:p>" } else { "</text:p>" };
+    let close = if link.is_some() {
+        "</text:a></text:p>"
+    } else {
+        "</text:p>"
+    };
     let mut out = open.clone();
     for (style, piece) in &pieces {
         for (index, line) in piece.split('\n').enumerate() {
@@ -2957,13 +3021,22 @@ mod tests {
             content.contains(r#"table:formula="of:=SUM([.B1:.B2])""#),
             "{content}"
         );
-        assert!(!content.contains("MyRange"), "a refused formula must not appear");
+        assert!(
+            !content.contains("MyRange"),
+            "a refused formula must not appear"
+        );
         assert!(
             content.contains(r#"office:value-type="string""#),
             "{content}"
         );
-        assert!(content.contains(r#"office:date-value="2026-03-05""#), "{content}");
-        assert!(content.contains(r#"office:boolean-value="true""#), "{content}");
+        assert!(
+            content.contains(r#"office:date-value="2026-03-05""#),
+            "{content}"
+        );
+        assert!(
+            content.contains(r#"office:boolean-value="true""#),
+            "{content}"
+        );
         assert!(
             content.contains(r#"table:number-columns-spanned="2""#),
             "{content}"
@@ -2971,10 +3044,19 @@ mod tests {
         assert!(content.contains("<table:covered-table-cell/>"), "{content}");
         assert!(content.contains(r#"table:display="false""#), "{content}");
         assert!(content.contains("style:column-width="), "{content}");
-        assert!(content.contains(r#"style:row-height="30.00pt""#), "{content}");
-        assert!(content.contains(r#"office:value-type="float" office:value="3.14159""#), "{content}");
+        assert!(
+            content.contains(r#"style:row-height="30.00pt""#),
+            "{content}"
+        );
+        assert!(
+            content.contains(r#"office:value-type="float" office:value="3.14159""#),
+            "{content}"
+        );
         assert!(content.contains("style:data-style-name="), "{content}");
-        assert!(content.contains("table:visibility=\"collapse\""), "{content}");
+        assert!(
+            content.contains("table:visibility=\"collapse\""),
+            "{content}"
+        );
 
         let styles = read_entry(&target, "styles.xml");
         let automatic = read_entry(&target, "content.xml");
@@ -2986,7 +3068,10 @@ mod tests {
             all.contains(r#"fo:border-bottom="0.75pt solid #000000""#),
             "{all}"
         );
-        assert!(all.contains("number:percentage-style") || all.contains("number:number-style"), "{all}");
+        assert!(
+            all.contains("number:percentage-style") || all.contains("number:number-style"),
+            "{all}"
+        );
 
         // The package opens as an ordinary ODS for calamine too.
         let reopened = calamine::open_workbook_auto(&target).unwrap();
@@ -3051,23 +3136,14 @@ mod tests {
             Some("s:Hello & <World>".to_owned())
         );
         assert_eq!(read_cell_value(&range, 0, 1), Some("n:42".to_owned()));
-        assert_eq!(
-            read_cell_value(&range, 0, 2),
-            Some("n:3.14159".to_owned())
-        );
-        assert_eq!(
-            read_cell_value(&range, 0, 3),
-            Some("n:46086".to_owned())
-        );
+        assert_eq!(read_cell_value(&range, 0, 2), Some("n:3.14159".to_owned()));
+        assert_eq!(read_cell_value(&range, 0, 3), Some("n:46086".to_owned()));
         assert_eq!(read_cell_value(&range, 0, 4), Some("n:0.25".to_owned()));
         assert_eq!(read_cell_value(&range, 1, 0), Some("b:true".to_owned()));
         assert_eq!(read_cell_value(&range, 1, 1), Some("n:84".to_owned()));
         assert_eq!(read_cell_value(&range, 1, 2), Some("n:126".to_owned()));
         assert_eq!(read_cell_value(&range, 1, 3), Some("n:7".to_owned()));
-        assert_eq!(
-            read_cell_value(&range, 1, 4),
-            Some("s:#DIV/0!".to_owned())
-        );
+        assert_eq!(read_cell_value(&range, 1, 4), Some("s:#DIV/0!".to_owned()));
         assert_eq!(
             range.merges.len(),
             1,
@@ -3219,7 +3295,10 @@ mod tests {
                 .unwrap();
             bytes
         };
-        assert!(picture.ends_with(&[b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]), "{picture:?}");
+        assert!(
+            picture.ends_with(&[b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+            "{picture:?}"
+        );
         assert!(
             read_entry(&target, "META-INF/manifest.xml").contains(
                 r#"<manifest:file-entry manifest:full-path="Pictures/image1.png" manifest:media-type="image/png"/>"#
@@ -3281,7 +3360,10 @@ mod tests {
         let result = convert_to_ods(&source, &target).unwrap();
         assert_eq!(result.cells, 2, "only the two values count");
         let content = read_entry(&target, "content.xml");
-        assert!(content.contains(r#"table:number-rows-repeated="4998""#), "{content}");
+        assert!(
+            content.contains(r#"table:number-rows-repeated="4998""#),
+            "{content}"
+        );
         assert!(content.contains(r#"office:value="11""#), "{content}");
         assert!(content.contains(r#"office:value="22""#), "{content}");
     }
@@ -3377,7 +3459,9 @@ mod tests {
         entries
     }
 
-    fn export(entries: &[(&str, String)]) -> (OdsExportResult, String, String, String, tempfile::TempDir) {
+    fn export(
+        entries: &[(&str, String)],
+    ) -> (OdsExportResult, String, String, String, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let source = dir.path().join("book.xlsx");
         write_workbook(&source, entries);
@@ -3415,7 +3499,9 @@ mod tests {
             vec![],
         ));
         assert!(
-            dated.contains(r#"<table:null-date table:date-value="1904-01-01"/></table:calculation-settings>"#),
+            dated.contains(
+                r#"<table:null-date table:date-value="1904-01-01"/></table:calculation-settings>"#
+            ),
             "{dated}"
         );
     }
@@ -3507,7 +3593,8 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
             "{content}"
         );
         assert!(
-            content.contains(r##"<text:a xlink:type="simple" xlink:href="#Data.A3">jump</text:a>"##),
+            content
+                .contains(r##"<text:a xlink:type="simple" xlink:href="#Data.A3">jump</text:a>"##),
             "{content}"
         );
         assert!(
@@ -3571,9 +3658,14 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
             content.contains(r#"<table:table-row-group table:display="false"><table:table-row table:visibility="filter">"#),
             "{content}"
         );
-        assert_eq!(content.matches("</table:table-row-group>").count(), 2, "{content}");
+        assert_eq!(
+            content.matches("</table:table-row-group>").count(),
+            2,
+            "{content}"
+        );
         assert!(
-            content.contains(r#"<table:table-column-group><table:table-column table:style-name="co"#),
+            content
+                .contains(r#"<table:table-column-group><table:table-column table:style-name="co"#),
             "{content}"
         );
         // The filter keeps its range, its buttons and its criteria.
@@ -3590,7 +3682,10 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
             "{content}"
         );
         assert!(content.contains(r#"table:protected="true""#), "{content}");
-        assert!(content.contains(r##"table:tab-color="#00FF00""##), "{content}");
+        assert!(
+            content.contains(r##"table:tab-color="#00FF00""##),
+            "{content}"
+        );
         assert!(content.contains(r#"fo:break-before="page""#), "{content}");
 
         // Frozen panes say where each pane starts, and the sheet keeps its
@@ -3608,10 +3703,12 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
         }
 
         // The grouped rows are still rows to the reader that comes back.
-        let reopened: calamine::Sheets<_> = calamine::open_workbook_auto(_dir.path().join("book.ods")).unwrap();
+        let reopened: calamine::Sheets<_> =
+            calamine::open_workbook_auto(_dir.path().join("book.ods")).unwrap();
         drop(reopened);
         let round = _dir.path().join("round.xlsx");
-        let converted = crate::convert::convert_to_xlsx(&_dir.path().join("book.ods"), &round).unwrap();
+        let converted =
+            crate::convert::convert_to_xlsx(&_dir.path().join("book.ods"), &round).unwrap();
         assert_eq!(converted.cells, 10, "every cell survives the groups");
     }
 
@@ -3709,7 +3806,10 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
         crate::convert::convert_to_xlsx(&dir.path().join("book.ods"), &round).unwrap();
         let sheet = read_entry(&round, "xl/worksheets/sheet1.xml");
         assert!(sheet.contains(r#"<c r="B1" t="inlineStr">"#), "{sheet}");
-        assert!(sheet.contains(r#"<c r="A2" s="1"><v>40189</v></c>"#), "{sheet}");
+        assert!(
+            sheet.contains(r#"<c r="A2" s="1"><v>40189</v></c>"#),
+            "{sheet}"
+        );
 
         assert!(is_iso_date("2010-01-11T09:30:00"));
         assert!(is_iso_date("2010-01-11T09:30:00.250"));
@@ -3884,7 +3984,9 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
         // Our own importer still reads the values around the drawings.
         let round = dir.path().join("round.xlsx");
         crate::convert::convert_to_xlsx(&dir.path().join("book.ods"), &round).unwrap();
-        assert!(read_entry(&round, "xl/worksheets/sheet1.xml").contains(r#"<c r="A2"><v>2</v></c>"#));
+        assert!(
+            read_entry(&round, "xl/worksheets/sheet1.xml").contains(r#"<c r="A2"><v>2</v></c>"#)
+        );
     }
 
     #[test]
@@ -3972,7 +4074,9 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
         // The second series has no name, and is not given the one a
         // spreadsheet shows for it.
         assert!(
-            chart.contains(r#" chart:values-cell-range-address="Data.C1:Data.C2" chart:class="chart:line">"#),
+            chart.contains(
+                r#" chart:values-cell-range-address="Data.C1:Data.C2" chart:class="chart:line">"#
+            ),
             "{chart}"
         );
         assert!(!chart.contains("Series2"), "{chart}");
@@ -4093,8 +4197,14 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
             chart.contains(r#"<chart:chart svg:width="10.160cm" svg:height="6.350cm" xlink:href=".." xlink:type="simple" chart:class="chart:bar""#),
             "{chart}"
         );
-        assert!(chart.contains("<text:p>Sales &amp; plan</text:p>"), "{chart}");
-        assert!(chart.contains(r#"<chart:legend chart:legend-position="bottom""#), "{chart}");
+        assert!(
+            chart.contains("<text:p>Sales &amp; plan</text:p>"),
+            "{chart}"
+        );
+        assert!(
+            chart.contains(r#"<chart:legend chart:legend-position="bottom""#),
+            "{chart}"
+        );
         assert!(chart.contains(r#"chart:stacked="true""#), "{chart}");
         assert!(
             chart.contains(r#"<text:p>Region</text:p></chart:title><chart:categories table:cell-range-address="Data.A2:Data.A3"/>"#),
@@ -4112,7 +4222,10 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
             chart.contains(r#"chart:values-cell-range-address="Data.B2:Data.B3" chart:label-cell-address="Data.B1:Data.B1" chart:class="chart:bar"><chart:data-point chart:repeated="2"/>"#),
             "{chart}"
         );
-        assert!(chart.contains(r##"draw:fill="solid" draw:fill-color="#4472c4""##), "{chart}");
+        assert!(
+            chart.contains(r##"draw:fill="solid" draw:fill-color="#4472c4""##),
+            "{chart}"
+        );
         // The values as they were, for a reader that cannot reach the cells.
         assert!(
             chart.contains(r#"<table:table-cell office:value-type="string"><text:p>a</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="3"><text:p>3</text:p></table:table-cell>"#),
@@ -4245,8 +4358,14 @@ second</t></r></text></comment></commentList></comments>"#.to_owned(),
             .nth(1)
             .and_then(|rest| rest.split("</style:style>").next())
             .unwrap_or_else(|| panic!("{content}"));
-        assert!(style.contains("fo:border-right=") && style.contains("#FF0000"), "{style}");
-        assert!(style.contains("fo:border-bottom=") && style.contains("#0000FF"), "{style}");
+        assert!(
+            style.contains("fo:border-right=") && style.contains("#FF0000"),
+            "{style}"
+        );
+        assert!(
+            style.contains("fo:border-bottom=") && style.contains("#0000FF"),
+            "{style}"
+        );
         // The number shows as a link and is still a number.
         assert!(
             content.contains(r#"office:value-type="float" office:value="42"><text:p><text:a xlink:type="simple" xlink:href="https://example.com/n">42</text:a></text:p></table:table-cell>"#),

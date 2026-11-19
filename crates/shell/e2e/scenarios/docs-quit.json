@@ -1,0 +1,32 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/docs-quit.docx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-quit"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "shortcut",
+      "name": "quit"
+    },
+    {
+      "op": "dialog",
+      "answer": "save"
+    }
+  ]
+}

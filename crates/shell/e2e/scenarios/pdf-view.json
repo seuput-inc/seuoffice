@@ -1,0 +1,39 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${FIXTURES}/multipage.pdf"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "pdf-pages",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'page',page:9999}}) ?? null"
+    },
+    {
+      "op": "query",
+      "as": "pdf-goto",
+      "js": "window.__seuofficeControl?.({cmd:'goto',target:{kind:'page',page:3}}) ?? null"
+    },
+    {
+      "op": "wait",
+      "ms": 1200
+    },
+    {
+      "op": "query",
+      "as": "pdf-current",
+      "js": "window.__seuofficeControl?.({cmd:'selection'}) ?? null"
+    },
+    {
+      "op": "screenshot",
+      "name": "pdf-page3"
+    }
+  ]
+}

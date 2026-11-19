@@ -216,6 +216,7 @@ fn load_staged(
         content,
         date,
         raw,
+        ..
     } in entries
     {
         declared.insert(name.clone(), uncompressed_size.unwrap_or(0.0));

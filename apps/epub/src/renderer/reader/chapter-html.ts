@@ -10,7 +10,8 @@
  * - the book's scripts, `on…` attributes, `javascript:` addresses, frames,
  *   plug-ins, `<base>` and `http-equiv` metas are removed;
  * - the head gets a Content-Security-Policy that runs no script and loads
- *   pictures, styles and fonts only from `epub-asset:`, then a `<base>` at the
+ *   pictures, styles and fonts only from the book's scheme (`epub-asset:`, `http://epub-asset.localhost`
+ *   where WebView2 serves it so), then a `<base>` at the
  *   chapter's own `epub-asset:` address so the book's relative links, styles
  *   and pictures resolve inside the book, then the book's own styles, then the
  *   screen-only view settings (`VIEW_STYLE_ID`).
@@ -20,6 +21,8 @@
  * HTML, so `<a id="x"/>` stays an empty element; a broken one is read with the
  * HTML parser.
  */
+
+import { schemeCspSource } from '@seuoffice/electron-utils/custom-scheme-url'
 
 /** Marks an editable block of the drawn chapter; the value is the engine's block id. */
 export const BLOCK_ATTR = 'data-epub-block'
@@ -31,6 +34,9 @@ export const VIEW_STYLE_ID = 'seuoffice-epub-view'
 const MARK_ATTR = 'data-seuoffice-epub-block-mark'
 
 const XHTML_NS = 'http://www.w3.org/1999/xhtml'
+
+/** What the page names the book's scheme in a policy: its logical or its WebView2 form */
+const BOOK_SOURCE = schemeCspSource('epub-asset')
 
 /**
  * The policy of the drawn chapter. No script runs, nothing is fetched from
@@ -47,11 +53,11 @@ export const FRAME_CSP = [
   "worker-src 'none'",
   "connect-src 'none'",
   "form-action 'none'",
-  'img-src epub-asset: data:',
-  "style-src epub-asset: 'unsafe-inline'",
-  'font-src epub-asset: data:',
+  `img-src ${BOOK_SOURCE} data:`,
+  `style-src ${BOOK_SOURCE} 'unsafe-inline'`,
+  `font-src ${BOOK_SOURCE} data:`,
   "media-src 'none'",
-  'base-uri epub-asset:',
+  `base-uri ${BOOK_SOURCE}`,
 ].join('; ')
 
 /** The part of a block the drawing copy needs: where its start tag begins. */

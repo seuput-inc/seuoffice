@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The shell's bridge reaches Rust with fetches to Tauri's ipc protocol: ipc://localhost on
+         macOS, http://ipc.localhost on Windows. It has no postMessage fallback, so a connect-src
+         that omits them leaves this page unable to send anything to the shell, readiness included. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>SeuOffice document engine host</title>
+    <script src="./boot.js"></script>
+    <script type="module" src="./main.js"></script>
+  </head>
+  <body></body>
+</html>

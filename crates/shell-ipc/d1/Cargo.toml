@@ -1,0 +1,25 @@
+[package]
+name = "shell-ipc-d1"
+description = "Stage 3 batch D1: Documents 1: slides, sheets, mind maps, diagrams. Handlers of its channels in shell-contract's CHANNELS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# the fakes of this batch's hosts for crates/ipc-probe (tools/ipc-diff)
+probe = []
+
+[dependencies]
+shell-contract = { path = "../../shell-contract" }
+shell-ipc-a = { path = "../a" }
+main-core.workspace = true
+jscompat.workspace = true
+serde_json.workspace = true
+encoding_rs.workspace = true
+# new URL(value, base) of the mind map link preview, the version main-core uses
+url = "2.5"
+file-commit.workspace = true
+
+[dev-dependencies]
+shell-core = { path = "../../shell-core" }

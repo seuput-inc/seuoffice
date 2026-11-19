@@ -169,7 +169,9 @@ const count = (group: string, kind: 'corpus' | 'built' | 'model', n: number): vo
   c[kind] += n
   inputCounts.set(group, c)
 }
-const modelSeeds = docxes.filter((d) => d.bytes.length < 600_000).slice(0, 80)
+const modelSeeds = docxes
+  .filter((d) => d.bytes.length < 600_000 && !d.name.startsWith('crates/'))
+  .slice(0, 80)
 const modelDocs = await Promise.all(
   modelSeeds.map(async (d) => withClock(() => parseDocx(d.bytes)).catch(() => null)),
 )

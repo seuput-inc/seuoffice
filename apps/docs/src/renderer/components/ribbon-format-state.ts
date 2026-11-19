@@ -3,6 +3,7 @@ import type { Node as PmNode } from '@tiptap/pm/model'
 import { NodeSelection } from '@tiptap/pm/state'
 import { isInTable, mergeCells, selectedRect, splitCell } from '@tiptap/pm/tables'
 import type { DocDefaults, Run, StyleInfo, TextboxDisplay } from '@seuoffice/docx-engine'
+import { toPlatformSchemeUrl } from '@seuoffice/electron-utils/custom-scheme-url'
 import { getActiveSubEditor } from '../editor/active-editor'
 import { shapeWrapOf } from '../editor/floating-z-order'
 import { selectedBoxIndex } from '../editor/selected-box'
@@ -186,6 +187,10 @@ const docEmptyOf = cachedByDoc((doc: PmNode) => {
 })
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+
+/** The picture of the selection as the page can load it (a lazily served one has a WebView2 form) */
+const pictureSource = (url: string | null): string | null =>
+  url === null ? null : toPlatformSchemeUrl(url)
 const num = (v: unknown): number | null => {
   const n = Number(v)
   return Number.isFinite(n) && n !== 0 ? n : null
@@ -323,13 +328,15 @@ export function computeFormatState(
     imageSelected,
     inlinePicture: !!inlinePic,
     pictureBox,
-    imageDataUrl: inlinePic
-      ? str(inlinePic.dataUrl)
-      : pictureBox
-        ? str(box?.fillImageDataUrl)
-        : imageSelected
-          ? str(protAttrs.imageDataUrl)
-          : null,
+    imageDataUrl: pictureSource(
+      inlinePic
+        ? str(inlinePic.dataUrl)
+        : pictureBox
+          ? str(box?.fillImageDataUrl)
+          : imageSelected
+            ? str(protAttrs.imageDataUrl)
+            : null,
+    ),
     imageWrap: inlinePic ? str(inlinePic.wrap) : box ? shapeWrapOf(box) : str(protAttrs.imageWrap),
     imageAlign: str(protAttrs.imageAlign),
     imageWidthPx: num(

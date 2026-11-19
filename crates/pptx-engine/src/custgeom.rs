@@ -270,10 +270,8 @@ pub fn parse_cust_geom(
         }
         let self_closing = tag.ends_with("/>");
         match name {
-            "a:avLst" | "a:gdLst" => {
-                if !self_closing {
-                    in_guides = true;
-                }
+            "a:avLst" | "a:gdLst" if !self_closing => {
+                in_guides = true;
             }
             "a:gd" => {
                 // gd elsewhere (e.g. cxnLst) does not participate

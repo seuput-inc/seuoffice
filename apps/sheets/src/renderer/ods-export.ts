@@ -19,7 +19,7 @@ export interface OdsExportContext {
   pendingEdits: () => Promise<WorkbookSaveRequest | null>
   /// Routes into the regular Save As flow when the person answers the refusal
   /// of a workbook that hides cells from the AI with "Save as .xlsx".
-  requestSaveAs: () => void
+  requestSaveAs: () => void | Promise<unknown>
 }
 
 /// Runs a save and, when its Save As ended on the ODS format, the export
@@ -42,6 +42,7 @@ export async function saveThenExportOds<T extends { ok: boolean; odsSaveAsPath?:
 export async function handleExportOds(
   ctx: OdsExportContext,
   targetPath?: string,
+  ownedSaveRequestId?: string,
 ): Promise<boolean> {
   if (!ctx.lazyWorkbookRef.current) return false
   try {
@@ -56,11 +57,12 @@ export async function handleExportOds(
     const result = await window.desktopApi.exportOds({
       sessionId: state.file.sessionId,
       ...(targetPath === undefined ? {} : { targetPath }),
+      ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
       workbook,
     })
     if (result.canceled) {
       if (result.saveAsXlsxInstead) {
-        ctx.requestSaveAs()
+        await ctx.requestSaveAs()
         return false
       }
       // The main process already showed the dialog for a refusal or a failed

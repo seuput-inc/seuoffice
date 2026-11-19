@@ -18,6 +18,8 @@ allow = [
   "Unlicense",
   "CC0-1.0",
   "BSL-1.0",
+  # libloading, under napi (main-node)
+  "ISC",
   # the JPEG code of rhwp (rhwp-zune-jpeg, rhwp-jpeg-encoder), which ships in
   # rhwp_bg.wasm already and is named in the third-party notices (rhwp crates)
   "IJG",

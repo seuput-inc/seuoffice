@@ -90,11 +90,28 @@ impl DrawStyle {
             };
         }
         inherit!(
-            stroke, stroke_dash, fill_gradient, stroke_width, stroke_color, fill, fill_color, opacity,
+            stroke,
+            stroke_dash,
+            fill_gradient,
+            stroke_width,
+            stroke_color,
+            fill,
+            fill_color,
+            opacity,
             image_opacity,
-            vertical_align, horizontal_align, wrap, marker_start, marker_end, align, color, size,
-            bold, italic,
-            underline, font, font_asian
+            vertical_align,
+            horizontal_align,
+            wrap,
+            marker_start,
+            marker_end,
+            align,
+            color,
+            size,
+            bold,
+            italic,
+            underline,
+            font,
+            font_asian
         );
         for (own, inherited) in self.padding.iter_mut().zip(under.padding) {
             if own.is_none() {
@@ -133,7 +150,11 @@ const MAX_GRADIENT_STOPS: usize = 64;
 fn dash_units(value: Option<&str>) -> Option<f64> {
     let value = value?.trim();
     match value.strip_suffix('%') {
-        Some(percent) => percent.trim().parse::<f64>().ok().map(|percent| percent / 100.0),
+        Some(percent) => percent
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|percent| percent / 100.0),
         None => length_points(value),
     }
     .filter(|units| units.is_finite() && *units >= 0.0)
@@ -303,12 +324,21 @@ pub(crate) enum Outline {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ShapeKind {
     /// A picture stored in the package under `entry`.
-    Picture { entry: String },
+    Picture {
+        entry: String,
+    },
     /// A chart document in the directory `directory` of the package.
-    Chart { directory: String },
-    Shape { outline: Outline, text_box: bool },
+    Chart {
+        directory: String,
+    },
+    Shape {
+        outline: Outline,
+        text_box: bool,
+    },
     /// A line or connector, drawn with the preset `preset`.
-    Line { preset: &'static str },
+    Line {
+        preset: &'static str,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -523,12 +553,24 @@ pub(crate) fn read_drawings(source: &Path) -> Result<OdfDrawings, SidecarError> 
         let mut reader = Reader::from_str(&xml);
         let mut ignored = Vec::new();
         // Its drawings, if any, belong to page headers; only styles matter.
-        let _ = parse(&mut reader, &mut drawings.styles, &mut sizes, &mut ignored, false);
+        let _ = parse(
+            &mut reader,
+            &mut drawings.styles,
+            &mut sizes,
+            &mut ignored,
+            false,
+        );
     }
     let entry = zip_entry(&mut archive, "content.xml")?;
     let mut reader = Reader::from_reader(BufReader::new(entry));
     let mut sheets = Vec::new();
-    parse(&mut reader, &mut drawings.styles, &mut sizes, &mut sheets, true)?;
+    parse(
+        &mut reader,
+        &mut drawings.styles,
+        &mut sizes,
+        &mut sheets,
+        true,
+    )?;
     drawings.sheets = finish_sheets(sheets, &sizes);
     Ok(drawings)
 }
@@ -630,7 +672,9 @@ fn read_properties(kind: &[u8], attributes: &[(String, String)], style: &mut Dra
             style.fill_color = get(attributes, "draw:fill-color")
                 .and_then(color)
                 .or(style.fill_color.take());
-            style.opacity = get(attributes, "draw:opacity").and_then(percent).or(style.opacity);
+            style.opacity = get(attributes, "draw:opacity")
+                .and_then(percent)
+                .or(style.opacity);
             style.image_opacity = get(attributes, "draw:image-opacity")
                 .and_then(percent)
                 .or(style.image_opacity);
@@ -660,7 +704,9 @@ fn read_properties(kind: &[u8], attributes: &[(String, String)], style: &mut Dra
             style.align = text("fo:text-align").or(style.align.take());
         }
         b"style:text-properties" => {
-            style.color = get(attributes, "fo:color").and_then(color).or(style.color.take());
+            style.color = get(attributes, "fo:color")
+                .and_then(color)
+                .or(style.color.take());
             style.size = get(attributes, "fo:font-size")
                 .and_then(length_points)
                 .filter(|size| *size > 0.0)
@@ -853,7 +899,9 @@ pub(crate) fn enhanced_path(text: &str) -> Option<(Vec<PathCommand>, bool)> {
             },
             'Q' => loop {
                 let points = arguments(&tokens, &mut index, 4)?;
-                commands.push(PathCommand::Quad([points[0], points[1], points[2], points[3]]));
+                commands.push(PathCommand::Quad([
+                    points[0], points[1], points[2], points[3],
+                ]));
                 if !more_arguments(&tokens, index) {
                     break;
                 }
@@ -956,7 +1004,12 @@ pub(crate) fn svg_path(text: &str) -> Option<Vec<PathCommand>> {
             'Q' => loop {
                 let points = arguments(&tokens, &mut index, 4)?;
                 let (dx, dy) = base(x, y);
-                let curve = [points[0] + dx, points[1] + dy, points[2] + dx, points[3] + dy];
+                let curve = [
+                    points[0] + dx,
+                    points[1] + dy,
+                    points[2] + dx,
+                    points[3] + dy,
+                ];
                 x = curve[2];
                 y = curve[3];
                 commands.push(PathCommand::Quad(curve));
@@ -1072,42 +1125,192 @@ fn custom_outline(
 /// The DrawingML preset names (ECMA-376 `ST_ShapeType`), sorted, so a type
 /// taken from a document is only written when it is one of them.
 const PRESETS: &[&str] = &[
-    "accentBorderCallout1", "accentBorderCallout2", "accentBorderCallout3", "accentCallout1",
-    "accentCallout2", "accentCallout3", "actionButtonBackPrevious", "actionButtonBeginning",
-    "actionButtonBlank", "actionButtonDocument", "actionButtonEnd", "actionButtonForwardNext",
-    "actionButtonHelp", "actionButtonHome", "actionButtonInformation", "actionButtonMovie",
-    "actionButtonReturn", "actionButtonSound", "arc", "bentArrow", "bentConnector2",
-    "bentConnector3", "bentConnector4", "bentConnector5", "bentUpArrow", "bevel", "blockArc",
-    "borderCallout1", "borderCallout2", "borderCallout3", "bracePair", "bracketPair", "callout1",
-    "callout2", "callout3", "can", "chartPlus", "chartStar", "chartX", "chevron", "chord",
-    "circularArrow", "cloud", "cloudCallout", "corner", "cornerTabs", "cube", "curvedConnector2",
-    "curvedConnector3", "curvedConnector4", "curvedConnector5", "curvedDownArrow",
-    "curvedLeftArrow", "curvedRightArrow", "curvedUpArrow", "decagon", "diagStripe", "diamond",
-    "dodecagon", "donut", "doubleWave", "downArrow", "downArrowCallout", "ellipse",
-    "ellipseRibbon", "ellipseRibbon2", "flowChartAlternateProcess", "flowChartCollate",
-    "flowChartConnector", "flowChartDecision", "flowChartDelay", "flowChartDisplay",
-    "flowChartDocument", "flowChartExtract", "flowChartInputOutput", "flowChartInternalStorage",
-    "flowChartMagneticDisk", "flowChartMagneticDrum", "flowChartMagneticTape",
-    "flowChartManualInput", "flowChartManualOperation", "flowChartMerge",
-    "flowChartMultidocument", "flowChartOfflineStorage", "flowChartOffpageConnector",
-    "flowChartOnlineStorage", "flowChartOr", "flowChartPredefinedProcess",
-    "flowChartPreparation", "flowChartProcess", "flowChartPunchedCard", "flowChartPunchedTape",
-    "flowChartSort", "flowChartSummingJunction", "flowChartTerminator", "foldedCorner", "frame",
-    "funnel", "gear6", "gear9", "halfFrame", "heart", "heptagon", "hexagon", "homePlate",
-    "horizontalScroll", "irregularSeal1", "irregularSeal2", "leftArrow", "leftArrowCallout",
-    "leftBrace", "leftBracket", "leftCircularArrow", "leftRightArrow", "leftRightArrowCallout",
-    "leftRightCircularArrow", "leftRightRibbon", "leftRightUpArrow", "leftUpArrow",
-    "lightningBolt", "line", "lineInv", "mathDivide", "mathEqual", "mathMinus", "mathMultiply",
-    "mathNotEqual", "mathPlus", "moon", "noSmoking", "nonIsoscelesTrapezoid",
-    "notchedRightArrow", "octagon", "parallelogram", "pentagon", "pie", "pieWedge", "plaque",
-    "plaqueTabs", "plus", "quadArrow", "quadArrowCallout", "rect", "ribbon", "ribbon2",
-    "rightArrow", "rightArrowCallout", "rightBrace", "rightBracket", "round1Rect",
-    "round2DiagRect", "round2SameRect", "roundRect", "rtTriangle", "smileyFace", "snip1Rect",
-    "snip2DiagRect", "snip2SameRect", "snipRoundRect", "squareTabs", "star10", "star12",
-    "star16", "star24", "star32", "star4", "star5", "star6", "star7", "star8",
-    "straightConnector1", "stripedRightArrow", "sun", "swooshArrow", "teardrop", "trapezoid",
-    "triangle", "upArrow", "upArrowCallout", "upDownArrow", "upDownArrowCallout", "uturnArrow",
-    "verticalScroll", "wave", "wedgeEllipseCallout", "wedgeRectCallout",
+    "accentBorderCallout1",
+    "accentBorderCallout2",
+    "accentBorderCallout3",
+    "accentCallout1",
+    "accentCallout2",
+    "accentCallout3",
+    "actionButtonBackPrevious",
+    "actionButtonBeginning",
+    "actionButtonBlank",
+    "actionButtonDocument",
+    "actionButtonEnd",
+    "actionButtonForwardNext",
+    "actionButtonHelp",
+    "actionButtonHome",
+    "actionButtonInformation",
+    "actionButtonMovie",
+    "actionButtonReturn",
+    "actionButtonSound",
+    "arc",
+    "bentArrow",
+    "bentConnector2",
+    "bentConnector3",
+    "bentConnector4",
+    "bentConnector5",
+    "bentUpArrow",
+    "bevel",
+    "blockArc",
+    "borderCallout1",
+    "borderCallout2",
+    "borderCallout3",
+    "bracePair",
+    "bracketPair",
+    "callout1",
+    "callout2",
+    "callout3",
+    "can",
+    "chartPlus",
+    "chartStar",
+    "chartX",
+    "chevron",
+    "chord",
+    "circularArrow",
+    "cloud",
+    "cloudCallout",
+    "corner",
+    "cornerTabs",
+    "cube",
+    "curvedConnector2",
+    "curvedConnector3",
+    "curvedConnector4",
+    "curvedConnector5",
+    "curvedDownArrow",
+    "curvedLeftArrow",
+    "curvedRightArrow",
+    "curvedUpArrow",
+    "decagon",
+    "diagStripe",
+    "diamond",
+    "dodecagon",
+    "donut",
+    "doubleWave",
+    "downArrow",
+    "downArrowCallout",
+    "ellipse",
+    "ellipseRibbon",
+    "ellipseRibbon2",
+    "flowChartAlternateProcess",
+    "flowChartCollate",
+    "flowChartConnector",
+    "flowChartDecision",
+    "flowChartDelay",
+    "flowChartDisplay",
+    "flowChartDocument",
+    "flowChartExtract",
+    "flowChartInputOutput",
+    "flowChartInternalStorage",
+    "flowChartMagneticDisk",
+    "flowChartMagneticDrum",
+    "flowChartMagneticTape",
+    "flowChartManualInput",
+    "flowChartManualOperation",
+    "flowChartMerge",
+    "flowChartMultidocument",
+    "flowChartOfflineStorage",
+    "flowChartOffpageConnector",
+    "flowChartOnlineStorage",
+    "flowChartOr",
+    "flowChartPredefinedProcess",
+    "flowChartPreparation",
+    "flowChartProcess",
+    "flowChartPunchedCard",
+    "flowChartPunchedTape",
+    "flowChartSort",
+    "flowChartSummingJunction",
+    "flowChartTerminator",
+    "foldedCorner",
+    "frame",
+    "funnel",
+    "gear6",
+    "gear9",
+    "halfFrame",
+    "heart",
+    "heptagon",
+    "hexagon",
+    "homePlate",
+    "horizontalScroll",
+    "irregularSeal1",
+    "irregularSeal2",
+    "leftArrow",
+    "leftArrowCallout",
+    "leftBrace",
+    "leftBracket",
+    "leftCircularArrow",
+    "leftRightArrow",
+    "leftRightArrowCallout",
+    "leftRightCircularArrow",
+    "leftRightRibbon",
+    "leftRightUpArrow",
+    "leftUpArrow",
+    "lightningBolt",
+    "line",
+    "lineInv",
+    "mathDivide",
+    "mathEqual",
+    "mathMinus",
+    "mathMultiply",
+    "mathNotEqual",
+    "mathPlus",
+    "moon",
+    "noSmoking",
+    "nonIsoscelesTrapezoid",
+    "notchedRightArrow",
+    "octagon",
+    "parallelogram",
+    "pentagon",
+    "pie",
+    "pieWedge",
+    "plaque",
+    "plaqueTabs",
+    "plus",
+    "quadArrow",
+    "quadArrowCallout",
+    "rect",
+    "ribbon",
+    "ribbon2",
+    "rightArrow",
+    "rightArrowCallout",
+    "rightBrace",
+    "rightBracket",
+    "round1Rect",
+    "round2DiagRect",
+    "round2SameRect",
+    "roundRect",
+    "rtTriangle",
+    "smileyFace",
+    "snip1Rect",
+    "snip2DiagRect",
+    "snip2SameRect",
+    "snipRoundRect",
+    "squareTabs",
+    "star10",
+    "star12",
+    "star16",
+    "star24",
+    "star32",
+    "star4",
+    "star5",
+    "star6",
+    "star7",
+    "star8",
+    "straightConnector1",
+    "stripedRightArrow",
+    "sun",
+    "swooshArrow",
+    "teardrop",
+    "trapezoid",
+    "triangle",
+    "upArrow",
+    "upArrowCallout",
+    "upDownArrow",
+    "upDownArrowCallout",
+    "uturnArrow",
+    "verticalScroll",
+    "wave",
+    "wedgeEllipseCallout",
+    "wedgeRectCallout",
     "wedgeRoundRectCallout",
 ];
 
@@ -1510,7 +1713,9 @@ impl ShapeBuilder {
                     .object
                     .as_deref()
                     .map(|href| href.trim_start_matches("./").trim_end_matches('/'))
-                    .filter(|href| !href.is_empty() && !href.contains("://") && !href.contains(".."));
+                    .filter(|href| {
+                        !href.is_empty() && !href.contains("://") && !href.contains("..")
+                    });
                 // The formats Excel draws; a vector original usually comes
                 // with a bitmap copy next to it.
                 let picture = self.images.iter().find(|href| {
@@ -1584,14 +1789,16 @@ impl ShapeBuilder {
                 }
             }
             b"draw:path" => {
-                let outline = get(attributes, "svg:d").and_then(svg_path).and_then(|commands| {
-                    let closed = commands.contains(&PathCommand::Close);
-                    custom_outline(
-                        commands,
-                        closed,
-                        get(attributes, "svg:viewBox").and_then(view_box),
-                    )
-                });
+                let outline = get(attributes, "svg:d")
+                    .and_then(svg_path)
+                    .and_then(|commands| {
+                        let closed = commands.contains(&PathCommand::Close);
+                        custom_outline(
+                            commands,
+                            closed,
+                            get(attributes, "svg:viewBox").and_then(view_box),
+                        )
+                    });
                 ShapeKind::Shape {
                     outline: outline.map_or(Outline::Preset("rect"), Outline::Custom),
                     text_box: false,
@@ -1725,7 +1932,9 @@ fn parse<R: BufRead>(
                         let attributes = attributes(reader, &element)?;
                         if let Some(name) = get(&attributes, "draw:name") {
                             if styles.dashes.len() < MAX_NAMED_STYLES {
-                                styles.dashes.insert(name.to_owned(), dash_preset(&attributes));
+                                styles
+                                    .dashes
+                                    .insert(name.to_owned(), dash_preset(&attributes));
                             }
                         }
                     }
@@ -1791,17 +2000,20 @@ fn parse<R: BufRead>(
                             }
                             _ => None,
                         };
-                        style = get(&attributes, "style:family").and_then(Family::of).map(|family| {
-                            let own = DrawStyle {
-                                parent: get(&attributes, "style:parent-style-name")
-                                    .map(str::to_owned),
-                                ..DrawStyle::default()
-                            };
-                            let name = (name == b"style:style")
-                                .then(|| get(&attributes, "style:name").map(str::to_owned))
-                                .flatten();
-                            (family, name, own)
-                        });
+                        style =
+                            get(&attributes, "style:family")
+                                .and_then(Family::of)
+                                .map(|family| {
+                                    let own = DrawStyle {
+                                        parent: get(&attributes, "style:parent-style-name")
+                                            .map(str::to_owned),
+                                        ..DrawStyle::default()
+                                    };
+                                    let name = (name == b"style:style")
+                                        .then(|| get(&attributes, "style:name").map(str::to_owned))
+                                        .flatten();
+                                    (family, name, own)
+                                });
                         if empty {
                             if let Some((family, Some(name), own)) = style.take() {
                                 styles.styles.insert((family, name), own);
@@ -1824,9 +2036,15 @@ fn parse<R: BufRead>(
                             } else {
                                 ("style:column-width", "style:use-optimal-column-width")
                             };
-                            if let Some(size) = length(&attributes, size).filter(|size| *size >= 0.0) {
+                            if let Some(size) =
+                                length(&attributes, size).filter(|size| *size >= 0.0)
+                            {
                                 let fitted = get(&attributes, fitted) == Some("true");
-                                let table = if is_row { &mut sizes.rows } else { &mut sizes.columns };
+                                let table = if is_row {
+                                    &mut sizes.rows
+                                } else {
+                                    &mut sizes.columns
+                                };
                                 table.insert(id, (size, fitted));
                             }
                         }
@@ -1846,8 +2064,9 @@ fn parse<R: BufRead>(
                         let (repeats, style, hidden) =
                             span_attributes(&element, b"number-columns-repeated", sizes);
                         let first = next_column_definition;
-                        next_column_definition =
-                            next_column_definition.saturating_add(repeats).min(MAX_COLUMN);
+                        next_column_definition = next_column_definition
+                            .saturating_add(repeats)
+                            .min(MAX_COLUMN);
                         if let Some(sheet) = sheets.last_mut().filter(|_| first < MAX_COLUMN) {
                             push_span(
                                 &mut sheet.columns,
@@ -1885,10 +2104,15 @@ fn parse<R: BufRead>(
                     _ if (in_cell || in_shapes) && is_shape_element(name) => {
                         let cell = (in_cell && !in_shapes)
                             .then_some((row.min(MAX_ROW - 1), column.min(MAX_COLUMN - 1)));
-                        let shape =
-                            ShapeBuilder::new(name, attributes(reader, &element)?, cell, link.clone());
+                        let shape = ShapeBuilder::new(
+                            name,
+                            attributes(reader, &element)?,
+                            cell,
+                            link.clone(),
+                        );
                         if empty {
-                            if let (Some(shape), Some(sheet)) = (shape.finish(), sheets.last_mut()) {
+                            if let (Some(shape), Some(sheet)) = (shape.finish(), sheets.last_mut())
+                            {
                                 if total < MAX_SHAPES {
                                     sheet.shapes.push(shape);
                                     total += 1;
@@ -1973,7 +2197,14 @@ mod tests {
         let mut sizes = Sizes::default();
         let mut reader = Reader::from_str(&xml);
         let mut sheets = Vec::new();
-        parse(&mut reader, &mut drawings.styles, &mut sizes, &mut sheets, true).unwrap();
+        parse(
+            &mut reader,
+            &mut drawings.styles,
+            &mut sizes,
+            &mut sheets,
+            true,
+        )
+        .unwrap();
         drawings.sheets = finish_sheets(sheets, &sizes);
         drawings
     }
@@ -2001,17 +2232,49 @@ mod tests {
         assert_eq!(
             sheet.columns,
             vec![
-                Span { first: 0, last: 1, size: inch, fitted: false, hidden: false },
-                Span { first: 2, last: 2, size: 0.0, fitted: true, hidden: true },
-                Span { first: 4, last: 4, size: inch, fitted: false, hidden: false },
+                Span {
+                    first: 0,
+                    last: 1,
+                    size: inch,
+                    fitted: false,
+                    hidden: false
+                },
+                Span {
+                    first: 2,
+                    last: 2,
+                    size: 0.0,
+                    fitted: true,
+                    hidden: true
+                },
+                Span {
+                    first: 4,
+                    last: 4,
+                    size: inch,
+                    fitted: false,
+                    hidden: false
+                },
             ]
         );
         // Rows that share a style are one run.
         assert_eq!(sheet.rows.len(), 3);
-        assert_eq!((sheet.rows[0].first, sheet.rows[0].last, sheet.rows[0].fitted), (0, 3, true));
+        assert_eq!(
+            (
+                sheet.rows[0].first,
+                sheet.rows[0].last,
+                sheet.rows[0].fitted
+            ),
+            (0, 3, true)
+        );
         assert!((sheet.rows[0].size - 0.452 * 360_000.0).abs() < 1.0);
         assert_eq!((sheet.rows[1].first, sheet.rows[1].hidden), (4, true));
-        assert_eq!((sheet.rows[2].first, sheet.rows[2].last, sheet.rows[2].fitted), (6, 6, false));
+        assert_eq!(
+            (
+                sheet.rows[2].first,
+                sheet.rows[2].last,
+                sheet.rows[2].fitted
+            ),
+            (6, 6, false)
+        );
         assert_eq!(sheet.shapes[0].cell, Some((6, 0)));
     }
 
@@ -2020,7 +2283,9 @@ mod tests {
         let mut text = vec![b' '; 64 * 1024 - 3];
         text.extend_from_slice(b"<draw:frame/>");
         assert!(mentions_drawings(text.as_slice()).unwrap());
-        assert!(!mentions_drawings(&b"<table:table><text:p>draw:</text:p></table:table>"[..]).unwrap());
+        assert!(
+            !mentions_drawings(&b"<table:table><text:p>draw:</text:p></table:table>"[..]).unwrap()
+        );
         assert!(!mentions_drawings(&b""[..]).unwrap());
     }
 
@@ -2066,7 +2331,12 @@ mod tests {
             })
         );
         // The cell's own text is not the picture's.
-        assert!(picture.paragraphs.iter().all(|paragraph| paragraph.runs.is_empty()));
+        assert!(
+            picture
+                .paragraphs
+                .iter()
+                .all(|paragraph| paragraph.runs.is_empty())
+        );
         let pinned = &drawings.sheets[1].shapes[0];
         assert_eq!(pinned.cell, None);
         assert_eq!(pinned.x.round(), 1_080_000.0);
@@ -2137,7 +2407,10 @@ mod tests {
             } => {
                 assert_eq!((path.width, path.height), (1000.0, 1000.0));
                 assert_eq!(path.commands.len(), 5);
-                assert_eq!(path.commands[3], PathCommand::Cubic([750.0, 700.0, 250.0, 700.0, 0.0, 1000.0]));
+                assert_eq!(
+                    path.commands[3],
+                    PathCommand::Cubic([750.0, 700.0, 250.0, 700.0, 0.0, 1000.0])
+                );
                 assert!(path.filled);
             }
             other => panic!("{other:?}"),
@@ -2175,9 +2448,15 @@ mod tests {
         assert_eq!(style.size, Some(18.0));
         let text = drawings.styles.resolve(Family::Text, Some("T1"));
         assert_eq!(text.color.as_deref(), Some("C00000"));
-        assert_eq!((text.bold, text.italic, text.underline), (Some(true), Some(true), Some(true)));
+        assert_eq!(
+            (text.bold, text.italic, text.underline),
+            (Some(true), Some(true), Some(true))
+        );
         assert_eq!(text.font.as_deref(), Some("Malgun Gothic"));
-        assert_eq!(drawings.styles.resolve(Family::Text, Some("ce1")), DrawStyle::default());
+        assert_eq!(
+            drawings.styles.resolve(Family::Text, Some("ce1")),
+            DrawStyle::default()
+        );
     }
 
     #[test]
@@ -2223,9 +2502,16 @@ mod tests {
         assert_eq!(enhanced_path("M 0 0 Z N"), None, "a path that goes nowhere");
         assert_eq!(preset("cloud"), Some("cloud"));
         assert_eq!(preset("notAShape"), None);
-        assert!(PRESETS.windows(2).all(|pair| pair[0] < pair[1]), "sorted for the search");
+        assert!(
+            PRESETS.windows(2).all(|pair| pair[0] < pair[1]),
+            "sorted for the search"
+        );
         assert_eq!(PRESETS.len(), 187);
-        assert!(ODF_SHAPE_TYPES.iter().all(|(_, name)| preset(name).is_some()));
+        assert!(
+            ODF_SHAPE_TYPES
+                .iter()
+                .all(|(_, name)| preset(name).is_some())
+        );
         assert_eq!(preset_of_type("isosceles-triangle"), Some("triangle"));
         assert_eq!(preset_of_type("ooxml-roundRect"), Some("roundRect"));
         assert_eq!(preset_of_type("ooxml-bogus"), None);
@@ -2246,7 +2532,11 @@ mod tests {
         };
         // The ones the export writes come back as they went.
         for entry in crate::ods_drawing::DASHES {
-            let (one, two, gap) = (format!("{}%", entry.2), format!("{}%", entry.4), format!("{}%", entry.5));
+            let (one, two, gap) = (
+                format!("{}%", entry.2),
+                format!("{}%", entry.4),
+                format!("{}%", entry.5),
+            );
             let (count1, count2) = (entry.1.to_string(), entry.3.to_string());
             let mut pairs = vec![
                 ("draw:dots1", count1.as_str()),
@@ -2261,7 +2551,11 @@ mod tests {
         }
         // Another writer's dashes, in lengths and with the dots first.
         assert_eq!(
-            dash(&[("draw:dots1", "1"), ("draw:dots1-length", "0.2cm"), ("draw:distance", "0.1cm")]),
+            dash(&[
+                ("draw:dots1", "1"),
+                ("draw:dots1-length", "0.2cm"),
+                ("draw:distance", "0.1cm")
+            ]),
             "dash"
         );
         assert_eq!(
@@ -2274,7 +2568,10 @@ mod tests {
             ]),
             "lgDashDotDot"
         );
-        assert_eq!(dash(&[("draw:dots1", "1"), ("draw:distance", "100%")]), "sysDot");
+        assert_eq!(
+            dash(&[("draw:dots1", "1"), ("draw:distance", "100%")]),
+            "sysDot"
+        );
         assert_eq!(dash(&[]), "dash");
         // Angles: with a unit, and in tenths of a degree without one.
         assert_eq!(gradient_degrees(Some("45deg")), Some(45.0));
