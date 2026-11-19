@@ -428,6 +428,14 @@ async function evalPdfText(run, check, io) {
   const text = nfc(parsed.text)
   const needle = nfc(check.contains)
   if (text.includes(needle)) return pass(`${check.file} text contains ${around(text, needle)}`)
+  // A printed page wraps a long line where it likes, also inside the text (a slide title
+  // breaks after a hyphen): the text is on the page, across two lines. Only line breaks are
+  // taken out; a blank inside a line still makes it another text.
+  const unwrapped = text.replace(/[ \t]*\r?\n[ \t]*/g, '')
+  if (unwrapped.includes(needle))
+    return pass(
+      `${check.file} text contains ${around(unwrapped, needle)}, wrapped over a line break on the page`,
+    )
   return text.trim() === ''
     ? unverified(
         `${check.file} has no extractable text (fonts without a text map, or an image-only print)`,

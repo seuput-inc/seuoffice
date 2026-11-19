@@ -1948,7 +1948,22 @@ impl Docs {
                                 view.0,
                                 match &reply {
                                     Ok(IpcValue::Null) => "nothing".to_owned(),
-                                    Ok(_) => format!("a document (opened: {opened})"),
+                                    Ok(IpcValue::Object(fields)) => format!(
+                                        "a document (opened: {opened}) with {}",
+                                        fields
+                                            .iter()
+                                            .map(|(key, value)| match value {
+                                                IpcValue::String(text) =>
+                                                    format!("{key}: text of {}", text.len()),
+                                                IpcValue::Null | IpcValue::Undefined =>
+                                                    format!("{key}: none"),
+                                                IpcValue::Bool(flag) => format!("{key}: {flag}"),
+                                                _ => format!("{key}: a value"),
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    ),
+                                    Ok(_) => format!("a value that is no object (opened: {opened})"),
                                     Err(error) => format!("an error: {}", error.message),
                                 }
                             );

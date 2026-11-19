@@ -3036,15 +3036,32 @@ fn recent_documents(services: &Services) -> Vec<String> {
 
 // ---- clicks ----
 
-/// The Save item of the menu now set that has `accelerator`
+/// Whether two accelerators name the same keys: the menus write Save As both as
+/// `CmdOrCtrl+Shift+S` and as `Shift+CmdOrCtrl+S`
+#[cfg(windows)]
+fn same_accelerator(a: &str, b: &str) -> bool {
+    let keys = |text: &str| {
+        let mut keys: Vec<String> = text.split('+').map(str::to_ascii_lowercase).collect();
+        keys.sort();
+        keys
+    };
+    keys(a) == keys(b)
+}
+
+/// The item of the menu now set that has `accelerator` and does something. In the Sheets and
+/// Slides menus the Save items are events to the page (`menu:action`, `slides:menu`), not
+/// [`Act::Save`], so the action is not looked at: the caller passes the Save shortcuts only.
 #[cfg(windows)]
 fn save_item_with(nodes: &[Node], accelerator: &str) -> Option<String> {
     for node in nodes {
         match node {
             Node::Item(item)
                 if item.enabled
-                    && item.accelerator.as_deref() == Some(accelerator)
-                    && matches!(item.act, Some(Act::Save(_))) =>
+                    && item.act.is_some()
+                    && item
+                        .accelerator
+                        .as_deref()
+                        .is_some_and(|own| same_accelerator(own, accelerator)) =>
             {
                 return item.id.clone();
             }
