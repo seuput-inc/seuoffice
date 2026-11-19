@@ -18,6 +18,9 @@ documents.
   Windows); `p8-*` and `p9-*` the context menu and popup probes.
 - `p3-context.html` and `p3-*.png/json/wasm` routes are also embedded in the
   shell (`src/probe/schemes.rs`) and served by the five stand-in schemes.
+  `pages/pixel.png` (one pixel) and `pages/tiny.wasm` (the 8-byte header of an
+  empty module) are written for the probes and ship inside the shell binary
+  (`tools/asset-licenses.json`).
 
 ## Running
 

@@ -48,3 +48,24 @@ allow = ["ISC"]
 [[licenses.exceptions]]
 crate = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
+
+# The Tauri 2 desktop shell (crates/shell, its own lock) is checked against this
+# policy too (ci.yml rust-licenses). These three ship in it.
+
+# jsonschema -> referencing -> fluent-uri. MIT-0 is MIT without the notice
+# condition.
+[[licenses.exceptions]]
+crate = "borrow-or-share"
+allow = ["MIT-0"]
+
+# Mozilla's root certificates as data, a direct dependency of the shell. The
+# agreement's text goes with the third-party notices.
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
+# seuoffice's own xlsx engine sidecar (apps/sheets/native), under the
+# project's licence (decision 0031).
+[[licenses.exceptions]]
+crate = "xlsx-sidecar"
+allow = ["FSL-1.1-ALv2"]
