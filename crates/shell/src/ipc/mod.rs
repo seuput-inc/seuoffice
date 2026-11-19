@@ -337,7 +337,11 @@ impl ReplyAuthority {
 /// What an answer is delivered against: the owner of its request, whether the answer was
 /// transferred to the owner of a document its call loaded, and the cancellation such a
 /// transfer stays bound to.
-type ReplyClaim = (NativeRequestOwner, bool, Option<shell_contract::runtime::CancelToken>);
+type ReplyClaim = (
+    NativeRequestOwner,
+    bool,
+    Option<shell_contract::runtime::CancelToken>,
+);
 
 /// Hands `frame` to the page inside the gates of `under`, if the request is still as `claim`
 /// read it. `true`: this was the one delivery of the request's answer.
@@ -395,12 +399,21 @@ fn verified_reply(
             let Some(claim) = authority.undelivered() else {
                 return;
             };
-            if deliver_reply(&ipc.outlet, &authority, &claim, &claim.0, &mut frame, &channel) {
+            if deliver_reply(
+                &ipc.outlet,
+                &authority,
+                &claim,
+                &claim.0,
+                &mut frame,
+                &channel,
+            ) {
                 return;
             }
-            let changed = authority.undelivered().is_some_and(|(owner, transferred, _)| {
-                transferred != claim.1 || !same_reply_owner(&owner, &claim.0)
-            });
+            let changed = authority
+                .undelivered()
+                .is_some_and(|(owner, transferred, _)| {
+                    transferred != claim.1 || !same_reply_owner(&owner, &claim.0)
+                });
             if changed {
                 continue;
             }
@@ -411,7 +424,9 @@ fn verified_reply(
                 return;
             };
             let core = ipc.core.clone();
-            core.post(Box::new(move || late_reply(&ipc, &authority, frame, &channel)));
+            core.post(Box::new(move || {
+                late_reply(&ipc, &authority, frame, &channel)
+            }));
             return;
         }
     })
@@ -1050,7 +1065,9 @@ mod posted_call_tests {
             let mut table = Table::default();
             let batch = shell_core::table::spec_of(SLOW).unwrap().batch;
             let handler = Rc::new(Keeps(kept.clone()));
-            table.register(batch, SLOW, ChannelKind::Invoke, handler).unwrap();
+            table
+                .register(batch, SLOW, ChannelKind::Invoke, handler)
+                .unwrap();
             install_dispatcher(Dispatcher::new(table));
             self.invokes_channel(id, SLOW);
             self.core_thread_runs();
