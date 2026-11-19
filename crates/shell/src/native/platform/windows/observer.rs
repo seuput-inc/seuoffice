@@ -140,18 +140,26 @@ fn modifier_bit(key: u32) -> Option<u8> {
     }
 }
 
+/// The modifiers held now. Shift alone raises no accelerator event, so it is never seen going
+/// down here: its own state is read, which holds for a hand on the keyboard (the key is still
+/// down when the letter is handled).
+fn held() -> u8 {
+    let held = MODIFIERS.load(Ordering::Relaxed);
+    // SAFETY: a plain read of the keyboard's physical state.
+    if unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } < 0 {
+        held | SHIFT
+    } else {
+        held
+    }
+}
+
 /// The menu accelerator of the Save shortcut being pressed: Ctrl+S or Ctrl+Shift+S
 fn file_shortcut() -> Option<&'static str> {
-    let held = MODIFIERS.load(Ordering::Relaxed);
+    let held = held();
     if held & CTRL == 0 || held & ALT != 0 {
         return None;
     }
-    // Shift alone raises no accelerator event, so it is never seen going down here: its own
-    // state is read, which holds for a hand on the keyboard (the key is still down when the
-    // letter is handled)
-    // SAFETY: a plain read of the keyboard's physical state.
-    let shift = held & SHIFT != 0 || unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } < 0;
-    Some(if shift {
+    Some(if held & SHIFT != 0 {
         "CmdOrCtrl+Shift+S"
     } else {
         "CmdOrCtrl+S"
@@ -296,8 +304,9 @@ impl Observe for Platform {
         })?;
 
         // WebView2 passes no unhandled key on to the window, so the menu's accelerators are dead
-        // while a page has the focus; the Save shortcuts of the pages that have none are taken
-        // here and run as the menu item they belong to.
+        // while a page has the focus. The ones no page handles itself are taken here and run as
+        // the menu item they belong to: the Save shortcuts of the pages that have none, and
+        // Close (Ctrl+W), which closes a tab only through the menu.
         let handler = AcceleratorKeyPressedEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else {
                 return Ok(());
@@ -320,15 +329,28 @@ impl Observe for Platform {
                 }
                 return Ok(());
             }
-            if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN || key != u32::from(b'S') {
+            if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
                 return Ok(());
             }
-            let shortcut = file_shortcut();
-            let handled = shortcut.is_some_and(crate::host::menu::run_file_accelerator);
-            crate::trace::trace!(
-                "accel",
-                "S pressed: shortcut {shortcut:?}, handled {handled}"
-            );
+            let handled = if key == u32::from(b'S') {
+                let shortcut = file_shortcut();
+                let handled = shortcut.is_some_and(crate::host::menu::run_file_accelerator);
+                crate::trace::trace!(
+                    "accel",
+                    "S pressed: shortcut {shortcut:?}, handled {handled}"
+                );
+                handled
+            } else if key == u32::from(b'W') {
+                let close = held() == CTRL;
+                let handled = close && crate::host::menu::run_close_accelerator();
+                crate::trace::trace!(
+                    "accel",
+                    "W pressed: Ctrl alone {close}, handled {handled}"
+                );
+                handled
+            } else {
+                return Ok(());
+            };
             if handled {
                 // SAFETY: as above.
                 unsafe { args.SetHandled(true)? };

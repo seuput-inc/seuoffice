@@ -95,16 +95,16 @@
       "js": "document.querySelector('.cm-content')?.textContent ?? null"
     },
     {
+      "op": "screenshot",
+      "name": "html-after"
+    },
+    {
       "op": "exportPdf",
       "path": "${WORK}/html-export.pdf"
     },
     {
       "op": "wait",
       "ms": 4000
-    },
-    {
-      "op": "screenshot",
-      "name": "html-after"
     }
   ]
 }

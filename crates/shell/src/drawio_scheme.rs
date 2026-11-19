@@ -74,8 +74,21 @@ impl DrawioAssets {
                 (self.root.clone(), PathBuf::from(relative), index)
             }
         };
-        let Ok(bytes) = crate::host::drawio_assets::read(&root, &relative, u64::MAX) else {
-            return empty(404);
+        let bytes = match crate::host::drawio_assets::read(&root, &relative, u64::MAX) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                // a file draw.io asks for and does not ship is no news; its page, or a refusal
+                // of the reader itself, is why the editor does not load
+                if index || error.kind() != std::io::ErrorKind::NotFound {
+                    crate::trace::trace!(
+                        "scheme",
+                        "draw.io: {} under {} could not be read: {error}",
+                        relative.display(),
+                        root.display()
+                    );
+                }
+                return empty(404);
+            }
         };
         let csp = csp_in_shape(
             drawio_protocol::drawio_csp(

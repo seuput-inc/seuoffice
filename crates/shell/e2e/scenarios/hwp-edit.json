@@ -73,12 +73,12 @@
       "js": "(async () => { const s = document.querySelector('.hwp-editor-host iframe')?.contentWindow?.rhwpStudio; if (!s) return null; await s.plugins.load('ieum-agent'); const r = await s.plugins.invoke('ieum-agent', 'findText', ['SEU-E2E-hwp']); return { count: r.count } })()"
     },
     {
-      "op": "exportPdf",
-      "path": "${WORK}/hwp-export.pdf"
-    },
-    {
       "op": "screenshot",
       "name": "hwp-after"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/hwp-export.pdf"
     }
   ]
 }

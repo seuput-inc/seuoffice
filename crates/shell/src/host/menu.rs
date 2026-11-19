@@ -19,7 +19,7 @@ mod dock;
 mod fonts;
 
 #[cfg(windows)]
-pub(crate) use app::run_file_accelerator;
+pub(crate) use app::{run_close_accelerator, run_file_accelerator};
 pub(crate) use app::{
     app_menu_activate, app_menu_popup, e2e_export_pdf, e2e_save_as_owned, prepare_activation_menu,
 };

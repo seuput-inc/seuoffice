@@ -51,6 +51,7 @@ G3 관문의 실행기다(`src/e2e/`). 앱은 평소처럼 전부 시작하고(`
 - `waitReady`는 `open`이 이름 붙인 파일의 탭이 활성이 되고 그 문서가 render-ready에 이른 것을 기다린다(`newDocument` 뒤에는 앞의 탭이 아닌 탭). 값에 활성 탭의 `kind`, `view`, `title`, `file`이 들어간다. 편집기의 제어 인터페이스가 끝내 준비되지 않으면(`control`이 `not_ready`나 `absent`) `page`에 그 페이지의 마지막 리소스 요청, 화면에 보이는 글, 기록된 오류가 들어간다.
 - `type`, `shortcut`, `ime`, `click`은 페이지가 이미 포커스를 가지고 있으면 포커스를 다시 주지 않는다. 윈도에서 다시 주는 것(WebView2 `MoveFocus`)은 페이지 안의 포커스를 옮길 수 있고, 포커스를 잃으면 편집을 끝내는 편집기(마인드맵 토픽, 슬라이드 글 상자)는 앞 단계에서 시작한 편집을 잃게 된다.
 - `focusBefore`, `focusAfter`의 `window`는 그 페이지의 창이 뜬 뒤로 포커스를 얻고(`gained`) 잃은(`lost`) 횟수다. 두 값 사이에 횟수가 늘었으면 그 사이에 포커스가 오갔다는 뜻이고, 포커스를 잃을 때 편집을 끝내는 편집기는 그때 편집을 잃는다. 실행 로그의 `focus:` 줄은 어느 뷰가 포커스를 얻고 잃었는지, 셸이 누구에게 포커스를 주었는지, 창의 `Focused` 이벤트가 창의 활성화였는지를 남긴다(처음 40줄, 그 뒤로는 100줄에 하나). `asset:` 줄은 문서 자산 스킴의 요청과 답을 남긴다.
+- `shortcut`의 `closeTab`은 키를 보낸 뒤 그 탭이 활성 탭이 아니게 될 때까지 10초를 기다리고, 그대로면 실패한다. `waitReady`는 이미 열려 있던 같은 파일의 탭도 받으므로, 닫히지 않은 탭은 뒤의 "다시 열고 읽기"를 닫힌 적 없는 페이지의 읽기로 만든다(윈도에서는 Ctrl+W가 아무것도 닫지 않아 S121까지 모든 실행이 그랬다). `exportPdf` 뒤에는 앱이 내보낸 PDF를 새 탭으로 열기 때문에, 문서를 보여야 하는 `screenshot`은 `exportPdf` 앞에 둔다.
 - 시나리오 문자열 안의 `${FIXTURES}`, `${WORK}`는 환경 변수 `SEUOFFICE_E2E_FIXTURES`, `SEUOFFICE_E2E_WORK`로 바뀐다.
 - 대화 상자: `dialog` 단계가 다음 네이티브 대화 상자의 답(`save`, `dontSave`, `cancel`, `path:<절대경로>`)을 넣는다. 훅은 `host/dialog/owned.rs`와 `Dialogs::error`에 있고 `--e2e`가 아니면 아무 일도 하지 않는다. 답 없는 대화 상자는 15초 뒤 취소되며 `e2e-dialogs.jsonl`에 남는다.
 - `query`는 활성 편집기 웹뷰에서 `PageOps::evaluate`로 식을 돌린다(Promise는 기다린다). 새 IPC 길은 없다.

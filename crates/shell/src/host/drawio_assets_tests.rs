@@ -156,3 +156,17 @@ fn confinement_model_never_follows_replaced_link() {
         }
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn reads_below_a_verbatim_root() {
+    // `fs::canonicalize` answers the `\\?\` form, the form the app's resources folder comes in
+    let scratch = Scratch::new();
+    let root = scratch.0.join("root");
+    fs::create_dir_all(root.join("nested")).unwrap();
+    fs::write(root.join("nested/a"), b"asset").unwrap();
+    let verbatim = fs::canonicalize(&root).unwrap();
+    assert!(verbatim.to_string_lossy().starts_with(r"\\?\"));
+    assert_eq!(read(&verbatim, Path::new("nested/a"), 5).unwrap(), b"asset");
+    assert!(read(&verbatim, Path::new("nested/../a"), 16).is_err());
+}

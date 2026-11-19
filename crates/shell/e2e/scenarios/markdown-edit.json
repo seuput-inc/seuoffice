@@ -68,16 +68,16 @@
       "js": "document.querySelector('.ProseMirror')?.textContent ?? null"
     },
     {
+      "op": "screenshot",
+      "name": "markdown-after"
+    },
+    {
       "op": "exportPdf",
       "path": "${WORK}/markdown-export.pdf"
     },
     {
       "op": "wait",
       "ms": 4000
-    },
-    {
-      "op": "screenshot",
-      "name": "markdown-after"
     }
   ]
 }

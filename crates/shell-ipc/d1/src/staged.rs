@@ -9,10 +9,11 @@
 use std::io;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use file_commit::{
-    CommittedWriteSnapshot, OwnedStage, OwnedWrittenCommit, PendingStage, PrivateDirectory,
-    PublicationMode,
+    CommittedWriteSnapshot, OwnedStage, OwnedWrittenCommit, OwnedWrittenStage, PendingStage,
+    PendingWrittenStage, PrivateDirectory, PublicationMode,
 };
 use shell_contract::IpcError;
 use shell_contract::ipc::{NativeSavedInput, SavedPublication, StagedWriteError};
@@ -97,6 +98,58 @@ fn failure(error: String, cleanup: io::Result<()>) -> IpcError {
 /// gets is the OS's text alone ("Access is denied"), which is the same for every step.
 fn note(path: &Path, step: &str, error: &dyn std::fmt::Display) {
     eprintln!("[staged] {}: {step} failed: {error}", path.display());
+}
+
+/// How long, and how often, a refused move of a written stage is tried again
+const MOVE_RETRY: Duration = Duration::from_secs(3);
+const MOVE_RETRY_STEP: Duration = Duration::from_millis(100);
+
+/// Whether a refused move of the stage gets another try: on Windows, for a while, when the
+/// refusal is "access denied" (5) or "in use by another process" (32). There a program that
+/// reads a file as soon as it is written (a virus scanner) refuses its rename for a moment.
+fn move_again(windows: bool, error: &io::Error, waited: Duration) -> bool {
+    windows && waited < MOVE_RETRY && matches!(error.raw_os_error(), Some(5 | 32))
+}
+
+/// Moves the written stage into its private directory. In the S116 and S121 runs on Windows
+/// the move of the Slides PDF was refused with "Access is denied" each time, while the same
+/// code moved a workbook's stage. Whether the refusal passes is not known yet: the line on
+/// stderr says how many tries the move took, or that it never went through.
+fn move_written(
+    path: &Path,
+    mut pending: PendingWrittenStage,
+) -> Result<OwnedWrittenStage, (io::Error, PendingWrittenStage)> {
+    let started = Instant::now();
+    let mut tries = 1u32;
+    loop {
+        match pending.quarantine() {
+            Ok(written) => {
+                if tries > 1 {
+                    eprintln!(
+                        "[staged] {}: the stage moved on try {tries}, after {} ms",
+                        path.display(),
+                        started.elapsed().as_millis()
+                    );
+                }
+                return Ok(written);
+            }
+            Err((error, stage)) => {
+                if !move_again(cfg!(windows), &error, started.elapsed()) {
+                    if tries > 1 {
+                        eprintln!(
+                            "[staged] {}: the stage did not move in {tries} tries over {} ms",
+                            path.display(),
+                            started.elapsed().as_millis()
+                        );
+                    }
+                    return Err((error, stage));
+                }
+                pending = stage;
+                tries += 1;
+                std::thread::sleep(MOVE_RETRY_STEP);
+            }
+        }
+    }
 }
 
 pub(crate) struct StagedOutput {
@@ -197,7 +250,7 @@ impl StagedOutput {
                 return Err(failure(error.to_string(), cleanup));
             }
         };
-        let written = match pending.quarantine() {
+        let written = match move_written(path, pending) {
             Ok(written) => written,
             Err((error, pending)) => {
                 note(
@@ -335,5 +388,24 @@ impl Drop for StagedOutput {
         if !self.settled {
             let _ = self.discard();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_move_is_tried_again_only_on_windows_for_a_while() {
+        let denied = || io::Error::from_raw_os_error(5);
+        let in_use = || io::Error::from_raw_os_error(32);
+        assert!(move_again(true, &denied(), Duration::ZERO));
+        assert!(move_again(true, &in_use(), MOVE_RETRY - MOVE_RETRY_STEP));
+        assert!(!move_again(true, &denied(), MOVE_RETRY));
+        assert!(!move_again(false, &denied(), Duration::ZERO));
+        // any other refusal stands at once
+        assert!(!move_again(true, &io::Error::from_raw_os_error(2), Duration::ZERO));
+        let named = io::Error::new(io::ErrorKind::InvalidData, "not the captured object");
+        assert!(!move_again(true, &named, Duration::ZERO));
     }
 }

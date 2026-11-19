@@ -58,6 +58,8 @@ const QUIET_TIMEOUT_MS: u32 = 10_000;
 const FILE_STABLE: Duration = Duration::from_millis(600);
 /// after a quit the app ends by itself; the runner waits this long for it
 const QUIT_WAIT: Duration = Duration::from_secs(60);
+/// a tab is gone within this of its Close Tab, or the key closed nothing
+const CLOSE_WAIT: Duration = Duration::from_secs(10);
 
 enum StepError {
     /// ran, did not get what it asked for
@@ -274,6 +276,30 @@ impl Runner<'_> {
             webview,
             window,
         })
+    }
+
+    /// A Close Tab is done when the tab it was sent to is no longer the active one, and fails
+    /// when it still is after `CLOSE_WAIT`. A scenario that opens the file again reads a
+    /// reopened document only then: `waitReady` also takes a tab of that file that was open
+    /// already. On Windows the key closed nothing (the second `waitReady` named the first
+    /// one's view in every run), so each read "after reopen" there was of the page that had
+    /// never been closed.
+    fn wait_closed(&self, view: ViewId) -> Result<(), StepError> {
+        let end = Instant::now() + CLOSE_WAIT;
+        loop {
+            if self.active()?.map(|active| active.view) != Some(view) {
+                return Ok(());
+            }
+            if Instant::now() >= end {
+                return Err(failed(format!(
+                    "the tab of view {} is still the active tab {} ms after Close Tab: it did \
+                     not close",
+                    view.0,
+                    CLOSE_WAIT.as_millis()
+                )));
+            }
+            sleep(POLL * 2);
+        }
     }
 
     /// The document of the webview went through the bridge's render-ready (registered, loaded,
@@ -594,11 +620,19 @@ impl Runner<'_> {
                 Ok(Some(value))
             }
             Step::Shortcut(shortcut) => {
+                // the tab a Close Tab is sent to, read before the key
+                let closing = match shortcut {
+                    Shortcut::CloseTab => self.active()?.map(|active| active.view),
+                    _ => None,
+                };
                 let target = self.target()?;
                 let focus = Self::focus_page(&target.webview)?;
                 input::shortcut(&self.context.ui, &target.window, *shortcut).map_err(unrunnable)?;
                 if *shortcut == Shortcut::Quit {
                     self.quitting = true;
+                }
+                if let Some(view) = closing {
+                    self.wait_closed(view)?;
                 }
                 Ok(Some(json!({ "kind": target.kind, "focusBefore": focus })))
             }

@@ -112,9 +112,18 @@ fn child(parent: &File, name: &OsStr, directory: bool) -> io::Result<File> {
 
 pub(super) fn open(root: &Path, relative: &[&OsStr]) -> io::Result<File> {
     let mut components = root.components();
+    // The verbatim forms name the same volumes (`\\?\D:`, `\\?\UNC\server\share`). The app's
+    // resources folder comes in that form: Tauri canonicalizes the executable's path, and with
+    // the plain forms alone no file of the installed diagram editor could be read.
     let prefix = match components.next() {
         Some(Component::Prefix(prefix))
-            if matches!(prefix.kind(), Prefix::Disk(_) | Prefix::UNC(_, _)) =>
+            if matches!(
+                prefix.kind(),
+                Prefix::Disk(_)
+                    | Prefix::UNC(_, _)
+                    | Prefix::VerbatimDisk(_)
+                    | Prefix::VerbatimUNC(_, _)
+            ) =>
         {
             prefix.as_os_str()
         }

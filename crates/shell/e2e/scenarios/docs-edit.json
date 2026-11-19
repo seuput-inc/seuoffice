@@ -64,12 +64,12 @@
       "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
     },
     {
-      "op": "exportPdf",
-      "path": "${WORK}/docs-export.pdf"
-    },
-    {
       "op": "screenshot",
       "name": "docs-after"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/docs-export.pdf"
     }
   ]
 }

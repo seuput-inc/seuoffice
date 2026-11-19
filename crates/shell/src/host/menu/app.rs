@@ -3108,6 +3108,33 @@ pub(crate) fn run_file_accelerator(accelerator: &str) -> bool {
     true
 }
 
+/// The Close item of the menu now set, wherever it is
+#[cfg(windows)]
+fn close_item(nodes: &[Node]) -> Option<String> {
+    nodes.iter().find_map(|node| match node {
+        Node::Item(item) if item.enabled && item.act == Some(Act::Close) => item.id.clone(),
+        Node::Menu { items, .. } => close_item(items),
+        _ => None,
+    })
+}
+
+/// Runs the Close item (`CmdOrCtrl+W`) for a webview that took the key from the native menu,
+/// as [`run_file_accelerator`] does for Save: no page closes its own tab, so with the focus in
+/// an editor the key closed nothing on Windows. True when it ran.
+#[cfg(windows)]
+pub(crate) fn run_close_accelerator() -> bool {
+    let id = lock(&SHOWN)
+        .as_ref()
+        .and_then(|shown| close_item(&shown.menus));
+    let (Some(id), Some(shell)) = (id, SHELL.get()) else {
+        crate::trace::trace!("accel", "CmdOrCtrl+W: the menu now set has no Close item");
+        return false;
+    };
+    crate::trace::trace!("accel", "CmdOrCtrl+W: running {id}");
+    dispatch(&shell.app, &id);
+    true
+}
+
 fn dispatch(app: &AppHandle, id: &str) {
     if !id.starts_with(ID_PREFIX) {
         return;
