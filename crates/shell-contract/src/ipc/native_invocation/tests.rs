@@ -1111,10 +1111,11 @@ fn native_recovery_activation_retains_its_exact_command_root() {
 }
 
 /// A restored tab is unloaded until something needs its view. A native load of it (the launch
-/// bringing the front tab back, a menu, a service) runs under a tab command, which must be
-/// able to open that tab's recovery selection and no other.
+/// bringing the front tab back, a menu, a service) runs under a tab command. The issuer admits
+/// a recovery child only under a root load command of its own process lifetime that names the
+/// tab; whose selection it is, the caller's registry decides.
 #[test]
-fn native_tab_load_opens_only_the_recovery_selection_of_the_tab_it_names() {
+fn a_recovery_child_is_issued_only_under_a_root_load_command_that_names_the_tab() {
     let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let selection = NativeInvocationSelection::RecoveryBlank {
         surface: Surface::Docs,
@@ -1168,6 +1169,16 @@ fn native_tab_load_opens_only_the_recovery_selection_of_the_tab_it_names() {
     ] {
         let root = issuer.issue_command(command, CancelToken::default());
         assert!(issue(&root, "tab-1").is_err());
+    }
+    // a load command remembered under a startup is not a root command
+    let owner = synthetic_owner(ViewId(1), &RendererGeneration::new());
+    let startup = issuer.issue_startup(Vec::new(), false, owner, CancelToken::default());
+    for command in named("tab-1") {
+        let remembered = issuer
+            .issue_command_child(&startup, command, CancelToken::default())
+            .unwrap();
+        assert!(!remembered.is_root_native_command());
+        assert!(issue(&remembered, "tab-1").is_err());
     }
 
     // the child binds to its view under the tab command, as one of a native open does

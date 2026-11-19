@@ -325,8 +325,10 @@ impl NativeInvocationIssuer {
         })))
     }
     /// A trusted native load of one unloaded tab (`ActivateTab`, `HydrateTab`) opens that
-    /// tab's recovery selection. The command must name `tab_id`, the tab whose entry supplies
-    /// the selection: a command for another tab, or any other command, is refused.
+    /// tab's recovery selection. The issuer checks the command, the tab, the shutdown and the
+    /// purpose only: a root load command of this process lifetime that names `tab_id`, and a
+    /// recovery selection. It cannot tell whose selection it was handed. The caller must pass
+    /// the selection of the opener bound to `tab_id`, and no other.
     pub fn issue_tab_recovery_child(
         &self,
         command: &NativeInvocationOperation,

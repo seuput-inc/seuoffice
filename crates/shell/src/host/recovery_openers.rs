@@ -2314,6 +2314,66 @@ mod tests {
         );
         finish(attempt, false);
     }
+    /// The tab issuer trusts its caller for whose selection it is handed. This is that half:
+    /// an opener bound to one tab is not found for another, and what is issued under the load
+    /// of its own tab is the selection of its own plan.
+    #[test]
+    fn an_opener_bound_to_one_tab_opens_its_own_selection_and_refuses_another_tab() {
+        let (opener, _, calls) = make(WindowId(98), false);
+        bind(opener, "tab-a").unwrap();
+        assert_eq!(
+            bind(opener, "tab-b").err().as_deref(),
+            Some("recovery opener belongs to another tab")
+        );
+        let issuer = NativeInvocationIssuer::new(CancelToken::default());
+        let load = |tab_id: &str| {
+            issuer.issue_command(
+                shell_contract::ipc::NativeEditorCommand::HydrateTab {
+                    tab_id: tab_id.into(),
+                },
+                CancelToken::default(),
+            )
+        };
+
+        // the load of another tab never reaches the editor's prepare or the issuer
+        let other = context("tab-b");
+        let other_root = load(&other.tab_id);
+        let issued = Cell::new(false);
+        let refused = prepare_open_with(&opener, &other, |plan| {
+            issued.set(true);
+            issuer.issue_tab_recovery_child(
+                &other_root,
+                &other.tab_id,
+                plan.selection().clone(),
+                CancelToken::default(),
+            )
+        });
+        assert_eq!(
+            refused.err().as_deref(),
+            Some("recovery opener belongs to another tab")
+        );
+        assert!(!issued.get());
+        assert_eq!(calls.get(), 0);
+
+        let tab = context("tab-a");
+        let root = load(&tab.tab_id);
+        let mut prepared = prepare_open_with(&opener, &tab, |plan| {
+            issuer.issue_tab_recovery_child(
+                &root,
+                &tab.tab_id,
+                plan.selection().clone(),
+                CancelToken::default(),
+            )
+        })
+        .unwrap();
+        let operation = prepared.operation.take().unwrap();
+        assert!(operation.is_child_of(&root));
+        assert!(matches!(
+            operation.selection(),
+            NativeInvocationSelection::RecoveryBlank { title, .. } if title == "selected title"
+        ));
+        finish(prepared.attempt.take().unwrap(), false);
+    }
     #[test]
     fn failures_remain_retryable_and_success_consumes_selected_opener() {
         let (opener, _, calls) = make(WindowId(10), true);
