@@ -188,6 +188,49 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn a_replay_that_did_not_start_is_asked_again_when_the_held_navigation_ends() {
+        use crate::native::events::LoadError;
+        let cancelled = || {
+            Err(LoadError {
+                code: None,
+                description: "the navigation was cancelled".to_owned(),
+            })
+        };
+        let held = url("https://example.test/a");
+
+        let control = FakeControl::new();
+        let browser = policy_browser("policy-replay", |_| true, control.clone());
+        assert!(!on_navigation(&browser, &held), "held, not started");
+        browser.observe_policy_installed();
+        assert_eq!(control.navigations.lock().unwrap().len(), 1);
+        // WebView2 reports the end of the cancelled navigation, and nothing has started since
+        browser.observe_load(cancelled());
+        assert_eq!(
+            *control.navigations.lock().unwrap(),
+            ["https://example.test/a", "https://example.test/a"]
+        );
+        browser.observe_load(cancelled());
+        assert_eq!(
+            control.navigations.lock().unwrap().len(),
+            2,
+            "asked again once only"
+        );
+
+        let control = FakeControl::new();
+        let browser = policy_browser("policy-replay-started", |_| true, control.clone());
+        assert!(!on_navigation(&browser, &held));
+        browser.observe_policy_installed();
+        assert!(on_navigation(&browser, &held), "the replay started");
+        browser.observe_load(cancelled());
+        assert_eq!(
+            control.navigations.lock().unwrap().len(),
+            1,
+            "a replay that started is not asked again"
+        );
+    }
+
+    #[test]
     #[cfg(target_os = "macos")]
     fn a_main_frame_flag_set_by_an_adapter_reaches_the_policy() {
         use crate::native::platform::with_navigation_frame;

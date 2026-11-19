@@ -186,6 +186,7 @@ impl Observe for Platform {
         let tracked = Rc::new(Tracked::default());
 
         let started = tracked.clone();
+        let label = browser.label().to_owned();
         let handler = NavigationStartingEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else {
                 return Ok(());
@@ -197,6 +198,11 @@ impl Observe for Platform {
                 // wry's handler ran first and cancels what the shell policy refused.
                 args.Cancel(&mut cancelled)?;
             }
+            crate::trace::trace!(
+                "nav",
+                "'{label}': navigation {id} starting (cancelled: {})",
+                cancelled.as_bool()
+            );
             started.started(id, cancelled.as_bool());
             Ok(())
         }));
@@ -207,6 +213,7 @@ impl Observe for Platform {
 
         let identity = browser.clone();
         let completed = tracked;
+        let label = browser.label().to_owned();
         let handler = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else {
                 return Ok(());
@@ -214,7 +221,12 @@ impl Observe for Platform {
             let mut id = 0u64;
             // SAFETY: `args` is live for this callback.
             unsafe { args.NavigationId(&mut id)? };
-            if !completed.reports(id) {
+            let reports = completed.reports(id);
+            crate::trace::trace!(
+                "nav",
+                "'{label}': navigation {id} completed (its outcome is reported: {reports})"
+            );
+            if !reports {
                 return Ok(());
             }
             let mut success = BOOL::default();

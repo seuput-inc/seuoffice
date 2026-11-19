@@ -121,6 +121,8 @@ struct BrowserLive {
     policy_ready: bool,
     /// The first navigation to a real URL, cancelled until the policy was enforced.
     held_navigation: Option<Url>,
+    /// The held navigation as it was replayed, until a navigation begins.
+    replayed: Option<Url>,
     ready: Option<Result<(), String>>,
     ready_waiters: Vec<ReadyWaiter>,
     /// The navigation whose load outcome was already reported.
@@ -381,6 +383,7 @@ impl BrowserCore {
                 initial_loaded: false,
                 policy_ready: config_without_policy,
                 held_navigation: None,
+                replayed: None,
                 ready: None,
                 ready_waiters: Vec::new(),
                 finished: None,
@@ -538,11 +541,13 @@ impl BrowserCore {
             "'{}': replaying the held navigation to {url}",
             self.label
         );
+        self.lock().replayed = Some(url.clone());
         let outcome = match self.control() {
             Some(control) => control.navigate(&url),
             None => Err("The webview is not attached.".to_owned()),
         };
         if let Err(error) = outcome {
+            self.lock().replayed = None;
             eprintln!("shell: the held navigation to {url} could not start: {error}");
             if let Some(navigation) = self.mint_navigation() {
                 {
@@ -556,6 +561,28 @@ impl BrowserCore {
                     description: error,
                 }));
             }
+        }
+    }
+
+    /// Replays the held navigation a second time. In the S129 runs on Windows each of the two
+    /// navigations that were held (the shell window's page, when WebView2 reported its start
+    /// before the observers were attached) was replayed without an error, and no navigation
+    /// followed: the only event after it was the end of the navigation that had been
+    /// cancelled, and the window stayed blank. Why WebView2 lets that first replay go is not
+    /// known; it was asked before the cancelled navigation was reported over. This one is
+    /// asked when that report comes.
+    fn replay_again(self: &Arc<Self>, url: &Url) {
+        eprintln!(
+            "shell: '{}': the replayed navigation to {url} did not start before the held one \
+             ended; replaying it once more",
+            self.label
+        );
+        let outcome = match self.control() {
+            Some(control) => control.navigate(url),
+            None => Err("The webview is not attached.".to_owned()),
+        };
+        if let Err(error) = outcome {
+            eprintln!("shell: the held navigation to {url} could not start: {error}");
         }
     }
 
@@ -661,6 +688,7 @@ impl BrowserCore {
             if state.closed {
                 return false;
             }
+            state.replayed = None;
             let same_document = matches!(state.doc, DocSlot::Committed(_))
                 && state
                     .url
@@ -721,6 +749,7 @@ impl BrowserCore {
             if state.closed {
                 return;
             }
+            state.replayed = None;
             // A commit nobody admitted: the first document, a restored page, a redirect.
             if state.nav.is_none() || matches!(state.doc, DocSlot::Committed(_)) {
                 let Some(fresh) = self.mint_navigation() else {
@@ -800,6 +829,17 @@ impl BrowserCore {
                 return;
             }
             let (Some(navigation), Some(url)) = (state.nav.clone(), state.nav_url.clone()) else {
+                // An outcome with no navigation admitted. After a replay on WebView2 it is the
+                // end of the navigation that was held, and the replay itself has not started.
+                let again = if cfg!(windows) {
+                    state.replayed.take()
+                } else {
+                    None
+                };
+                drop(state);
+                if let Some(url) = again {
+                    self.replay_again(&url);
+                }
                 return;
             };
             if state.finished == Some(navigation.id) {
