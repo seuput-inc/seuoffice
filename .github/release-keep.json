@@ -4,7 +4,7 @@
   "keep": {
     "v0.12.37": "Electron baseline downloaded by .github/workflows/proto-measure.yml, proto-tauri2.yml, proto/common/stage-dist.sh and update-proof-mac.sh",
     "v0.12.15": "install example URLs in docs/seuoffice/판-내기.md and packages/embed/README.md",
-    "v0.12.44": "a release YUYU pins: its production scope 21 (b803736db) runs on it",
-    "v0.12.47": "the release YUYU pins for its web embed: test scope 22 (959b1ffa1)"
+    "v0.12.44": "a release YUYU keeps to roll back to: its job definition ba19f3087390 pins it (production scope 21, b803736db)",
+    "v0.12.51": "the release YUYU production scope 22 (aa1a45884) pins"
   }
 }
