@@ -129,11 +129,7 @@ fn read_style_property<R: BufRead>(
             let Some(height) = attribute_value(reader, element, b"row-height")? else {
                 return Ok(());
             };
-            if is_true(attribute_value(
-                reader,
-                element,
-                b"use-optimal-row-height",
-            )?) {
+            if is_true(attribute_value(reader, element, b"use-optimal-row-height")?) {
                 return Ok(());
             }
             if let Some(points) = length_points(&height) {
@@ -181,8 +177,7 @@ fn count_attribute<R: BufRead>(
     element: &BytesStart<'_>,
     name: &[u8],
 ) -> Result<Option<u32>, SidecarError> {
-    Ok(attribute_value(reader, element, name)?
-        .and_then(|value| value.trim().parse().ok()))
+    Ok(attribute_value(reader, element, name)?.and_then(|value| value.trim().parse().ok()))
 }
 
 /// Streams `content.xml`: one `SheetBuilder` per `table:table`, finished at its
@@ -218,13 +213,10 @@ fn parse_content<R: BufRead>(
                         // repeat count is not applied.
                         let group = element.local_name().as_ref() == b"table-columns";
                         if !(group && !empty) {
-                            let repeats = count_attribute(
-                                reader,
-                                &element,
-                                b"number-columns-repeated",
-                            )?
-                            .unwrap_or(1)
-                            .max(1);
+                            let repeats =
+                                count_attribute(reader, &element, b"number-columns-repeated")?
+                                    .unwrap_or(1)
+                                    .max(1);
                             let name = attribute_value(reader, &element, b"style-name")?;
                             if let Some(name) = name {
                                 let builder = current.get_or_insert_with(SheetBuilder::default);
@@ -232,15 +224,13 @@ fn parse_content<R: BufRead>(
                                 let last = first.saturating_add(repeats - 1).min(MAX_COLUMN - 1);
                                 builder.columns.push((first, last, name));
                             }
-                            next_column =
-                                next_column.saturating_add(repeats).min(MAX_COLUMN);
+                            next_column = next_column.saturating_add(repeats).min(MAX_COLUMN);
                         }
                     }
                     b"table-row" => {
-                        let repeats =
-                            count_attribute(reader, &element, b"number-rows-repeated")?
-                                .unwrap_or(1)
-                                .max(1);
+                        let repeats = count_attribute(reader, &element, b"number-rows-repeated")?
+                            .unwrap_or(1)
+                            .max(1);
                         let name = attribute_value(reader, &element, b"style-name")?;
                         let builder = current.get_or_insert_with(SheetBuilder::default);
                         let first = builder.next_row;
@@ -257,10 +247,9 @@ fn parse_content<R: BufRead>(
                             count_attribute(reader, &element, b"number-columns-repeated")?
                                 .unwrap_or(1)
                                 .max(1);
-                        let columns =
-                            count_attribute(reader, &element, b"number-columns-spanned")?
-                                .unwrap_or(1)
-                                .max(1);
+                        let columns = count_attribute(reader, &element, b"number-columns-spanned")?
+                            .unwrap_or(1)
+                            .max(1);
                         let rows = count_attribute(reader, &element, b"number-rows-spanned")?
                             .unwrap_or(1)
                             .max(1);
@@ -268,10 +257,7 @@ fn parse_content<R: BufRead>(
                         if columns > 1 || rows > 1 {
                             let start = (builder.row_start, builder.column);
                             let end = (
-                                builder
-                                    .row_start
-                                    .saturating_add(rows - 1)
-                                    .min(MAX_ROW - 1),
+                                builder.row_start.saturating_add(rows - 1).min(MAX_ROW - 1),
                                 builder
                                     .column
                                     .saturating_add(columns - 1)
@@ -282,11 +268,8 @@ fn parse_content<R: BufRead>(
                         // An array formula says how far its result reaches on
                         // the cell that holds it; one cell wide and high is
                         // still an array formula.
-                        let matrix_columns = count_attribute(
-                            reader,
-                            &element,
-                            b"number-matrix-columns-spanned",
-                        )?;
+                        let matrix_columns =
+                            count_attribute(reader, &element, b"number-matrix-columns-spanned")?;
                         let matrix_rows =
                             count_attribute(reader, &element, b"number-matrix-rows-spanned")?;
                         if matrix_columns.is_some() || matrix_rows.is_some() {
@@ -357,7 +340,10 @@ pub(crate) fn length_points(text: &str) -> Option<f64> {
     let text = text.trim();
     let split = text
         .find(|character: char| {
-            !(character.is_ascii_digit() || character == '.' || character == '-' || character == '+')
+            !(character.is_ascii_digit()
+                || character == '.'
+                || character == '-'
+                || character == '+')
         })
         .unwrap_or(text.len());
     let number: f64 = text[..split].parse().ok()?;

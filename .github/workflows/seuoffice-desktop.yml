@@ -52,6 +52,14 @@ on:
         description: Publish the next version as a pre-release (main only)
         type: boolean
         default: false
+      candidate_version:
+        description: Version to build for migration testing (build-only)
+        type: string
+        required: false
+      next_version:
+        description: Higher version to build for the second migration update (build-only)
+        type: string
+        required: false
 
 # Every publishing run (release runs and v* tags) shares one queue, so two runs
 # never pick or write the same version at once; a build-only run keeps its ref's.
@@ -75,6 +83,9 @@ jobs:
 
       - name: Pick the version
         id: pick
+        env:
+          CANDIDATE_VERSION: ${{ inputs.candidate_version }}
+          NEXT_VERSION: ${{ inputs.next_version }}
         run: |
           set -euo pipefail
           base=$(node -p "require('./apps/shell/package.json').version")
@@ -107,9 +118,13 @@ jobs:
             fi
             publish=true
           else
-            version=$base
+            version=${CANDIDATE_VERSION:-$base}
           fi
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not a version: $version"; exit 1; }
+          if [ -n "$NEXT_VERSION" ]; then
+            [ "$publish" = false ] || { echo "::error::next_version is build-only"; exit 1; }
+            node -e 'const parse=s=>{if(!/^\d+\.\d+\.\d+$/.test(s)) throw Error("invalid version");return s.split(".").map(BigInt)};const [v,n]=process.argv.slice(1),a=parse(v),b=parse(n);if(!b.some((x,i)=>x>a[i]&&b.slice(0,i).every((y,j)=>y===a[j]))) throw Error("next_version must be greater")' "$version" "$NEXT_VERSION"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "version $version, publish $publish"
@@ -119,6 +134,21 @@ jobs:
       - name: Check the release notes
         if: steps.pick.outputs.publish == 'true'
         run: node tools/check-release-notes.mjs "${{ steps.pick.outputs.version }}"
+
+  rust_bundle:
+    # a run that names candidate_version builds the Rust candidate beside the packages
+    if: needs.version.outputs.publish != 'true' && inputs.candidate_version != ''
+    needs: version
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/seuoffice-rust-bundle.yml
+    with:
+      source_sha: ${{ github.sha }}
+      version: ${{ needs.version.outputs.version }}
+      next_version: ${{ inputs.next_version || '' }}
+    secrets: inherit
 
   windows:
     needs: version

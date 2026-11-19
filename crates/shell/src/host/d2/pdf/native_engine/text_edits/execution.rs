@@ -1,0 +1,562 @@
+//! Apply matched edits in stable page-object order.
+use super::super::super::pdfium_session::wire_number;
+use super::super::form_draw_tree::{FormDrawTree, lift};
+use super::{
+    ID, PdfiumSession, TextObject, buffer, call, field, floats, handle, integer, matrix, number,
+    offset, page_index, reference, text, walk,
+};
+use super::{inserts, matching, rebuild};
+use serde_json::json;
+use shell_contract::{IpcValue as V, runtime::CancelToken};
+use std::collections::{HashMap, HashSet};
+fn skip(edit: &V, reason: impl Into<String>) -> V {
+    let mut fields = vec![
+        (
+            "pageIndex".into(),
+            field(edit, "pageIndex").cloned().unwrap_or(V::Undefined),
+        ),
+        (
+            "oldText".into(),
+            field(edit, "oldText").cloned().unwrap_or(V::Undefined),
+        ),
+        ("reason".into(), V::String(reason.into())),
+    ];
+    if let Some(id) = field(edit, "__previewProbe") {
+        fields.push(("__previewProbe".into(), id.clone()))
+    }
+    V::Object(fields)
+}
+fn flag(edit: &V, key: &str) -> bool {
+    matches!(field(edit, key), Some(V::Bool(true)))
+}
+fn reusable(
+    edit: &V,
+    replacement: &str,
+    matches: &[usize],
+    objects: &[TextObject],
+    whole: bool,
+) -> bool {
+    if matches.len() != 1
+        || ["newFontSize", "newColor", "newFont", "lineXOffsets"]
+            .iter()
+            .any(|k| field(edit, k).is_some_and(|v| !matches!(v, V::Undefined)))
+        || flag(edit, "newItalic")
+        || (flag(edit, "newBold") && !whole)
+    {
+        return false;
+    }
+    let styles = field(edit, "styleRuns").or_else(|| field(edit, "colorRuns"));
+    if matches!(styles,Some(V::Array(a)) if !a.is_empty()) {
+        return false;
+    }
+    if !replacement.bytes().all(|c| (0x20..=0x7e).contains(&c)) {
+        return false;
+    }
+    let font = objects[matches[0]].font;
+    let charset = objects
+        .iter()
+        .filter(|o| o.font == font)
+        .flat_map(|o| o.text.chars())
+        .collect::<HashSet<_>>();
+    replacement
+        .chars()
+        .all(|c| c == ' ' || charset.contains(&c))
+}
+fn font_is_bold(session: &mut PdfiumSession, font: Option<u64>) -> Result<bool, String> {
+    let Some(font) = font else { return Ok(false) };
+    let n = usize::try_from(integer(call(
+        session,
+        "FPDFFont_GetBaseFontName",
+        &[reference(font), json!(0), json!(0)],
+    )?)?)
+    .map_err(|_| "invalid font name length")?;
+    if n == 0 {
+        return Ok(false);
+    }
+    let name = buffer(session, n, |s, b| {
+        call(
+            s,
+            "FPDFFont_GetBaseFontName",
+            &[reference(font), reference(b), json!(n)],
+        )?;
+        s.read(b, 0, n).map_err(|e| e.to_string())
+    })?;
+    let name = String::from_utf8_lossy(&name).to_lowercase();
+    Ok([
+        "bold",
+        "black",
+        "heavy",
+        "semibold",
+        "demibold",
+        "extrabold",
+        "ultrabold",
+    ]
+    .iter()
+    .any(|s| name.contains(s)))
+}
+fn bold(session: &mut PdfiumSession, object: u64) -> Result<(), String> {
+    let mode = integer(call(
+        session,
+        "FPDFTextObj_GetTextRenderMode",
+        &[reference(object)],
+    )?)?;
+    if mode == 2 || mode == 6 {
+        return Ok(());
+    }
+    let color = buffer(session, 16, |s, b| {
+        if integer(call(
+            s,
+            "FPDFPageObj_GetFillColor",
+            &[
+                reference(object),
+                reference(b),
+                offset(b, 4),
+                offset(b, 8),
+                offset(b, 12),
+            ],
+        )?)? == 0
+        {
+            return Ok([0, 0, 0, 255]);
+        }
+        let v = s.read(b, 0, 16).map_err(|e| e.to_string())?;
+        let alpha = if v[12] == 0 { 255 } else { v[12] };
+        Ok([v[0], v[4], v[8], alpha])
+    })?;
+    let size = buffer(session, 4, |s, b| {
+        if integer(call(
+            s,
+            "FPDFTextObj_GetFontSize",
+            &[reference(object), reference(b)],
+        )?)? == 0
+        {
+            Ok(1.0)
+        } else {
+            Ok(floats(s, b, 1)?[0])
+        }
+    })?;
+    let m = matrix(session, object)?;
+    let width = size * m[0].hypot(m[1]) * 0.035;
+    call(
+        session,
+        "FPDFTextObj_SetTextRenderMode",
+        &[reference(object), json!(2)],
+    )?;
+    call(
+        session,
+        "FPDFPageObj_SetStrokeColor",
+        &[
+            reference(object),
+            json!(color[0]),
+            json!(color[1]),
+            json!(color[2]),
+            json!(color[3]),
+        ],
+    )?;
+    call(
+        session,
+        "FPDFPageObj_SetStrokeWidth",
+        &[reference(object), wire_number(width)],
+    )?;
+    call(
+        session,
+        "FPDFPageObj_SetLineJoin",
+        &[reference(object), json!(1)],
+    )?;
+    Ok(())
+}
+fn set_text(session: &mut PdfiumSession, object: u64, value: &str) -> Result<(), String> {
+    let bytes = value
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    buffer(session, bytes.len(), |s, b| {
+        s.write(b, 0, &bytes).map_err(|e| e.to_string())?;
+        if integer(call(
+            s,
+            "FPDFText_SetText",
+            &[reference(object), reference(b)],
+        )?)? == 0
+        {
+            Err("FPDFText_SetText failed".into())
+        } else {
+            Ok(())
+        }
+    })
+}
+struct Plan<'a> {
+    edit: &'a V,
+    indices: Vec<usize>,
+    replacement: String,
+    whole: bool,
+}
+fn fragment_edit(edit: &V) -> V {
+    let mut result = edit.clone();
+    if let V::Object(fields) = &mut result {
+        fields.retain(|(k, _)| !matches!(k.as_str(), "origin" | "lineLeading" | "lineXOffsets"));
+    }
+    result
+}
+#[allow(clippy::too_many_arguments)]
+fn apply_page(
+    session: &mut PdfiumSession,
+    doc: u64,
+    page: u64,
+    text_page: u64,
+    page_index: usize,
+    edits: &[&V],
+    source: &[u8],
+    tree: &mut Option<FormDrawTree>,
+    skips: &mut Vec<V>,
+    cancel: &CancelToken,
+) -> Result<(usize, bool), String> {
+    let mut objects = Vec::new();
+    walk(
+        session,
+        page,
+        text_page,
+        false,
+        ID,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+        &mut objects,
+    )?;
+    let mut claimed = HashSet::new();
+    let mut plans = Vec::new();
+    for edit in edits {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        match matching::locate(&objects, edit) {
+            Err(reason) => skips.push(skip(edit, reason)),
+            Ok(matched) => {
+                if matched
+                    .indices
+                    .iter()
+                    .any(|i| claimed.contains(&objects[*i].handle))
+                {
+                    skips.push(skip(edit, "overlaps another pending text edit"));
+                    continue;
+                }
+                if matched
+                    .indices
+                    .iter()
+                    .any(|i| !objects[*i].chain.is_empty())
+                {
+                    if tree.is_none() {
+                        *tree = Some(FormDrawTree::load(source)?)
+                    }
+                    if matched.indices.iter().any(|i| {
+                        !objects[*i].chain.is_empty()
+                            && !tree.as_ref().is_some_and(|tree| {
+                                tree.exclusive(page_index, &objects[*i].ordinals)
+                            })
+                    }) {
+                        skips.push(skip(
+                            edit,
+                            "the text lives in a template that is drawn more than once",
+                        ));
+                        continue;
+                    }
+                }
+                for i in &matched.indices {
+                    claimed.insert(objects[*i].handle);
+                }
+                plans.push(Plan {
+                    edit,
+                    indices: matched.indices,
+                    replacement: matched.replacement,
+                    whole: matched.whole,
+                })
+            }
+        }
+    }
+    let mut failed = HashMap::new();
+    for i in (0..objects.len()).rev() {
+        if claimed.contains(&objects[i].handle) && !objects[i].chain.is_empty() {
+            match lift(session, page, objects[i].handle, &objects[i].chain) {
+                Ok(()) => objects[i].chain.clear(),
+                Err(e) => {
+                    failed.insert(i, e);
+                }
+            }
+        }
+    }
+    if !failed.is_empty() {
+        plans.retain(|plan| {
+            if let Some(reason) = plan.indices.iter().find_map(|i| failed.get(i)) {
+                skips.push(skip(plan.edit, reason));
+                false
+            } else {
+                true
+            }
+        })
+    }
+    let count = integer(call(session, "FPDFPage_CountObjects", &[reference(page)])?)?;
+    let mut indices = HashMap::new();
+    for i in 0..count {
+        if let Some(obj) = handle(call(
+            session,
+            "FPDFPage_GetObject",
+            &[reference(page), json!(i)],
+        )?)? {
+            indices.insert(
+                obj,
+                usize::try_from(i).map_err(|_| "invalid page object index")?,
+            );
+        }
+    }
+    for obj in &mut objects {
+        if let Some(i) = indices.get(&obj.handle) {
+            obj.index = *i
+        }
+    }
+    plans.sort_by(|a, b| {
+        objects[b.indices[0]]
+            .index
+            .cmp(&objects[a.indices[0]].index)
+    });
+    let mut applied = 0;
+    let mut cff = false;
+    for plan in plans {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        if let Some(V::Array(v)) = field(plan.edit, "translate") {
+            if !plan.whole {
+                skips.push(skip(
+                    plan.edit,
+                    "the text block cannot be moved as one unit",
+                ));
+                continue;
+            }
+            let dx = number(v.first()).ok_or("invalid text translation")?;
+            let dy = number(v.get(1)).ok_or("invalid text translation")?;
+            for i in &plan.indices {
+                call(
+                    session,
+                    "FPDFPageObj_Transform",
+                    &[
+                        reference(objects[*i].handle),
+                        json!(1),
+                        json!(0),
+                        json!(0),
+                        json!(1),
+                        wire_number(dx),
+                        wire_number(dy),
+                    ],
+                )?;
+            }
+            applied += 1;
+            continue;
+        }
+        if plan.replacement.trim().is_empty() {
+            for i in &plan.indices {
+                let obj = objects[*i].handle;
+                call(
+                    session,
+                    "FPDFPage_RemoveObject",
+                    &[reference(page), reference(obj)],
+                )?;
+                call(session, "FPDFPageObj_Destroy", &[reference(obj)])?;
+            }
+            applied += 1;
+            continue;
+        }
+        let edit = if plan.whole {
+            plan.edit.clone()
+        } else {
+            fragment_edit(plan.edit)
+        };
+        let result = if reusable(
+            &edit,
+            &plan.replacement,
+            &plan.indices,
+            &objects,
+            plan.whole,
+        ) {
+            let obj = &objects[plan.indices[0]];
+            set_text(session, obj.handle, &plan.replacement).and_then(|_| {
+                if flag(&edit, "newBold") && !font_is_bold(session, obj.font)? {
+                    bold(session, obj.handle)?
+                }
+                Ok(false)
+            })
+        } else {
+            let matches = plan
+                .indices
+                .iter()
+                .map(|i| objects[*i].clone())
+                .collect::<Vec<_>>();
+            rebuild::rebuild(
+                session,
+                doc,
+                page,
+                &edit,
+                &matches,
+                &plan.replacement,
+                text_page,
+                cancel,
+            )
+        };
+        match result {
+            Ok(embedded) => {
+                cff |= embedded;
+                applied += 1
+            }
+            Err(error) => {
+                if cancel.is_cancelled() {
+                    return Err("cancelled".into());
+                }
+                skips.push(skip(plan.edit, error));
+            }
+        }
+    }
+    Ok((applied, cff))
+}
+pub(super) fn erase(
+    session: &mut PdfiumSession,
+    doc: u64,
+    page: u64,
+    page_index: usize,
+    source: &[u8],
+    probes: &[V],
+    cancel: &CancelToken,
+) -> Result<Vec<bool>, String> {
+    let mut edits = Vec::with_capacity(probes.len());
+    for (i, probe) in probes.iter().enumerate() {
+        let V::Object(fields) = probe else {
+            return Err("invalid text probe".into());
+        };
+        let mut fields = fields.clone();
+        fields.retain(|(k, _)| !matches!(k.as_str(), "newText" | "translate" | "__previewProbe"));
+        fields.push(("newText".into(), V::String(String::new())));
+        fields.push(("__previewProbe".into(), V::String(i.to_string())));
+        edits.push(V::Object(fields));
+    }
+    let text_page = handle(call(session, "FPDFText_LoadPage", &[reference(page)])?)?
+        .ok_or("could not load PDF text page")?;
+    let result: Result<Vec<bool>, String> = (|| {
+        let refs = edits.iter().collect::<Vec<_>>();
+        let mut failures = Vec::new();
+        let mut tree = None;
+        let (applied, _) = apply_page(
+            session,
+            doc,
+            page,
+            text_page,
+            page_index,
+            &refs,
+            source,
+            &mut tree,
+            &mut failures,
+            cancel,
+        )?;
+        if applied > 0 {
+            call(session, "FPDFPage_GenerateContent", &[reference(page)])?;
+        }
+        let mut ok = vec![true; edits.len()];
+        for failure in failures {
+            if let Some(i) =
+                text(field(&failure, "__previewProbe")).and_then(|s| s.parse::<usize>().ok())
+                && let Some(v) = ok.get_mut(i)
+            {
+                *v = false
+            }
+        }
+        Ok(ok)
+    })();
+    let closed = call(session, "FPDFText_ClosePage", &[reference(text_page)]);
+    let result = result?;
+    closed?;
+    Ok(result)
+}
+pub(super) fn apply<F>(
+    bytes: &[u8],
+    edits: &[V],
+    cancel: &CancelToken,
+    relabel: F,
+) -> Result<(Vec<u8>, Vec<V>), String>
+where
+    F: FnOnce(&[u8]) -> Result<Vec<u8>, String>,
+{
+    if cancel.is_cancelled() {
+        return Err("cancelled".into());
+    }
+    let mut session =
+        PdfiumSession::open_with_cancel(bytes, None, cancel.clone()).map_err(|e| e.to_string())?;
+    let doc = session.document();
+    let count = integer(call(&mut session, "FPDF_GetPageCount", &[reference(doc)])?)?;
+    let mut tree = None;
+    let mut skipped = Vec::new();
+    let mut groups: Vec<(usize, Vec<&V>)> = Vec::new();
+    for edit in edits {
+        let Some(page) = page_index(field(edit, "pageIndex"))
+            .filter(|p| i64::try_from(*p).is_ok_and(|p| p < count))
+        else {
+            skipped.push(skip(edit, "page does not exist"));
+            continue;
+        };
+        if let Some((_, v)) = groups.iter_mut().find(|(p, _)| *p == page) {
+            v.push(edit)
+        } else {
+            groups.push((page, vec![edit]))
+        }
+    }
+    let mut applied = 0;
+    let mut cff = false;
+    for (index, edits) in groups {
+        if cancel.is_cancelled() {
+            return Err("cancelled".into());
+        }
+        let page = handle(call(
+            &mut session,
+            "FPDF_LoadPage",
+            &[reference(doc), json!(index)],
+        )?)?
+        .ok_or_else(|| format!("could not load page {}", index + 1))?;
+        let result = (|| {
+            let text_page = handle(call(&mut session, "FPDFText_LoadPage", &[reference(page)])?)?
+                .ok_or("could not load PDF text page")?;
+            let result = apply_page(
+                &mut session,
+                doc,
+                page,
+                text_page,
+                index,
+                &edits,
+                bytes,
+                &mut tree,
+                &mut skipped,
+                cancel,
+            );
+            let closed = call(&mut session, "FPDFText_ClosePage", &[reference(text_page)]);
+            let (done, embedded) = result?;
+            closed?;
+            if done > 0
+                && integer(call(
+                    &mut session,
+                    "FPDFPage_GenerateContent",
+                    &[reference(page)],
+                )?)? == 0
+            {
+                return Err(format!("could not regenerate page {}", index + 1));
+            }
+            applied += done;
+            cff |= embedded;
+            Ok(())
+        })();
+        let closed = call(&mut session, "FPDF_ClosePage", &[reference(page)]);
+        result?;
+        closed?;
+    }
+    if applied == 0 {
+        return Ok((bytes.to_vec(), skipped));
+    }
+    let saved = inserts::save(&mut session)?;
+    if cancel.is_cancelled() {
+        return Err("cancelled".into());
+    }
+    Ok((if cff { relabel(&saved)? } else { saved }, skipped))
+}

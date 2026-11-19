@@ -524,6 +524,13 @@ export function App() {
     null,
   )
   const bootHandledRef = useRef(false)
+  const [recoveryApplied, setRecoveryApplied] = useState<string | null>(null)
+  const recoveryAcknowledged = useRef<string | null>(null)
+  useEffect(() => {
+    if (!recoveryApplied || recoveryAcknowledged.current === recoveryApplied) return
+    recoveryAcknowledged.current = recoveryApplied
+    void window.slidesApi.recoveryInitialized(recoveryApplied, true)
+  }, [recoveryApplied])
   const [images, setImages] = useState<Map<string, HTMLImageElement>>(new Map())
   const imageLoaderRef = useRef<ReturnType<typeof createImageLoader> | null>(null)
   const [hasClipboard, setHasClipboard] = useState(false)
@@ -998,17 +1005,29 @@ export function App() {
   const askOpenRef = useRef(false)
 
   const save = useCallback(
-    (auto = false, hostSaveId?: string): Promise<boolean> =>
-      fileActions.save(() => ctxRef.current, auto, hostSaveId),
+    (auto = false, requestId?: string): Promise<boolean> =>
+      fileActions.save(() => ctxRef.current, auto, requestId),
     [],
   )
 
   // Close guard (closing tab/window) chose "Save": run the full save flow and report the result
   useEffect(() => {
     return window.slidesApi.onCloseSaveRequest?.((request) => {
-      void save(false, request?.hostSaveId).then(
-        (ok) => window.slidesApi.reportCloseSaveResult(ok),
-        () => window.slidesApi.reportCloseSaveResult(false),
+      // a web embed host's request carries its id alone, as `hostSaveId`
+      if (request && 'hostSaveId' in request) {
+        void save(false, request.hostSaveId).then(
+          (ok) => window.slidesApi.reportCloseSaveResult(ok),
+          () => window.slidesApi.reportCloseSaveResult(false),
+        )
+        return
+      }
+      const pass =
+        request?.mode === 'saveAs'
+          ? fileActions.saveAsForRequest(() => ctxRef.current, request.id)
+          : save(false, request?.id)
+      void pass.then(
+        (ok) => window.slidesApi.reportCloseSaveResult(ok, request?.id),
+        () => window.slidesApi.reportCloseSaveResult(false, request?.id),
       )
     })
   }, [save])
@@ -1380,6 +1399,7 @@ export function App() {
   // StrictMode runs the mount effect twice, but the pending queue can only be consumed once, so the
   // consume Promise is stored in a shared ref and its result is processed only once.
   useEffect(() => {
+    let recoveryToken: string | undefined
     // newBlank itself can fail (IPC/main-process error); one retry for transient
     // hiccups, then surface the error — otherwise the tab silently sticks on
     // "Opening…" forever and the click that created it looks like a no-op
@@ -1395,12 +1415,21 @@ export function App() {
       .then((r) => {
         if (bootHandledRef.current) return
         bootHandledRef.current = true
-        if (r) applyOpen(r)
-        else void bootBlank()
+        if (r) {
+          recoveryToken = r.recoveryToken
+          applyOpen(r)
+          if (recoveryToken) setRecoveryApplied(recoveryToken)
+        } else void bootBlank()
       })
       // Open failures (corrupt file etc.) also land on a blank deck, or it stays at "Opening…" forever
-      .catch(() => {
-        if (bootHandledRef.current) return
+      .catch((error: unknown) => {
+        if (recoveryToken) {
+          void window.slidesApi.recoveryInitialized(
+            recoveryToken,
+            false,
+            error instanceof Error ? error.message : String(error),
+          )
+        } else if (bootHandledRef.current) return
         bootHandledRef.current = true
         void bootBlank()
       })

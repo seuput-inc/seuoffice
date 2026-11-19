@@ -43,8 +43,9 @@ import type { EpubSubscriptionApi } from './subscription-api'
 
 export const EPUB_CHANNELS = {
   // ---- open and read ----
-  /** invoke → `string | null`: the path queued for this view */
+  /** invoke → a queued path or a native recovery path and its receipt */
   consumePending: 'epub:consume-pending',
+  recoveryInitialized: 'epub:recovery-initialized',
   /** invoke(path) → `EpubOpenFileResult`: open a granted path; the book stays in the main process */
   openFile: 'epub:open-file',
   /** invoke(spineIndex) → `EpubChapterResult`: one chapter's text as it is now (unsaved edits included) */
@@ -314,6 +315,7 @@ export type EpubChapterResult =
 
 export interface EpubApplyEditsRequest {
   spineIndex: number
+  requestId?: string
   /** applied in order, all or nothing; later edits see the blocks as the earlier ones left them */
   edits: BlockEdit[]
 }
@@ -358,6 +360,7 @@ export type SaveMode = 'save' | 'saveAs'
 
 export interface EpubSaveRequest {
   mode: SaveMode
+  requestId?: string
   /**
    * an automatic save (the timer or a window blur): while the same book is
    * open in another pane it defers silently instead of asking to overwrite
@@ -600,7 +603,8 @@ export type ReadUrlResult =
 /** Open, read, edit, save and the shell's settings: what the editor itself needs. */
 export interface EpubCoreApi {
   /** Take the path pending for this view (queued at tab creation) */
-  consumePending(): Promise<string | null>
+  consumePending(): Promise<string | { path: string; receipt: string } | null>
+  recoveryInitialized(receipt: string, ok: boolean, error?: string): Promise<void>
   openFile(path: string): Promise<EpubOpenFileResult>
   readChapter(spineIndex: number): Promise<EpubChapterResult>
   onFlushRequest(handler: (requestId: string) => void): () => void
@@ -613,9 +617,9 @@ export interface EpubCoreApi {
   /** the renderer holds edits it has not sent yet (for the close prompt) */
   setDirty(dirty: boolean): void
   /** Shell menu Save / Save As → the renderer sends what it holds and calls save() */
-  onSaveRequest(handler: (mode: SaveMode) => void): () => void
+  onSaveRequest(handler: (mode: SaveMode, requestId?: string) => void): () => void
   /** Resolves a menu-save waiter when the save ended without ever invoking save() */
-  sendSaveRequestAck(ok: boolean): void
+  sendSaveRequestAck(ok: boolean, requestId?: string): void
   /** "Save" in the close prompt → the renderer saves and replies via sendCloseSaveResult */
   onCloseSaveRequest(handler: () => void): () => void
   sendCloseSaveResult(ok: boolean): void

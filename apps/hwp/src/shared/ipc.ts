@@ -6,6 +6,8 @@ import type { SubscriptionApi } from './subscription-api'
 
 export const HWP_CHANNELS = {
   consumePending: 'hwp:consume-pending',
+  consumeRecovery: 'hwp:consume-recovery',
+  recoveryInitialized: 'hwp:recovery-initialized',
   /** invoke → `{ name, format } | null`: the pending path is an untitled copy (spec 5.7) */
   untitledCopy: 'hwp:untitled-copy',
   readFile: 'hwp:read-file',
@@ -327,6 +329,8 @@ export type ReadUrlResult =
 export interface HwpApi {
   /** path queued for this view when its tab was created; null for a view opened without a file */
   consumePending(): Promise<string | null>
+  consumeRecovery?(): Promise<{ path: string; token: string } | null>
+  recoveryInitialized?(token: string, result: { ok: boolean; error?: string }): Promise<void>
   /** the pending path is an untitled copy (a skill template's): its name and format; null otherwise */
   untitledCopy?(): Promise<{ name: string; format: 'hwp' | 'hwpx' } | null>
   readFile(path: string): Promise<Uint8Array>
@@ -349,9 +353,9 @@ export interface HwpApi {
    */
   noSaveAs?: true
   /** resolve where and in which format this save goes (shows the dialog for Save As) */
-  beginSave(mode: SaveMode): Promise<BeginSaveResult>
+  beginSave(mode: SaveMode, requestToken?: string): Promise<BeginSaveResult>
   /** the tabs of exported bytes that have no width yet (see tab-widths in main) */
-  newTabs(bytes: Uint8Array, format: HwpFormat): Promise<TabSpot[]>
+  newTabs(bytes: Uint8Array, format: HwpFormat, requestToken?: string): Promise<TabSpot[]>
   /**
    * write the exported bytes to the target `beginSave` resolved, with the widths the editor
    * measured for the tabs `newTabs` found
@@ -360,11 +364,13 @@ export interface HwpApi {
     bytes: Uint8Array,
     tabs?: MeasuredTab[],
     options?: CommitSaveOptions,
+    requestToken?: string,
   ): Promise<CommitSaveResult>
   /** the renderer could not produce bytes for a save it began */
-  abortSave(): void
+  abortSave(requestToken?: string): void
   setDirty(dirty: boolean): void
-  onSaveRequest(handler: (mode: SaveMode, hostSaveId?: string) => void): () => void
+  /** `requestToken` names the request: the shell's on the desktop, the embed host's on the web */
+  onSaveRequest(handler: (mode: SaveMode, requestToken?: string) => void): () => void
   /** Web embed only: the host asks for a picture of the first page, which `source` draws */
   onThumbnailRequest?(source: WebThumbnailSource): () => void
   /**
@@ -380,7 +386,7 @@ export interface HwpApi {
    * make the PDF (asking where, unless `path` is the PDF path Save As just picked) or open
    * the print dialog for these pages
    */
-  printPages(job: PrintJob, options?: { path: string }): Promise<PrintResult>
+  printPages(job: PrintJob, options?: { path: string; requestToken?: string }): Promise<PrintResult>
   /** Headless export mode: the PDF path this hidden window must write, null in normal use */
   consumeHeadlessExport(): Promise<string | null>
   /** Headless export mode: report the outcome so the main process can exit */
@@ -412,7 +418,7 @@ export interface HwpApi {
   recoveryOpened(passwordProtected: boolean): Promise<RecoveryOpenedResult>
   /** the main process wants a copy now (the OS is ending the session) */
   onRecoveryFlush(handler: (token: number) => void): () => void
-  sendRecoveryFlushed(token: number): void
+  sendRecoveryFlushed(token: number, error?: string): void
   /** the copy was removed while the tab stays open: the next turn writes a fresh one */
   onRecoveryReset(handler: () => void): () => void
   /** file picker for chat attachments (multi-select) */

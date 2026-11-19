@@ -140,9 +140,9 @@ impl DataStyles {
 /// spelled in brackets, of which a format may hold two.
 fn join_sections(mapped: &[(Condition, &DataStyle)], main: &DataStyle) -> String {
     let is = |index: usize, operator: Operator| {
-        mapped.get(index).is_some_and(|(condition, _)| {
-            condition.operator == operator && condition.number == 0.0
-        })
+        mapped
+            .get(index)
+            .is_some_and(|(condition, _)| condition.operator == operator && condition.number == 0.0)
     };
     // A section that paints nothing stays empty: `0;-0;` shows no zero.
     let section = |index: usize| mapped[index].1.section.clone();
@@ -255,7 +255,8 @@ fn section_code(node: Node<'_, '_>, kind: FormatKind) -> String {
     let date_like = matches!(kind, FormatKind::Date | FormatKind::Time);
     let percentage = node.tag_name().name() == "percentage-style";
     // A time style that does not wrap at 24 hours counts them instead.
-    let elapsed = kind == FormatKind::Time && attribute(node, "truncate-on-overflow") == Some("false");
+    let elapsed =
+        kind == FormatKind::Time && attribute(node, "truncate-on-overflow") == Some("false");
     let mut code = String::new();
     let mut general = false;
     for child in node.children().filter(Node::is_element) {
@@ -388,14 +389,21 @@ fn number_code(node: Node<'_, '_>) -> Option<String> {
         .min(decimals);
 
     // Integer digits right to left: required ones are `0`, the rest `#`.
-    let widest_embedded = embedded.iter().map(|(position, _)| *position).max().unwrap_or(0);
+    let widest_embedded = embedded
+        .iter()
+        .map(|(position, _)| *position)
+        .max()
+        .unwrap_or(0);
     let digits = min_integer
         .max(if grouping { 4 } else { 1 })
         .max(widest_embedded + 1);
     let mut integer = String::new();
     for position in (0..digits).rev() {
         integer.push(if position < min_integer { '0' } else { '#' });
-        if let Some((_, text)) = embedded.iter().find(|(at, _)| *at == position && position > 0) {
+        if let Some((_, text)) = embedded
+            .iter()
+            .find(|(at, _)| *at == position && position > 0)
+        {
             integer.push_str(&literal(text, false));
         } else if grouping && position > 0 && position % 3 == 0 {
             integer.push(',');
@@ -441,10 +449,16 @@ fn scientific_code(node: Node<'_, '_>) -> String {
 
 fn fraction_code(node: Node<'_, '_>) -> String {
     let min_integer = count(node, "min-integer-digits").unwrap_or(0);
-    let numerator = count(node, "min-numerator-digits").unwrap_or(1).clamp(1, 10);
+    let numerator = count(node, "min-numerator-digits")
+        .unwrap_or(1)
+        .clamp(1, 10);
     let denominator = match count(node, "denominator-value") {
         Some(value) => value.to_string(),
-        None => "?".repeat(count(node, "min-denominator-digits").unwrap_or(1).clamp(1, 10)),
+        None => "?".repeat(
+            count(node, "min-denominator-digits")
+                .unwrap_or(1)
+                .clamp(1, 10),
+        ),
     };
     let integer = if min_integer == 0 {
         "#".to_owned()
@@ -633,9 +647,18 @@ mod tests {
             r#"<number:boolean-style style:name="g"><number:boolean/></number:boolean-style>"#,
         );
         let styles = styles(body);
-        assert_eq!(styles.code("a").unwrap(), ("yyyy-mm-dd".to_owned(), FormatKind::Date));
-        assert_eq!(styles.code("b").unwrap().0, "yyyy\"년\" m\"월\" d\"일\" ddd");
-        assert_eq!(styles.code("c").unwrap(), ("[h]:mm:ss".to_owned(), FormatKind::Time));
+        assert_eq!(
+            styles.code("a").unwrap(),
+            ("yyyy-mm-dd".to_owned(), FormatKind::Date)
+        );
+        assert_eq!(
+            styles.code("b").unwrap().0,
+            "yyyy\"년\" m\"월\" d\"일\" ddd"
+        );
+        assert_eq!(
+            styles.code("c").unwrap(),
+            ("[h]:mm:ss".to_owned(), FormatKind::Time)
+        );
         assert_eq!(styles.code("d").unwrap().0, "hh:mm AM/PM");
         assert_eq!(styles.code("e").unwrap().0, "[$₩-412]#,##0");
         assert_eq!(styles.code("f").unwrap().0, "\"€\"0.00");

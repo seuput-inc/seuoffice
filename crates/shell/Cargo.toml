@@ -1,0 +1,180 @@
+[package]
+name = "seuoffice-shell"
+description = "The stage 3 shell of SeuOffice: Tauri 2 on system webviews, main-core linked in-process"
+version = "0.13.0"
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+publish = false
+
+# Its own workspace and lock: crates/Cargo.toml excludes this folder.
+[workspace]
+
+# the executable is what the bundle ships, so it carries the product name
+[[bin]]
+name = "SeuOffice"
+path = "src/main.rs"
+
+[features]
+# Webview developer tools in release builds too.
+devtools = ["tauri/devtools"]
+# a release build on Windows without a console window; the runner builds leave
+# it off so the logs and the measurement's output stay on stdout and stderr
+windows-gui = []
+# The replay markers of the native-only IPC record (src/ipc/native_record/replay.rs): a
+# renderer's call may stand for a value of an earlier answered call. Only the real-app test
+# build turns it on (the e2e job of seuoffice-shell.yml); an executable that ships must not
+# have it, which ci/replay-guard.sh checks on the built file in the bundle job.
+e2e-replay = []
+
+[build-dependencies]
+tauri-build = "=2.7.4"
+serde_json = "1"
+sha2 = "0.10"
+
+[dependencies]
+# `unstable` enables child webviews for tabs within a shell window; `macos-private-api` is
+# the transparent password window on macOS (tauri.conf.json app.macOSPrivateApi, Developer ID
+# distribution only).
+tauri = { version = "=2.12.5", features = ["unstable", "tray-icon", "macos-private-api"] }
+# the shell's one HTTP client, the version tauri already pulls: the updater's
+# feed and download (U, host/update.rs, blocking on workers) and A's network
+# ports (host/net/). The system's TLS and trust store and proxy, as
+# Chromium's net in the Electron build used; the four content decoders
+# undici and Chromium both apply.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "system-proxy", "stream", "multipart", "http2", "charset", "gzip", "brotli", "deflate", "zstd", "blocking"] }
+# A's loopback servers of the sign-ins (host/net/http.rs) and the stream the
+# AI runtime reads a body through: all already pulled by reqwest and tauri
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+tokio = { version = "1", features = ["net", "sync", "macros", "rt", "time"] }
+# A's AI hosts (host/net/ai): the ChatGPT sign-in's ID token signature
+# (RS256, ES256), the OAuth PKCE bytes from the OS, the slides AI's image
+# sizes; ring and image are already pulled by tauri and reqwest
+ring = "0.17"
+getrandom = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+xcap = "=0.9.10"
+raw-window-handle = "=0.6.2"
+# A's MCP hub (host/net/tools): a tool's outputSchema, as the MCP SDK's Ajv
+# checked it; no remote or file $ref resolution
+jsonschema = { version = "0.61", default-features = false }
+# the feed's sha512 of a download (host/update.rs)
+sha2 = "0.10"
+# the blockmaps of a differential update are gzipped (U, host/update/feed.rs)
+flate2 = "1"
+
+shell-contract = { path = "../shell-contract" }
+shell-core = { path = "../shell-core" }
+shell-ipc-u = { path = "../shell-ipc/u" }
+shell-ipc-a = { path = "../shell-ipc/a" }
+shell-ipc-m = { path = "../shell-ipc/m" }
+shell-ipc-w = { path = "../shell-ipc/w" }
+shell-ipc-d1 = { path = "../shell-ipc/d1" }
+shell-ipc-d2 = { path = "../shell-ipc/d2" }
+main-core = { path = "../main-core" }
+# the JSON values main-core's dialog and save-image ports take (host/menu/context.rs)
+# and the AI runtime's JS errors (host/net/http.rs)
+jscompat = { path = "../jscompat" }
+file-parse = { path = "../file-parse", features = ["dispatch"] }
+seu-host = { path = "../seu-host" }
+docx-engine = { path = "../docx-engine" }
+omml = { path = "../omml" }
+sheet-native = { package = "xlsx-sidecar", path = "../../apps/sheets/native/xlsx-engine" }
+pptx-engine = { path = "../pptx-engine" }
+odt-engine = { path = "../odt-engine" }
+ooxml-pkg = { path = "../ooxml-pkg" }
+epub-engine = { path = "../epub-engine", features = ["book-translate"] }
+
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+base64 = "0.22"
+percent-encoding = "2"
+dirs = "6"
+# native dialogs, on the UI thread (host/dialog.rs)
+rfd = { version = "0.15", features = ["common-controls-v6"] }
+# the clipboard in the formats the handlers use (host/clipboard.rs)
+clipboard-rs = "0.3"
+# shell.openExternal / openPath and trashItem (host/os_shell.rs)
+open = "5"
+trash = "5"
+notify = "8"
+html5ever = "0.40"
+markup5ever_rcdom = "0.40"
+saxes = { path = "../saxes" }
+chrono = { version = "0.4", features = ["clock"] }
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+ttf-parser = "=0.25.1"
+rustybuzz = "=0.20.1"
+unicode-segmentation = "=1.13.3"
+unicode-general-category = "=1.1.0"
+unicode-bidi = "=0.3.18"
+unicode-bidi-mirroring = "=0.4.0"
+# NFKC of font family names in the PDF to Office font map (native_tools_engine/office/docx/fontmap.rs)
+unicode-normalization = "=0.1.26"
+encoding_rs = "0.8"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Native certificate and PKCS#12 primitives; the parser source is pinned to
+# the headers reviewed by host/d2/pdf/crypto's safe-bag adapter.
+openssl = { version = "=0.10.82", features = ["vendored"] }
+openssl-sys = "=0.9.118"
+openssl-src = "=300.6.1"
+foreign-types = "0.3"
+yasna = "0.5"
+zeroize = "1"
+rustls-native-certs = "0.8"
+webpki-root-certs = "1"
+lopdf = { path = "../vendor/lopdf", default-features = false }
+
+# regress 0.12.0 with a bounded backtrack stack (see crates/vendor/regress/VENDORED.md):
+# the workspace patch does not reach a crate outside it
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = "0.11"
+ashpd = { version = "=0.14.0", default-features = false, features = ["async-io", "screencast", "pipewire"] }
+pipewire = "=0.10.1"
+pollster = "=1.0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# the Dock menu (host/menu/dock.rs): applicationDockMenu: added to the NSApp delegate's class;
+# the message box with any number of buttons and a checkbox (host/message_box/mac.rs): NSAlert;
+# native/platform/macos: window ops, key events, print operation and spell checker
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSResponder", "NSView", "NSWindow", "NSImage", "NSBitmapImageRep", "NSScreen", "NSGraphics", "NSEvent", "NSPrintInfo", "NSPrintOperation", "NSPrintPanel", "NSSpellChecker", "NSGraphicsContext"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSString", "NSLocale", "NSURL", "NSData", "NSDictionary", "NSArray", "NSError", "NSGeometry", "NSValue", "NSRunLoop", "NSNotification", "NSKeyValueCoding", "objc2-core-foundation"] }
+# the OS webview behind wry (native/platform/macos): navigation delegate chaining, script
+# evaluation, snapshots, content rule lists and the page's print operation
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "objc2-app-kit", "block2", "WKWebView", "WKWebViewConfiguration", "WKNavigationDelegate", "WKNavigation", "WKNavigationAction", "WKNavigationResponse", "WKFrameInfo", "WKUserContentController", "WKUserScript", "WKContentRuleList", "WKContentRuleListStore", "WKContentWorld", "WKPreferences", "WKWebpagePreferences", "WKPDFConfiguration", "WKSnapshotConfiguration", "WKUIDelegate", "WKWebsiteDataStore", "WKError"] }
+# the sheet's completion handler and the web view's completion blocks
+block2 = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+# the silent print loop (host/print/windows.rs): Windows.Data.Pdf pages into a GDI printer DC;
+# Win32_UI_Input_Ime: the Hangul mode query of the --e2e runner (e2e/input_win.rs)
+windows = { version = "0.62", features = ["Data_Pdf", "Foundation", "Graphics_Imaging", "Storage_Streams", "UI", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Graphics_Printing", "Win32_Storage_Xps", "Win32_Storage_FileSystem", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_Security", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Ime"] }
+# the WebView2 interfaces behind wry (native/platform/windows): CDP, focus, process failure;
+# the version wry 0.57 resolves, built on the same `windows` 0.62 as the line above
+webview2-com = "0.39"
+
+[dev-dependencies]
+# the fakes of A's, M's and U's hosts for the_batches_register_over_the_stubs
+shell-ipc-a = { path = "../shell-ipc/a", features = ["probe"] }
+shell-ipc-m = { path = "../shell-ipc/m", features = ["probe"] }
+shell-ipc-u = { path = "../shell-ipc/u", features = ["probe"] }
+shell-ipc-w = { path = "../shell-ipc/w", features = ["probe"] }
+
+[patch.crates-io]
+regress = { path = "../vendor/regress" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+# main-core's handlers are wrapped in catch_unwind (the contract, section 1):
+# a panic becomes an error reply instead of ending the shell with every open
+# document. The workspace's release profile aborts; this one does not.
+panic = "unwind"

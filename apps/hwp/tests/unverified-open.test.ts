@@ -184,6 +184,21 @@ const commit = (contents: FakeContents, bytes: Uint8Array): Promise<CommitSaveRe
 /** HWPX bytes enough for the container check (ZIP magic). */
 const HWPX_BYTES = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0x21, 0x22, 0x23])
 
+describe('save byte validation', () => {
+  it('rejects empty and wrong-format output without changing the opened file', async () => {
+    const original = exported()
+    const { contents, path } = await openView('original.hwp', original)
+    for (const [bytes, error] of [
+      [new Uint8Array(), 'hwp: bad save request'],
+      [HWPX_BYTES, 'hwp: exported bytes are not a hwp file'],
+    ] as const) {
+      expect(await begin(contents, 'save')).toMatchObject({ ok: true, path, format: 'hwp' })
+      expect(await commit(contents, bytes)).toEqual({ ok: false, error })
+      expect(readFileSync(path)).toEqual(Buffer.from(original))
+    }
+  })
+})
+
 describe('an HWP file the compound-file gate refuses', () => {
   it('is refused by the gate and is still a document the engine opens', () => {
     const file = gateRefused(tracked())

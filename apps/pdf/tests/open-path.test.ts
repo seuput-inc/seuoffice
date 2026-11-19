@@ -95,6 +95,14 @@ describe('pdf open-path lifecycle', () => {
     expect(consume(wcId)).toBe(path)
   })
 
+  it('keeps the ordinary Electron open path when no native recovery seed exists', () => {
+    const path = makePdfFile()
+    createPdfView(path)
+    const wcId = lastWebContents.id
+    expect(handlers.has(PDF_CHANNELS.consumeRecoveryPending)).toBe(false)
+    expect(consume(wcId)).toBe(path)
+  })
+
   it('drops the path when the view is destroyed', () => {
     const path = makePdfFile()
     createPdfView(path)

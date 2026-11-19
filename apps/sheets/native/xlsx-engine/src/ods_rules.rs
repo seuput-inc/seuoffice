@@ -202,7 +202,13 @@ fn comparison(
 /// condition (only its messages); `Err` is one ODF cannot say.
 fn validation_condition(rule: &DataValidationRule, names: &Names) -> Result<Option<String>, ()> {
     let compare = |subject: &str, between: &str| {
-        comparison(rule.operator.as_deref(), &rule.formulas, names, subject, between)
+        comparison(
+            rule.operator.as_deref(),
+            &rule.formulas,
+            names,
+            subject,
+            between,
+        )
     };
     let typed = |kind: &str| -> Result<String, ()> {
         Ok(format!(
@@ -214,7 +220,10 @@ fn validation_condition(rule: &DataValidationRule, names: &Names) -> Result<Opti
         "" | "none" => return Ok(None),
         "list" => format!(
             "cell-content-is-in-list({})",
-            list_source(rule.formulas.first().map(String::as_str).unwrap_or(""), names)?
+            list_source(
+                rule.formulas.first().map(String::as_str).unwrap_or(""),
+                names
+            )?
         ),
         "whole" => typed("whole-number")?,
         "decimal" => typed("decimal-number")?,
@@ -226,7 +235,10 @@ fn validation_condition(rule: &DataValidationRule, names: &Names) -> Result<Opti
         )?,
         "custom" => format!(
             "is-true-formula({})",
-            operand(rule.formulas.first().map(String::as_str).unwrap_or(""), names)?
+            operand(
+                rule.formulas.first().map(String::as_str).unwrap_or(""),
+                names
+            )?
         ),
         _ => return Err(()),
     };
@@ -352,7 +364,9 @@ pub(crate) fn parse_sparkline_extras(tail: &[u8]) -> Vec<SparklineExtra> {
                         });
                         if let (Some(rgb), Some(group)) = (rgb, groups.last_mut()) {
                             let hex = &rgb[rgb.len() - 6..];
-                            group.colors.push((slot, format!("#{}", hex.to_ascii_lowercase())));
+                            group
+                                .colors
+                                .push((slot, format!("#{}", hex.to_ascii_lowercase())));
                         }
                     }
                 }
@@ -540,7 +554,14 @@ fn rule_entry(
     // formula is the fallback when the name has no ODF counterpart.
     let by_formula = || formula(0).map(|formula| format!("formula-is({formula})"));
     let value = match rule.rule_type.as_str() {
-        "cellIs" => comparison(rule.operator.as_deref(), &rule.formulas, names, "", "between").ok()?,
+        "cellIs" => comparison(
+            rule.operator.as_deref(),
+            &rule.formulas,
+            names,
+            "",
+            "between",
+        )
+        .ok()?,
         "expression" => by_formula()?,
         "top10" => {
             let rank = rule.rank.unwrap_or(10);
@@ -552,11 +573,15 @@ fn rule_entry(
             }
         }
         "aboveAverage" => {
-            let average = extras.averages.get(&rule.priority).copied().unwrap_or(Average {
-                above: true,
-                equal: false,
-                deviations: false,
-            });
+            let average = extras
+                .averages
+                .get(&rule.priority)
+                .copied()
+                .unwrap_or(Average {
+                    above: true,
+                    equal: false,
+                    deviations: false,
+                });
             if average.deviations {
                 return None;
             }
@@ -627,7 +652,12 @@ fn threshold(cfvo: &Cfvo, names: &Names) -> Option<(&'static str, String)> {
         "formula" => "formula",
         _ => return None,
     };
-    let value = match cfvo.value.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    let value = match cfvo
+        .value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         None => "0".to_owned(),
         Some(value) if value.parse::<f64>().is_ok() => value.to_owned(),
         Some(value) => operand(value, names).ok()?,
@@ -695,7 +725,10 @@ fn data_bar(rule: &ConditionalRule, names: &Names) -> Option<String> {
         _ => plain.then(|| positive.clone()),
     };
     if let Some(negative) = negative {
-        attributes.push_str(&format!(r#" calcext:negative-color="{}""#, escape_xml(&negative)));
+        attributes.push_str(&format!(
+            r#" calcext:negative-color="{}""#,
+            escape_xml(&negative)
+        ));
     }
     match rule.axis_position.as_deref() {
         Some("middle") => attributes.push_str(r#" calcext:axis-position="middle""#),
@@ -703,9 +736,15 @@ fn data_bar(rule: &ConditionalRule, names: &Names) -> Option<String> {
         _ if plain => attributes.push_str(r#" calcext:axis-position="none""#),
         _ => {}
     }
-    attributes.push_str(&format!(r#" calcext:positive-color="{}""#, escape_xml(&positive)));
+    attributes.push_str(&format!(
+        r#" calcext:positive-color="{}""#,
+        escape_xml(&positive)
+    ));
     if let Some(axis) = &rule.axis_color {
-        attributes.push_str(&format!(r#" calcext:axis-color="{}""#, escape_xml(&color(axis))));
+        attributes.push_str(&format!(
+            r#" calcext:axis-color="{}""#,
+            escape_xml(&color(axis))
+        ));
     }
     if rule.gradient == Some(false) {
         attributes.push_str(r#" calcext:gradient="false""#);
@@ -740,7 +779,12 @@ fn icon_set(rule: &ConditionalRule, names: &Names) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn range(start_row: usize, start_column: usize, end_row: usize, end_column: usize) -> MergedRange {
+    fn range(
+        start_row: usize,
+        start_column: usize,
+        end_row: usize,
+        end_column: usize,
+    ) -> MergedRange {
         MergedRange {
             start_row,
             start_column,
@@ -749,12 +793,19 @@ mod tests {
         }
     }
 
-    fn validation(rule_type: &str, operator: Option<&str>, formulas: &[&str]) -> DataValidationRule {
+    fn validation(
+        rule_type: &str,
+        operator: Option<&str>,
+        formulas: &[&str],
+    ) -> DataValidationRule {
         DataValidationRule {
             ranges: vec![range(1, 1, 9, 1)],
             rule_type: rule_type.to_owned(),
             operator: operator.map(str::to_owned),
-            formulas: formulas.iter().map(|formula| (*formula).to_owned()).collect(),
+            formulas: formulas
+                .iter()
+                .map(|formula| (*formula).to_owned())
+                .collect(),
             allow_blank: true,
             suppress_dropdown: false,
             show_input_message: false,
@@ -768,9 +819,12 @@ mod tests {
     }
 
     fn condition(rule_type: &str, operator: Option<&str>, formulas: &[&str]) -> Option<String> {
-        validation_condition(&validation(rule_type, operator, formulas), &Names::default())
-            .ok()
-            .flatten()
+        validation_condition(
+            &validation(rule_type, operator, formulas),
+            &Names::default(),
+        )
+        .ok()
+        .flatten()
     }
 
     #[test]
@@ -812,8 +866,12 @@ mod tests {
             condition("whole", None, &["1", "2"]).as_deref(),
             Some("of:cell-content-is-whole-number() and cell-content-is-between(1,2)")
         );
-        assert!(validation_condition(&validation("whole", None, &["1"]), &Names::default()).is_err());
-        assert!(validation_condition(&validation("fancy", None, &["1"]), &Names::default()).is_err());
+        assert!(
+            validation_condition(&validation("whole", None, &["1"]), &Names::default()).is_err()
+        );
+        assert!(
+            validation_condition(&validation("fancy", None, &["1"]), &Names::default()).is_err()
+        );
         assert_eq!(
             validation_condition(&validation("none", None, &[]), &Names::default()),
             Ok(None)
@@ -938,7 +996,9 @@ mod tests {
         };
         let tail = r#"<conditionalFormatting sqref="A1:A20"><cfRule type="aboveAverage" dxfId="0" priority="6" aboveAverage="0" equalAverage="1"/><cfRule type="timePeriod" dxfId="0" priority="7" timePeriod="last7Days"/></conditionalFormatting>"#;
         let (xml, dropped, styles) = formats(
-            &[greater, between, expression, top, text, below, period, blanks],
+            &[
+                greater, between, expression, top, text, below, period, blanks,
+            ],
             tail,
         );
         assert_eq!(dropped, 0);
@@ -967,7 +1027,10 @@ mod tests {
             styles.contains(r#"<style:style style:name="ConditionalStyle_1" style:family="table-cell" style:parent-style-name="Default">"#),
             "{styles}"
         );
-        assert!(styles.contains(r##"fo:background-color="#FFC7CE""##), "{styles}");
+        assert!(
+            styles.contains(r##"fo:background-color="#FFC7CE""##),
+            "{styles}"
+        );
         assert!(styles.contains(r#"fo:font-weight="bold""#), "{styles}");
     }
 
@@ -975,7 +1038,11 @@ mod tests {
     fn writes_scales_bars_and_icons_and_counts_what_it_cannot_say() {
         let mut scale = rule("colorScale", 1);
         scale.dxf_index = None;
-        scale.cfvos = vec![cfvo("min", None), cfvo("percentile", Some("50")), cfvo("formula", Some("$A$1"))];
+        scale.cfvos = vec![
+            cfvo("min", None),
+            cfvo("percentile", Some("50")),
+            cfvo("formula", Some("$A$1")),
+        ];
         scale.colors = vec!["#F8696B".into(), "FFFFEB84".into(), "#63BE7B".into()];
         let mut bar = rule("dataBar", 2);
         bar.dxf_index = None;
@@ -990,7 +1057,11 @@ mod tests {
         let mut icons = rule("iconSet", 3);
         icons.dxf_index = None;
         icons.icon_set_name = Some("3Arrows".into());
-        icons.cfvos = vec![cfvo("percent", Some("0")), cfvo("percent", Some("33")), cfvo("num", Some("67"))];
+        icons.cfvos = vec![
+            cfvo("percent", Some("0")),
+            cfvo("percent", Some("33")),
+            cfvo("num", Some("67")),
+        ];
         let mut reversed = rule("iconSet", 4);
         reversed.icon_set_name = Some("3Arrows".into());
         reversed.icon_reverse = true;
@@ -1011,9 +1082,14 @@ mod tests {
         plain_bar.colors = vec!["#638EC6".into()];
         plain_bar.min_length = Some(10);
         plain_bar.max_length = Some(90);
-        let (xml, dropped, _) =
-            formats(&[scale, bar, icons, reversed, unstyled, deviations, plain_bar], tail);
-        assert_eq!(dropped, 3, "a reversed icon set, a rule with no style, a deviation band");
+        let (xml, dropped, _) = formats(
+            &[scale, bar, icons, reversed, unstyled, deviations, plain_bar],
+            tail,
+        );
+        assert_eq!(
+            dropped, 3,
+            "a reversed icon set, a rule with no style, a deviation band"
+        );
         assert!(
             xml.contains(r##"<calcext:data-bar calcext:min-length="10" calcext:max-length="90" calcext:negative-color="#638ec6" calcext:axis-position="none" calcext:positive-color="#638ec6">"##),
             "a 2007 bar has no axis: {xml}"

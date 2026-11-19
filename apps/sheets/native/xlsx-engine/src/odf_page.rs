@@ -161,12 +161,25 @@ impl PageBook {
         }
 
         let has_header = master.header.is_some()
-            || master.header_even.as_ref().is_some_and(|text| !text.is_empty())
-            || master.header_first.as_ref().is_some_and(|text| !text.is_empty());
+            || master
+                .header_even
+                .as_ref()
+                .is_some_and(|text| !text.is_empty())
+            || master
+                .header_first
+                .as_ref()
+                .is_some_and(|text| !text.is_empty());
         let has_footer = master.footer.is_some()
-            || master.footer_even.as_ref().is_some_and(|text| !text.is_empty())
-            || master.footer_first.as_ref().is_some_and(|text| !text.is_empty());
-        let inches = |points: Option<f64>, fallback: f64| points.map_or(fallback, |points| points / 72.0);
+            || master
+                .footer_even
+                .as_ref()
+                .is_some_and(|text| !text.is_empty())
+            || master
+                .footer_first
+                .as_ref()
+                .is_some_and(|text| !text.is_empty());
+        let inches =
+            |points: Option<f64>, fallback: f64| points.map_or(fallback, |points| points / 72.0);
         let page_top = inches(layout.top, 0.75);
         let page_bottom = inches(layout.bottom, 0.75);
         // With a header the page margin is where the header starts and the
@@ -412,7 +425,11 @@ fn paragraphs_code(paragraphs: &[Node<'_, '_>], styles: &HashMap<String, FontPro
         inline_code(*paragraph, None, styles, &mut state, &mut out);
     }
     // A band that holds only line breaks holds nothing.
-    if out.trim().is_empty() { String::new() } else { out }
+    if out.trim().is_empty() {
+        String::new()
+    } else {
+        out
+    }
 }
 
 fn inline_code(
@@ -521,7 +538,10 @@ fn switch_look(style: Option<&FontProps>, state: &mut RunState, out: &mut String
         out.push_str(&format!("&\"{}\"", face.as_deref().unwrap_or("-,Regular")));
         state.font = face;
     }
-    let size = style.size.map(|size| size.round() as u32).filter(|size| (1..=409).contains(size));
+    let size = style
+        .size
+        .map(|size| size.round() as u32)
+        .filter(|size| (1..=409).contains(size));
     if size.is_some() && size != state.size {
         out.push_str(&format!("&{}", size.unwrap_or(11)));
         state.size = size;
@@ -598,7 +618,9 @@ mod tests {
         let page = pages.page_xml(Some("m1")).unwrap();
         assert!(page.fit_to_page);
         assert!(
-            page.tail.starts_with(r#"<printOptions horizontalCentered="1" headings="1" gridLines="1"/>"#),
+            page.tail.starts_with(
+                r#"<printOptions horizontalCentered="1" headings="1" gridLines="1"/>"#
+            ),
             "{}",
             page.tail
         );
@@ -630,9 +652,23 @@ mod tests {
             r#"<style:master-page style:name="Default" style:page-layout-name="pm1"><style:header><text:p><text:span text:style-name="T1">2026 plan</text:span></text:p></style:header><style:footer><text:p>Page <text:page-number/></text:p></style:footer></style:master-page>"#,
         );
         let page = pages.page_xml(Some("Default")).unwrap();
-        assert!(page.tail.contains("<oddHeader>&amp;C&amp;9 2026 plan</oddHeader>"), "{}", page.tail);
-        assert!(page.tail.contains("<oddFooter>&amp;CPage &amp;P</oddFooter>"), "{}", page.tail);
+        assert!(
+            page.tail
+                .contains("<oddHeader>&amp;C&amp;9 2026 plan</oddHeader>"),
+            "{}",
+            page.tail
+        );
+        assert!(
+            page.tail
+                .contains("<oddFooter>&amp;CPage &amp;P</oddFooter>"),
+            "{}",
+            page.tail
+        );
         assert!(!page.fit_to_page);
-        assert!(page.tail.contains(r#"<pageSetup orientation="portrait"/>"#), "{}", page.tail);
+        assert!(
+            page.tail.contains(r#"<pageSetup orientation="portrait"/>"#),
+            "{}",
+            page.tail
+        );
     }
 }
