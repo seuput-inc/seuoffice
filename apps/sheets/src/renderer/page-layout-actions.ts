@@ -378,11 +378,14 @@ export function handleApplyHeaderFooter(
   return null
 }
 
+/// What laying a sheet out as print pages reads of the App.
+type PrintLayoutSource = Pick<PageLayoutContext, 'lazyWorkbookRef' | 'requestVisualInstall'>
+
 /// One sheet laid out as print pages with its Page Layout settings, the
 /// dialog's unsaved overrides on top; `selection` prints that range instead
 /// of the print area.
 async function sheetPrintDocument(
-  ctx: PageLayoutContext,
+  ctx: PrintLayoutSource,
   state: LazyWorkbookState | null,
   worksheet: FWorksheet,
   overrides: PageSetupJournalState,
@@ -422,6 +425,38 @@ async function sheetPrintDocument(
     pictures,
     snapshotPrintVisuals(document, frames),
     { breaks: state ? effectivePageBreaks(state, sheetId) : null, selection, now },
+  )
+}
+
+/// How much of a sheet its picture lays out, from A1: more than the first page holds.
+const PICTURE_ROWS = 100
+const PICTURE_COLUMNS = 26
+
+/// The top-left block of the active sheet laid out as print pages, at the grid's
+/// own size and with the headings and gridlines the grid shows: what a picture
+/// of the sheet is drawn from (a web embed host's thumbnail). A print job waits
+/// for the whole workbook; this does not, the block is what the grid loads
+/// first. Null when no sheet is open.
+export async function sheetPictureDocument(
+  ctx: PrintLayoutSource & Pick<PageLayoutContext, 'univerRef'>,
+): Promise<SheetPrintDocument | null> {
+  const worksheet = ctx.univerRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()
+  if (!worksheet) return null
+  const lastColumn = columnLabel(Math.min(PICTURE_COLUMNS, worksheet.getMaxColumns()) - 1)
+  return sheetPrintDocument(
+    ctx,
+    ctx.lazyWorkbookRef.current,
+    worksheet,
+    {
+      printGridlines: !worksheet.hasHiddenGridLines(),
+      printHeadings: true,
+      // a sheet set to fit one page, or to print small, would shrink the block
+      fitToPage: false,
+      scale: 100,
+    },
+    `A1:${lastColumn}${Math.min(PICTURE_ROWS, worksheet.getMaxRows())}`,
+    new Date(),
+    true,
   )
 }
 
@@ -794,7 +829,7 @@ export async function handleExportPdf(
 /// of every visual that is not deleted; visuals without a frame never
 /// install, hence the timeout.
 async function settledVisualFrames(
-  ctx: PageLayoutContext,
+  ctx: PrintLayoutSource,
   state: LazyWorkbookState | null,
   sheetId: string,
 ): Promise<readonly InstalledVisualFrame[]> {

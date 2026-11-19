@@ -37,7 +37,7 @@ import type {
 } from '@seuoffice/ai-provider'
 import { AI_EFFORTS } from '@seuoffice/ai-provider/browser'
 import type { AiToolCapabilities } from '@seuoffice/ai-search'
-import type { AiPanelPrefs, FontFamilyInfo } from '@seuoffice/ui'
+import type { AiPanelPrefs, FontFamilyInfo, WebThumbnailSource } from '@seuoffice/ui'
 import type { SubscriptionApi } from './subscription-api'
 
 // edit schemas shared with the xlsx gateway package; re-exported so IPC consumers keep one import site
@@ -3637,6 +3637,8 @@ export interface DesktopApi {
   /// Main asks the renderer to save before closing; reply via reportCloseSaveResult.
   onCloseSaveRequest(callback: (request?: { requestId: string }) => void): () => void
   reportCloseSaveResult(ok: boolean): void
+  /// Web embed only: the host asks for a picture of the open sheet, which `source` draws.
+  onThumbnailRequest?(source: WebThumbnailSource): () => void
   /// The workbook just opened in this tab keeps no recovery copy (password
   /// protected): main sends the localized notice once per tab.
   onRecoveryNotice(callback: (text: string) => void): () => void

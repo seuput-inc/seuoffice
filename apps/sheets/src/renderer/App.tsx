@@ -130,6 +130,7 @@ import {
   useProjectPanel,
   type ProjectPanel,
   webViewMode,
+  whenLoaded,
 } from '@seuoffice/ui'
 
 import {
@@ -575,6 +576,7 @@ import type { CellsMode } from './insert-delete-cells'
 import { installFormatPainter } from './format-painter'
 import { installCopyMaterialize } from './copy-materialize'
 import { installCopyPicture } from './copy-picture'
+import { drawFirstPage } from './sheet-page-image'
 import {
   applyPasteSpecial,
   pasteSpecialCarriesWithheld,
@@ -622,6 +624,7 @@ import {
   handleExportPdf as handleExportPdfImpl,
   handlePageLayoutCommand as handlePageLayoutCommandImpl,
   openPrintPreviewHost,
+  sheetPictureDocument,
   type PrintPreviewHost,
   type PageLayoutContext,
 } from './page-layout-actions'
@@ -871,6 +874,26 @@ export function App({
   /// The note popup that is up and carries a picture (see note-hover-card.ts).
   const [notePopupCard, setNotePopupCard] = useState<NotePopupCard | null>(null)
   const getRuntime = useCallback(() => univerRef.current, [])
+  // Web embed: the host asks for a picture of the open sheet, perhaps before its cells arrived.
+  // While the whole workbook is still being read in, that is when the reading is done.
+  useEffect(
+    () =>
+      window.desktopApi?.onThumbnailRequest?.(async (request) => {
+        await whenLoaded(() => {
+          const state = lazyWorkbookRef.current
+          const sheet = univerRef.current?.univerAPI.getActiveWorkbook()?.getActiveSheet()
+          const arrived =
+            state &&
+            sheet &&
+            (state.flags.preloadComplete || state.loadedRanges.has(sheet.getSheetId()))
+          return arrived ? true : null
+        }, request.signal)
+        const sheet = await sheetPictureDocument({ univerRef, lazyWorkbookRef })
+        if (!sheet) throw new Error('no sheet is open')
+        return drawFirstPage(sheet, request)
+      }),
+    [],
+  )
   /// True while Univer's in-cell editor is open (AutoSave must not save-reload then).
   const editingCellRef = useRef(false)
   const visualDisposablesRef = useRef<{ dispose(): void }[]>([])
