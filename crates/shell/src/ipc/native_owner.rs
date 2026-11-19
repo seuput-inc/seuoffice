@@ -295,6 +295,26 @@ pub(crate) fn current_recovery_owner(
     }
 }
 
+/// The owner the native document of `lost` has now, for a call of its page that arrived under
+/// `lost` and has not been dispatched yet. A Docs owner carries the media permit of the
+/// document its page shows, so a page that loads a document takes the owner from every other
+/// call it has on its way, though the native document and the renderer are the same and the
+/// page waits for each answer (S121, macOS `docs-edit`: the open ahead of
+/// `docs:consume-new-blank` answered first, that call was never dispatched, and the page
+/// stayed at "Opening…"). Nothing is revived, as in [`current_recovery_owner`].
+pub(crate) fn succeeding_owner(
+    views: &crate::views::ViewTable,
+    lost: &NativeRequestOwner,
+) -> Option<NativeRequestOwner> {
+    let origin = &lost.context.authority_ref::<NativeOwnerAuthority>()?.origin;
+    let current = capture_owner(views, lost.view, lost.context.renderer()?).ok()?;
+    let same_document = current
+        .context
+        .authority_ref::<NativeOwnerAuthority>()
+        .is_some_and(|authority| &authority.origin == origin);
+    same_document.then_some(current)
+}
+
 /// Admit `owner` once more as the owner a recovery opening delivers, and let `swap` put it in
 /// place of the one delivered before. `swap` runs inside the admission and answers the owner
 /// it took out, or `None` when there is nothing to deliver to. That owner is released only

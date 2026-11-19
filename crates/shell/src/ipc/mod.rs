@@ -328,12 +328,11 @@ impl ReplyAuthority {
 }
 
 fn verified_reply(
-    ipc: &Ipc,
+    outlet: Arc<TauriOutlet>,
     authority: Arc<ReplyAuthority>,
     id: RequestId,
     channel: String,
 ) -> Box<dyn FnOnce(Reply) + Send> {
-    let outlet = ipc.outlet.clone();
     Box::new(move |reply| {
         let mut frame = Some(reply_frame(id, &channel, &reply));
         for _ in 0..2 {
@@ -390,11 +389,43 @@ fn verified_reply(
     })
 }
 
+/// The owner a posted call is dispatched under: its own while that still verifies. Between its
+/// arrival and its turn on the core thread the page may have loaded a document, which takes the
+/// owner from every other call the page has on its way, though the page still waits for their
+/// answers. The owner its native document has now then stands for the lost one
+/// ([`native_owner::succeeding_owner`]). `None`: the document is gone, with nobody to answer.
+fn posted_owner(
+    views: &ViewTable,
+    owner: NativeRequestOwner,
+    kind: &str,
+    channel: &str,
+) -> Option<NativeRequestOwner> {
+    if with_verified(&owner, || ()).is_some() {
+        return Some(owner);
+    }
+    let current = native_owner::succeeding_owner(views, &owner)
+        .filter(|current| with_verified(current, || ()).is_some());
+    if current.is_some() {
+        trace!(
+            "owner",
+            "the {kind} '{channel}' of view {} goes on under the owner its document has now",
+            owner.view.0
+        );
+    } else {
+        trace!(
+            "refused",
+            "the {kind} '{channel}' of view {} was not dispatched: its document is gone",
+            owner.view.0
+        );
+    }
+    current
+}
+
 /// Accepts only a sender and owner bound by authenticated native ingress.
 pub(crate) fn invoke_verified(
     ipc: &Ipc,
     sender: Sender,
-    mut owner: NativeRequestOwner,
+    owner: NativeRequestOwner,
     bytes: &[u8],
 ) -> Result<(), String> {
     if sender.view != owner.view || with_verified(&owner, || ()).is_none() {
@@ -409,19 +440,22 @@ pub(crate) fn invoke_verified(
     let Call { id, channel, args } = parse_bytes(bytes, true)?;
     let id = RequestId(id.ok_or("the frame has no id")?);
     ipc.note_call();
-    let authority = Arc::new(ReplyAuthority::new(id, owner.clone()));
-    owner.context = owner.context.with_request_authority(authority.clone());
-    let deliver = verified_reply(ipc, authority, id, channel.clone());
     if let Some(measure) = &ipc.measure
         && measure.handles(&channel)
     {
+        let authority = Arc::new(ReplyAuthority::new(id, owner));
+        let deliver = verified_reply(ipc.outlet.clone(), authority, id, channel.clone());
         measure.invoke(ipc, sender.view, id, &channel, args, deliver);
         return Ok(());
     }
+    let (views, outlet) = (ipc.views.clone(), ipc.outlet.clone());
     ipc.core.post(Box::new(move || {
-        if with_verified(&owner, || ()).is_none() {
+        let Some(mut owner) = posted_owner(&views, owner, "invoke", &channel) else {
             return;
-        }
+        };
+        let authority = Arc::new(ReplyAuthority::new(id, owner.clone()));
+        owner.context = owner.context.with_request_authority(authority.clone());
+        let deliver = verified_reply(outlet, authority, id, channel.clone());
         dispatch(
             sender,
             ChannelKind::Invoke,
@@ -453,10 +487,11 @@ pub(crate) fn send_verified(
     }
     let Call { channel, args, .. } = parse_bytes(bytes, false)?;
     ipc.note_call();
+    let views = ipc.views.clone();
     ipc.core.post(Box::new(move || {
-        if with_verified(&owner, || ()).is_none() {
+        let Some(owner) = posted_owner(&views, owner, "send", &channel) else {
             return;
-        }
+        };
         let name = channel.clone();
         dispatch(
             sender,
@@ -831,5 +866,160 @@ mod reply_transfer_tests {
             .with_media_transfer(&actual, &cancel, actual.clone(), || Ok(()))
             .unwrap_err();
         assert_eq!(error, "The native request reply authority was replaced");
+    }
+}
+
+#[cfg(test)]
+mod posted_call_tests {
+    use super::*;
+    use crate::native::browser::testing::{TEST_NONCE, registered_context, url};
+    use main_core::docs::byte_handoff::MediaViewLease;
+    use shell_contract::runtime::RendererGeneration;
+    use shell_core::wire::{Encoder, frame};
+
+    struct Inline;
+
+    impl Thread for Inline {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            job();
+        }
+        fn is_current(&self) -> bool {
+            true
+        }
+    }
+
+    /// The core thread of a test: what is posted to it waits until the test lets it run.
+    #[derive(Default)]
+    struct Waiting(Mutex<Vec<Box<dyn FnOnce() + Send>>>);
+
+    impl Thread for Waiting {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            self.0.lock().unwrap().push(job);
+        }
+        fn is_current(&self) -> bool {
+            true
+        }
+    }
+
+    /// A Docs page of a real view table, bound to a real registered native document, with its
+    /// output stream open. `answered` lists the requests the page was answered.
+    struct DocsPage {
+        ipc: Ipc,
+        core: Arc<Waiting>,
+        sender: Sender,
+        created: RendererGeneration,
+        lease: MediaViewLease,
+        browser: BrowserIdentity,
+        answered: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl DocsPage {
+        fn open(label: &str) -> Self {
+            let outlet = Arc::new(TauriOutlet::default());
+            let views = Arc::new(ViewTable::new(outlet.clone(), Arc::new(Inline)));
+            let window = shell_contract::ids::WindowId(1);
+            let surface = shell_contract::Surface::Docs;
+            let _lifecycle = views.add_window(window, label.into());
+            let (view, created) = views
+                .register_view(views.allocate_view().unwrap(), window, surface)
+                .unwrap();
+            let lease = MediaViewLease::new(view.0).unwrap();
+            views.set_docs_media_lease(view, lease.clone()).unwrap();
+            let (browser, origin) = registered_context(label);
+            assert!(views.bind_verified_native_origin(view, &created, &origin));
+            let answered = Arc::new(Mutex::new(Vec::new()));
+            let seen = answered.clone();
+            let stream = Channel::new(move |body| {
+                if let InvokeResponseBody::Raw(bytes) = body
+                    && let Ok((header, _)) = unframe(&bytes)
+                    && let Some(id) = header.get("reply").and_then(Value::as_u64)
+                {
+                    seen.lock().unwrap().push(id);
+                }
+                Ok(())
+            });
+            outlet.attach(view, stream, created.clone()).unwrap();
+            let core = Arc::new(Waiting::default());
+            Self {
+                ipc: Ipc {
+                    core: core.clone(),
+                    views,
+                    outlet,
+                    measure: None,
+                },
+                core,
+                sender: Sender {
+                    view,
+                    window,
+                    surface,
+                },
+                created,
+                lease,
+                browser,
+                answered,
+            }
+        }
+
+        /// The page invokes a channel: the call arrives and waits for the core thread.
+        fn invokes(&self, id: u64) {
+            let (views, view) = (&self.ipc.views, self.sender.view);
+            let owner = native_owner::capture_owner(views, view, &self.created).unwrap();
+            let mut encoder = Encoder::default();
+            let args = encoder.values(&[]);
+            let header = serde_json::json!({
+                "id": id,
+                "channel": "docs:consume-new-blank",
+                "args": args,
+            });
+            let bytes = frame(&header, &encoder.buffers);
+            invoke_verified(&self.ipc, self.sender, owner, &bytes).unwrap();
+        }
+
+        fn core_thread_runs(&self) {
+            let jobs = std::mem::take(&mut *self.core.0.lock().unwrap());
+            for job in jobs {
+                job();
+            }
+        }
+
+        fn answered(&self) -> Vec<u64> {
+            self.answered.lock().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn a_call_that_waits_while_its_page_loads_a_document_is_still_answered() {
+        let page = DocsPage::open("posted-call-document-load");
+        page.invokes(7);
+        // the open ahead of it finishes first: the page shows another document now
+        let next = page.lease.stage_document().unwrap();
+        page.lease.commit_document(&next).unwrap();
+        page.core_thread_runs();
+        assert_eq!(page.answered(), [7]);
+    }
+
+    #[test]
+    fn a_call_whose_page_is_gone_is_not_dispatched() {
+        // the page left its document, and a successor took the view at the very same address
+        let page = DocsPage::open("posted-call-navigation");
+        page.invokes(8);
+        let address = url("https://example.test/a");
+        assert!(page.browser.core.admit_navigation(&address));
+        page.browser.core.commit(&address);
+        let successor = page.browser.core.register_document(TEST_NONCE).unwrap();
+        assert!(page.ipc.views.bind_verified_native_origin(
+            page.sender.view,
+            &page.created,
+            &successor
+        ));
+        page.core_thread_runs();
+        assert!(page.answered().is_empty());
+
+        // the view ended its document session
+        let page = DocsPage::open("posted-call-closed");
+        page.invokes(9);
+        page.lease.revoke();
+        page.core_thread_runs();
+        assert!(page.answered().is_empty());
     }
 }
