@@ -103,7 +103,7 @@ import type {
 import type { AiToolCapabilities, MediaToolErrorCode } from '@seuoffice/ai-search'
 import type { HeadlessExportTarget } from '@seuoffice/electron-utils/headless-export'
 import type { FaceVerticalMetrics } from '@seuoffice/font-metrics'
-import type { AiPanelPrefs, FontFamilyInfo } from '@seuoffice/ui'
+import type { AiPanelPrefs, FontFamilyInfo, WebThumbnailSource } from '@seuoffice/ui'
 import type { DocFormat, MarkedExportFormat, SaveAsKind } from './open-file'
 
 export type { FaceVerticalMetrics }
@@ -837,6 +837,8 @@ export interface DesktopApi {
   /** Close guard chose "Save": main process asks the renderer to run the full save flow */
   onCloseSaveRequest(handler: (request?: { requestId: string }) => void): () => void
   reportCloseSaveResult(ok: boolean): void
+  /** Web embed only: the host asks for a picture of the first page, which `source` draws */
+  onThumbnailRequest?(source: WebThumbnailSource): () => void
   /** hosts that track unsaved changes (the web embed) hear each change of the flag; absent on the desktop */
   reportDirty?(dirty: boolean): void
   /** keep the native View menu's checkbox items in sync with renderer state */

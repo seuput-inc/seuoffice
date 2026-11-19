@@ -54,25 +54,13 @@ export function thumbnailWidth(requested: unknown): number {
 
 function encode(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    try {
-      canvas.toBlob(
-        (blob) =>
-          blob
-            ? resolve(blob)
-            : reject(new ThumbnailRefusal('thumbnail_unsupported', 'the image was not encoded')),
-        'image/png',
-      )
-    } catch (error) {
-      // a canvas that drew a picture of another origin gives its pixels to nobody
-      reject(
-        error instanceof Error && error.name === 'SecurityError'
-          ? new ThumbnailRefusal(
-              'thumbnail_tainted',
-              'the page holds a picture from another origin',
-            )
-          : error,
-      )
-    }
+    canvas.toBlob(
+      (blob) =>
+        blob
+          ? resolve(blob)
+          : reject(new ThumbnailRefusal('thumbnail_unsupported', 'the image was not encoded')),
+      'image/png',
+    )
   })
 }
 
@@ -110,8 +98,9 @@ async function draw(
 /**
  * The PNG of the first page for the width the host asked. Rejects with a
  * ThumbnailRefusal: no `source` (the app draws none, or nothing is open), the
- * time ran out, the PNG is too large, or the canvas may not be read. Any other
- * rejection is the app's own: what stopped its drawing.
+ * time ran out, the PNG is too large, or a canvas may not be read (the app's
+ * own while it draws, or the image's when it is encoded). Any other rejection
+ * is the app's own: what stopped its drawing.
  */
 export async function makeThumbnail(
   source: ThumbnailSource | undefined,
@@ -129,6 +118,15 @@ export async function makeThumbnail(
   })
   try {
     return await Promise.race([draw(source, thumbnailWidth(requested), waiting.signal), late])
+  } catch (error) {
+    // a canvas that drew a picture of another origin gives its pixels to nobody
+    if (error instanceof Error && error.name === 'SecurityError') {
+      throw new ThumbnailRefusal(
+        'thumbnail_tainted',
+        'the page holds a picture from another origin',
+      )
+    }
+    throw error
   } finally {
     clearTimeout(timer)
   }

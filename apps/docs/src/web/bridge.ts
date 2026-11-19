@@ -8,6 +8,7 @@ import {
   installWebBridge,
   joinPageCollab,
   onHostSaveRequest,
+  onHostThumbnailRequest,
   registerCollabCapable,
   reportDirty,
   reportError,
@@ -260,6 +261,7 @@ const desktop: Partial<DesktopApi> = {
       if (closeSaveHandler === handler) closeSaveHandler = undefined
     }
   },
+  onThumbnailRequest: onHostThumbnailRequest,
   reportCloseSaveResult: (ok) => {
     settleCloseSave?.(ok)
     settleCloseSave = undefined

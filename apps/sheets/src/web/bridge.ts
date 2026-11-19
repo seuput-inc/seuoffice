@@ -8,6 +8,7 @@ import {
   editMode,
   installWebBridge,
   onHostSaveRequest,
+  onHostThumbnailRequest,
   registerCollabCapable,
   reportDirty,
   reportError,
@@ -379,6 +380,7 @@ const desktopApi: WebDesktopApi = {
     }
   },
   reportCloseSaveResult: (ok) => closeSaveSettled?.(ok),
+  onThumbnailRequest: onHostThumbnailRequest,
   // the pending-edit count feeds the host's unsaved-changes flag; a co-editing session reports its own
   notifyPendingEdits: (count) => {
     if (editMode() && !collab) reportDirty(count > 0)
