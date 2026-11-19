@@ -918,7 +918,10 @@ impl App {
             // The actor itself is retired by its closure receipt. Its attachment to the shared
             // presentation must not outlive the view meanwhile: a later export or save of the
             // same deck would try to capture an owner for a view that is gone and be refused.
-            eprintln!("[slides] view {}: gone, detaching it from its presentation", view.0);
+            eprintln!(
+                "[slides] view {}: gone, detaching it from its presentation",
+                view.0
+            );
             self.state.borrow_mut().detach_view(view);
             return;
         }

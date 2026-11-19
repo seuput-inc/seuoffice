@@ -3073,7 +3073,11 @@ pub(crate) fn run_file_accelerator(accelerator: &str) -> bool {
             return false;
         };
         if !matches!(shown.kind, TabKind::Sheets | TabKind::Slides) {
-            crate::trace::trace!("accel", "{accelerator}: the menu is a {:?} menu", shown.kind);
+            crate::trace::trace!(
+                "accel",
+                "{accelerator}: the menu is a {:?} menu",
+                shown.kind
+            );
             return false;
         }
         save_item_with(&shown.menus, accelerator)

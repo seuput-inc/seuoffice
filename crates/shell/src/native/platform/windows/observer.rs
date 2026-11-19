@@ -295,7 +295,10 @@ impl Observe for Platform {
             }
             let shortcut = file_shortcut();
             let handled = shortcut.is_some_and(crate::host::menu::run_file_accelerator);
-            crate::trace::trace!("accel", "S pressed: shortcut {shortcut:?}, handled {handled}");
+            crate::trace::trace!(
+                "accel",
+                "S pressed: shortcut {shortcut:?}, handled {handled}"
+            );
             if handled {
                 // SAFETY: as above.
                 unsafe { args.SetHandled(true)? };
