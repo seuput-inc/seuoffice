@@ -165,8 +165,25 @@ impl RecoveryPlan {
     pub(crate) fn guard(&self) -> NativeInvocationOperation {
         self.guard.clone()
     }
-    pub(crate) fn selection(&self) -> &NativeInvocationSelection {
-        &self.selection
+    /// The selection an open of this plan is issued for. A plan is captured before the launch
+    /// list is answered, while its file is still named as saved; `decision` is what the answer
+    /// made of that file, as the recovery store holds it. Only the decision of a file
+    /// selection follows it: the surface and the path stay as captured, and so does every
+    /// other kind of selection.
+    pub(crate) fn selection_for(
+        &self,
+        decision: NativeRecoveryDecision,
+    ) -> NativeInvocationSelection {
+        match &self.selection {
+            NativeInvocationSelection::RecoveryFile { surface, path, .. } => {
+                NativeInvocationSelection::RecoveryFile {
+                    surface: *surface,
+                    path: path.clone(),
+                    decision,
+                }
+            }
+            captured => captured.clone(),
+        }
     }
 
     pub(crate) fn cancel(&self) {
@@ -174,11 +191,15 @@ impl RecoveryPlan {
         self.guard.finish();
     }
 
-    pub(crate) fn attempt(&self) -> Result<NativeInvocationOperation, String> {
+    pub(crate) fn attempt(
+        &self,
+        decision: NativeRecoveryDecision,
+    ) -> Result<NativeInvocationOperation, String> {
         if self.guard.with_active(|| ()).is_none() {
             return Err("The selected recovery plan is no longer active".into());
         }
-        let child = issue(&self.issuer, &self.selection, self.cancel.clone())?;
+        let selection = self.selection_for(decision);
+        let child = issue(&self.issuer, &selection, self.cancel.clone())?;
         if self.guard.with_active(|| ()).is_none() {
             child.finish();
             return Err("The selected recovery plan is no longer active".into());
@@ -274,6 +295,64 @@ mod tests {
             opener: RestoredTabOpener::File,
         };
         assert!(capture(&factory, &spec).is_err());
+    }
+
+    /// A file's plan is captured before the launch list is answered. The open is issued for
+    /// what the answer made of that file: its recovery copy, or the file as saved. The answer
+    /// changes nothing else, and nothing of a plan that names no file.
+    #[test]
+    fn an_open_follows_the_launch_decision_of_its_file_and_nothing_else() {
+        let issuer = Rc::new(NativeInvocationIssuer::new(CancelToken::default()));
+        let startup = test_startup(&issuer);
+        let factory: RecoveryIssuer = Rc::new(move |selection, cancel| {
+            issuer.issue_recovery_child(&startup, selection, cancel)
+        });
+        let spec = |file_path: Option<&str>, opener| UnloadedTabSpec {
+            kind: "markdown".into(),
+            title: "notes.md".into(),
+            file_path: file_path.map(str::to_owned),
+            opener,
+        };
+        let decided = |decision| NativeInvocationSelection::RecoveryFile {
+            surface: Surface::Markdown,
+            path: "/work/notes.md".into(),
+            decision,
+        };
+
+        let file = spec(Some("/work/notes.md"), RestoredTabOpener::File);
+        let plan = RecoveryPlan::capture(&factory, &file).unwrap();
+        assert_eq!(
+            plan.guard().selection(),
+            &decided(NativeRecoveryDecision::Original)
+        );
+        for decision in [
+            NativeRecoveryDecision::Restore,
+            NativeRecoveryDecision::Original,
+        ] {
+            let operation = plan.attempt(decision).unwrap();
+            assert_eq!(operation.selection(), &decided(decision));
+            operation.finish();
+        }
+
+        let blank = spec(None, RestoredTabOpener::File);
+        let copy = spec(
+            None,
+            RestoredTabOpener::UntitledCopy {
+                copy: RecoveryIdentity::Untitled(RecoveryUntitledIdentity {
+                    kind: "markdown".into(),
+                    untitled_id: "copy-id".into(),
+                    ext: ".md".into(),
+                }),
+                save_as_default_path: None,
+            },
+        );
+        for spec in [blank, copy] {
+            let plan = RecoveryPlan::capture(&factory, &spec).unwrap();
+            let captured = plan.guard().selection().clone();
+            let operation = plan.attempt(NativeRecoveryDecision::Restore).unwrap();
+            assert_eq!(operation.selection(), &captured);
+            operation.finish();
+        }
     }
 
     #[test]

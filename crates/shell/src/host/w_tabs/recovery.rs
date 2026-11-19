@@ -897,8 +897,21 @@ impl Opening {
             Some(true) => {}
             Some(false) if self.settled.load(Ordering::Acquire) => return,
             _ => {
-                return self
-                    .fail("The recovery request expired before its document became ready".into());
+                // which part of the authority gave way, for the line the failed open logs
+                let selection_active = match &snapshot.context {
+                    RecoveryOpenContext::NativeStartup(operation) => {
+                        operation.with_active(|| ()).is_some()
+                    }
+                    RecoveryOpenContext::Renderer { .. } => true,
+                };
+                return self.fail(format!(
+                    "The recovery request expired before its document became ready \
+                     (document owner lost: {}, renderer active: {}, seed settled: {:?}, \
+                     selection active: {selection_active})",
+                    owner.loss_token().is_none_or(|token| token.is_cancelled()),
+                    self.target.created().is_active(),
+                    receipt.settlement().map(|result| result.is_ok()),
+                ));
             }
         }
         self.complete();

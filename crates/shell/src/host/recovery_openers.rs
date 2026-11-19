@@ -38,6 +38,10 @@ pub(crate) struct PreparedRecoveryOpen {
     pub(crate) kind: TabKind,
     pub(crate) path: Option<String>,
     pub(crate) untitled: bool,
+    /// What the launch answer made of the tab's file, as the recovery store holds it when the
+    /// tab is opened: its recovery copy, or the file as saved. The open is issued for it. A
+    /// tab that names no file leaves it at the file as saved.
+    pub(crate) decision: shell_contract::ipc::NativeRecoveryDecision,
     pub(crate) operation: Option<shell_contract::ipc::NativeInvocationOperation>,
     attempt: Option<NativeAttempt>,
     pub(crate) before_load: Option<BeforeLoad>,
@@ -998,7 +1002,7 @@ pub(crate) fn prepare_open(
     opener: &Opener,
     context: &UnloadedTabOpenContext,
 ) -> Result<PreparedRecoveryOpen, String> {
-    prepare_open_with(opener, context, |plan| plan.attempt())
+    prepare_open_with(opener, context, |plan, decision| plan.attempt(decision))
 }
 
 pub(crate) fn prepare_open_command(
@@ -1007,11 +1011,11 @@ pub(crate) fn prepare_open_command(
     command: &shell_contract::ipc::NativeInvocationOperation,
     cancel: shell_contract::runtime::CancelToken,
 ) -> Result<PreparedRecoveryOpen, String> {
-    prepare_open_with(opener, context, |plan| {
+    prepare_open_with(opener, context, |plan, decision| {
         if plan.guard().with_active(|| ()).is_none() {
             return Err("The selected recovery plan is no longer active".into());
         }
-        let selection = plan.selection().clone();
+        let selection = plan.selection_for(decision);
         // a native load of one tab opens that tab's own selection; a native open, the
         // selection of its surface
         let child = match command.selection() {
@@ -1039,6 +1043,7 @@ fn prepare_open_with(
     context: &UnloadedTabOpenContext,
     issue: impl FnOnce(
         &super::recovery_launch::issuer::RecoveryPlan,
+        shell_contract::ipc::NativeRecoveryDecision,
     ) -> Result<shell_contract::ipc::NativeInvocationOperation, String>,
 ) -> Result<PreparedRecoveryOpen, String> {
     let (restored, captured, _, callback, _) = lookup(opener, context)?;
@@ -1065,7 +1070,7 @@ fn prepare_open_with(
         entry.attempt = Attempt::Starting;
         entry.plan.clone()
     };
-    let operation = match issue(&plan) {
+    let operation = match issue(&plan, prepared.decision) {
         Ok(operation) => operation,
         Err(error) => {
             abort_start(opener);
@@ -1894,6 +1899,32 @@ fn cancel_registered_and_drain(done: Box<dyn FnOnce(Result<(), String>)>) {
     }
 }
 
+/// What the launch list's answer made of a file tab, read from the recovery store as the tab
+/// is opened: the file's recovery copy when the answer chose it, the file as saved otherwise
+/// (no copy, a copy left for later, a copy nobody was asked about). The editor's own open of
+/// a file reads the same plan.
+fn launch_decision(
+    store: &super::recovery_manager::SharedStore,
+    kind: TabKind,
+    path: &str,
+) -> shell_contract::ipc::NativeRecoveryDecision {
+    use main_core::packages::electron_utils::recovery_store::{
+        RecoveryFileIdentity, RecoveryIdentity, RecoveryOpenPlan, is_recovery_editor_kind,
+    };
+    use shell_contract::ipc::NativeRecoveryDecision;
+    if !is_recovery_editor_kind(kind.as_str()) {
+        return NativeRecoveryDecision::Original;
+    }
+    let identity = RecoveryIdentity::File(RecoveryFileIdentity {
+        kind: kind.as_str().to_owned(),
+        file_path: path.to_owned(),
+    });
+    match store.with_store(|store| store.open_plan(&identity)) {
+        Ok(RecoveryOpenPlan::Restore(_)) => NativeRecoveryDecision::Restore,
+        _ => NativeRecoveryDecision::Original,
+    }
+}
+
 pub(crate) fn live_callbacks(
     services: shell_contract::runtime::Services,
     provided: Rc<shell_contract::Provided>,
@@ -1932,9 +1963,10 @@ pub(crate) fn callbacks(
         RecoveryOpenUntitledRequest,
     };
     use main_core::packages::electron_utils::recovery_store::{
-        RecoveryStoreOptions, create_recovery_store,
+        RecoveryStoreOptions, create_recovery_store, is_recovery_editor_kind,
     };
     use main_core::shell::recovery_shell::{OpenContext, RestoredTabOpenerDeps};
+    use shell_contract::ipc::NativeRecoveryDecision;
 
     struct Unblocked;
     impl RestoredTabOpenerDeps for Unblocked {
@@ -1943,6 +1975,10 @@ pub(crate) fn callbacks(
         }
     }
 
+    let launch = super::recovery_manager::SharedStore {
+        shared: shared.clone(),
+        user_data: user_data.clone(),
+    };
     let open_gate = gate.clone();
     let prepare: Rc<PrepareOpen> = Rc::new(move |restored, context| {
         if open_gate.blocking() {
@@ -1955,18 +1991,20 @@ pub(crate) fn callbacks(
                 let path = context.file_path.clone();
                 let editor = provided.all::<dyn RecoveryEditorContract<ViewId,shell_contract::ipc::RecoveryOpenTarget>>().into_iter()
                     .find(|editor| editor.kind() == kind.as_str());
-                let request = path.as_ref().filter(|path| !path.is_empty()).map(|path| {
-                    RecoveryOpenFileRequest {
-                        file_path: path.clone(),
-                        decision: RecoveryOpenDecision::Original,
-                    }
+                // the launch list's answer decides between the file's recovery copy and the
+                // file as saved; the request and the selection the open is issued for agree
+                let file = path.as_ref().filter(|path| !path.is_empty());
+                let decision = file.map_or(NativeRecoveryDecision::Original, |path| {
+                    launch_decision(&launch, kind, path)
                 });
-                if request.is_some()
-                    && editor.is_none()
-                    && main_core::packages::electron_utils::recovery_store::is_recovery_editor_kind(
-                        kind.as_str(),
-                    )
-                {
+                let request = file.map(|path| RecoveryOpenFileRequest {
+                    file_path: path.clone(),
+                    decision: match decision {
+                        NativeRecoveryDecision::Restore => RecoveryOpenDecision::Restore,
+                        NativeRecoveryDecision::Original => RecoveryOpenDecision::Original,
+                    },
+                });
+                if request.is_some() && editor.is_none() && is_recovery_editor_kind(kind.as_str()) {
                     return Err(format!(
                         "the {} recovery editor is unavailable",
                         kind.as_str()
@@ -1999,6 +2037,7 @@ pub(crate) fn callbacks(
                     kind,
                     path,
                     untitled: false,
+                    decision,
                     operation: None,
                     attempt: None,
                     before_load: Some(Box::new(move |view, target, done| {
@@ -2045,6 +2084,7 @@ pub(crate) fn callbacks(
                     kind: context.kind,
                     path: None,
                     untitled: true,
+                    decision: NativeRecoveryDecision::Original,
                     operation: None,
                     attempt: None,
                     before_load: Some(Box::new(move |view, target, done| {
@@ -2262,6 +2302,7 @@ mod tests {
                     kind: TabKind::Docs,
                     path: None,
                     untitled: false,
+                    decision: shell_contract::ipc::NativeRecoveryDecision::Original,
                     operation: None,
                     attempt: None,
                     before_load: None,
@@ -2292,10 +2333,10 @@ mod tests {
             },
             CancelToken::default(),
         );
-        let mut prepared = prepare_open_with(&opener, &tab, |plan| {
+        let mut prepared = prepare_open_with(&opener, &tab, |plan, decision| {
             issuer.issue_command_recovery_child(
                 &root,
-                plan.selection().clone(),
+                plan.selection_for(decision),
                 CancelToken::default(),
             )
         })
@@ -2339,12 +2380,12 @@ mod tests {
         let other = context("tab-b");
         let other_root = load(&other.tab_id);
         let issued = Cell::new(false);
-        let refused = prepare_open_with(&opener, &other, |plan| {
+        let refused = prepare_open_with(&opener, &other, |plan, decision| {
             issued.set(true);
             issuer.issue_tab_recovery_child(
                 &other_root,
                 &other.tab_id,
-                plan.selection().clone(),
+                plan.selection_for(decision),
                 CancelToken::default(),
             )
         });
@@ -2357,11 +2398,11 @@ mod tests {
 
         let tab = context("tab-a");
         let root = load(&tab.tab_id);
-        let mut prepared = prepare_open_with(&opener, &tab, |plan| {
+        let mut prepared = prepare_open_with(&opener, &tab, |plan, decision| {
             issuer.issue_tab_recovery_child(
                 &root,
                 &tab.tab_id,
-                plan.selection().clone(),
+                plan.selection_for(decision),
                 CancelToken::default(),
             )
         })
@@ -2373,6 +2414,56 @@ mod tests {
             NativeInvocationSelection::RecoveryBlank { title, .. } if title == "selected title"
         ));
         finish(prepared.attempt.take().unwrap(), false);
+    }
+    /// The launch list's answer is what restores a file: a copy that exists but was not
+    /// chosen, a copy left for later, and another file all open as saved.
+    #[test]
+    fn a_restored_file_opens_from_its_copy_only_when_the_launch_answer_chose_it() {
+        use main_core::packages::electron_utils::recovery_store::{
+            RecoveryFileIdentity, RecoveryIdentity, RecoveryLaunchDecision, RecoveryWriteOptions,
+            SharedRecoveryState,
+        };
+        use shell_contract::ipc::NativeRecoveryDecision::{Original, Restore};
+        let dir = std::env::temp_dir().join(format!(
+            "seuoffice-launch-decision-{}-{}",
+            std::process::id(),
+            jscompat::random_uuid()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("notes.md");
+        std::fs::write(&file, "saved").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let other = dir.join("other.md").to_string_lossy().into_owned();
+        let store = super::super::recovery_manager::SharedStore {
+            shared: std::sync::Arc::new(std::sync::Mutex::new(SharedRecoveryState::new("test"))),
+            user_data: dir.join("userdata").to_string_lossy().into_owned(),
+        };
+        let identity = RecoveryIdentity::File(RecoveryFileIdentity {
+            kind: "markdown".into(),
+            file_path: path.clone(),
+        });
+        let decided = |path: &str| launch_decision(&store, TabKind::Markdown, path);
+        let answer = |decision| {
+            store
+                .with_store(|store| store.apply_launch_decision(&identity, decision))
+                .unwrap();
+        };
+
+        assert_eq!(decided(&path), Original);
+        store
+            .with_store(|store| {
+                store.write_copy(&identity, b"typed", &RecoveryWriteOptions::default())
+            })
+            .unwrap();
+        assert_eq!(decided(&path), Original);
+        answer(RecoveryLaunchDecision::Restore);
+        assert_eq!(decided(&path), Restore);
+        assert_eq!(decided(&other), Original);
+        // the same file under a kind that keeps no copies
+        assert_eq!(launch_decision(&store, TabKind::Epub, &path), Original);
+        answer(RecoveryLaunchDecision::Later);
+        assert_eq!(decided(&path), Original);
+        let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
     fn failures_remain_retryable_and_success_consumes_selected_opener() {

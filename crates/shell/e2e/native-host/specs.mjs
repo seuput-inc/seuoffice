@@ -236,6 +236,13 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
   }
 }
 
+/**
+ * A failure a page reports counts as the failure of a damaged restore only where the same
+ * restore, undamaged, succeeds on that OS: otherwise the page may fail for any other reason
+ * (run 44464831843, Windows: Docs could not open any file and "passed" this way).
+ */
+const intact = (spec) => ({ spec, scenario: 'successful-ack' })
+
 /** The same crash, with the recovery copy overwritten before the restore. */
 function damagedVariant(kind, channel) {
   const base = baseSteps(`${kind}-edit`)
@@ -252,7 +259,13 @@ function damagedVariant(kind, channel) {
       {
         channel,
         scenario: 'failed-apply',
-        rule: { kind: 'ack', run: 2, verdict: false, list: true },
+        rule: {
+          kind: 'ack',
+          run: 2,
+          verdict: false,
+          list: true,
+          control: intact(`${kind}-recovery`),
+        },
       },
     ],
   }
@@ -342,7 +355,13 @@ function unreadableVariant(kind, file, { fixture, channel, scenario }) {
       { end: 'kill', steps: [...openFile(file), wait(3000)] },
       { damage: file, steps: [wait(30000)] },
     ],
-    expect: [{ channel, scenario, rule: { kind: 'ack', run: 2, verdict: false } }],
+    expect: [
+      {
+        channel,
+        scenario,
+        rule: { kind: 'ack', run: 2, verdict: false, control: intact(`${kind}-restore`) },
+      },
+    ],
   }
 }
 

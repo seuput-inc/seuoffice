@@ -251,31 +251,54 @@ const RULES = {
 
 // ------------------------------------------------------------------------------------- the run
 
-/** One row per expectation of each named spec */
-export function runChecks({ root, names, specs = SPECS }) {
-  const rows = []
-  for (const name of names) {
-    const spec = specs[name]
-    const runs = spec.runs.map((_, index) => loadRun(root, name, index + 1))
-    for (const { channel, scenario, rule } of spec.expect) {
-      const run = runs[rule.run - 1]
-      const row = { spec: name, channel, scenario }
-      if (!runs[0]) rows.push({ ...row, status: 'MISSING', evidence: 'the spec was not run' })
-      else if (!run) {
-        const before = runs[rule.run - 2]?.exit
-        rows.push({
-          ...row,
-          ...fail(
-            `run ${rule.run} never started (run ${rule.run - 1} ended by ${before?.ended ?? 'nothing'}, not ${before?.wanted ?? 'at all'})`,
-          ),
-          artifact: runs.findLast(Boolean).artifact,
-        })
-      } else {
-        rows.push({ ...row, ...RULES[rule.kind](run, rule, channel, spec), artifact: run.artifact })
+/** One row per expectation of a spec, in the order of its `expect` */
+function checkSpec(root, name, spec) {
+  const runs = spec.runs.map((_, index) => loadRun(root, name, index + 1))
+  return spec.expect.map(({ channel, scenario, rule }) => {
+    const run = runs[rule.run - 1]
+    const row = { spec: name, channel, scenario }
+    if (!runs[0]) return { ...row, status: 'MISSING', evidence: 'the spec was not run' }
+    if (!run) {
+      const before = runs[rule.run - 2]?.exit
+      return {
+        ...row,
+        ...fail(
+          `run ${rule.run} never started (run ${rule.run - 1} ended by ${before?.ended ?? 'nothing'}, not ${before?.wanted ?? 'at all'})`,
+        ),
+        artifact: runs.findLast(Boolean).artifact,
       }
     }
+    return { ...row, ...RULES[rule.kind](run, rule, channel, spec), artifact: run.artifact }
+  })
+}
+
+/**
+ * One row per expectation of each named spec. A rule with a `control` passes only where that
+ * other spec's scenario on the same channel passes too, whether or not that spec was named.
+ */
+export function runChecks({ root, names, specs = SPECS }) {
+  const decided = new Map()
+  const rowsOf = (name) => {
+    if (!decided.has(name)) decided.set(name, checkSpec(root, name, specs[name]))
+    return decided.get(name)
   }
-  return rows
+  return names.flatMap((name) =>
+    rowsOf(name).map((row, index) => {
+      const { control } = specs[name].expect[index].rule
+      if (!control || row.status !== 'PASS') return row
+      const other = rowsOf(control.spec).find(
+        (candidate) => candidate.channel === row.channel && candidate.scenario === control.scenario,
+      )
+      if (other?.status === 'PASS') return row
+      return {
+        ...row,
+        ...fail(
+          `${row.evidence}, but ${control.spec} did not pass ${control.scenario} ` +
+            `(${other?.evidence ?? 'no such expectation'}): the failure is not shown to come from the damage`,
+        ),
+      }
+    }),
+  )
 }
 
 /** The receipts of the rows: per spec, channel, verdict and deciding run */

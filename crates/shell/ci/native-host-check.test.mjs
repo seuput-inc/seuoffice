@@ -254,9 +254,16 @@ describe('the specs against the contracts', () => {
 
   it('gives every rule the step it reads', () => {
     for (const [name, spec] of Object.entries(SPECS)) {
-      for (const { rule } of spec.expect) {
+      for (const { channel, rule } of spec.expect) {
         const run = spec.runs[rule.run - 1]
         expect(run, `${name}: run ${rule.run}`).toBeDefined()
+        if (rule.control) {
+          const controls = SPECS[rule.control.spec]?.expect ?? []
+          const named = controls.filter(
+            (other) => other.channel === channel && other.scenario === rule.control.scenario,
+          )
+          expect(named, `${name}: ${JSON.stringify(rule.control)}`).toHaveLength(1)
+        }
         const has = (matches) =>
           expect(run.steps.some(matches), `${name}: ${JSON.stringify(rule)}`).toBe(true)
         if (rule.probe) has((step) => step.op === 'invoke' && step.as === rule.probe)
@@ -500,6 +507,28 @@ describe('the rules', () => {
       if (number === 2) exit.damaged = []
     })
     expect(check('docs-damaged')[0].evidence).toContain('nothing to damage')
+  })
+
+  it('count a failed restore as the damage only where the intact restore passes', () => {
+    const channel = 'docs:recovery-initialized'
+    const verdict = () => rowOf(check('docs-damaged'), channel, 'failed-apply')
+    // the damaged restore alone: nothing shows that an intact one works
+    simulate('docs-damaged')
+    expect(verdict()).toMatchObject({
+      status: 'FAIL',
+      evidence: expect.stringContaining('docs-recovery did not pass successful-ack'),
+    })
+    simulate('docs-recovery')
+    expect(verdict().status).toBe('PASS')
+    // run 44464831843, Windows: Docs opened nothing, so its page reported a failure either way
+    simulate('docs-recovery', undefined, (number, lines) => {
+      if (number !== 2) return
+      const own = lines.find((line) => line.event === 'call' && line.channel === channel)
+      own.args[1].value = false
+    })
+    expect(verdict().evidence).toContain('the failure is not shown to come from the damage')
+    // the control decides nothing about its own spec, and is not listed with the other's rows
+    expect(check('docs-damaged')).toHaveLength(1)
   })
 
   it('say when a run never started and when a spec was not run', () => {
