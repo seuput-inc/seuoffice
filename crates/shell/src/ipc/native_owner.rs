@@ -306,13 +306,9 @@ pub(crate) fn succeeding_owner(
     views: &crate::views::ViewTable,
     lost: &NativeRequestOwner,
 ) -> Option<NativeRequestOwner> {
-    let origin = &lost.context.authority_ref::<NativeOwnerAuthority>()?.origin;
-    let current = capture_owner(views, lost.view, lost.context.renderer()?).ok()?;
-    let same_document = current
-        .context
-        .authority_ref::<NativeOwnerAuthority>()
-        .is_some_and(|authority| &authority.origin == origin);
-    same_document.then_some(current)
+    // red check: the behavior before the fix, where a lost owner is never re-captured
+    let _ = (views, lost);
+    None
 }
 
 /// Admit `owner` once more as the owner a recovery opening delivers, and let `swap` put it in
