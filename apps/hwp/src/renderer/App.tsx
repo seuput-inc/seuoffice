@@ -43,7 +43,12 @@ import {
 import { openedUnverifiedKey, runSave, saveFailureKey, type SaveEditorPort } from './save-flow'
 import { AUTOSAVE_IDLE_MS, startAutosave } from './autosave-flow'
 import { PASSWORD_FLAG } from '../../scripts/rhwp-patches.mjs'
-import { STUDIO_SETTINGS_KEY, seededStudioSettings, studioUrl } from './studio-settings'
+import {
+  STUDIO_HANDSHAKE_MS,
+  STUDIO_SETTINGS_KEY,
+  seededStudioSettings,
+  studioUrl,
+} from './studio-settings'
 import { hideStudioRulers } from './studio-view-only'
 import { hwpFormatOfPath } from '../shared/ipc'
 import type {
@@ -262,7 +267,10 @@ export default function App() {
           STUDIO_SETTINGS_KEY,
           seededStudioSettings(localStorage.getItem(STUDIO_SETTINGS_KEY), theme),
         )
-        editor = await createEditor(hostRef.current!, { studioUrl: studioUrl(lang) })
+        editor = await createEditor(hostRef.current!, {
+          studioUrl: studioUrl(lang),
+          handshakeTimeoutMs: STUDIO_HANDSHAKE_MS,
+        })
         if (disposed) {
           editor.destroy()
           return
