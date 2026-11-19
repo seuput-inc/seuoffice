@@ -247,6 +247,7 @@ export {
   type WebThumbnailRequest,
   type WebThumbnailSource,
 } from './web-host-mode'
+export { fontFamilyKey, pageCss, paintHtml } from './html-picture'
 export { appDialogs, setAppDialogs, type AppDialogs } from './app-dialogs'
 export {
   SPLIT_PANE_BRIDGE_KEY,
