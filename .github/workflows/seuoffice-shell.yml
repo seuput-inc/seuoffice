@@ -841,18 +841,25 @@ jobs:
 
       # Windows composes Hangul through the Korean IME of the language pack; the hosted image has
       # English only. A failure here is not fatal: the ime scenarios then fail with their own evidence.
+      # The log says what the image had before the install and how long the install took (S116:
+      # 33 minutes), which is what a cheaper setup has to be judged against.
       - name: Korean IME (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'e2e-ime-install.txt'
+          $tip = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A028AE76-01B1-46C2-99C4-ACD9858AE02F}'
+          $files = Join-Path $env:windir 'System32\IME\IMEKR'
+          "before the install: Korean IME registered: $(Test-Path $tip), IME files: $(Test-Path $files)" >> $log
+          $watch = [Diagnostics.Stopwatch]::StartNew()
           try {
             Install-Language -Language ko-KR -ErrorAction Stop *>> $log
           } catch {
             "Install-Language failed: $_" | Tee-Object -FilePath $log -Append
-            Add-WindowsCapability -Online -Name 'Language.Basic~~~ko-KR~~~0.0.1.0' *>> $log
+            Add-WindowsCapability -Online -Name 'Language.Basic~~~ko-KR~0.0.1.0' *>> $log
           }
+          "the install took $([int]$watch.Elapsed.TotalSeconds) s" >> $log
           $list = New-WinUserLanguageList en-US
           $list.Add('ko-KR')
           Set-WinUserLanguageList $list -Force

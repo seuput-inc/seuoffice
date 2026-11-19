@@ -346,14 +346,66 @@ fn layout_language(layout: HKL) -> usize {
     layout.0 as usize & 0xffff
 }
 
-/// Asks the window's thread to switch to `layout` and waits until it did. The request is posted
-/// again every second: a window that was busy with its first paint after a new tab may drop it.
-fn request_layout(hwnd: HWND, thread: u32, layout: HKL) -> Result<(), String> {
+/// The window that has the keyboard focus in the app window's input queue, and its thread.
+/// Keys go to that thread, and its keyboard layout is the one the IME there works with. The
+/// app window and its own thread are the answer only when the queue has no focus window.
+fn focus_owner(hwnd: HWND) -> (HWND, u32) {
+    // SAFETY: reads the thread of a window and that thread's GUI state into a local structure.
+    unsafe {
+        let thread = GetWindowThreadProcessId(hwnd, None);
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(thread, &mut info).is_err() || info.hwndFocus.0.is_null() {
+            return (hwnd, thread);
+        }
+        (
+            info.hwndFocus,
+            GetWindowThreadProcessId(info.hwndFocus, None),
+        )
+    }
+}
+
+/// Who has the keyboard focus and which layouts are active, for the record of an `ime` step
+/// and for the error of a layout that did not switch: the focus window, its class, thread and
+/// process next to this process, and the layouts of that thread and of the app window's own.
+fn focus_holder(hwnd: HWND) -> String {
+    let own = std::process::id();
+    let (focus, thread) = focus_owner(hwnd);
+    // SAFETY: the calls read system state; `process` and `class` outlive them.
+    unsafe {
+        let mut process = 0u32;
+        let _ = GetWindowThreadProcessId(focus, Some(&mut process));
+        let mut class = [0u16; 256];
+        let length = usize::try_from(GetClassNameW(focus, &mut class)).unwrap_or(0);
+        let class = String::from_utf16_lossy(&class[..length.min(class.len())]);
+        let app_thread = GetWindowThreadProcessId(hwnd, None);
+        format!(
+            "the focus is in window {:#x} of class '{class}', thread {thread} of process \
+             {process} with layout {:08x} (this is process {own}; the app window {:#x} is of \
+             thread {app_thread} with layout {:08x})",
+            focus.0 as usize,
+            GetKeyboardLayout(thread).0 as usize,
+            hwnd.0 as usize,
+            GetKeyboardLayout(app_thread).0 as usize
+        )
+    }
+}
+
+/// Asks the window that has the keyboard focus to switch to `layout` and waits until its
+/// thread did. Windows posts this request to the focus window, and the keys go to that
+/// window's thread, so that is the window asked and the thread judged. The app window's own
+/// thread is no measure: in the S121 run it stayed at 04090409 on a docs page through five
+/// requests, where a sheets page of the same run composed Hangul. The request is posted again
+/// every second: a window that was busy with its first paint after a new tab may drop it.
+fn request_layout(hwnd: HWND, layout: HKL) -> Result<(), String> {
     let deadline = Instant::now() + LAYOUT_TIMEOUT;
     let mut asked = Instant::now()
         .checked_sub(Duration::from_secs(1))
         .unwrap_or_else(Instant::now);
     loop {
+        let (focus, thread) = focus_owner(hwnd);
         // SAFETY: reads the keyboard layout of a thread id.
         let current = unsafe { GetKeyboardLayout(thread) };
         if layout_language(current) == layout_language(layout) {
@@ -361,18 +413,19 @@ fn request_layout(hwnd: HWND, thread: u32, layout: HKL) -> Result<(), String> {
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "the window's thread did not switch the keyboard layout (it stayed at {:08x}, \
-                 wanted {:08x})",
-                current.0 as usize, layout.0 as usize
+                "the thread with the keyboard focus did not switch the keyboard layout to \
+                 {:08x}: {}",
+                layout.0 as usize,
+                focus_holder(hwnd)
             ));
         }
         if asked.elapsed() >= Duration::from_secs(1) {
             asked = Instant::now();
-            // SAFETY: posts the documented input language change request to a window of this
-            // process.
+            // SAFETY: posts the documented input language change request to the window that
+            // has the keyboard focus.
             unsafe {
                 PostMessageW(
-                    Some(hwnd),
+                    Some(focus),
                     WM_INPUTLANGCHANGEREQUEST,
                     WPARAM(0),
                     LPARAM(layout.0 as isize),
@@ -430,11 +483,9 @@ pub(super) fn ime_ko_2set(
 ) -> Result<Value, String> {
     let hwnd = hwnd_of(window)?;
     foreground(hwnd)?;
-    // SAFETY: reads the thread id and keyboard layout of this process's window.
-    let (thread, previous) = unsafe {
-        let thread = GetWindowThreadProcessId(hwnd, None);
-        (thread, GetKeyboardLayout(thread))
-    };
+    let (_, thread) = focus_owner(hwnd);
+    // SAFETY: reads the keyboard layout of a thread id.
+    let previous = unsafe { GetKeyboardLayout(thread) };
     // SAFETY: loads the Korean keyboard layout into this process without activating it here.
     let korean =
         unsafe { LoadKeyboardLayoutW(w!("00000412"), KLF_NOTELLSHELL) }.map_err(|error| {
@@ -443,7 +494,8 @@ pub(super) fn ime_ko_2set(
     if layout_language(korean) != KOREAN_LANGID {
         return Err("Windows did not load the Korean keyboard layout".into());
     }
-    request_layout(hwnd, thread, korean)?;
+    request_layout(hwnd, korean)?;
+    let focus_switched = focus_holder(hwnd);
     sleep(IME_SETTLE);
     // a freshly activated Korean IME may start in alphanumeric mode: toggle unless Hangul mode
     // is confirmed
@@ -483,7 +535,8 @@ pub(super) fn ime_ko_2set(
     // leaving Hangul mode commits the composition
     let committed = toggle_hangul();
     sleep(SETTLE);
-    let restored = request_layout(hwnd, thread, previous);
+    let focus_typed = focus_holder(hwnd);
+    let restored = request_layout(hwnd, previous);
     typed?;
     committed?;
     restored?;
@@ -492,6 +545,8 @@ pub(super) fn ime_ko_2set(
         "hangulModeBefore": started_in_hangul,
         "toggledAgain": corrected,
         "layout": format!("{:08x}", korean.0 as usize),
+        "focusSwitched": focus_switched,
+        "focusTyped": focus_typed,
     }))
 }
 

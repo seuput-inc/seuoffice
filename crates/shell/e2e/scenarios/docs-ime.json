@@ -15,7 +15,7 @@
     {
       "op": "query",
       "as": "prep-comp",
-      "js": "(() => { if (window.__comp) return true; window.__comp = []; for (const type of ['keydown', 'compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input']) document.addEventListener(type, (e) => window.__comp.push(type + ':' + (type === 'keydown' ? e.key + '/' + e.keyCode : (e.data === undefined || e.data === null ? '' : e.data) + '/' + (e.inputType || ''))), true); return true })()"
+      "js": "(() => { if (window.__comp) return true; window.__comp = []; for (const type of ['keydown', 'compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input', 'focusin', 'focusout']) document.addEventListener(type, (e) => window.__comp.push(type + ':' + (type === 'keydown' ? e.key + '/' + e.keyCode : (e.data === undefined || e.data === null ? '' : e.data)) + ':' + (e.target.tagName || '') + (e.target.className ? '.' + String(e.target.className).split(' ')[0] : '')), true); for (const type of ['focus', 'blur']) window.addEventListener(type, () => window.__comp.push('window:' + type)); return true })()"
     },
     {
       "op": "ime",

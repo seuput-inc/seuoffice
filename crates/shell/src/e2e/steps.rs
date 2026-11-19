@@ -601,7 +601,7 @@ impl Runner<'_> {
             }
             Step::Ime { keys, prime } => {
                 let target = self.target()?;
-                Self::focus_page(&target.webview)?;
+                let focus = Self::focus_page(&target.webview)?;
                 // `true` clears the page's key record; `false` says whether the last key the page
                 // saw was the IME's `Process` (a letter that came through is not composing)
                 let composing = |reset: bool| -> Option<bool> {
@@ -613,10 +613,17 @@ impl Runner<'_> {
                         Self::key_arrived(&target.webview, "<Process>").map(|(seen, _)| seen)
                     }
                 };
-                let value =
+                let mut value =
                     input::ime_ko_2set(&self.context.ui, &target.window, keys, *prime, &composing)
                         .map_err(unrunnable)?;
                 Self::flush_input(&target.webview);
+                if let Some(record) = value.as_object_mut() {
+                    record.insert("focusBefore".into(), json!(focus));
+                    record.insert(
+                        "focusAfter".into(),
+                        json!(Self::focus_state(&target.webview)),
+                    );
+                }
                 Ok(Some(value))
             }
             Step::Shortcut(shortcut) => {
