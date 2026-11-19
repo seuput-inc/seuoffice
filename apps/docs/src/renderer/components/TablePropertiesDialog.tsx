@@ -4,6 +4,7 @@ import type { Command } from '@tiptap/pm/state'
 import { isInTable, selectedRect } from '@tiptap/pm/tables'
 import type { TableAutoFitMode } from '@seuoffice/docx-engine'
 import { useI18n, type StringKey } from '../i18n/locale'
+import { canvasScaleOf } from '../editor/canvas-scale'
 import { setTableAutoFit, updateSelectedTableAttrs } from '../editor/table-properties'
 import { setSelectedColumnWidth } from '../editor/table-sizing'
 import {
@@ -117,7 +118,7 @@ export function applyTableValue(
         const tableDom = editor.view.nodeDOM(rect.tableStart - 1)
         if (tableDom instanceof HTMLElement) {
           const zoomEl = document.querySelector('.doc-zoom') as HTMLElement | null
-          const zoom = zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+          const zoom = canvasScaleOf(zoomEl, 1)
           measuredWidthPx = tableDom.getBoundingClientRect().width / zoom
         }
       } catch {

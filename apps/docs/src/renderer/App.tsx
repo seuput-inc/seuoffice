@@ -271,7 +271,6 @@ import {
   setOversizeClips,
   setPageGaps,
   stampGapFlowTops,
-  canvasZoomOf,
   rowFillsSig,
   setRowFills,
   syncAnchorBands,
@@ -293,6 +292,7 @@ import {
   PAGE_TURN_SEL,
   type PageFrame,
 } from './editor/pagination-gaps'
+import { canvasScaleOf, canvasScaleStyle, unscaleCanvas } from './editor/canvas-scale'
 import { syncWrapObstacles } from './editor/wrap-obstacles'
 import { newObstacleShadow, obstaclePlanDiffs } from './editor/obstacle-plan'
 import { MultipageGrid, snapshotCanvas, type CanvasSnapshot } from './components/MultipageGrid'
@@ -4487,17 +4487,15 @@ export function App() {
       dirtyFrom = Infinity
       try {
         const zoomEl = scroller.querySelector<HTMLElement>('.doc-zoom')
-        // the canvas zoom as applied, not this closure's: a pass reaching the
-        // DOM through a late async callback must never read a zoomed canvas at
-        // factor 1 (split-row fills then land in zoomed px and rows overlap)
-        const liveZoom = canvasZoomOf(zoomEl, zoom / 100)
-        const swapZoom = zoomEl !== null && Math.abs(liveZoom - 1) > 0.0001
+        // the canvas scale as applied, not this closure's: a pass reaching the
+        // DOM through a late async callback must never read a scaled canvas at
+        // factor 1 (split-row fills then land in scaled px and rows overlap)
+        const liveZoom = canvasScaleOf(zoomEl, zoom / 100)
+        const restoreScale =
+          zoomEl !== null && Math.abs(liveZoom - 1) > 0.0001 ? unscaleCanvas(zoomEl) : null
         const scrollTop = scroller.scrollTop
         const scrollLeft = scroller.scrollLeft
-        if (swapZoom) {
-          zoomEl.style.zoom = '1'
-          factor = 1
-        }
+        if (restoreScale) factor = 1
         let fast = false
         try {
           fast = Boolean(edited && edited.size > 0 && tryFastPass(edited))
@@ -4507,8 +4505,8 @@ export function App() {
             remeasurePass(dirty)
           }
         } finally {
-          if (swapZoom) {
-            zoomEl.style.zoom = String(liveZoom)
+          if (restoreScale) {
+            restoreScale()
             factor = liveZoom
             scroller.scrollTop = scrollTop
             scroller.scrollLeft = scrollLeft
@@ -8433,7 +8431,7 @@ export function App() {
       ? { ...rulerBase, marginLeft: rulerBase.marginRight, marginRight: rulerBase.marginLeft }
       : rulerBase
   const docZoomStyle = {
-    zoom: zoom / 100,
+    ...canvasScaleStyle(zoom / 100),
     '--page-w': canvasBox ? `${paperW}px` : undefined,
     '--page-h': canvasBox ? `${canvasBox.height}px` : undefined,
     '--section-content-w': canvasBox ? `${canvasBox.contentWidth}px` : undefined,

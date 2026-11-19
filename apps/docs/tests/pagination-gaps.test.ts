@@ -6,7 +6,6 @@ import {
   GAP_BAND,
   gapLedgerOf,
   alignGapHfStrips,
-  canvasZoomOf,
   alignTableGapFills,
   makeGapEl,
   pageFramesFromGaps,
@@ -1129,20 +1128,6 @@ describe('page-break-lead margin drop', () => {
       /\.page-break-lead:not\(\.measuring-natural \*\)\s*\{\s*margin-top: 0 !important;/,
     )
     expect(css).not.toMatch(/\n\.page-break-lead\s*\{/)
-  })
-})
-
-describe('canvasZoomOf', () => {
-  it('reads the zoom the host applies, not the caller fallback', () => {
-    expect(canvasZoomOf({ style: { zoom: '0.84' } }, 1)).toBe(0.84)
-    expect(canvasZoomOf({ style: { zoom: '1' } }, 0.84)).toBe(1)
-  })
-  it('an unset or unusable inline zoom is the unzoomed canvas', () => {
-    expect(canvasZoomOf({ style: { zoom: '' } }, 0.84)).toBe(1)
-    expect(canvasZoomOf({ style: { zoom: 'abc' } }, 0.84)).toBe(1)
-  })
-  it('without a host the fallback stands', () => {
-    expect(canvasZoomOf(null, 0.84)).toBe(0.84)
   })
 })
 

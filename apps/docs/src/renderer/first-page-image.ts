@@ -1,6 +1,6 @@
 import { fontFamilyKey, pageCss, paintHtml, type WebThumbnailRequest } from '@seuoffice/ui'
 import { THUMB_PAGE_CLASS, fillThumbPage, snapshotPages } from './components/NavPageThumbs'
-import { canvasZoomOf } from './editor/pagination-gaps'
+import { canvasScaleOf } from './editor/canvas-scale'
 import type { PageCut } from './pagination-cuts'
 
 /** What a box above the page may keep: it stands in the tree only so the page's rules still match */
@@ -86,9 +86,9 @@ export async function drawFirstPage(
   cuts: readonly PageCut[] | undefined,
   { width, maxHeight, signal }: WebThumbnailRequest,
 ): Promise<HTMLCanvasElement> {
-  // the zoom the canvas is laid out at now: a request waits for the document, and the zoom
+  // the scale the canvas is shown at now: a request waits for the document, and the zoom
   // the App had when it came may have been refitted since
-  const zoom = canvasZoomOf(pm.closest<HTMLElement>('.doc-zoom'), 1)
+  const zoom = canvasScaleOf(pm.closest<HTMLElement>('.doc-zoom'), 1)
   const snap = snapshotPages(pm, zoom, cuts)
   const first = snap?.pages[0]
   if (!snap || !first) throw new Error('the document has no page laid out')

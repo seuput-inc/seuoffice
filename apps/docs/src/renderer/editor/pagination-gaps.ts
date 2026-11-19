@@ -209,15 +209,6 @@ export function rowFillAttrs(
   return { style: `height:${h}px`, ...(extra > 0 ? { 'data-split-extra': extra.toFixed(1) } : {}) }
 }
 
-/** the canvas zoom as applied to the `.doc-zoom` host (its inline `zoom`), not
- *  the React state a closure captured: a pass that measures the DOM at factor 1
- *  while the host is still zoomed lands every split-row fill in zoomed px */
-export function canvasZoomOf(zoomEl: { style: { zoom: string } } | null, fallback: number): number {
-  if (!zoomEl) return fallback
-  const z = parseFloat(zoomEl.style.zoom || '1')
-  return Number.isFinite(z) && z > 0 ? z : 1
-}
-
 /** vertical border-spacing of the row's table (w:tblCellSpacing tables), else 0 */
 function rowGapPx(tr: Element): number {
   const table = tr.closest('table')

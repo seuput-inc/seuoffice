@@ -1,4 +1,5 @@
 import { ScriptFonts } from './script-fonts'
+import { canvasScaleOf } from './canvas-scale'
 import {
   asciiFamilyResolver,
   eaFamilyResolver,
@@ -6034,10 +6035,10 @@ function inlinePictureResizePlugin(): Plugin {
   })
 }
 
-/** CSS zoom of the page canvas around el: client px divided by it are CSS px */
+/** scale of the page canvas around el: client px divided by it are CSS px */
 function canvasZoomOf(el: Element): number {
   const zoomEl = el.closest('.doc-zoom') as HTMLElement | null
-  return zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+  return canvasScaleOf(zoomEl, 1)
 }
 
 /**
@@ -6386,7 +6387,7 @@ function imageResizePlugin(): Plugin {
             view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, boxPos)))
 
             const zoomEl = document.querySelector('.doc-zoom') as HTMLElement | null
-            const zoom = zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+            const zoom = canvasScaleOf(zoomEl, 1)
             const startRect = boxEl.getBoundingClientRect()
             const startW = isChart
               ? startRect.width / zoom
@@ -6479,7 +6480,7 @@ function imageResizePlugin(): Plugin {
 
           // CSS `zoom` scales client coordinates; divide it back out
           const zoomEl = document.querySelector('.doc-zoom') as HTMLElement | null
-          const zoom = zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+          const zoom = canvasScaleOf(zoomEl, 1)
           // Layout-box measurements: getBoundingClientRect would include the
           // rotation/flip transform, swapping width/height for 90°-rotated images
           const selectedNode = view.state.doc.nodeAt(pos)
@@ -7065,7 +7066,7 @@ function floatingObjectDragPlugin(): Plugin {
           if (isPictureBox && boxes.length > 1) return true
 
           const zoomEl = document.querySelector('.doc-zoom') as HTMLElement | null
-          const zoom = zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+          const zoom = canvasScaleOf(zoomEl, 1)
           const startX = event.clientX
           const startY = event.clientY
           // Start position of the picture in its offset space (px). When the

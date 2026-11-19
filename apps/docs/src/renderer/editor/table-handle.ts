@@ -3,6 +3,7 @@ import { NodeSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/s
 import type { EditorView } from '@tiptap/pm/view'
 import { TableMap } from '@tiptap/pm/tables'
 import { t } from '../i18n/locale'
+import { canvasScaleOf } from './canvas-scale'
 import { paintPreview, restorePreview, scaleTableGrid, startPreview } from './table-column-drag'
 import { setTableGridAtCell, tableGridAtCell } from './table-sizing'
 import { previewRowHeights, rowChromePx } from './table-row-drag'
@@ -242,7 +243,7 @@ function tableHandlePlugin(): Plugin {
         const visual = view.nodeDOM(dragPos)
         if (!(visual instanceof HTMLElement)) return
         const zoomEl = document.querySelector('.doc-zoom') as HTMLElement | null
-        const zoom = zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+        const zoom = canvasScaleOf(zoomEl, 1)
         const startX = event.clientX
         const startY = event.clientY
         const initialX = Number(node.attrs.tblFloatXTwips) || 0
