@@ -8,7 +8,6 @@ import {
   rememberAiPanelOpen,
   skillTemplateText,
   templateDocumentOf,
-  autoSaveOffered,
   useAutoSavePref,
   useSplitPaneFocusPing,
   webAiOff,
@@ -1160,20 +1159,15 @@ export default function App() {
             {t('checkTitle')}
           </button>
           <MemoToggle open={memoOpen} onToggle={() => setMemoOpen((open) => !open)} />
-          {autoSaveOffered() && (
-            <label
-              className={`autosave-toggle${autoSave ? ' on' : ''}`}
-              data-tip={t('autoSaveTip')}
-            >
-              <span className="autosave-knob" />
-              <span className="autosave-text">{t('autoSave')}</span>
-              <input
-                type="checkbox"
-                checked={autoSave}
-                onChange={(e) => setAutoSave(e.target.checked)}
-              />
-            </label>
-          )}
+          <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
+            <span className="autosave-knob" />
+            <span className="autosave-text">{t('autoSave')}</span>
+            <input
+              type="checkbox"
+              checked={autoSave}
+              onChange={(e) => setAutoSave(e.target.checked)}
+            />
+          </label>
         </div>
       )}
       <div className="app-main">
