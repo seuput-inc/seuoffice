@@ -569,7 +569,8 @@ const WORD_COUNT_THROTTLE_MS = 400
 /** consecutive follow-up passes a pass may schedule for itself */
 /** 30s recovery ticks skipped after a failed copy write (as the slides editor does) */
 const RECOVERY_BACKOFF_TICKS = 10
-import { runHeadlessDocumentExport } from './headless-export'
+import { runHeadlessDocumentExport, waitForDocumentSettled } from './headless-export'
+import { drawFirstPage } from './first-page-image'
 import { installMcpBridge } from './mcp-bridge'
 import { odtOffProps, refuseInOdt, useOdtSession } from './odt-gate'
 import { cleanOdtPaste } from './editor/odt-guard'
@@ -3210,6 +3211,13 @@ export function App() {
     ) => setRevisionDisplay(mode)
   }, [exportPdf, exportImages])
 
+  // A failed open falls back to an untitled blank document (filePath null): only a
+  // document that came from a file counts as open.
+  const documentReadiness = useCallback(() => {
+    const doc = fileCtxRef.current.doc
+    return { opened: typeof doc?.filePath === 'string', failed: doc?.filePath === null }
+  }, [])
+
   // Headless export mode (--headless-export): this renderer lives in a hidden
   // window whose only job is to run the File menu's PDF or HTML export against
   // a path the CLI chose, then report back so the main process can quit.
@@ -3224,13 +3232,8 @@ export function App() {
         target.format === 'html' ? exportHtml : target.format === 'md' ? exportMarkdown : exportPdf
       const report = await runHeadlessDocumentExport(
         target.outPath,
-        // A failed open falls back to an untitled blank document (filePath
-        // null); exporting that would hand the CLI a blank PDF and call it
-        // success, so only a document that came from disk counts as ready.
-        () => {
-          const doc = fileCtxRef.current.doc
-          return { opened: typeof doc?.filePath === 'string', failed: doc?.filePath === null }
-        },
+        // exporting the blank fallback would hand the CLI a blank PDF and call it success
+        documentReadiness,
         // nobody can be asked here: content hidden from AI is refused, and the
         // CLI gets the reason instead of "did not produce a file"
         async (outPath) => {
@@ -3247,7 +3250,16 @@ export function App() {
       )
       window.desktop.headlessExportDone(report)
     })()
-  }, [exportPdf, exportHtml, exportMarkdown])
+  }, [exportPdf, exportHtml, exportMarkdown, documentReadiness])
+
+  // Web embed: the host asks for a picture of the first page, perhaps before pagination settled
+  useEffect(() => {
+    if (!editor) return
+    return window.desktop.onThumbnailRequest?.(async (request) => {
+      await waitForDocumentSettled(documentReadiness, { signal: request.signal })
+      return drawFirstPage(editor.view.dom, cutsNow(), request)
+    })
+  }, [editor, cutsNow, documentReadiness])
 
   useEffect(() => {
     const pending = pendingMixedExportRef.current

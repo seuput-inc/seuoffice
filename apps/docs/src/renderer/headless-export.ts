@@ -38,18 +38,20 @@ const UNREADABLE = 'the input document did not open (corrupt, unsupported or pas
  * Resolves once a document is open and its pagination has produced the same
  * page cuts (start, end, lead, header/footer variant, window facts) twice in
  * a row, so headless exports the layout the editor would have shown. A page
- * count alone can repeat while the pass chain still moves a cut.
+ * count alone can repeat while the pass chain still moves a cut. Rejects as
+ * soon as `signal` aborts: whoever asked stopped waiting.
  */
 export async function waitForDocumentSettled(
   readiness: () => DocumentReadiness,
-  options: HeadlessWaitOptions = {},
+  options: HeadlessWaitOptions & { signal?: AbortSignal } = {},
 ): Promise<void> {
-  const { timeoutMs = 180_000, pollMs = 300 } = options
+  const { timeoutMs = 180_000, pollMs = 300, signal } = options
   const deadline = Date.now() + timeoutMs
   // A corrupt input is answered with a blank untitled document, not an error;
   // waiting out the full budget for it would only delay the same verdict.
   await pollUntilReady(
     () => {
+      signal?.throwIfAborted()
       if (readiness().failed) throw new Error(UNREADABLE)
       return readiness().opened
     },
@@ -66,6 +68,7 @@ export async function waitForDocumentSettled(
   let stable = 0
   let last = ''
   while (Date.now() <= deadline) {
+    signal?.throwIfAborted()
     const sig = pageCutSig()
     if (sig !== '') {
       stable = sig === last ? stable + 1 : 0
