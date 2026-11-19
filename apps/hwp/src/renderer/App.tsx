@@ -1161,7 +1161,10 @@ export default function App() {
           </button>
           <MemoToggle open={memoOpen} onToggle={() => setMemoOpen((open) => !open)} />
           {autoSaveOffered() && (
-            <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
+            <label
+              className={`autosave-toggle${autoSave ? ' on' : ''}`}
+              data-tip={t('autoSaveTip')}
+            >
               <span className="autosave-knob" />
               <span className="autosave-text">{t('autoSave')}</span>
               <input
