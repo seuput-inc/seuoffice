@@ -188,6 +188,11 @@ pub(super) enum Step {
         path: PathBuf,
         timeout_ms: u64,
     },
+    /// The active editor is asked for a Save As the shell owns; its save dialog takes `path`
+    SaveAsOwned {
+        path: PathBuf,
+        timeout_ms: u64,
+    },
     Screenshot {
         name: String,
     },
@@ -218,6 +223,7 @@ impl Step {
             Self::Query { .. } => "query",
             Self::Dialog { .. } => "dialog",
             Self::ExportPdf { .. } => "exportPdf",
+            Self::SaveAsOwned { .. } => "saveAsOwned",
             Self::Screenshot { .. } => "screenshot",
             Self::Click { .. } => "click",
             Self::Wait { .. } => "wait",
@@ -421,6 +427,10 @@ fn parse_step(raw: &Value, env: Env<'_>) -> Result<Step, String> {
             path: fields.absolute_path("path")?,
             timeout_ms: fields.millis("timeoutMs", DEFAULT_EXPORT_TIMEOUT_MS)?,
         },
+        "saveAsOwned" => Step::SaveAsOwned {
+            path: fields.absolute_path("path")?,
+            timeout_ms: fields.millis("timeoutMs", DEFAULT_EXPORT_TIMEOUT_MS)?,
+        },
         "screenshot" => Step::Screenshot {
             name: fields.name("name")?,
         },
@@ -473,6 +483,7 @@ mod tests {
                 {"op":"query","js":"1+1","as":"prep-sum"},
                 {"op":"dialog","answer":"dontSave"},
                 {"op":"exportPdf","path":"${WORK}/out.pdf"},
+                {"op":"saveAsOwned","path":"${WORK}/copy.pdf","timeoutMs":90000},
                 {"op":"screenshot","name":"shot1"},
                 {"op":"wait","ms":250}
               ]
@@ -494,6 +505,7 @@ mod tests {
                 "query",
                 "dialog",
                 "exportPdf",
+                "saveAsOwned",
                 "screenshot",
                 "wait"
             ]
@@ -515,6 +527,13 @@ mod tests {
         assert_eq!(scenario.steps[8].op(), "dialog");
         assert_eq!(scenario.steps[7].name(), Some("prep-sum"));
         assert_eq!(scenario.steps[0].name(), None);
+        assert_eq!(
+            scenario.steps[10],
+            Step::SaveAsOwned {
+                path: PathBuf::from(format!("{}/copy.pdf", work())),
+                timeout_ms: 90_000
+            }
+        );
     }
 
     #[test]

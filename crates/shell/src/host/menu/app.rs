@@ -3222,6 +3222,37 @@ pub(crate) fn e2e_export_pdf() -> Result<(), String> {
     Ok(())
 }
 
+/// The e2e runner's Save As the shell owns: the active editor is asked to save in Save As mode
+/// under its own captured owner (`request_save_owned`), the request a closing tab's Save and
+/// the Generate menu's source save send in Save mode. No menu item, key or page call asks a
+/// Word page for that mode (the menu's Save As is its own save, `menu:command`), so the runner
+/// asks here; what the editor does with the request is the product's. On the core thread;
+/// answers the view that was asked.
+pub(crate) fn e2e_save_as_owned(provided: &Provided) -> Result<ViewId, String> {
+    use shell_contract::runtime::Views as _;
+    let shell = SHELL.get().ok_or("the application menu is not installed")?;
+    let view = shell_tabs(provided)
+        .and_then(|tabs| tabs.active_editor(tabs.menu_kind()?))
+        .ok_or("there is no active editor")?;
+    let generation = shell
+        .views
+        .renderer_generation(view)
+        .ok_or("the editor's renderer is unavailable")?;
+    let owner = shell.effects.capture_owner(view, &generation)?;
+    let editor = editor_for(provided, view).ok_or("the active view has no editor host")?;
+    crate::trace::trace!("e2e", "owned Save As: asking view {}", view.0);
+    editor.request_save_owned(
+        view,
+        SaveMode::SaveAs,
+        owner,
+        shell_contract::runtime::CancelToken::default(),
+        Box::new(move |saved| {
+            crate::trace::trace!("e2e", "owned Save As of view {}: {saved:?}", view.0);
+        }),
+    );
+    Ok(view)
+}
+
 // ---- the ☰ popup ----
 
 /// `appMenuPopupTemplate(menus)`: the menus now set as the ☰ button lists them

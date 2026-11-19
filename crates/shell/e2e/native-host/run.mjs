@@ -47,6 +47,7 @@ const POLL_MS = 500
 const MARKER = '.seuoffice-e2e-profile'
 const SETTINGS = 'app-settings.json'
 const EPUB = 'epub.epub'
+const PAPERS = 'docs-papers.docx'
 const DAMAGE = Buffer.from('SEU-E2E damaged on purpose\n')
 
 /**
@@ -80,6 +81,28 @@ export function compileRun(run, runNumber) {
   const awaited = steps.length
   if (run.end === 'kill') steps.push({ op: 'wait', ms: HOLD_MS })
   return { scenario: { deadlineMs: DEADLINE_MS, steps }, awaited }
+}
+
+/**
+ * A Word document with a second section on another paper, made from one that has a single
+ * section: the Word page prints a document of more than one paper size group by group.
+ */
+export async function twoPaperDocx(source) {
+  const zip = await JSZip.loadAsync(source)
+  const part = 'word/document.xml'
+  const xml = await zip.file(part).async('string')
+  const start = xml.lastIndexOf('<w:sectPr')
+  const end = xml.indexOf('</w:sectPr>', start) + '</w:sectPr>'.length
+  const section = xml.slice(start, end)
+  const paper = /<w:pgSz [^>]*\/>/
+  if (start < 0 || !paper.test(section)) throw new Error('the Word fixture names no paper')
+  const other = section.replace(paper, '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>')
+  zip.file(
+    part,
+    `${xml.slice(0, start)}<w:p><w:pPr>${section}</w:pPr></w:p>` +
+      `<w:p><w:r><w:t>A page on another paper.</w:t></w:r></w:p>${other}${xml.slice(end)}`,
+  )
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
 }
 
 /** A one-chapter EPUB 3 book: the repo carries no small one. */
@@ -307,6 +330,11 @@ async function main(argv) {
   }
   if (!existsSync(fixtures)) await makeFixtures(resolve(fixtures))
   if (!existsSync(join(fixtures, EPUB))) writeFileSync(join(fixtures, EPUB), await minimalEpub())
+  if (!existsSync(join(fixtures, PAPERS)))
+    writeFileSync(
+      join(fixtures, PAPERS),
+      await twoPaperDocx(readFileSync(join(fixtures, 'docs.docx'))),
+    )
   mkdirSync(root, { recursive: true })
   for (const name of selected(option('--only'))) {
     await runSpec(name, SPECS[name], { bin, root, fixtures })

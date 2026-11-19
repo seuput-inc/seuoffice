@@ -431,6 +431,30 @@ const ownedPrint = () => {
   }
 }
 
+/**
+ * The PDF of a Save As the shell owns. The Word page prints a document of more than one paper
+ * size group by group itself (apps/docs file-actions.ts, printGroupsMerged), under the token of
+ * the save when the shell owns it. No menu, key or page call makes the shell ask a Word page
+ * for a Save As it owns (the menu's Save As is the page's own save), so the runner asks
+ * (`saveAsOwned`); the dialog of the page's Save As takes the PDF path, and the rest is the
+ * page's own save.
+ */
+function ownedPrintCopy() {
+  const channel = 'docs:owned-print-pdf-buffer'
+  return {
+    about: 'docs: a Save As the shell owns writes the PDF of a document on two papers',
+    runs: [
+      {
+        steps: [
+          ...openFile('docs-papers.docx'),
+          { op: 'saveAsOwned', path: '${WORK}/docs-owned.pdf', timeoutMs: 120000 },
+        ],
+      },
+    ],
+    expect: [{ channel, scenario: 'normal-completion', rule: { kind: 'printed', run: 1 } }],
+  }
+}
+
 /** A work file under its own name, unless the fixture already has that name. */
 const fixtureCopy = (file, fixture) => (file === fixture ? {} : { [file]: fixture })
 
@@ -610,6 +634,7 @@ export const SPECS = {
     second: 'docs-b.docx',
     extra: ownedPrint,
   }),
+  'docs-owned-print': ownedPrintCopy(),
   'slides-recovery': recoveryVariant('slides', {
     channel: 'slides:recovery-initialized',
     second: 'slides-b.pptx',
@@ -679,18 +704,6 @@ export function selected(only, names = Object.keys(SPECS)) {
   return every ? names : names.filter((name) => wanted.includes(name))
 }
 
-/**
- * The Word page prints page groups itself, under the token of a save the shell owns, only when
- * a Save As of such a save picks PDF for a document of more than one paper size or more than
- * ten pages (apps/docs file-actions.ts, printGroupsMerged). The shell asks a Word page for a
- * save it owns in Save mode alone (a closing tab, the source of Generate): that mode writes the
- * document itself, and turns into a Save As with the export formats only when the person
- * answers the box about content hidden from AI with Word. The menu's Save As is the page's own
- * save (`menu:command`, no token). The runner has no step that asks for a Save As the shell owns.
- */
-const OWNED_SAVE_AS =
-  'needs a Save As the shell owns that picks PDF: no menu, key or page call makes the shell ' +
-  'ask a Word page for one, and the runner has no step for it'
 const SAVED_INPUT = { 'failed-apply': 'no text makes the editor fail to apply a file' }
 
 /**
@@ -700,7 +713,6 @@ const SAVED_INPUT = { 'failed-apply': 'no text makes the editor fail to apply a 
  */
 export const UNDRIVEN = {
   'docs:owned-print-pdf-buffer': {
-    'normal-completion': OWNED_SAVE_AS,
     'owner-loss': 'needs the tab closed while the copy is being printed',
     'effect-failure': 'needs the print of the page itself to fail',
   },

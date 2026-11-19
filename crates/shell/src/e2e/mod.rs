@@ -32,6 +32,7 @@
 //! | `query` | `PageOps::evaluate` on the active editor's webview; no new IPC channel exists |
 //! | `dialog` | answers the next native dialog (`dialog.rs`) |
 //! | `exportPdf` | the active menu's Export as PDF item, with its save dialog answered |
+//! | `saveAsOwned` | the active editor is asked for a Save As the shell owns (`request_save_owned`), with its save dialog answered |
 //! | `screenshot` | the app window through `xcap`, else the page's own capture |
 
 pub(crate) mod dialog;

@@ -14,6 +14,7 @@ import {
   invokeQuery,
   minimalEpub,
   seedSettings,
+  twoPaperDocx,
 } from '../e2e/native-host/run.mjs'
 import {
   ACKS,
@@ -173,6 +174,14 @@ function simulate(name, spec = SPECS[name], tamper = () => {}) {
         firstFile ??= pending
         record.value = { view: active.view }
       }
+      if (spelled.op === 'saveAsOwned') {
+        // the page of the active tab prints each paper's pages under the token of the save
+        const printed = object({ ok: flag(true), base64: text(2400) })
+        const paper = [{ type: 'number' }, { type: 'number' }, { type: 'number' }, text()]
+        for (let group = 0; group < 2; group += 1)
+          ownCall(active, 'docs:owned-print-pdf-buffer', paper, { ok: true, value: printed })
+        record.value = { path: spelled.path, bytes: 4096, view: active.view }
+      }
       if (spelled.op === 'query') {
         record.as = spelled.as
         const probe = run.steps[step]?.op === 'invoke' ? run.steps[step] : undefined
@@ -300,6 +309,7 @@ describe('the specs against the contracts', () => {
         if (rule.probe) has((step) => step.op === 'invoke' && step.as === rule.probe)
         if (rule.list) has((step) => step.op === 'query' && step.as === LIST_PRESS)
         if (rule.asked) has((step) => step.op === 'query' && step.as === rule.asked)
+        if (rule.kind === 'printed') has((step) => step.op === 'saveAsOwned')
         if (rule.proof) {
           has((step) => step.op === 'query' && step.as === rule.proof.query)
           expect(rule.proof.marker, name).toMatch(/^SEU-E2E-/)
@@ -660,6 +670,41 @@ describe('the rules', () => {
     expect(verdict('duplicate-ack').evidence).toMatch(/^it was sent from Docs view \d+$/)
   })
 
+  it('fail a Save As the shell owns that left no PDF or printed nothing under its token', () => {
+    const name = 'docs-owned-print'
+    const print = 'docs:owned-print-pdf-buffer'
+    const verdict = () => rowOf(check(name), print, 'normal-completion')
+    simulate(name)
+    expect(verdict().evidence).toMatch(
+      /^Docs view \d+ printed 2 page groups under the token of its save; the PDF has 4096 bytes$/,
+    )
+
+    simulate(name, undefined, (_, _lines, records) => {
+      const saved = records.find((record) => record.op === 'saveAsOwned')
+      Object.assign(saved, { ok: false, value: undefined, error: 'no PDF appeared' })
+    })
+    expect(verdict()).toMatchObject({
+      status: 'FAIL',
+      evidence: 'the Save As the shell owns left no PDF: no PDF appeared',
+    })
+
+    // one paper only: the shell printed the whole document itself, the page asked for no group
+    simulate(name, undefined, (_, lines) => lines.splice(0))
+    expect(verdict().evidence).toMatch(/^view \d+ wrote the PDF without a print under the token/)
+
+    simulate(name, undefined, (_, lines) => {
+      const reply = lines.findLast((line) => line.event === 'reply')
+      reply.value = object({ ok: flag(false), error: text(20) })
+    })
+    expect(verdict().evidence).toContain('got no pages for a page group')
+
+    // a print without the token is the page's ordinary export, not this save's
+    simulate(name, undefined, (_, lines) => {
+      lines.find((line) => line.event === 'call').args.pop()
+    })
+    expect(verdict().status).toBe('FAIL')
+  })
+
   it('fail a replay that found no receipt or was accepted', () => {
     simulate('docs-recovery', undefined, (number, lines) => {
       if (number !== 2) return
@@ -865,6 +910,25 @@ describe('the helpers', () => {
     expect(JSON.parse(fs.readFileSync(path.join(root, 'app-settings.json'), 'utf8'))).toEqual({
       defaultSaveDir: path.join(root, 'work'),
     })
+  })
+
+  it('give a Word document a second section on another paper', async () => {
+    const source = fs.readFileSync(
+      new URL('../../../fixtures/generated/simple.docx', import.meta.url),
+    )
+    const zip = await JSZip.loadAsync(await twoPaperDocx(source))
+    const xml = await zip.file('word/document.xml').async('string')
+    const papers = [...xml.matchAll(/<w:pgSz w:w="(\d+)" w:h="(\d+)"/g)].map(([, w, h]) => [w, h])
+    expect(papers).toEqual([
+      ['11906', '16838'],
+      ['16838', '11906'],
+    ])
+    // the first paper ends in a paragraph of its own, the second closes the body
+    expect(xml).toMatch(/<w:p><w:pPr><w:sectPr>.*?<\/w:sectPr><\/w:pPr><\/w:p>/)
+    expect(xml.endsWith('</w:sectPr></w:body></w:document>')).toBe(true)
+    expect(Object.keys(zip.files).sort()).toEqual(
+      Object.keys((await JSZip.loadAsync(source)).files).sort(),
+    )
   })
 
   it('build an EPUB whose first entry is its uncompressed mimetype', async () => {

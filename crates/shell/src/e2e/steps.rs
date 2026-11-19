@@ -635,6 +635,9 @@ impl Runner<'_> {
             Step::ExportPdf { path, timeout_ms } => {
                 self.export_pdf(path, Duration::from_millis(*timeout_ms))
             }
+            Step::SaveAsOwned { path, timeout_ms } => {
+                self.save_as_owned(path, Duration::from_millis(*timeout_ms))
+            }
             Step::Screenshot { name } => self.screenshot(name),
             Step::Click {
                 selector,
@@ -902,6 +905,35 @@ impl Runner<'_> {
         Ok(Some(
             json!({ "path": path.display().to_string(), "bytes": bytes }),
         ))
+    }
+
+    /// The PDF of a Save As the shell owns: the editor's own Save As asks where, the dialog
+    /// takes `path`, and the step waits for that file, as `exportPdf` does. The value names the
+    /// view that was asked, so a checker can tell its calls from another tab's.
+    fn save_as_owned(&self, path: &Path, timeout: Duration) -> StepResult {
+        // a leftover file would pass for the copy
+        let _ = fs::remove_file(path);
+        let ticket = dialog::push(Answer::Path(path.to_path_buf()));
+        let asked = match on_core_within(CORE_STALL, crate::host::menu::e2e_save_as_owned) {
+            Ok(Some(asked)) => asked.map_err(failed),
+            Ok(None) => Err(failed("the shell's core is not up")),
+            Err(_) => Err(unrunnable(format!(
+                "the core thread did not answer within {CORE_STALL:?}"
+            ))),
+        };
+        let outcome = asked.and_then(|view| {
+            wait_for_pdf(path, timeout)
+                .map(|bytes| (view, bytes))
+                .map_err(failed)
+        });
+        // a save that never asked for a path must not leave its answer for a later dialog
+        dialog::discard(ticket);
+        let (view, bytes) = outcome?;
+        Ok(Some(json!({
+            "path": path.display().to_string(),
+            "bytes": bytes,
+            "view": view.0,
+        })))
     }
 
     fn screenshot(&self, name: &str) -> StepResult {

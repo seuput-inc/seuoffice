@@ -93,6 +93,12 @@ const isSeed = (reply) =>
   reply.value?.type === 'object' &&
   reply.value.fields?.token?.type === 'string' &&
   reply.value.fields?.path?.type === 'string'
+/** A print of the Word page under a save's token that was answered with the pages */
+const isPrinted = (call) =>
+  call.args?.[3]?.type === 'string' &&
+  call.reply?.ok === true &&
+  call.reply.value?.fields?.ok?.value === true &&
+  call.reply.value.fields.base64?.length > 0
 
 /** The record of the first step that matches, with its step */
 function stepRecord(run, matches) {
@@ -280,6 +286,30 @@ const RULES = {
     if (isSeed(call.reply)) return fail(`${where(call)} was handed the document a second time`)
     return pass(
       `${where(call)} got ${call.reply.ok ? call.reply.value?.type : clip(call.reply.error)}`,
+    )
+  },
+
+  /**
+   * A Save As the shell owns left its PDF where the dialog said, and the page that wrote it
+   * printed every page group under the token of that save.
+   */
+  printed(run, _rule, channel) {
+    const saved = stepRecord(run, (step) => step.op === 'saveAsOwned')
+    if (!saved?.ok)
+      return fail(`the Save As the shell owns left no PDF: ${saved?.error ?? 'no record'}`)
+    const { view, bytes } = saved.value
+    const parts = run.calls.filter((call) => own(call, channel) && call.view === view)
+    if (parts.length === 0)
+      return fail(`view ${view} wrote the PDF without a print under the token of its save`)
+    const lost = parts.find((call) => !isPrinted(call))
+    if (lost)
+      return fail(
+        `${where(lost)} got no pages for a page group: ` +
+          clip(lost.reply?.ok === false ? lost.reply.error : JSON.stringify(lost.reply ?? null)),
+      )
+    return pass(
+      `${where(parts[0])} printed ${parts.length} page groups under the token of its save; ` +
+        `the PDF has ${bytes} bytes`,
     )
   },
 }

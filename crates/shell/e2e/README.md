@@ -64,10 +64,13 @@ app. The same `gate=e2e` job produces it after the scenarios:
   (`src/ipc/native_record.rs`): who sent it, the shape of its arguments, the answer or refusal.
   A text is written as its length only, so no receipt or token is in the file.
 - `native-host/specs.mjs` is the table of specs: runs of the app and what each must show. The
-  editing steps are read from `scenarios/<kind>-edit.json`. Two things a spec has that a scenario
-  has not: an `invoke` step (the active page sends a call through its own document bridge;
-  `run.mjs` writes it as a `query`), and `end: 'kill'` (`run.mjs` kills the app from outside once
-  the last step is on record, so the next run of the spec meets what a crash leaves).
+  editing steps are read from `scenarios/<kind>-edit.json`. Three things a spec has that a
+  scenario has not: an `invoke` step (the active page sends a call through its own document
+  bridge; `run.mjs` writes it as a `query`), `end: 'kill'` (`run.mjs` kills the app from outside
+  once the last step is on record, so the next run of the spec meets what a crash leaves), and
+  `settings` (fields of the profile's `app-settings.json`, written before the first run, as a
+  person would have set them in Settings; `${WORK}` in a value is the work folder, absolute and
+  as the OS spells it).
 - `native-host/run.mjs` runs each spec into `<root>/native-host/<name>/run-<n>/`, on one throwaway
   profile per spec. `../ci/native-host-check.mjs` reads those folders and writes
   `<root>/native-host/receipts.json`, the receipts of this OS and commit; they are uploaded with the
@@ -76,6 +79,22 @@ app. The same `gate=e2e` job produces it after the scenarios:
 The workflow's `scenarios` input picks specs too: by name, or `native-host` for all of them. A
 required scenario no spec drives is listed with its reason in `UNDRIVEN` of `specs.mjs`; the checker
 test fails when the specs and that list stop matching the contracts.
+
+Three specs drive a save the shell owns, where no person's step starts one:
+
+- `markdown-saved-copy` and `html-saved-copy`: the Word page asks for a new Markdown or HTML
+  document, as its AI's `create_document` tool does (`window.desktop.createDocument`). The shell
+  writes the file as a save it owns and opens it from the bytes it kept; the page of the new tab
+  acknowledges that text (`<app>:saved-input-applied`), and the same receipt again, and from the
+  page of another file, is refused. The shell writes such a copy into the default save folder,
+  so these specs set it to the work folder (`settings: { defaultSaveDir: '${WORK}' }`).
+- `docs-owned-print`: the runner step `saveAsOwned` asks the active editor for a Save As the
+  shell owns (`request_save_owned`; no menu item, key or page call makes the shell ask a Word
+  page for one), and the dialog of the page's Save As takes a PDF path. The document has two
+  paper sizes (`docs-papers.docx`, which `run.mjs` makes from the `docs.docx` fixture), so the
+  Word page prints it group by group under the token of that save
+  (`docs:owned-print-pdf-buffer`). The step's value names the view that was asked; the checker
+  passes when that view printed every group with the token and the PDF is where the dialog said.
 
 The specs present another view's receipt and the same receipt twice through replay markers
 (`{"e2eReplay": ...}` in an `invoke` step's arguments, `src/ipc/native_record/replay.rs`). That
