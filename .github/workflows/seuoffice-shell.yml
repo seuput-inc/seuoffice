@@ -307,6 +307,12 @@ jobs:
           # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
           cargo test --locked --release real_sidecar -- --ignored
 
+      # the staged moves the app makes through crates/file-commit are Windows-only code that the
+      # repository's own tests run on Ubuntu, where these tests compile to nothing
+      - name: file-commit tests (Windows)
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --manifest-path ../Cargo.toml -p file-commit
+
       - name: upload shell-win
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -448,6 +454,12 @@ jobs:
           mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
           # vendored OpenSSL configures with perl; Git Bash's perl lacks the modules it needs
           if [ "$RUNNER_OS" = Windows ]; then export OPENSSL_SRC_PERL='C:\Strawberry\perl\bin\perl.exe'; fi
+          # crates/file-commit's Windows-only code (the staged moves) is tested on Windows here;
+          # check-local.sh below execs cargo, so this runs first
+          if [ "$RUNNER_OS" = Windows ]; then
+            # shellcheck disable=SC2086
+            cargo test --locked --manifest-path crates/Cargo.toml -p file-commit -- $TEST_ARGS
+          fi
           # with the replay markers of the e2e build, so their tests run here; the full gate's
           # release tests run without them, and with the test that a default build has none
           # shellcheck disable=SC2086 # the arguments are split as typed

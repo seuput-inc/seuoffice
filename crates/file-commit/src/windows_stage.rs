@@ -7,13 +7,14 @@ use std::{
     os::windows::io::{AsRawHandle, FromRawHandle},
     path::Path,
     ptr,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use windows_sys::Wdk::{
     Foundation::OBJECT_ATTRIBUTES,
     Storage::FileSystem::{
-        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+        FILE_ACCESS_INFORMATION, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
+        FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, FileAccessInformation,
+        NtCreateFile, NtQueryInformationFile,
     },
 };
 use windows_sys::Win32::{
@@ -24,8 +25,8 @@ use windows_sys::Win32::{
     Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
     Storage::FileSystem::{
         DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_DISPOSITION_INFO,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FileDispositionInfo,
-        SYNCHRONIZE, SetFileInformationByHandle,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+        FileDispositionInfo, SYNCHRONIZE, SetFileInformationByHandle,
     },
     System::IO::IO_STATUS_BLOCK,
 };
@@ -150,7 +151,9 @@ fn child(
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            access | SYNCHRONIZE,
+            // CreateFileW adds FILE_READ_ATTRIBUTES itself; here only what is asked for is
+            // granted, and comparing two handles by identity reads attributes through both
+            access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
             &attributes,
             &mut status_block,
             ptr::null(),
@@ -225,9 +228,61 @@ fn delete_handle(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// A second handle to the private directory, one that may delete it. The handle a transaction
+/// keeps holds no DELETE: up to Windows 11 and Windows Server 2022 a rename opens its
+/// destination directory without sharing delete ([MS-FSA] 2.1.5.15.12, note 185), so a held
+/// DELETE refuses every move of a stage into the directory with a sharing violation.
+fn open_for_removal(directory: &File) -> io::Result<File> {
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, ReOpenFile},
+    };
+    // SAFETY: the directory handle is live and ReOpenFile returns an owned handle.
+    let handle = unsafe {
+        ReOpenFile(
+            directory.as_raw_handle().cast(),
+            DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_FLAG_BACKUP_SEMANTICS,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_handle(handle.cast()) })
+}
+
+/// What a handle may do, for the line that explains a refused move. Reading it needs no
+/// right on the handle.
+fn granted_access(file: &File) -> String {
+    let mut info = FILE_ACCESS_INFORMATION::default();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: the handle is live and both structures outlive the call.
+    let status = unsafe {
+        NtQueryInformationFile(
+            file.as_raw_handle().cast(),
+            &mut status_block,
+            (&mut info as *mut FILE_ACCESS_INFORMATION).cast(),
+            std::mem::size_of::<FILE_ACCESS_INFORMATION>() as u32,
+            FileAccessInformation,
+        )
+    };
+    if status < 0 {
+        return format!("unknown (status {status:#010x})");
+    }
+    let has = |right: u32| info.AccessFlags & right != 0;
+    format!(
+        "{:#010x} (read attributes: {}, delete: {})",
+        info.AccessFlags,
+        has(FILE_READ_ATTRIBUTES),
+        has(DELETE)
+    )
+}
+
 struct DirectoryInner {
     parent: File,
     directory: File,
+    removed: Mutex<bool>,
 }
 #[derive(Clone)]
 pub struct PrivateDirectory(Arc<DirectoryInner>);
@@ -275,7 +330,7 @@ impl PrivateDirectory {
             match child(
                 parent,
                 &name,
-                GENERIC_READ | GENERIC_WRITE | FILE_TRAVERSE | DELETE,
+                GENERIC_READ | GENERIC_WRITE | FILE_TRAVERSE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 true,
                 true,
@@ -285,6 +340,7 @@ impl PrivateDirectory {
                     return Ok(Self(Arc::new(DirectoryInner {
                         parent: held_parent,
                         directory,
+                        removed: Mutex::new(false),
                     })));
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -395,8 +451,19 @@ impl PrivateDirectory {
         self.quarantine_public(&receipt.0.parent, name, file)
             .map_err(|(error, _)| error)
     }
+    /// Marks the directory for deletion, once; it goes when its last handle closes.
     pub fn remove(&self) -> io::Result<()> {
-        delete_handle(&self.0.directory)
+        let mut removed = self
+            .0
+            .removed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *removed {
+            return Ok(());
+        }
+        delete_handle(&open_for_removal(&self.0.directory)?)?;
+        *removed = true;
+        Ok(())
     }
 }
 impl RenameUnavailableStage {
@@ -517,6 +584,21 @@ impl PendingStage {
             Err(error) => Err((error, self, bytes)),
         }
     }
+    /// Says on stderr which step refused the move and what each handle may do. The OS's text
+    /// alone ("Access is denied") is the same for a right missing on the stage, on its lease
+    /// and on the private directory.
+    fn note_refusal(&self, step: &str, error: &io::Error, lease: Option<&File>) {
+        let granted = format!(
+            "stage {}, lease {}, private directory {}",
+            granted_access(&self.file),
+            lease.map_or_else(|| "none".to_owned(), granted_access),
+            granted_access(&self.directory.0.directory)
+        );
+        eprintln!(
+            "[file-commit] {}: {step} failed: {error}; access granted: {granted}",
+            self.public_name
+        );
+    }
     pub fn quarantine(self) -> Result<OwnedStage, (io::Error, Self)> {
         let name = match random_name("entry-") {
             Ok(name) => name,
@@ -525,7 +607,10 @@ impl PendingStage {
         let lease = if self.leased {
             match self.file.try_clone() {
                 Ok(lease) => lease,
-                Err(error) => return Err((error, self)),
+                Err(error) => {
+                    self.note_refusal("duplicating the stage handle", &error, None);
+                    return Err((error, self));
+                }
             }
         } else {
             match child(
@@ -538,7 +623,10 @@ impl PendingStage {
                 FILE_OPEN,
             ) {
                 Ok(lease) => lease,
-                Err(error) => return Err((error, self)),
+                Err(error) => {
+                    self.note_refusal("opening the source for its move", &error, None);
+                    return Err((error, self));
+                }
             }
         };
         match crate::same_handles(&lease, &self.file) {
@@ -552,10 +640,22 @@ impl PendingStage {
                     self,
                 ));
             }
-            Err(error) => return Err((error, self)),
+            Err(error) => {
+                self.note_refusal(
+                    "reading the identity of the stage and its lease",
+                    &error,
+                    Some(&lease),
+                );
+                return Err((error, self));
+            }
         }
         if let Err(error) = crate::rename_handle(&lease, &self.directory.0.directory, &name, false)
         {
+            self.note_refusal(
+                "renaming the stage into the private directory",
+                &error,
+                Some(&lease),
+            );
             return Err((error, self));
         }
         Ok(OwnedStage {

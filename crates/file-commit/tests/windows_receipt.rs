@@ -10,10 +10,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::INVALID_HANDLE_VALUE,
     Storage::FileSystem::{
-        CREATE_NEW, CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, OPEN_EXISTING,
-        SYNCHRONIZE,
+        CREATE_NEW, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ATTRIBUTE_NORMAL,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA, OPEN_EXISTING, SYNCHRONIZE,
     },
 };
 
@@ -184,6 +184,67 @@ fn private_stage_publication_returns_actual_written_snapshot() {
     assert_eq!(snapshot.bytes(), b"actual payload");
     assert_eq!(fs::read(&target).unwrap(), b"actual payload");
     assert!(snapshot.receipt().matches_path(&target).unwrap());
+    private.remove().unwrap();
+}
+
+#[test]
+fn staged_move_of_a_written_stage_publishes_a_new_file_and_leaves_nothing_behind() {
+    let sandbox = Sandbox::new();
+    let parent = parent(&sandbox.0);
+    let private = file_commit::PrivateDirectory::create(&parent).unwrap();
+    let pending = match private.create_stage_for("export.pdf", 0o666).unwrap() {
+        file_commit::CreatedStage::Movable(pending) => pending,
+        file_commit::CreatedStage::RenameUnavailable(stage) => {
+            panic!("DELETE unavailable: {}", stage.error())
+        }
+    };
+    let pending = match pending.write_owned(b"%PDF-staged".to_vec()) {
+        Ok(stage) => stage,
+        Err((error, _, _)) => panic!("{error}"),
+    };
+    let written = match pending.quarantine() {
+        Ok(stage) => stage,
+        Err((error, _)) => panic!("{error}"),
+    };
+    written.sync_all().unwrap();
+    let target = sandbox.0.join("export.pdf");
+    let mode = PublicationMode::Exclusive;
+    let plan = match written.prepare(&parent, "export.pdf", &target, mode) {
+        Ok(plan) => plan,
+        Err((error, _)) => panic!("{error}"),
+    };
+    let snapshot = match plan.publish() {
+        Ok(snapshot) => snapshot,
+        Err(failure) => panic!("{}", failure.0),
+    };
+    assert_eq!(fs::read(&target).unwrap(), b"%PDF-staged");
+    private.remove().unwrap();
+    private.remove().unwrap();
+    drop((snapshot, private));
+    let left: Vec<String> = fs::read_dir(&sandbox.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, ["export.pdf"]);
+}
+
+/// Up to Windows 11 and Windows Server 2022 a rename opens its destination directory to add
+/// a file while sharing only read and write ([MS-FSA] 2.1.5.15.12, note 185). Windows Server
+/// 2025 shares delete there too, so it cannot show a staging directory held with DELETE;
+/// this opens the directory the older way itself.
+#[test]
+fn staged_move_destination_takes_the_open_of_a_rename_before_windows_server_2025() {
+    let sandbox = Sandbox::new();
+    let parent = parent(&sandbox.0);
+    let private = file_commit::PrivateDirectory::create(&parent).unwrap();
+    let directory = fs::read_dir(&sandbox.0).unwrap().next().unwrap().unwrap();
+    drop(open(
+        &directory.path(),
+        FILE_ADD_FILE | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+    ));
     private.remove().unwrap();
 }
 
