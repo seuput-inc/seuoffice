@@ -6460,7 +6460,7 @@ export function App() {
     }
     const handler = (e: KeyboardEvent) => {
       const canEdit = !!editor?.isEditable && focusInEditor()
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+      if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === 's') {
         e.preventDefault()
         void save(e.shiftKey)
       }
