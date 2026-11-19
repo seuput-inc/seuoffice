@@ -1250,11 +1250,11 @@ fn render_pdf(
                                     } else {
                                         script
                                     };
-                                    RendererAnswer::Executed(
-                                        job.window()
-                                            .0
-                                            .execute_javascript(script, user_gesture, race_ms),
-                                    )
+                                    RendererAnswer::Executed(job.window().0.execute_javascript(
+                                        script,
+                                        user_gesture,
+                                        race_ms,
+                                    ))
                                 }
                                 RendererCall::PrintToPdf { options } => RendererAnswer::Pdf(
                                     job.window()

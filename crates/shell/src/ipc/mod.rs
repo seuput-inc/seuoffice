@@ -378,7 +378,10 @@ fn verified_reply(
                     && (state.transferred != transferred || !same_reply_owner(&state.owner, &owner))
             });
             if !changed {
-                trace!("refused", "the reply of '{channel}' was dropped: its owner is no longer valid");
+                trace!(
+                    "refused",
+                    "the reply of '{channel}' was dropped: its owner is no longer valid"
+                );
             }
             if !changed {
                 return;
