@@ -42,9 +42,19 @@ const disk = (scenario, file, title, contains, extra) => ({
   contains,
   ...extra,
 })
+/**
+ * An export writes the PDF and the app opens it in a tab of its own. The scenario waits for that
+ * tab after `exportPdf`, then reads the active page: `export-status` is its lines that speak of
+ * a failed export (the editor's own page says so when the tab never came), `export-tab` its
+ * address, which is the PDF viewer's when the tab is the active one.
+ */
 const exported = (scenario, file, title, contains) => [
   { scenario, kind: 'pdf', file, title: `${title}: a PDF of at least one page`, minPages: 1 },
   { scenario, kind: 'pdfText', file, title: `${title}: the PDF carries the text`, contains },
+  query(scenario, 'export-status', `${title}: no page reports a failed export`, { equals: '' }),
+  query(scenario, 'export-tab', `${title}: the PDF opens in a tab of its own`, {
+    contains: 'genoffice-app-pdf',
+  }),
 ]
 const screenshot = (scenario, name, title) => ({ scenario, kind: 'screenshot', name, title })
 const reopen = (scenario, as, contains, title = 'the editor shows the text after reopen') =>

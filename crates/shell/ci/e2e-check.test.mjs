@@ -102,19 +102,30 @@ const DOCS_STEPS = [
   { op: 'query', as: 'docs-after', js: '1' },
   { op: 'exportPdf', path: 'x' },
   { op: 'screenshot', name: 'docs-after' },
+  { op: 'waitReady', timeoutMs: 1 },
+  { op: 'query', as: 'export-status', js: '1' },
+  { op: 'query', as: 'export-tab', js: '1' },
+]
+/** The exported PDF's tab came up: no failed export on the page, and the page is the viewer's */
+const PDF_TAB = [
+  ok(6, 'waitReady'),
+  ok(7, 'query', { value: '' }),
+  ok(8, 'query', { value: 'genoffice-app-pdf://localhost/index.html' }),
+]
+const DOCS_RECORDS = [
+  ok(0, 'open'),
+  ok(1, 'type'),
+  ok(2, 'query', { value: 'Hello SEU-E2E-docs world' }),
+  ok(3, 'query', { value: 'SEU-E2E-docs' }),
+  ok(4, 'exportPdf'),
+  ok(5, 'screenshot'),
+  ...PDF_TAB,
 ]
 const docsChecks = CHECKS.filter((check) => check.scenario === 'docs-edit')
 const rowsOf = (rows) => Object.fromEntries(rows.map((row) => [row.id, row]))
 
 async function docsRun(overrides = {}) {
-  const records = overrides.records ?? [
-    ok(0, 'open'),
-    ok(1, 'type'),
-    ok(2, 'query', { value: 'Hello SEU-E2E-docs world' }),
-    ok(3, 'query', { value: 'SEU-E2E-docs' }),
-    ok(4, 'exportPdf'),
-    ok(5, 'screenshot'),
-  ]
+  const records = overrides.records ?? DOCS_RECORDS
   layout('docs-edit', {
     steps: DOCS_STEPS,
     records,
@@ -134,7 +145,9 @@ describe('a scenario that did everything', () => {
     const rows = await docsRun()
     expect(rows.map((row) => row.status)).toEqual(Array(rows.length).fill('PASS'))
     const byId = rowsOf(rows)
-    expect(byId['docs-edit/run'].evidence).toMatch(/6 steps ran/)
+    expect(byId['docs-edit/run'].evidence).toMatch(/9 steps ran/)
+    expect(byId['docs-edit/query:export-status'].evidence).toMatch(/= ""$/)
+    expect(byId['docs-edit/query:export-tab'].evidence).toMatch(/contains .*genoffice-app-pdf/)
     expect(byId['docs-edit/disk:docs.docx'].evidence).toMatch(
       /independent read found .*SEU-E2E-docs.*repo parser found it too/,
     )
@@ -169,6 +182,7 @@ describe('what makes a check FAIL', () => {
         ok(3, 'query', { value: 'SEU-E2E-docs' }),
         ok(4, 'exportPdf'),
         ok(5, 'screenshot'),
+        ...PDF_TAB,
       ],
     })
     const byId = rowsOf(rows)
@@ -184,7 +198,7 @@ describe('what makes a check FAIL', () => {
     const rows = await docsRun({ records: [ok(0, 'open'), ok(1, 'type')], exit: 3 })
     const byId = rowsOf(rows)
     expect(byId['docs-edit/run'].status).toBe('FAIL')
-    expect(byId['docs-edit/run'].evidence).toMatch(/missing steps 2\.\.5 \(2 of 6 records\)/)
+    expect(byId['docs-edit/run'].evidence).toMatch(/missing steps 2\.\.8 \(2 of 9 records\)/)
     expect(byId['docs-edit/run'].evidence).toMatch(/exit status 3 \(a step could not run\)/)
     expect(byId['docs-edit/query:docs-after'].status).toBe('FAIL')
     expect(byId['docs-edit/query:docs-after'].evidence).toMatch(/step 3 never ran/)
@@ -200,11 +214,46 @@ describe('what makes a check FAIL', () => {
         ok(3, 'query', { value: 'SEU-E2E-docs' }),
         ok(4, 'exportPdf'),
         ok(5, 'screenshot'),
+        ...PDF_TAB,
       ],
     })
     const byId = rowsOf(rows)
     expect(byId['docs-edit/run'].evidence).toMatch(/step 2 query failed: ReferenceError: nope/)
     expect(byId['docs-edit/query:docs-before'].evidence).toMatch(/failed: ReferenceError/)
+  })
+
+  it('an export whose page says it failed, or whose PDF never got its tab', async () => {
+    const status = 'docs-edit/query:export-status'
+    const tab = 'docs-edit/query:export-tab'
+    const said = '— PDF export failed: Error: The saved document view is not open'
+    const rows = await docsRun({
+      records: [
+        ...DOCS_RECORDS.slice(0, 6),
+        { step: 6, op: 'waitReady', ok: false, ms: 60000, error: 'the active tab was not ready' },
+        ok(7, 'query', { value: said }),
+        ok(8, 'query', { value: 'genoffice-app-docs://localhost/index.html?mode=tab' }),
+      ],
+    })
+    const byId = rowsOf(rows)
+    expect(byId['docs-edit/run'].evidence).toMatch(/step 6 waitReady failed/)
+    expect(byId[status].status).toBe('FAIL')
+    expect(byId[status].evidence).toContain('PDF export failed')
+    expect(byId[tab].status).toBe('FAIL')
+    expect(byId[tab].evidence).toMatch(/lacks "genoffice-app-pdf".*genoffice-app-docs/)
+    // the file itself was written, which is all the two PDF checks look at
+    expect(byId['docs-edit/pdf:docs-export.pdf'].status).toBe('PASS')
+
+    // the address WebView2 gives the same viewer
+    const windows = rowsOf(
+      await docsRun({
+        records: [
+          ...DOCS_RECORDS.slice(0, 8),
+          ok(8, 'query', { value: 'http://genoffice-app-pdf.localhost/index.html' }),
+        ],
+      }),
+    )
+    expect(windows[tab].status).toBe('PASS')
+    expect(windows[status].evidence).toMatch(/= ""$/)
   })
 
   it('an app that exited with the deadline status', async () => {
@@ -236,6 +285,7 @@ describe('what makes a check FAIL', () => {
         ok(3, 'query', { value: 'SEU-E2E-docs' }),
         ok(4, 'exportPdf'),
         ok(5, 'screenshot'),
+        ...PDF_TAB,
       ],
       files: { 'docs.docx': await docx('something else') },
     })

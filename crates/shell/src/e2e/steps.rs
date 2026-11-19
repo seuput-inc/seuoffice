@@ -674,6 +674,11 @@ impl Runner<'_> {
                 }
             }
             Step::ExportPdf { path, timeout_ms } => {
+                // The app opens the PDF it wrote in a tab of its own (`openGeneratedFile`): a
+                // `waitReady` after this step waits for that tab, and fails when none comes. A
+                // Slides page that said "PDF export failed" after writing the file passed for
+                // an export while nothing looked at the tab.
+                self.begin_switch(Some(path.components().collect()))?;
                 self.export_pdf(path, Duration::from_millis(*timeout_ms))
             }
             Step::SaveAsOwned { path, timeout_ms } => {

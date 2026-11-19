@@ -79,6 +79,20 @@
     {
       "op": "exportPdf",
       "path": "${WORK}/hwp-export.pdf"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "query",
+      "as": "export-status",
+      "js": "document.body.innerText.split('\\n').filter((line) => /export.*fail|fail.*export/i.test(line)).slice(0, 3).join(' | ')"
+    },
+    {
+      "op": "query",
+      "as": "export-tab",
+      "js": "location.href"
     }
   ]
 }
