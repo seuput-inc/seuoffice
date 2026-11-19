@@ -61,6 +61,8 @@ const HEADING_ROW_HEIGHT_PT = 14
 const HEADING_COLUMN_WIDTH_PT = 24
 /// Header/footer text size before scaleWithDoc applies.
 const HEADER_FOOTER_FONT_SIZE_PT = 9
+/// Side padding of a cell's text box.
+const CELL_PADDING_PT = 2
 
 /** UI-language CJK fallback for the print stack (mirrors the :lang() variables in styles.css) */
 function printCjkFonts(lang: Lang): string {
@@ -254,12 +256,11 @@ export function layoutSheetPrint(
   visuals: PrintVisualSnapshot = { visuals: [], css: '' },
   options: SheetPrintOptions = {},
 ): SheetPrintDocument {
-  const areas =
+  const explicitAreas =
     options.selection !== undefined && options.selection !== null
       ? [parseArea(options.selection)]
-      : setup.printAreas.length > 0
-        ? setup.printAreas.map(parseArea)
-        : [usedArea(worksheet, visuals.visuals)]
+      : setup.printAreas.map(parseArea)
+  const areas = explicitAreas.length > 0 ? explicitAreas : [usedArea(worksheet, visuals.visuals)]
   const titleRows = setup.printTitles ? parseTitleRows(setup.printTitles) : null
   const titleColumns = setup.printTitleColumns ? parseTitleColumns(setup.printTitleColumns) : null
   const headings = setup.printHeadings
@@ -340,8 +341,10 @@ export function layoutSheetPrint(
     const rows = area.endRow - area.startRow + 1
     const columns = area.endColumn - area.startColumn + 1
     const grid = worksheet.getRange(area.startRow, area.startColumn, rows, columns)
+    const printed = bodyColumns(area, plan)
     return {
       area,
+      columns: printed,
       display: grid.getDisplayValues(),
       raw: grid.getValues(),
       // Repeated titles print with their merges even when they sit outside
@@ -353,7 +356,7 @@ export function layoutSheetPrint(
         endColumn: Math.max(area.endColumn, titleColumns?.end ?? area.endColumn),
       }),
       rowOffset: offsets(bodyRows(area, plan), rowHeightPt),
-      columnOffset: offsets(bodyColumns(area, plan), columnWidthPt),
+      columnOffset: offsets(printed, columnWidthPt),
     }
   })
 
@@ -401,10 +404,24 @@ export function layoutSheetPrint(
     span: string,
     heightPt: number,
     near: Neighbours,
+    /// How far the cells on one side of this one stay empty (pt); null for
+    /// a cell whose text never leaves it.
+    room: ((step: 1 | -1) => number) | null,
   ): string => {
     const style = styleAt(row, column)
     const text = displayAt(data, row, column)
+    const raw = rawAt(data, row, column)
+    const horizontal = horizontalAlign(style, raw)
     const align = style?.vt === 1 ? 'flex-start' : style?.vt === 2 ? 'center' : 'flex-end'
+    // Excel keeps numbers, wrapped text and merged cells inside their cell.
+    const spill =
+      room !== null &&
+      text !== '' &&
+      style?.tb !== 3 &&
+      typeof raw !== 'number' &&
+      typeof raw !== 'boolean'
+        ? spillBoxCss(horizontal, columnWidthPt(column), room)
+        : ''
     const custom = (r: number | null, c: number | null, edge: 't' | 'b' | 'l' | 'r'): boolean =>
       r !== null && c !== null && borderEdge(styleAt(r, c), edge) !== undefined
     const edges = {
@@ -421,8 +438,8 @@ export function layoutSheetPrint(
       right: borderEdge(style, 'r') !== undefined || (gridlines && !custom(row, near.rightOf, 'l')),
     }
     return (
-      `<td${span} style="${cellCss(style, rawAt(data, row, column), gridlines, edges)}">` +
-      `<div class="c" style="height:${round(heightPt)}pt;align-items:${align}"><span>${escapeHtml(text)}</span></div></td>`
+      `<td${span} style="${cellCss(style, horizontal, gridlines, edges)}${spill ? ';overflow:visible' : ''}">` +
+      `<div class="c" style="height:${round(heightPt)}pt;align-items:${align}${spill}"><span>${escapeHtml(text)}</span></div></td>`
     )
   }
 
@@ -441,6 +458,34 @@ export function layoutSheetPrint(
     const allColumns = [...titleColumnList, ...pageColumns]
     const printedColumns = new Set(allColumns)
     const printedRows = [...titleRowList, ...pageRows]
+    // Past the last column of the used range every cell is empty, so text
+    // there gets the page width and the content box clips it. An explicit
+    // print area ends the text at its edge, and so does a page that
+    // continues on the next one.
+    const openRight =
+      explicitAreas.length === 0 &&
+      pageColumns[pageColumns.length - 1] === data.columns[data.columns.length - 1]
+    const room = (row: number, index: number, step: 1 | -1): number => {
+      let total = 0
+      for (let at = index + step; ; at += step) {
+        const from = allColumns[at - step]
+        const column = allColumns[at]
+        if (from === undefined || column === undefined)
+          return step === 1 && openRight ? total + plan.pageWidthPt : total
+        // repeated title columns print out of sheet order
+        if ((column - from) * step <= 0) return total
+        for (let between = from + step; between !== column; between += step)
+          if (columnWidthPt(between) > 0) return total
+        const key = `${row}:${column}`
+        if (
+          displayAt(data, row, column) !== '' ||
+          data.merges.anchors.has(key) ||
+          data.merges.covered.has(key)
+        )
+          return total
+        total += columnWidthPt(column)
+      }
+    }
 
     const colgroup =
       `<colgroup>${headings ? `<col style="width:${HEADING_COLUMN_WIDTH_PT}pt">` : ''}` +
@@ -471,7 +516,7 @@ export function layoutSheetPrint(
         if (coveredBy !== undefined) {
           const [anchorRow, anchorColumn] = coveredBy
           if (inSection.has(anchorRow) && printedColumns.has(anchorColumn)) return
-          cells.push(cell(data, row, column, '', heightPt, near))
+          cells.push(cell(data, row, column, '', heightPt, near, null))
           return
         }
         const anchor = data.merges.anchors.get(key)
@@ -491,11 +536,12 @@ export function layoutSheetPrint(
               ` rowspan="${spannedRows.length}" colspan="${spannedColumns.length}"`,
               spanned,
               { ...near, below: rowAfter(lastRow), rightOf: columnAfter(lastColumn) },
+              null,
             ),
           )
           return
         }
-        cells.push(cell(data, row, column, '', heightPt, near))
+        cells.push(cell(data, row, column, '', heightPt, near, (step) => room(row, index, step)))
       })
       return `<tr style="height:${round(heightPt)}pt">${cells.join('')}</tr>`
     }
@@ -631,7 +677,7 @@ body { font-family: Calibri, 'Helvetica Neue', Arial, ${printCjkFonts(lang)}, sa
 .hf img { vertical-align: bottom; }
 table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
 td, th { padding: 0; border: 0; overflow: hidden; font-size: 11pt; vertical-align: bottom; }
-td .c { display: flex; overflow: hidden; padding: 0 2pt; line-height: 1.2; }
+td .c { display: flex; overflow: hidden; padding: 0 ${CELL_PADDING_PT}pt; line-height: 1.2; }
 td .c > span { width: 100%; }
 th.hd { background: #f1f1f1; color: #444; font-size: 8.5pt; font-weight: 400;
   text-align: center; vertical-align: middle;
@@ -932,12 +978,45 @@ function cellDisplay(worksheet: PrintWorksheet, row: number, column: number): st
   return worksheet.getRange(row, column, 1, 1).getDisplayValues()[0]?.[0] ?? ''
 }
 
+type HorizontalAlign = 'left' | 'center' | 'right'
+
+function horizontalAlign(style: PrintCellStyle | null, rawValue: unknown): HorizontalAlign {
+  if (style?.ht === 1) return 'left'
+  if (style?.ht === 2) return 'center'
+  if (style?.ht === 3) return 'right'
+  if (typeof rawValue === 'number') return 'right'
+  return typeof rawValue === 'boolean' ? 'center' : 'left'
+}
+
+/// Excel runs unwrapped text over the empty cells beside it: to the right
+/// of left-aligned text, to the left of right-aligned text, both ways when
+/// centred. `room` is how far the cells on one side stay empty. Returns the
+/// CSS that widens the text box by that much, '' when the text stays in.
+function spillBoxCss(
+  align: HorizontalAlign,
+  widthPt: number,
+  room: (step: 1 | -1) => number,
+): string {
+  const left = align === 'left' ? 0 : room(-1)
+  const right = align === 'right' ? 0 : room(1)
+  if (left + right <= 0) return ''
+  let css = `;width:${round(widthPt + left + right)}pt`
+  if (left > 0) css += `;margin-left:-${round(left)}pt`
+  if (align === 'center') {
+    // the wider side takes the difference as padding, so the text stays
+    // centred on its own cell
+    if (left > right) css += `;padding-left:${round(CELL_PADDING_PT + left - right)}pt`
+    if (right > left) css += `;padding-right:${round(CELL_PADDING_PT + right - left)}pt`
+  }
+  return css
+}
+
 /// Borders paint as inset shadows (no layout share, unlike CSS borders, so
 /// the planned row heights hold); `edges` says which of the cell's four
 /// edges it owns.
 function cellCss(
   style: PrintCellStyle | null,
-  rawValue: unknown,
+  align: HorizontalAlign,
   gridlines: boolean,
   edges: { top: boolean; bottom: boolean; left: boolean; right: boolean },
 ): string {
@@ -961,18 +1040,6 @@ function cellCss(
     )
   if (style?.cl?.rgb) rules.push(`color:${cssColor(style.cl.rgb)}`)
   if (style?.bg?.rgb) rules.push(`background:${cssColor(style.bg.rgb)}`)
-  const align =
-    style?.ht === 1
-      ? 'left'
-      : style?.ht === 2
-        ? 'center'
-        : style?.ht === 3
-          ? 'right'
-          : typeof rawValue === 'number'
-            ? 'right'
-            : typeof rawValue === 'boolean'
-              ? 'center'
-              : 'left'
   rules.push(`text-align:${align}`)
   rules.push(style?.tb === 3 ? 'white-space:pre-wrap;word-break:break-word' : 'white-space:pre')
   const shadows: string[] = []
