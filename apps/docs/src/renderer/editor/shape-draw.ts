@@ -10,6 +10,7 @@ import type { Editor } from '@tiptap/core'
 import { shapeClipCss } from '@seuoffice/ui'
 import { LINE_KINDS } from '@seuoffice/docx-engine'
 import { isStraightLineKind, shapeBackgroundImage } from './shape-svg'
+import { canvasScaleOf } from './canvas-scale'
 
 const EMU_PER_PX = 9525
 /** Word's predefined single-click insert size: 1x1 inch. */
@@ -135,7 +136,7 @@ export function startShapeDrawMode(
   // Same zoom handling as the floating-object drag plugin
   const zoomOf = () => {
     const el = document.querySelector('.doc-zoom') as HTMLElement | null
-    return el ? parseFloat(getComputedStyle(el).zoom || '1') || 1 : 1
+    return canvasScaleOf(el, 1)
   }
 
   const isLine = prst in LINE_KINDS

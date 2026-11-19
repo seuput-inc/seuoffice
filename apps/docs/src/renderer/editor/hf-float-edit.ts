@@ -7,6 +7,7 @@
  */
 import type { HfPictureEdit } from '@seuoffice/docx-engine'
 import type { HfView } from '../doc-state'
+import { canvasScaleOf } from './canvas-scale'
 
 export interface HfFloatTarget {
   section: number
@@ -47,10 +48,10 @@ export function tagHfFloatEl(
   return el
 }
 
-/** CSS zoom of the page canvas around el: client px divided by it are CSS px */
+/** scale of the page canvas around el: client px divided by it are CSS px */
 function zoomOf(el: Element): number {
   const zoomEl = el.closest('.doc-zoom') as HTMLElement | null
-  return zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+  return canvasScaleOf(zoomEl, 1)
 }
 
 /** the box the element is laid out at (makeHfFloatImgEl) */

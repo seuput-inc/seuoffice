@@ -12463,7 +12463,9 @@ body.docs-crop-active
 
   .doc-zoom {
     zoom: 1 !important;
+    transform: none !important;
     width: auto !important;
+    margin: 0 !important;
   }
 
   .page-wrap {

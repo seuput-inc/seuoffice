@@ -11,6 +11,7 @@ import {
   mergeCells,
   selectedRect,
 } from '@tiptap/pm/tables'
+import { canvasScaleOf } from './canvas-scale'
 import { alignAttrFor, effectiveBidi } from './direction'
 import { showToast } from '../components/toast-bus'
 import { t } from '../i18n/locale'
@@ -435,7 +436,7 @@ function rowRange(rect: ReturnType<typeof selectedRect>): [number, number] {
 
 function zoomOf(view: EditorView): number {
   const zoomEl = view.dom.closest('.doc-zoom') as HTMLElement | null
-  return zoomEl ? parseFloat(getComputedStyle(zoomEl).zoom || '1') || 1 : 1
+  return canvasScaleOf(zoomEl, 1)
 }
 
 /** Distribute Rows Evenly: the selected rows (or all) take their measured average height */

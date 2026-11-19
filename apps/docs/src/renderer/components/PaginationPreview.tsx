@@ -77,6 +77,7 @@ import {
 } from '../editor/margin-annotations'
 import { pageBorderArtStripStyle, pageBorderStyleOf } from '../editor/pagination-gaps'
 import { textColorValue } from '../editor/text-color'
+import { unscaleCanvas } from '../editor/canvas-scale'
 import { textOutlineCssValue } from '../editor/text-outline'
 import { noteMarkText } from '../note-format'
 import { noteRowBox, noteRunClass } from '../editor/note-dom'
@@ -1078,11 +1079,10 @@ export function PaginationPreview({
     // Measure at zoom 1: CSS zoom rounds every box to device pixels, so dividing
     // zoomed rects by the factor drifts from the zoom-1 clones the pages render
     // (a long table accumulates rows of error — repeated headers overprint the
-    // first data row and page cuts land mid-row). Neutralizing the canvas zoom
+    // first data row and page cuts land mid-row). Neutralizing the canvas scale
     // for the snapshot makes measurement and clone layout share one geometry.
     const zoomHost = pm.closest<HTMLElement>('.doc-zoom')
-    const savedZoom = zoomHost?.style.zoom ?? ''
-    if (zoomHost) zoomHost.style.zoom = '1'
+    const restoreScale = zoomHost ? unscaleCanvas(zoomHost) : null
     const factor = 1
     // switch the columned canvas to the single-flow measuring state (uniform: CSS columns
     // off, width = column width; mixed: block translates off), matching engine column-flow
@@ -1520,7 +1520,7 @@ export function PaginationPreview({
       }
     } finally {
       if (measureNeutralize) pm.classList.remove('measuring-columns')
-      if (zoomHost) zoomHost.style.zoom = savedZoom
+      restoreScale?.()
     }
     // snapshot: measure once on open; deps intentionally empty
     // eslint-disable-next-line react-hooks/exhaustive-deps
