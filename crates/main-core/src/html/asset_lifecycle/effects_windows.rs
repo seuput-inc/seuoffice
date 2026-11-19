@@ -17,10 +17,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CALLBACK_STREAM_SWITCH, COPY_FILE_FAIL_IF_EXISTS, CopyFileExW,
     CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_RENAME_INFO,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_DATA,
-    FileDispositionInfo, FileRenameInfo, GetFileInformationByHandle, GetFinalPathNameByHandleW,
-    OPEN_EXISTING, PROGRESS_CANCEL, PROGRESS_CONTINUE, SYNCHRONIZE, SetFileInformationByHandle,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_DATA, FileDispositionInfo,
+    GetFileInformationByHandle, GetFinalPathNameByHandleW, OPEN_EXISTING, PROGRESS_CANCEL,
+    PROGRESS_CONTINUE, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -658,44 +658,8 @@ impl Directory {
         {
             return Err(node_error_named("EINVAL", "rename", &self.path));
         }
-        let name: Vec<u16> = name.encode_utf16().collect();
-        let bytes = name
-            .len()
-            .checked_mul(2)
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| node_error_named("ENAMETOOLONG", "rename", &self.path))?;
-        let offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-        let size = std::mem::size_of::<FILE_RENAME_INFO>()
-            .checked_add(bytes as usize)
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| node_error_named("ENAMETOOLONG", "rename", &self.path))?;
-        let mut memory = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
-        let info = memory.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-        // SAFETY: memory is aligned and covers the header plus UTF-16 name.
-        unsafe {
-            (*info).Anonymous.ReplaceIfExists = replace;
-            (*info).RootDirectory = self.file.as_raw_handle().cast();
-            (*info).FileNameLength = bytes;
-            ptr::copy_nonoverlapping(
-                name.as_ptr(),
-                memory.as_mut_ptr().cast::<u8>().add(offset).cast::<u16>(),
-                name.len(),
-            );
-            if SetFileInformationByHandle(
-                file.as_raw_handle().cast(),
-                FileRenameInfo,
-                info.cast(),
-                size,
-            ) == 0
-            {
-                return Err(node_error(
-                    &io::Error::last_os_error(),
-                    "rename",
-                    &self.path,
-                ));
-            }
-        }
-        Ok(())
+        file_commit::rename_handle(file, &self.file, name, replace)
+            .map_err(|error| node_error(&error, "rename", &self.path))
     }
 
     pub(super) fn remove(&self, name: &str, expected: Option<&Version>) -> R<()> {

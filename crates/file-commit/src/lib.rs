@@ -1550,12 +1550,16 @@ fn same_file(source: &File, path: &Path) -> io::Result<bool> {
         && a.nFileIndexLow == b.nFileIndexLow)
 }
 
+/// Renames the open file to `name` in the directory `parent`. `SetFileInformationByHandle`
+/// cannot do this: it rewrites the name as a path from the current directory and keeps the
+/// root handle, which the kernel refuses as an invalid parameter.
 #[cfg(windows)]
 pub fn rename_handle(leaf: &File, parent: &File, name: &str, replace: bool) -> io::Result<()> {
     use std::{os::windows::io::AsRawHandle, ptr};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle,
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
     };
+    use windows_sys::Win32::{Foundation::RtlNtStatusToDosError, System::IO::IO_STATUS_BLOCK};
     if name.is_empty()
         || name == "."
         || name == ".."
@@ -1572,14 +1576,17 @@ pub fn rename_handle(leaf: &File, parent: &File, name: &str, replace: bool) -> i
         .checked_mul(2)
         .and_then(|n| u32::try_from(n).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination name too long"))?;
-    let offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-    let size = std::mem::size_of::<FILE_RENAME_INFO>()
+    let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let size = std::mem::size_of::<FILE_RENAME_INFORMATION>()
         .checked_add(bytes as usize)
         .and_then(|n| u32::try_from(n).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination name too long"))?;
     let mut storage = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
-    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-    unsafe {
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: storage is aligned, zeroed and covers the header plus the name; both handles
+    // and the status block outlive the call.
+    let status = unsafe {
         (*info).Anonymous.ReplaceIfExists = replace;
         (*info).RootDirectory = parent.as_raw_handle().cast();
         (*info).FileNameLength = bytes;
@@ -1588,15 +1595,18 @@ pub fn rename_handle(leaf: &File, parent: &File, name: &str, replace: bool) -> i
             storage.as_mut_ptr().cast::<u8>().add(offset).cast::<u16>(),
             name.len(),
         );
-        if SetFileInformationByHandle(
+        NtSetInformationFile(
             leaf.as_raw_handle().cast(),
-            FileRenameInfo,
+            &mut status_block,
             info.cast(),
             size,
-        ) == 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+            FileRenameInformation,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(status) } as i32,
+        ));
     }
     Ok(())
 }

@@ -228,30 +228,6 @@ fn delete_handle(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// A second handle to the private directory, one that may delete it. The handle a transaction
-/// keeps holds no DELETE: up to Windows 11 and Windows Server 2022 a rename opens its
-/// destination directory without sharing delete ([MS-FSA] 2.1.5.15.12, note 185), so a held
-/// DELETE refuses every move of a stage into the directory with a sharing violation.
-fn open_for_removal(directory: &File) -> io::Result<File> {
-    use windows_sys::Win32::{
-        Foundation::INVALID_HANDLE_VALUE,
-        Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, ReOpenFile},
-    };
-    // SAFETY: the directory handle is live and ReOpenFile returns an owned handle.
-    let handle = unsafe {
-        ReOpenFile(
-            directory.as_raw_handle().cast(),
-            DELETE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_FLAG_BACKUP_SEMANTICS,
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_handle(handle.cast()) })
-}
-
 /// What a handle may do, for the line that explains a refused move. Reading it needs no
 /// right on the handle.
 fn granted_access(file: &File) -> String {
@@ -281,6 +257,7 @@ fn granted_access(file: &File) -> String {
 
 struct DirectoryInner {
     parent: File,
+    name: String,
     directory: File,
     removed: Mutex<bool>,
 }
@@ -339,6 +316,7 @@ impl PrivateDirectory {
                 Ok(directory) => {
                     return Ok(Self(Arc::new(DirectoryInner {
                         parent: held_parent,
+                        name,
                         directory,
                         removed: Mutex::new(false),
                     })));
@@ -451,6 +429,31 @@ impl PrivateDirectory {
         self.quarantine_public(&receipt.0.parent, name, file)
             .map_err(|(error, _)| error)
     }
+    /// A second handle to the directory, one that may delete it, opened by the name it was
+    /// created under (`ReOpenFile` opens files only: for a directory it answers "Access is
+    /// denied"). The handle a transaction keeps holds no DELETE: up to Windows 11 and Windows
+    /// Server 2022 a rename opens its destination directory without sharing delete ([MS-FSA]
+    /// 2.1.5.15.12, note 185), so a held DELETE refuses every move of a stage into the
+    /// directory with a sharing violation.
+    fn open_for_removal(&self) -> io::Result<File> {
+        let removal = child(
+            &self.0.parent,
+            &self.0.name,
+            DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            true,
+            false,
+            FILE_OPEN,
+        )?;
+        if crate::same_handles(&removal, &self.0.directory)? {
+            Ok(removal)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the private staging directory was replaced",
+            ))
+        }
+    }
     /// Marks the directory for deletion, once; it goes when its last handle closes.
     pub fn remove(&self) -> io::Result<()> {
         let mut removed = self
@@ -461,9 +464,27 @@ impl PrivateDirectory {
         if *removed {
             return Ok(());
         }
-        delete_handle(&open_for_removal(&self.0.directory)?)?;
-        *removed = true;
-        Ok(())
+        let marked = self
+            .open_for_removal()
+            .map_err(|error| ("opening the private directory for its removal", error))
+            .and_then(|removal| {
+                delete_handle(&removal)
+                    .map_err(|error| ("marking the private directory for deletion", error))
+            });
+        match marked {
+            Ok(()) => {
+                *removed = true;
+                Ok(())
+            }
+            Err((step, error)) => {
+                eprintln!(
+                    "[file-commit] {}: {step} failed: {error}; access granted: private directory {}",
+                    self.0.name,
+                    granted_access(&self.0.directory)
+                );
+                Err(error)
+            }
+        }
     }
 }
 impl RenameUnavailableStage {
