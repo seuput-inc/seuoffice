@@ -1906,7 +1906,10 @@ impl Docs {
             recovery.as_ref().map(|(_, scope)| scope.clone()),
             Box::new(move |prepared| match prepared {
                 None => {
-                    eprintln!("[docs] view {}: the open was not prepared (path refused)", view.0);
+                    eprintln!(
+                        "[docs] view {}: the open was not prepared (path refused)",
+                        view.0
+                    );
                     let result = recovery.map_or(IpcValue::Null, |(token, scope)| {
                         docs.recovery_response(
                             view,

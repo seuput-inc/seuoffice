@@ -478,7 +478,11 @@ impl App {
         };
         eprintln!(
             "[slides] the PDF is published: {}",
-            if published.is_some() { "yes" } else { "no (headless)" }
+            if published.is_some() {
+                "yes"
+            } else {
+                "no (headless)"
+            }
         );
         if self.shell.is_headless() {
             return responder.reply(Ok(obj([
