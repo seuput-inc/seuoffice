@@ -1614,7 +1614,8 @@ fn native_recovery_is_queued_only_under_the_browser_owner_the_host_committed() {
             .unwrap();
     };
     let leave = |_: &RecoveryOpenTarget| {};
-    let cases: [(u32, &dyn Fn(&RecoveryOpenTarget), bool); 3] = [
+    type OwnerStep<'a> = &'a dyn Fn(&RecoveryOpenTarget);
+    let cases: [(u32, OwnerStep, bool); 3] = [
         (206, &commit, true),
         (207, &leave, false),
         (208, &replace, false),
