@@ -36,9 +36,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_MENU, VK_RETURN, VK_SHIFT, VK_TAB, VkKeyScanW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GUITHREADINFO, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId,
-    IsIconic, PostMessageW, SW_RESTORE, SetCursorPos, SetForegroundWindow, ShowWindow,
-    WM_INPUTLANGCHANGEREQUEST,
+    GUITHREADINFO, GetClassNameW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, SW_RESTORE, SetCursorPos,
+    SetForegroundWindow, ShowWindow, WM_INPUTLANGCHANGEREQUEST,
 };
 use windows::core::w;
 
@@ -74,6 +74,37 @@ pub(super) fn window_id(_ui: &Arc<dyn Thread>, window: &Window) -> Result<u32, S
     Ok(hwnd_of(window)?.0 as usize as u32)
 }
 
+/// What holds the foreground when the app window is refused it: that window, its class and the
+/// process it belongs to, next to this process and whether the app window is visible. A
+/// refusal alone does not say whether another program took the desktop or the app's own
+/// window (a dialog, a second window) is in front.
+fn foreground_holder(hwnd: HWND) -> String {
+    let own = std::process::id();
+    // SAFETY: the calls read system state; `process` and `class` outlive them.
+    unsafe {
+        let visible = IsWindowVisible(hwnd).as_bool();
+        let holder = GetForegroundWindow();
+        if holder.is_invalid() {
+            return format!(
+                "no window is in the foreground (this is process {own}, the app window \
+                 {:#x} is visible: {visible})",
+                hwnd.0 as usize
+            );
+        }
+        let mut process = 0u32;
+        let _ = GetWindowThreadProcessId(holder, Some(&mut process));
+        let mut class = [0u16; 256];
+        let length = usize::try_from(GetClassNameW(holder, &mut class)).unwrap_or(0);
+        let class = String::from_utf16_lossy(&class[..length.min(class.len())]);
+        format!(
+            "the foreground window is {:#x} of class '{class}' in process {process} (this is \
+             process {own}, the app window {:#x} is visible: {visible})",
+            holder.0 as usize,
+            hwnd.0 as usize
+        )
+    }
+}
+
 /// Makes the window the foreground window, or says it could not
 fn foreground(hwnd: HWND) -> Result<(), String> {
     // SAFETY: both calls take a window handle of this process and change its state only.
@@ -100,7 +131,10 @@ fn foreground(hwnd: HWND) -> Result<(), String> {
             return Ok(());
         }
         if Instant::now() >= end {
-            return Err("Windows did not let the app window become the foreground window.".into());
+            return Err(format!(
+                "Windows did not let the app window become the foreground window: {}.",
+                foreground_holder(hwnd)
+            ));
         }
         sleep(wait);
         wait = (wait * 2).min(FOREGROUND_WAIT_MAX);
