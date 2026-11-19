@@ -1333,6 +1333,11 @@ impl Setup {
             browser_owner,
         )
         .unwrap();
+        // the host commits the browser's owner before it hands the target to the editor
+        target
+            .closure_reservation()
+            .with_initial_owner(target.browser_owner(), |_| Ok(()))
+            .unwrap();
         let done = Rc::new(RefCell::new(None));
         let completed = done.clone();
         views().unwrap().open_file_with_decision(
@@ -1537,6 +1542,11 @@ fn recovery_preparation_cancelled_before_worker_cannot_commit_seed() {
         browser_owner,
     )
     .unwrap();
+    // the host commits the browser's owner before it hands the target to the editor
+    target
+        .closure_reservation()
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
     let done = Rc::new(RefCell::new(None));
     let completed = done.clone();
     s.kit.hold_workers();

@@ -213,9 +213,11 @@ impl MindmapApp {
         let mut previous = None;
         let mut ticket = None;
         let admitted = effects.with_recovery_seed_snapshot(target, &authority, &mut || {
+            // the host committed the browser's owner when it made the view: the recovery
+            // is staged under that owner, not by a second first adoption
             target
                 .closure_reservation()
-                .with_initial_owner(target.browser_owner(), |_| {
+                .with_owner(target.browser_owner(), |_| {
                     let mut state = self.0.state.borrow_mut();
                     state.next_gen = state
                         .next_gen

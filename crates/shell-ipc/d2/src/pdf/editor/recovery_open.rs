@@ -844,9 +844,11 @@ fn begin(
     effects: &OwnedEffectsHost,
 ) -> Result<(), String> {
     seed(effects, target, snapshot, &mut || {
+        // the host committed the browser's owner when it made the view: the slot is made
+        // under that owner, not by a second first adoption
         target
             .closure_reservation()
-            .with_initial_owner(target.browser_owner(), |_| {
+            .with_owner(target.browser_owner(), |_| {
                 if ed.rec.borrow().has_view_state(view) {
                     return Err("PDF recovery target already has document state".into());
                 }

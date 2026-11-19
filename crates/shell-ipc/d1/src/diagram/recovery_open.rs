@@ -125,9 +125,11 @@ impl DiagramViews {
         let ticket = jscompat::random_uuid();
         let mut done = Some(done);
         let result = effects.with_recovery_seed_snapshot(target, &authority, &mut || {
+            // the host committed the browser's owner when it made the view: the recovery
+            // is staged under that owner, not by a second first adoption
             target
                 .closure_reservation()
-                .with_initial_owner(target.browser_owner(), |_| {
+                .with_owner(target.browser_owner(), |_| {
                     self.with_state(|state| {
                         let entry = state.view(view);
                         if entry.recovery_preparing.is_some()

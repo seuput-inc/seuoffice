@@ -85,9 +85,11 @@ impl EpubEditors {
                 _loss: Vec::new(),
             });
             let receipt = effects.commit_recovery_seed(target, &mut || {
+                // the host committed the browser's owner when it made the view: the
+                // document is queued under that owner, not by a second first adoption
                 target
                     .closure_reservation()
-                    .with_initial_owner(target.browser_owner(), |_| {
+                    .with_owner(target.browser_owner(), |_| {
                         let mut state = self.0.state.borrow_mut();
                         let entry = state.views.entry(view).or_insert_with(|| ViewState {
                             unopened: true,

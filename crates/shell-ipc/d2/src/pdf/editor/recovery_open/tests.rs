@@ -115,6 +115,11 @@ fn native_evidence_captured_recovery_completes_before_navigation_and_revocation_
             browser_owner,
         )
         .unwrap();
+        // the host commits the browser's owner before it hands the target to the editor
+        target
+            .closure_reservation()
+            .with_initial_owner(target.browser_owner(), |_| Ok(()))
+            .unwrap();
         let identity = file_identity("/missing.pdf");
         let copy =
             recovery_copy_path(&rt.dir.join("userData").to_string_lossy(), &identity).unwrap();
@@ -584,6 +589,11 @@ fn exact_closed_receipt_waits_for_preparation_and_removes_only_its_work_file() {
         browser_owner,
     )
     .unwrap();
+    // the host commits the browser's owner before it hands the target to the editor
+    target
+        .closure_reservation()
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
     let identity = file_identity("/missing-closed.pdf");
     let copy = recovery_copy_path(&rt.dir.join("userData").to_string_lossy(), &identity).unwrap();
     std::fs::create_dir_all(std::path::Path::new(&copy).parent().unwrap()).unwrap();

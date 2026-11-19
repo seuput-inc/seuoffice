@@ -23,11 +23,13 @@ import { readFileSync } from 'node:fs'
 /** The request ids of `invoke` steps start here, far above the bridge's own counter. */
 export const PROBE_BASE = 4_000_000_000
 /** The button of the launch recovery list (apps/shell RecoveryList.tsx); every row starts at Restore. */
-export const LIST_CONFIRM = '.recovery-confirm'
+const LIST_CONFIRM = '.recovery-confirm'
+/** The step that presses it, by its name: the checker reads that step's record. */
+export const LIST_PRESS = 'prep-list'
 /**
  * The Skip button of the first-run onboarding (apps/shell Onboarding.tsx). A new profile shows it
- * over Home, the launch recovery list included; a spec that comes back to Home dismisses it in
- * its first run, as a person does before anything else.
+ * over Home, the launch recovery list included; a spec that answers the list dismisses it in its
+ * first run, as a person does before anything else.
  */
 const ONBOARDING_SKIP = '.onb-skip'
 /** How long after an edit the app is killed: every editor writes its recovery copy each 30 s. */
@@ -77,8 +79,28 @@ const openFile = (file, timeoutMs = 60000) => [
   wait(1000),
 ]
 const replay = (of, ...path) => ({ e2eReplay: of, path })
+/**
+ * A press of a button of Home, made by the page: the element's own `click()`. Home has no editor
+ * page that holds the OS focus, and the runner's native click did not reach it there (run
+ * 44446306292: on macOS it only activated the window, on Windows the window was refused the
+ * foreground). The press is made only while the button is what lies at its own centre, so what
+ * covers it for a person covers it here; the step asks again until then and answers `false`
+ * when its time is up.
+ */
+const press = (as, selector, timeoutMs) => ({
+  op: 'query',
+  as,
+  timeoutMs,
+  js:
+    `(() => { const button = document.querySelector(${JSON.stringify(selector)}); ` +
+    'if (!button || button.disabled) return false; ' +
+    'const box = button.getBoundingClientRect(); ' +
+    'const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2); ' +
+    'if (top !== button && !button.contains(top)) return false; ' +
+    `button.click(); return { pressed: ${JSON.stringify(selector)} } })()`,
+})
 /** The first launch of a profile, before anything else: the onboarding is skipped. */
-const firstLaunch = [{ op: 'click', selector: ONBOARDING_SKIP, timeoutMs: 30000 }, wait(1000)]
+const firstLaunch = [press('prep-onboarding', ONBOARDING_SKIP, 30000), wait(1000)]
 
 /** A recorded flag (`{type: 'boolean', value}`), or undefined when the argument is something else. */
 const flag = (shape) => (shape?.type === 'boolean' ? shape.value : undefined)
@@ -183,7 +205,7 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
       },
       {
         steps: [
-          { op: 'click', selector: LIST_CONFIRM, timeoutMs: 60000 },
+          press(LIST_PRESS, LIST_CONFIRM, 60000),
           { op: 'waitReady', timeoutMs: ready },
           ...base.read,
           invoke(`${kind}-twice`, channel, form.with(replay('self', ...form.path))),
@@ -223,7 +245,7 @@ function damagedVariant(kind, channel) {
       { end: 'kill', steps: [...firstLaunch, ...base.open, ...base.edit, wait(COPY_WAIT_MS)] },
       {
         damage: 'copies',
-        steps: [{ op: 'click', selector: LIST_CONFIRM, timeoutMs: 60000 }, wait(20000)],
+        steps: [press(LIST_PRESS, LIST_CONFIRM, 60000), wait(20000)],
       },
     ],
     expect: [
@@ -237,75 +259,13 @@ function damagedVariant(kind, channel) {
 }
 
 /**
- * Docs' Save As to another format writes a copy under the authority of the save itself: the
- * menu's Save As is a save the shell owns. A Markdown or HTML copy is published and opened in
- * its own editor, whose page acknowledges the text it was handed (`<app>:saved-input-applied`).
+ * A Markdown or HTML page also acknowledges a text the shell handed it as the output of a save
+ * (`<app>:saved-input-applied`). An ordinary tab was handed none: without a receipt, or with one
+ * the shell never issued, it is refused.
  */
-function savedCopy(app, ext, other) {
-  const channel = `${app}:saved-input-applied`
-  const form = ACKS[channel]
-  const base = baseSteps('docs-edit')
-  const copy = `docs-copy.${ext}`
-  const probes = tokenProbes(`${app}-saved`, channel, RECEIPT)
-  return {
-    about: `docs: Save As a ${ext} copy, which opens in the ${app} editor`,
-    runs: [
-      {
-        steps: [
-          ...base.open,
-          ...base.edit,
-          { op: 'shortcut', name: 'saveAs' },
-          { op: 'dialog', answer: `path:\${WORK}/${copy}`, timeoutMs: 30000 },
-          wait(8000),
-          ...openFile(copy),
-          ...probes.steps,
-          invoke(`${app}-saved-twice`, channel, form.with(replay('self', ...form.path))),
-          ...openFile(other),
-          invoke(`${app}-saved-other`, channel, form.with(replay('other', ...form.path))),
-        ],
-      },
-    ],
-    expect: [
-      { channel, scenario: 'successful-ack', rule: { kind: 'ack', run: 1, verdict: true } },
-      ...probes.expect,
-      {
-        channel,
-        scenario: 'duplicate-ack',
-        rule: { kind: 'replayRefused', run: 1, probe: `${app}-saved-twice`, of: 'self' },
-      },
-      {
-        channel,
-        scenario: 'foreign-renderer',
-        rule: { kind: 'replayRefused', run: 1, probe: `${app}-saved-other`, of: 'other' },
-      },
-    ],
-  }
-}
-
-/** The same Save As to a PDF copy: the page prints it with the token of that save. */
-function savedPdfCopy() {
-  const base = baseSteps('docs-edit')
-  return {
-    about: 'docs: Save As a PDF copy, printed under the save',
-    runs: [
-      {
-        steps: [
-          ...base.open,
-          ...base.edit,
-          { op: 'shortcut', name: 'saveAs' },
-          { op: 'dialog', answer: 'path:${WORK}/docs-copy.pdf', timeoutMs: 30000 },
-          wait(15000),
-        ],
-      },
-    ],
-    expect: [
-      {
-        channel: 'docs:owned-print-pdf-buffer',
-        scenario: 'normal-completion',
-        rule: { kind: 'completed', run: 1, view: 1 },
-      },
-    ],
-  }
+const savedInput = (app) => () => {
+  const probes = tokenProbes(`${app}-saved`, `${app}:saved-input-applied`, RECEIPT)
+  return { first: probes.steps, expect: probes.expect }
 }
 
 /** Docs also answers the PDF of a closing save: without its pending save token it refuses. */
@@ -339,7 +299,7 @@ function restoredVariant(kind, file, { fixture, channel, names, extra = () => ({
     about: `${kind}: open, crash, the tab comes back`,
     copies: { ...fixtureCopy(file, fixture), [second]: fixture },
     runs: [
-      { end: 'kill', steps: [...firstLaunch, ...openFile(file), ...probes.steps, wait(3000)] },
+      { end: 'kill', steps: [...openFile(file), ...probes.steps, wait(3000)] },
       {
         steps: [
           { op: 'waitReady', timeoutMs: 90000 },
@@ -379,7 +339,7 @@ function unreadableVariant(kind, file, { fixture, channel, scenario }) {
     about: `${kind}: open, crash, the tab comes back on a damaged file`,
     copies: fixtureCopy(file, fixture),
     runs: [
-      { end: 'kill', steps: [...firstLaunch, ...openFile(file), wait(3000)] },
+      { end: 'kill', steps: [...openFile(file), wait(3000)] },
       { damage: file, steps: [wait(30000)] },
     ],
     expect: [{ channel, scenario, rule: { kind: 'ack', run: 2, verdict: false } }],
@@ -515,14 +475,13 @@ export const SPECS = {
   'markdown-recovery': recoveryVariant('markdown', {
     channel: 'markdown:recovery-applied',
     second: 'markdown-b.md',
+    extra: savedInput('markdown'),
   }),
   'html-recovery': recoveryVariant('html', {
     channel: 'html:recovery-applied',
     second: 'html-b.html',
+    extra: savedInput('html'),
   }),
-  'docs-copy-pdf': savedPdfCopy(),
-  'docs-copy-markdown': savedCopy('markdown', 'md', 'markdown.md'),
-  'docs-copy-html': savedCopy('html', 'html', 'html.html'),
   'pdf-restore': restoredVariant('pdf', 'pdf.pdf', {
     fixture: 'multipage.pdf',
     channel: 'pdf:recovery-initialized',
@@ -566,12 +525,28 @@ export function selected(only, names = Object.keys(SPECS)) {
 }
 
 /**
+ * A save the shell owns hands its token to the page that writes it, and a Markdown or HTML copy
+ * it wrote to the editor that opens it. The PDF print and the two acknowledgements below need
+ * such a save to write a copy in another format. The menu's Save As is the page's own save
+ * (`menu:command`, no token; in run 44446306292 its key started nothing either), and the save
+ * of a closing tab writes the document itself.
+ */
+const OWNED_SAVE = 'needs a copy in another format written inside a save the shell owns'
+const SAVED_INPUT = {
+  'successful-ack': OWNED_SAVE,
+  'duplicate-ack': OWNED_SAVE,
+  'foreign-renderer': OWNED_SAVE,
+  'failed-apply': 'no text makes the editor fail to apply a file',
+}
+
+/**
  * Required scenarios no spec drives yet, with the reason. The checker writes no receipt for
  * them, so the IPC comparison keeps them pending; its test fails when this list and `expect`
  * together stop matching the contracts.
  */
 export const UNDRIVEN = {
   'docs:owned-print-pdf-buffer': {
+    'normal-completion': OWNED_SAVE,
     'owner-loss': 'needs the tab closed while the copy is being printed',
     'effect-failure': 'needs the print of the page itself to fail',
   },
@@ -588,9 +563,7 @@ export const UNDRIVEN = {
     'closed-tab': 'a closed tab has no page left to send the report from',
   },
   'html:recovery-applied': { 'failed-apply': 'no text makes the editor fail to apply a copy' },
-  'html:saved-input-applied': { 'failed-apply': 'no text makes the editor fail to apply a file' },
+  'html:saved-input-applied': SAVED_INPUT,
   'markdown:recovery-applied': { 'failed-apply': 'no text makes the editor fail to apply a copy' },
-  'markdown:saved-input-applied': {
-    'failed-apply': 'no text makes the editor fail to apply a file',
-  },
+  'markdown:saved-input-applied': SAVED_INPUT,
 }

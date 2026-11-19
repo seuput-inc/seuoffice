@@ -1638,6 +1638,11 @@ fn recover(h: &H, id: u32, name: &str) -> Recovering {
         browser_owner,
     )
     .unwrap();
+    // the host commits the browser's owner before it hands the target to the editor
+    target
+        .closure_reservation()
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
     let done = Rc::new(RefCell::new(None));
     let completed = done.clone();
     h.app.open_file_with_decision(

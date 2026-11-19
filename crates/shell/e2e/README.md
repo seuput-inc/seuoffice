@@ -84,7 +84,12 @@ turn on; the job checks that its executable has the marker (`ci/replay-guard.sh 
 default build hands a marker to the handler as an ordinary object, and the bundle job fails when
 an executable it built or installed has the marker's bytes (`ci/replay-guard.sh absent`).
 
-The restore runs answer the launch recovery list with a `click` on its confirm button, on Home (the
-runner uses the shell window's own view there). A new profile shows the first-run onboarding over
-Home, the list included, so the first run of such a spec starts by clicking its Skip button, and
-the checker fails a list click that landed on anything but a button.
+The restore runs answer the launch recovery list on Home, where the runner evaluates a step in the
+shell window's own view. Home has no editor page holding the OS focus, and the native `click`
+did not reach it there (macOS: the click only activated the window; Windows: the window was
+refused the foreground). So the two Home buttons a spec needs are pressed by the page, in `prep-`
+queries: the Skip button of the first-run onboarding in the first run (a new profile shows it
+over Home, the list included), and the list's confirm button in the second. The query calls the
+button's `click()` only while the button is what lies at its own centre, and answers `false`
+otherwise; the checker fails a list that was not pressed. These two steps are setup, not evidence
+of user input: the evidence is what the restored page then sends by itself.

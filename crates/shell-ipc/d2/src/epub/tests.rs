@@ -1332,6 +1332,11 @@ fn native_recovery_requires_the_registered_renderer_and_real_book_before_ack() {
         browser_owner,
     )
     .unwrap();
+    // the host commits the browser's owner before it hands the target to the editor
+    target
+        .closure_reservation()
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
     let completion = Rc::new(RefCell::new(None));
     let answer = completion.clone();
     editors(&rt).queue_recovery_direct(
@@ -1469,6 +1474,11 @@ fn native_recovery_refusal_settles_failure_without_a_book() {
         browser_owner,
     )
     .unwrap();
+    // the host commits the browser's owner before it hands the target to the editor
+    target
+        .closure_reservation()
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
     editors(&rt).queue_recovery_direct(
         sender.view,
         &target,
@@ -1555,6 +1565,11 @@ fn native_recovery_never_queues_into_another_created_view() {
         browser_owner,
     )
     .unwrap();
+    // the host commits the browser's owner before it hands the target to the editor
+    target
+        .closure_reservation()
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
     let answer = Rc::new(RefCell::new(None));
     let result = answer.clone();
     editors(&rt).queue_recovery_direct(
@@ -1611,6 +1626,11 @@ fn seeded(rt: &mut Rt, id: u32, name: &str) -> Seed {
         browser_owner,
     )
     .unwrap();
+    // the host commits the browser's owner before it hands the target to the editor
+    target
+        .closure_reservation()
+        .with_initial_owner(target.browser_owner(), |_| Ok(()))
+        .unwrap();
     editors(rt).queue_recovery_direct(
         sender.view,
         &target,
