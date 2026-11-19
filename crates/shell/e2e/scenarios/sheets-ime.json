@@ -38,6 +38,11 @@
       "ms": 400
     },
     {
+      "op": "query",
+      "as": "prep-comp",
+      "js": "(() => { if (window.__comp) return true; window.__comp = []; for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'input', 'focusin']) document.addEventListener(type, (e) => window.__comp.push(type + ':' + (e.data === undefined || e.data === null ? '' : e.data) + ':' + (e.target.tagName || '') + (e.target.className ? '.' + String(e.target.className).split(' ')[0] : '')), true); return true })()"
+    },
+    {
       "op": "ime",
       "source": "ko-2set",
       "keys": "gksrmf"
@@ -45,6 +50,11 @@
     {
       "op": "wait",
       "ms": 500
+    },
+    {
+      "op": "query",
+      "as": "diag-sheets-composition",
+      "js": "(window.__comp || []).join(' | ')"
     },
     {
       "op": "type",

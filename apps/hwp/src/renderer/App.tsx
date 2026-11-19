@@ -8,6 +8,7 @@ import {
   rememberAiPanelOpen,
   skillTemplateText,
   templateDocumentOf,
+  autoSaveOffered,
   useAutoSavePref,
   useSplitPaneFocusPing,
   webAiOff,
@@ -1066,6 +1067,39 @@ export default function App() {
     }
   }, [phase])
 
+  // The editor's frame swallows Ctrl+S and Ctrl+P (Cmd on a Mac) before the application menu can
+  // see them. The Electron main process takes those keys ahead of the frame; the shell has no
+  // such hook, so the page asks for the same file commands the main process would send.
+  useEffect(() => {
+    if (phase !== 'ready') return
+    const mac = /Mac/.test(navigator.platform)
+    const onKey = (event: KeyboardEvent): void => {
+      if (previewRef.current || event.isComposing || event.altKey || event.shiftKey) return
+      if (!(mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return
+      const command = event.code === 'KeyS' ? 'save' : event.code === 'KeyP' ? 'print' : null
+      if (!command) return
+      event.preventDefault()
+      event.stopPropagation()
+      window.hwpApi.requestFileCommand(command)
+    }
+    window.addEventListener('keydown', onKey, true)
+    let frameWindow: Window | null = null
+    try {
+      frameWindow = editorRef.current?.element.contentWindow ?? null
+      frameWindow?.addEventListener('keydown', onKey, true)
+    } catch {
+      frameWindow = null
+    }
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      try {
+        frameWindow?.removeEventListener('keydown', onKey, true)
+      } catch {
+        /* the frame went away with its document */
+      }
+    }
+  }, [phase])
+
   // OS-level Esc leaves fullscreen without a keydown: end the show with it.
   useEffect(() => {
     if (!presenting) return
@@ -1126,15 +1160,17 @@ export default function App() {
             {t('checkTitle')}
           </button>
           <MemoToggle open={memoOpen} onToggle={() => setMemoOpen((open) => !open)} />
-          <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
-            <span className="autosave-knob" />
-            <span className="autosave-text">{t('autoSave')}</span>
-            <input
-              type="checkbox"
-              checked={autoSave}
-              onChange={(e) => setAutoSave(e.target.checked)}
-            />
-          </label>
+          {autoSaveOffered() && (
+            <label className={`autosave-toggle${autoSave ? ' on' : ''}`} data-tip={t('autoSaveTip')}>
+              <span className="autosave-knob" />
+              <span className="autosave-text">{t('autoSave')}</span>
+              <input
+                type="checkbox"
+                checked={autoSave}
+                onChange={(e) => setAutoSave(e.target.checked)}
+              />
+            </label>
+          )}
         </div>
       )}
       <div className="app-main">

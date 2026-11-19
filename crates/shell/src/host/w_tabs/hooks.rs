@@ -90,9 +90,15 @@ impl shell_ipc_w::tabs::host::EditorSeedRollback for SheetsRegistrationRollback 
 pub(super) struct SlidesActorRollback(pub(super) ViewId);
 impl SlidesActorRollback {
     fn retire(&self, proof: &shell_contract::ipc::NativeClosureReceipt) -> Result<(), String> {
-        shell_ipc_d1::slides::views()
-            .ok_or("Slides editor is not registered")?
-            .retire_native_closed(self.0, proof)
+        let result = shell_ipc_d1::slides::views()
+            .ok_or("Slides editor is not registered")
+            .map_err(str::to_owned)
+            .and_then(|views| views.retire_native_closed(self.0, proof));
+        eprintln!(
+            "[slides] view {}: the closed actor is retired: {result:?}",
+            self.0.0
+        );
+        result
     }
 }
 impl shell_ipc_w::tabs::host::EditorSeedRollback for SlidesActorRollback {
