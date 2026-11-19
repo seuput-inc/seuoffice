@@ -295,6 +295,35 @@ pub(crate) fn current_recovery_owner(
     }
 }
 
+/// Admit `owner` once more as the owner a recovery opening delivers, and let `swap` put it in
+/// place of the one delivered before. `swap` runs inside the admission and answers the owner
+/// it took out, or `None` when there is nothing to deliver to. That owner is released only
+/// after the admission has let go of its gates: the last reference of a Docs owner leaves
+/// the listeners of its media permit when it drops, which takes the very gate the admission
+/// holds (run 44507447462 stopped there, once the opening could capture a second owner).
+pub(crate) fn redeliver_recovery_owner(
+    receipt: &shell_contract::ipc::RecoverySeedReceipt,
+    snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot,
+    owner: &NativeRequestOwner,
+    swap: impl FnOnce(NativeRequestOwner) -> Option<NativeRequestOwner>,
+) -> bool {
+    let cancel = receipt.target().created().loss_token();
+    let replaced = with_recovery_open_service_snapshot(
+        receipt,
+        snapshot,
+        owner,
+        &[],
+        None,
+        None,
+        &cancel,
+        None,
+        &[],
+        || swap(owner.clone()),
+    )
+    .flatten();
+    replaced.is_some()
+}
+
 pub(crate) fn authenticated_owner(context: &NativeContext) -> Option<NativeRequestOwner> {
     let authority = context.authority_ref::<NativeOwnerAuthority>()?;
     Some(NativeRequestOwner {
@@ -932,5 +961,42 @@ mod tests {
         assert!(lost(&opening.registered));
         assert!(opening.current_owner().is_err());
         assert!(!opening.hands_over(&opening.registered));
+    }
+
+    #[test]
+    fn a_docs_opening_delivers_its_owner_again_and_releases_the_one_it_replaces() {
+        let (sent, done) = std::sync::mpsc::channel();
+        // on its own thread: an owner released under the gate of its permit never returns
+        std::thread::spawn(move || {
+            let opening = DocsOpening::new("docs-redelivery");
+            let next = opening.lease.stage_document().unwrap();
+            opening.lease.commit_document(&next).unwrap();
+            let snapshot = opening.target.authority_snapshot().unwrap();
+
+            // The owner delivered when the document became ready, held by nothing else.
+            let delivered = std::sync::Mutex::new(Some(opening.current_owner().unwrap()));
+            let swap = |owner: NativeRequestOwner| {
+                delivered
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .replace(owner)
+            };
+            let refused =
+                redeliver_recovery_owner(&opening.receipt, &snapshot, &opening.registered, swap);
+            let again = opening.current_owner().unwrap();
+            let admitted = redeliver_recovery_owner(&opening.receipt, &snapshot, &again, swap);
+            let holds_the_new_owner = delivered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .and_then(NativeRequestOwner::loss_token)
+                .zip(again.loss_token())
+                .is_some_and(|(held, again)| held.same_token(&again));
+            let _ = sent.send((refused, admitted, holds_the_new_owner, lost(&again)));
+        });
+        assert_eq!(
+            done.recv_timeout(std::time::Duration::from_secs(60)),
+            Ok((false, true, true, false)),
+        );
     }
 }

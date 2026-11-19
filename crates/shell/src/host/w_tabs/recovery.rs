@@ -987,32 +987,17 @@ impl Opening {
             let Some(receipt) = self.target.committed_seed() else {
                 return;
             };
-            let cancel = self.target.created().loss_token();
             let delivered = exact_origin
-                && native_owner::with_recovery_open_service_snapshot(
-                    &receipt,
-                    &snapshot,
-                    &owner,
-                    &[],
-                    None,
-                    None,
-                    &cancel,
-                    None,
-                    &[],
-                    || {
-                        let mut result = self
-                            .result
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner());
-                        if let Some(Ok(ready)) = result.as_mut() {
-                            ready.owner = owner.clone();
-                            true
-                        } else {
-                            false
-                        }
-                    },
-                )
-                .unwrap_or(false);
+                && native_owner::redeliver_recovery_owner(&receipt, &snapshot, &owner, |owner| {
+                    let mut result = self
+                        .result
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    match result.as_mut() {
+                        Some(Ok(ready)) => Some(std::mem::replace(&mut ready.owner, owner)),
+                        _ => None,
+                    }
+                });
             if !delivered {
                 eprintln!("[recovery] final document authority changed during work drain");
                 return;
