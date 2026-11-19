@@ -324,10 +324,10 @@ impl Hooks {
                         .map_err(TabError)?,
                 );
             }
-            // Saved-input construction reserves only the view and native
-            // assets here. The editor's prepared token stages its actor and
-            // barrier and publishes both in the saved adoption transition.
-            if saved_input.is_some() {
+            // Here a saved input reserves only the view and native assets of
+            // an editor whose token stages the actor. Any other editor opens
+            // its view below, without the path: its token needs that view.
+            if saved_input.is_some() && saved_token_stages_actor(spec) {
                 if surface == Surface::Slides {
                     slides_lease =
                         Some(self.cx.views.prepare_slides_media(view).map_err(TabError)?);
@@ -491,6 +491,27 @@ impl Hooks {
         })
     }
 }
+
+/// Whether the token an editor prepares for a saved input stages the view's
+/// actor itself and publishes it in the saved adoption transition. Every other
+/// editor puts that token's barrier on a view it already tracks, and refuses a
+/// view it does not.
+fn saved_token_stages_actor(spec: &EditorViewSpec<'_>) -> bool {
+    match spec {
+        EditorViewSpec::Docs { .. }
+        | EditorViewSpec::Sheets { .. }
+        | EditorViewSpec::Slides { .. }
+        | EditorViewSpec::Diagram { .. } => true,
+        EditorViewSpec::Pdf { .. }
+        | EditorViewSpec::Markdown { .. }
+        | EditorViewSpec::Html { .. }
+        | EditorViewSpec::HtmlPresent { .. }
+        | EditorViewSpec::Mindmap { .. }
+        | EditorViewSpec::Epub { .. }
+        | EditorViewSpec::Hwp { .. } => false,
+    }
+}
+
 fn fail_editor_view(cx: HostContext, view: ViewId, error: String) {
     if let Some(host) = NATIVE_WINDOWS.get() {
         host.deferred_views.lock().unwrap().remove(&view);
@@ -2065,7 +2086,43 @@ fn blank_pdf() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{WindowId, blank_pdf, is_activation};
+    use super::{
+        EditorViewSpec, HwpUntitledCopy, WindowId, blank_pdf, is_activation,
+        saved_token_stages_actor,
+    };
+
+    #[test]
+    fn a_saved_input_view_is_opened_in_its_editor_unless_the_token_stages_the_actor() {
+        for spec in [
+            EditorViewSpec::Docs { path: None },
+            EditorViewSpec::Sheets {
+                opening_workbook: None,
+            },
+            EditorViewSpec::Slides { path: None },
+            EditorViewSpec::Diagram { path: None },
+        ] {
+            assert!(
+                saved_token_stages_actor(&spec),
+                "{spec:?}: its token refuses a view that already has an actor"
+            );
+        }
+        for spec in [
+            EditorViewSpec::Pdf { path: "" },
+            EditorViewSpec::Markdown { path: None },
+            EditorViewSpec::Html { path: None },
+            EditorViewSpec::Mindmap { path: None },
+            EditorViewSpec::Epub { path: "" },
+            EditorViewSpec::Hwp {
+                path: None,
+                untitled_copy: HwpUntitledCopy::Flag(false),
+            },
+        ] {
+            assert!(
+                !saved_token_stages_actor(&spec),
+                "{spec:?}: its token refuses a view the editor does not track"
+            );
+        }
+    }
 
     #[test]
     fn a_focus_that_returns_inside_the_foreground_window_is_no_activation() {
