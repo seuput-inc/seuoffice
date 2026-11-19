@@ -2668,6 +2668,9 @@ impl<E: RecoveryEditors<Contents = Contents> + 'static> Runtime<E> {
                         );
                     }
                     LaunchNeed::RecordDecisions(decisions) => {
+                        // this turn accepted the answer and opened the gate: restored tabs
+                        // may load before the worker below has written the store
+                        super::recovery_openers::record_launch_answers(&decisions);
                         worker::decisions(&services, store, decisions, shutdown, move |errors| {
                             Self::resume(
                                 runtime,

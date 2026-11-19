@@ -38,9 +38,9 @@ pub(crate) struct PreparedRecoveryOpen {
     pub(crate) kind: TabKind,
     pub(crate) path: Option<String>,
     pub(crate) untitled: bool,
-    /// What the launch answer made of the tab's file, as the recovery store holds it when the
-    /// tab is opened: its recovery copy, or the file as saved. The open is issued for it. A
-    /// tab that names no file leaves it at the file as saved.
+    /// What this launch's answer made of the tab's file: its recovery copy, or the file as
+    /// saved. The open is issued for it. A tab that names no file leaves it at the file as
+    /// saved.
     pub(crate) decision: shell_contract::ipc::NativeRecoveryDecision,
     pub(crate) operation: Option<shell_contract::ipc::NativeInvocationOperation>,
     attempt: Option<NativeAttempt>,
@@ -892,6 +892,12 @@ struct Registry {
     shutting_down: bool,
     queries: HashMap<u64, RecoveryQuery>,
     drains: Vec<PendingDrain>,
+    /// What the list of this launch was answered for each file copy, by the copy's exact kind
+    /// and path
+    launch_answers: HashMap<
+        (String, String),
+        main_core::packages::electron_utils::recovery_store::RecoveryLaunchDecision,
+    >,
 }
 
 thread_local! {
@@ -1899,28 +1905,40 @@ fn cancel_registered_and_drain(done: Box<dyn FnOnce(Result<(), String>)>) {
     }
 }
 
-/// What the launch list's answer made of a file tab, read from the recovery store as the tab
-/// is opened: the file's recovery copy when the answer chose it, the file as saved otherwise
-/// (no copy, a copy left for later, a copy nobody was asked about). The editor's own open of
-/// a file reads the same plan.
-fn launch_decision(
-    store: &super::recovery_manager::SharedStore,
-    kind: TabKind,
-    path: &str,
-) -> shell_contract::ipc::NativeRecoveryDecision {
-    use main_core::packages::electron_utils::recovery_store::{
-        RecoveryFileIdentity, RecoveryIdentity, RecoveryOpenPlan, is_recovery_editor_kind,
-    };
+/// Keeps the answer the launch list was just given, for each file copy it listed. It is called
+/// on the core thread in the turn that accepts the answer: the gate lets restored tabs load
+/// from that turn on, and the recovery store is written later, by a worker. An answer replaces
+/// the one before it.
+pub(crate) fn record_launch_answers(
+    decisions: &[(
+        main_core::packages::electron_utils::recovery_store::RecoveryIdentity,
+        main_core::packages::electron_utils::recovery_store::RecoveryLaunchDecision,
+    )],
+) {
+    use main_core::packages::electron_utils::recovery_store::RecoveryIdentity;
+    let answers = decisions
+        .iter()
+        .filter_map(|(identity, decision)| match identity {
+            RecoveryIdentity::File(file) => {
+                Some(((file.kind.clone(), file.file_path.clone()), *decision))
+            }
+            RecoveryIdentity::Untitled(_) => None,
+        })
+        .collect();
+    REGISTRY.with(|registry| registry.borrow_mut().launch_answers = answers);
+}
+
+/// What the launch list's answer made of a file tab: the file's recovery copy only when the
+/// accepted answer of this launch for exactly that kind and path was to restore it, the file
+/// as saved otherwise. What the recovery store holds decides nothing here. A state left there
+/// by an earlier run would override an answer of this run that could not be written.
+fn launch_decision(kind: TabKind, path: &str) -> shell_contract::ipc::NativeRecoveryDecision {
+    use main_core::packages::electron_utils::recovery_store::RecoveryLaunchDecision;
     use shell_contract::ipc::NativeRecoveryDecision;
-    if !is_recovery_editor_kind(kind.as_str()) {
-        return NativeRecoveryDecision::Original;
-    }
-    let identity = RecoveryIdentity::File(RecoveryFileIdentity {
-        kind: kind.as_str().to_owned(),
-        file_path: path.to_owned(),
-    });
-    match store.with_store(|store| store.open_plan(&identity)) {
-        Ok(RecoveryOpenPlan::Restore(_)) => NativeRecoveryDecision::Restore,
+    let key = (kind.as_str().to_owned(), path.to_owned());
+    let answer = REGISTRY.with(|registry| registry.borrow().launch_answers.get(&key).copied());
+    match answer {
+        Some(RecoveryLaunchDecision::Restore) => NativeRecoveryDecision::Restore,
         _ => NativeRecoveryDecision::Original,
     }
 }
@@ -1975,10 +1993,6 @@ pub(crate) fn callbacks(
         }
     }
 
-    let launch = super::recovery_manager::SharedStore {
-        shared: shared.clone(),
-        user_data: user_data.clone(),
-    };
     let open_gate = gate.clone();
     let prepare: Rc<PrepareOpen> = Rc::new(move |restored, context| {
         if open_gate.blocking() {
@@ -1991,11 +2005,11 @@ pub(crate) fn callbacks(
                 let path = context.file_path.clone();
                 let editor = provided.all::<dyn RecoveryEditorContract<ViewId,shell_contract::ipc::RecoveryOpenTarget>>().into_iter()
                     .find(|editor| editor.kind() == kind.as_str());
-                // the launch list's answer decides between the file's recovery copy and the
-                // file as saved; the request and the selection the open is issued for agree
+                // this launch's answer decides between the file's recovery copy and the file
+                // as saved; the request and the selection the open is issued for agree
                 let file = path.as_ref().filter(|path| !path.is_empty());
                 let decision = file.map_or(NativeRecoveryDecision::Original, |path| {
-                    launch_decision(&launch, kind, path)
+                    launch_decision(kind, path)
                 });
                 let request = file.map(|path| RecoveryOpenFileRequest {
                     file_path: path.clone(),
@@ -2415,55 +2429,65 @@ mod tests {
         ));
         finish(prepared.attempt.take().unwrap(), false);
     }
-    /// The launch list's answer is what restores a file: a copy that exists but was not
-    /// chosen, a copy left for later, and another file all open as saved.
+    /// Only the answer this launch accepted restores a file, and only the file of exactly
+    /// that kind and path. No answer, a refusal, a copy left for later and any other file
+    /// open as saved, and a later answer replaces the one before it.
     #[test]
-    fn a_restored_file_opens_from_its_copy_only_when_the_launch_answer_chose_it() {
+    fn a_restored_file_opens_from_its_copy_only_when_this_launch_answered_restore() {
         use main_core::packages::electron_utils::recovery_store::{
-            RecoveryFileIdentity, RecoveryIdentity, RecoveryLaunchDecision, RecoveryWriteOptions,
-            SharedRecoveryState,
+            RecoveryFileIdentity, RecoveryIdentity, RecoveryLaunchDecision,
+            RecoveryUntitledIdentity,
         };
         use shell_contract::ipc::NativeRecoveryDecision::{Original, Restore};
-        let dir = std::env::temp_dir().join(format!(
-            "seuoffice-launch-decision-{}-{}",
-            std::process::id(),
-            jscompat::random_uuid()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("notes.md");
-        std::fs::write(&file, "saved").unwrap();
-        let path = file.to_string_lossy().into_owned();
-        let other = dir.join("other.md").to_string_lossy().into_owned();
-        let store = super::super::recovery_manager::SharedStore {
-            shared: std::sync::Arc::new(std::sync::Mutex::new(SharedRecoveryState::new("test"))),
-            user_data: dir.join("userdata").to_string_lossy().into_owned(),
-        };
-        let identity = RecoveryIdentity::File(RecoveryFileIdentity {
-            kind: "markdown".into(),
-            file_path: path.clone(),
-        });
-        let decided = |path: &str| launch_decision(&store, TabKind::Markdown, path);
-        let answer = |decision| {
-            store
-                .with_store(|store| store.apply_launch_decision(&identity, decision))
-                .unwrap();
-        };
-
-        assert_eq!(decided(&path), Original);
-        store
-            .with_store(|store| {
-                store.write_copy(&identity, b"typed", &RecoveryWriteOptions::default())
+        let file = |kind: &str, path: &str| {
+            RecoveryIdentity::File(RecoveryFileIdentity {
+                kind: kind.into(),
+                file_path: path.into(),
             })
-            .unwrap();
-        assert_eq!(decided(&path), Original);
-        answer(RecoveryLaunchDecision::Restore);
-        assert_eq!(decided(&path), Restore);
-        assert_eq!(decided(&other), Original);
-        // the same file under a kind that keeps no copies
-        assert_eq!(launch_decision(&store, TabKind::Epub, &path), Original);
-        answer(RecoveryLaunchDecision::Later);
-        assert_eq!(decided(&path), Original);
-        let _ = std::fs::remove_dir_all(&dir);
+        };
+        let decided = |path: &str| launch_decision(TabKind::Markdown, path);
+
+        // before the list is answered nothing is restored
+        assert_eq!(decided("/work/notes.md"), Original);
+        record_launch_answers(&[
+            (
+                file("markdown", "/work/notes.md"),
+                RecoveryLaunchDecision::Restore,
+            ),
+            (
+                file("markdown", "/work/refused.md"),
+                RecoveryLaunchDecision::Discard,
+            ),
+            (
+                file("markdown", "/work/later.md"),
+                RecoveryLaunchDecision::Later,
+            ),
+            (
+                RecoveryIdentity::Untitled(RecoveryUntitledIdentity {
+                    kind: "markdown".into(),
+                    untitled_id: "/work/untitled.md".into(),
+                    ext: ".md".into(),
+                }),
+                RecoveryLaunchDecision::Restore,
+            ),
+        ]);
+        assert_eq!(decided("/work/notes.md"), Restore);
+        assert_eq!(decided("/work/refused.md"), Original);
+        assert_eq!(decided("/work/later.md"), Original);
+        assert_eq!(decided("/work/other.md"), Original);
+        assert_eq!(decided("/work/Notes.md"), Original);
+        assert_eq!(decided("/work/untitled.md"), Original);
+        // the same path under another kind
+        assert_eq!(launch_decision(TabKind::Html, "/work/notes.md"), Original);
+
+        // a refusal is not overridden by the answer accepted before it
+        record_launch_answers(&[(
+            file("markdown", "/work/notes.md"),
+            RecoveryLaunchDecision::Discard,
+        )]);
+        assert_eq!(decided("/work/notes.md"), Original);
+        record_launch_answers(&[]);
+        assert_eq!(decided("/work/notes.md"), Original);
     }
     #[test]
     fn failures_remain_retryable_and_success_consumes_selected_opener() {

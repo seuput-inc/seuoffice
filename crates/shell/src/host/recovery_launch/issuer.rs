@@ -167,9 +167,9 @@ impl RecoveryPlan {
     }
     /// The selection an open of this plan is issued for. A plan is captured before the launch
     /// list is answered, while its file is still named as saved; `decision` is what the answer
-    /// made of that file, as the recovery store holds it. Only the decision of a file
-    /// selection follows it: the surface and the path stay as captured, and so does every
-    /// other kind of selection.
+    /// this launch accepted made of that file. Only the decision of a file selection follows
+    /// it: the surface and the path stay as captured, and so does every other kind of
+    /// selection.
     pub(crate) fn selection_for(
         &self,
         decision: NativeRecoveryDecision,
