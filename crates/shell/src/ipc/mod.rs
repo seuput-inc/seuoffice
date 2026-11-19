@@ -528,8 +528,7 @@ pub(super) fn verified_sender(
     if authority.origin != *origin {
         trace!(
             "refused",
-            "the owner of view {} is bound to another document than the caller's",
-            sender.view.0
+            "the owner of view {} is bound to another document than the caller's", sender.view.0
         );
         return Err("Renderer document is no longer available.".into());
     }

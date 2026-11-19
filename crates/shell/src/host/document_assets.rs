@@ -2300,7 +2300,10 @@ mod tests {
             Some("seuoffice-docx-media://handoff/abc".into())
         );
         assert_eq!(
-            docx_original_uri_for("seuoffice-docx-media://localhost/abc/word/media/a.png?x=1", true),
+            docx_original_uri_for(
+                "seuoffice-docx-media://localhost/abc/word/media/a.png?x=1",
+                true
+            ),
             Some("seuoffice-docx-media://abc/word/media/a.png?x=1".into())
         );
         // the logical shape passes unchanged on both platforms
@@ -2315,6 +2318,9 @@ mod tests {
             docx_original_uri_for("seuoffice-docx-media://localhost/handoff/abc", false),
             Some("seuoffice-docx-media://localhost/handoff/abc".into())
         );
-        assert_eq!(docx_original_uri_for("seuoffice-docx-media://localhost/", true), None);
+        assert_eq!(
+            docx_original_uri_for("seuoffice-docx-media://localhost/", true),
+            None
+        );
     }
 }

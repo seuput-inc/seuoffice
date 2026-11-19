@@ -54,7 +54,11 @@ fn respond(reply: &Reply, answer: MediaAnswer) {
     crate::trace::trace!(
         "asset",
         "answered {status} ({bytes} bytes){}",
-        if responder.is_some() { "" } else { ", but the request was already answered" }
+        if responder.is_some() {
+            ""
+        } else {
+            ", but the request was already answered"
+        }
     );
     if let Some(responder) = responder {
         responder.respond(response);
@@ -347,7 +351,12 @@ pub fn handle(
     crate::trace::trace!(
         "asset",
         "'{label}' {method} {}",
-        request.uri().to_string().chars().take(48).collect::<String>()
+        request
+            .uri()
+            .to_string()
+            .chars()
+            .take(48)
+            .collect::<String>()
     );
     let response = context.response_gate();
     let cancel = CancelToken::default();

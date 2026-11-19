@@ -526,10 +526,18 @@ impl BrowserCore {
             state.held_navigation.take()
         };
         let Some(url) = url else {
-            crate::trace::trace!("attach", "'{}': no navigation was held to replay", self.label);
+            crate::trace::trace!(
+                "attach",
+                "'{}': no navigation was held to replay",
+                self.label
+            );
             return;
         };
-        crate::trace::trace!("attach", "'{}': replaying the held navigation to {url}", self.label);
+        crate::trace::trace!(
+            "attach",
+            "'{}': replaying the held navigation to {url}",
+            self.label
+        );
         let outcome = match self.control() {
             Some(control) => control.navigate(&url),
             None => Err("The webview is not attached.".to_owned()),
