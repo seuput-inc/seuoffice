@@ -161,6 +161,15 @@ describe("answering the host's thumbnail", () => {
     expect(await answer()).toMatchObject({ ok: false, code: 'thumbnail_tainted' })
   })
 
+  it('refuses with thumbnail_tainted when the app may not read the canvas it drew on', async () => {
+    channel.onHostThumbnailRequest(async () => {
+      throw Object.assign(new Error('The operation is insecure.'), { name: 'SecurityError' })
+    })
+    channel.reportOpened()
+    fromHost({ type: 'thumbnail', requestId: 'a' })
+    expect(await answer()).toMatchObject({ ok: false, code: 'thumbnail_tainted' })
+  })
+
   it('refuses with thumbnail_timeout after 10 s and tells the app to stop', async () => {
     vi.useFakeTimers()
     let stopped: AbortSignal | undefined
