@@ -133,12 +133,24 @@ pub(crate) struct Target {
 /// `parseAssetUrl`. `Err` is the status the handler answered: 400 for an address that is not
 /// this scheme's or is not decodable, 404 for a malformed token or an empty path.
 pub(crate) fn parse(uri: &str) -> Result<Target, u16> {
+    parse_for(uri, cfg!(windows))
+}
+
+/// `localhost_shape`: whether a scheme handler is handed `epub-asset://localhost/<token>/<path>`
+/// for the page's `http://epub-asset.localhost/<token>/<path>`, as wry does on Windows (see
+/// `native::url::handler_logical_url_for`); read as the logical address its token is
+/// `localhost`, which is no token.
+fn parse_for(uri: &str, localhost_shape: bool) -> Result<Target, u16> {
+    use crate::native::url::{Flavor, handler_logical_url_for, logical_url_for};
     // `http://epub-asset.localhost/<token>/<path>` is the Windows shape of
     // `epub-asset://<token>/<path>`; the handler only ever sees its own scheme, so both shapes
     // are read on every OS
     let wire = tauri::Url::parse(uri).map_err(|_| 400u16)?;
-    let url = crate::native::url::logical_url_for(crate::native::url::Flavor::LocalhostHttp, &wire)
-        .unwrap_or(wire);
+    let url = if localhost_shape {
+        handler_logical_url_for(Flavor::LocalhostHttp, wire)
+    } else {
+        logical_url_for(Flavor::LocalhostHttp, &wire).unwrap_or(wire)
+    };
     if url.scheme() != SCHEME {
         return Err(400);
     }
@@ -423,6 +435,13 @@ mod tests {
         );
         assert_eq!(parse(&format!("epub-asset://{TOKEN}")), Err(404));
         assert_eq!(parse(&address("")), Err(404));
+        // what wry hands the handler on Windows for http://epub-asset.localhost/<token>/a.css
+        let handed = format!("epub-asset://localhost/{TOKEN}/OEBPS/a.css");
+        assert_eq!(
+            parse_for(&handed, true).map(|target| (target.token, target.path)),
+            Ok((TOKEN.to_owned(), "OEBPS/a.css".to_owned()))
+        );
+        assert_eq!(parse_for(&handed, false), Err(404));
         assert_eq!(parse(&address("%2e%2e/%2e%2e")), Err(404));
     }
 

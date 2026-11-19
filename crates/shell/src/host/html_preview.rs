@@ -17,6 +17,14 @@ use crate::native::url::Flavor;
 /// The view an address names. `Err` is the status Electron's handler answered: 400 for an
 /// address that does not parse, 404 for a host that is no view.
 pub(crate) fn view_of(uri: &str) -> Result<ViewId, u16> {
+    view_of_for(uri, cfg!(windows))
+}
+
+/// `localhost_shape`: whether a scheme handler is handed `html-preview://localhost/view-3/` for
+/// the page's `http://html-preview.localhost/view-3/`, as wry does on Windows (see
+/// `document_assets::docx_original_uri_for`). The view is then the first path segment; read as
+/// the host it was `localhost`, and every preview was answered 404 there.
+fn view_of_for(uri: &str, localhost_shape: bool) -> Result<ViewId, u16> {
     // `http://html-preview.localhost/view-3/` is the Windows shape of `html-preview://view-3/`;
     // the handler only ever sees its own scheme, so both shapes are read on every OS
     let wire = tauri::Url::parse(uri).map_err(|_| 400u16)?;
@@ -25,9 +33,15 @@ pub(crate) fn view_of(uri: &str) -> Result<ViewId, u16> {
     if url.scheme() != PREVIEW_SCHEME {
         return Err(400);
     }
+    let named = if localhost_shape && url.host_str() == Some("localhost") {
+        url.path()
+            .strip_prefix('/')
+            .and_then(|rest| rest.split('/').next())
+    } else {
+        url.host_str()
+    };
     // `^view-(\d+)$` on the host, which carries a port when the address names one
-    let digits = url
-        .host_str()
+    let digits = named
         .filter(|_| url.port().is_none())
         .and_then(|host| host.strip_prefix("view-"))
         .filter(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()));
@@ -96,6 +110,31 @@ mod tests {
             view_of("http://html-preview.localhost/view-7/"),
             Ok(ViewId(7))
         );
+    }
+
+    #[test]
+    fn the_handler_address_of_windows_names_the_view_in_its_path() {
+        // what wry hands the handler on Windows for http://html-preview.localhost/view-2/?v=0
+        assert_eq!(
+            view_of_for("html-preview://localhost/view-2/?v=0", true),
+            Ok(ViewId(2))
+        );
+        assert_eq!(
+            view_of_for("html-preview://localhost/other/", true),
+            Err(404)
+        );
+        assert_eq!(view_of_for("html-preview://localhost/", true), Err(404));
+        // elsewhere `localhost` is a host like any other, and names no view
+        assert_eq!(
+            view_of_for("html-preview://localhost/view-2/", false),
+            Err(404)
+        );
+        for localhost_shape in [false, true] {
+            assert_eq!(
+                view_of_for("html-preview://view-3/", localhost_shape),
+                Ok(ViewId(3))
+            );
+        }
     }
 
     #[test]

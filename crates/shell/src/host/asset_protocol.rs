@@ -34,13 +34,27 @@ pub enum Scheme {
 
 type Reply = Arc<Mutex<Option<UriSchemeResponder>>>;
 
-fn respond(reply: &Reply, answer: MediaAnswer) {
+/// The start of a response a page of any origin may read, with the answer's own headers.
+///
+/// An answer that allows every origin itself (a handed-off document's bytes, a template font)
+/// must not say so a second time. WebView2 is given one line per header, and Chromium refuses a
+/// cross-origin response whose `Access-Control-Allow-Origin` holds more than one value; WebKit
+/// is given a dictionary, where the second value replaces the first.
+fn builder_of(status: u16, headers: Vec<(String, String)>) -> http::response::Builder {
+    let allow_origin = http::header::ACCESS_CONTROL_ALLOW_ORIGIN;
     let mut builder = http::Response::builder()
-        .status(answer.status)
-        .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-    for (name, value) in answer.headers {
-        builder = builder.header(name, value);
+        .status(status)
+        .header(allow_origin.clone(), "*");
+    for (name, value) in headers {
+        if !name.eq_ignore_ascii_case(allow_origin.as_str()) {
+            builder = builder.header(name, value);
+        }
     }
+    builder
+}
+
+fn respond(reply: &Reply, answer: MediaAnswer) {
+    let builder = builder_of(answer.status, answer.headers);
     let response = builder.body(answer.body).unwrap_or_else(|_| {
         let mut response = http::Response::new(Vec::new());
         *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
@@ -256,12 +270,14 @@ fn deliver(
             return;
         }
     };
-    let mut builder = http::Response::builder()
-        .status(answer.status)
-        .header(http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-    for (name, value) in answer.headers {
-        builder = builder.header(name, value);
-    }
+    crate::trace::trace!(
+        "asset",
+        "'{}' is answered {} ({} bytes)",
+        request.label,
+        answer.status,
+        answer.body.len()
+    );
+    let builder = builder_of(answer.status, answer.headers);
     let response = match builder.body(std::borrow::Cow::Owned(answer.body)) {
         Ok(response) => response,
         Err(_) => {
@@ -586,7 +602,29 @@ pub fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::original_slide_uri;
+    use super::{builder_of, original_slide_uri};
+    use tauri::http;
+
+    #[test]
+    fn an_answer_that_allows_every_origin_itself_says_so_once() {
+        let response = builder_of(
+            200,
+            vec![
+                ("Content-Type".into(), "application/octet-stream".into()),
+                ("Access-Control-Allow-Origin".into(), "*".into()),
+            ],
+        )
+        .body(Vec::<u8>::new())
+        .unwrap();
+        let allowed = response
+            .headers()
+            .get_all(http::header::ACCESS_CONTROL_ALLOW_ORIGIN);
+        assert_eq!(allowed.iter().count(), 1);
+        assert_eq!(
+            response.headers().get(http::header::CONTENT_TYPE).unwrap(),
+            "application/octet-stream"
+        );
+    }
 
     #[test]
     fn slide_url_restores_only_the_registered_wire_origin() {

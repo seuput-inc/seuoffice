@@ -169,15 +169,26 @@ pub(crate) fn handle(
     responder: tauri::UriSchemeResponder,
 ) {
     let method = request.method().as_str().to_owned();
-    // The platform shape (`http://drawio-app.localhost/editor/...` on Windows) is translated
-    // back: the resolver and the print registry speak `drawio-app://editor/...`.
-    let uri = crate::native::url::logical_url_text(&request.uri().to_string());
+    // What the handler is handed is translated back (on Windows wry hands
+    // `drawio-app://localhost/editor/...` for the page's `http://drawio-app.localhost/editor/...`,
+    // which the resolver refused as a host that is not the editor's, so the frame never loaded):
+    // the resolver and the print registry speak `drawio-app://editor/...`.
+    let uri = crate::native::url::handler_logical_url_text(&request.uri().to_string());
     tauri::async_runtime::spawn_blocking(move || match assets.resolve(&method, &uri) {
         DrawioResponse::Asset {
             status,
             headers,
             body,
         } => {
+            // the editor's page and every refusal; its few hundred files are left out
+            if status >= 400 || uri.contains("index.html") {
+                crate::trace::trace!(
+                    "scheme",
+                    "draw.io {method} {} -> {status} ({} bytes)",
+                    uri.chars().take(120).collect::<String>(),
+                    body.len()
+                );
+            }
             let mut builder = tauri::http::Response::builder().status(status);
             for (name, value) in headers {
                 builder = builder.header(name, value);

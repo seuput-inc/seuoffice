@@ -667,12 +667,16 @@ impl Runner<'_> {
         Ok(Some(json!({ "textBytes": written })))
     }
 
-    /// Whether the page has OS focus, and which element holds it, as the page itself says
+    /// Whether the page has OS focus, which element holds it, and how often its window has
+    /// gained and lost the focus since it loaded, as the page itself says. The counts of two
+    /// states apart tell a focus that went back and forth in between: an editor that ends an
+    /// edit when it loses the focus keeps none then.
     fn focus_state(webview: &Webview) -> Option<Value> {
         let page = webview.page().ok()?;
         let expression = "(() => { const a = document.activeElement; return { hasFocus: \
              document.hasFocus(), active: a ? a.tagName + (a.className ? '.' + \
-             String(a.className).split(' ')[0] : '') : null } })()";
+             String(a.className).split(' ')[0] : '') : null, \
+             window: window.__e2eFocus || null } })()";
         page.blocking(FOCUS_QUERY, |done| {
             page.evaluate(expression, false, None, done)
         })

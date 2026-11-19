@@ -247,9 +247,11 @@ fn frame_event(view: ViewId, label: &str, event: &NativeEvent) {
 fn view_event(view: ViewId, event: &NativeEvent) {
     let event = match &event.kind {
         NativeEventKind::View(ViewEvent::Focus) => {
+            trace!("focus", "view {} got the focus", view.0);
             Some(shell_ipc_w::projects::PageEvent::Focus(view))
         }
         NativeEventKind::View(ViewEvent::Blur) => {
+            trace!("focus", "view {} lost the focus", view.0);
             Some(shell_ipc_w::projects::PageEvent::Blur(view))
         }
         NativeEventKind::NavigationStarted {

@@ -93,6 +93,12 @@ fn failure(error: String, cleanup: io::Result<()>) -> IpcError {
     }
 }
 
+/// Says on stderr which step of staging or publishing an output failed. The error the caller
+/// gets is the OS's text alone ("Access is denied"), which is the same for every step.
+fn note(path: &Path, step: &str, error: &dyn std::fmt::Display) {
+    eprintln!("[staged] {}: {step} failed: {error}", path.display());
+}
+
 pub(crate) struct StagedOutput {
     directory: PrivateDirectory,
     commit: Option<OwnedWrittenCommit>,
@@ -167,13 +173,18 @@ impl StagedOutput {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| thrown("The output file name is not valid Unicode"))?;
-        let parent = file_commit::open_output_parent(parent_path)
-            .map_err(|error| thrown(error.to_string()))?;
-        let directory =
-            PrivateDirectory::create(&parent).map_err(|error| thrown(error.to_string()))?;
+        let parent = file_commit::open_output_parent(parent_path).map_err(|error| {
+            note(path, "opening the destination's folder", &error);
+            thrown(error.to_string())
+        })?;
+        let directory = PrivateDirectory::create(&parent).map_err(|error| {
+            note(path, "creating the private staging directory", &error);
+            thrown(error.to_string())
+        })?;
         let pending = match create_pending(&directory, name) {
             Ok(pending) => pending,
             Err(error) => {
+                note(path, "creating the stage", &error.message);
                 let cleanup = abandon(Retained::Directory(directory));
                 return Err(failure(error.message, cleanup));
             }
@@ -181,6 +192,7 @@ impl StagedOutput {
         let pending = match pending.write_owned(bytes) {
             Ok(pending) => pending,
             Err((error, stage, _)) => {
+                note(path, "writing the stage", &error);
                 let cleanup = abandon(Retained::Pending(stage));
                 return Err(failure(error.to_string(), cleanup));
             }
@@ -188,6 +200,7 @@ impl StagedOutput {
         let written = match pending.quarantine() {
             Ok(written) => written,
             Err((error, pending)) => {
+                note(path, "moving the written stage into its private directory", &error);
                 let (stage, _) = pending.into_parts();
                 let cleanup = abandon(Retained::Pending(stage));
                 return Err(failure(error.to_string(), cleanup));
@@ -201,6 +214,7 @@ impl StagedOutput {
                     | io::ErrorKind::InvalidInput
             );
             if !tolerated {
+                note(path, "flushing the stage", &error);
                 let (stage, _) = written.into_parts();
                 let cleanup = abandon(Retained::Owned(stage));
                 return Err(failure(error.to_string(), cleanup));
@@ -213,6 +227,7 @@ impl StagedOutput {
                 settled: false,
             }),
             Err((error, written)) => {
+                note(path, "preparing the publication", &error);
                 let (stage, _) = written.into_parts();
                 let cleanup = abandon(Retained::Owned(stage));
                 Err(failure(error.to_string(), cleanup))
@@ -274,11 +289,13 @@ impl StagedOutput {
                 Ok((publication, input))
             }
             Err(StagedWriteError::Admission { error, stage }) => {
+                eprintln!("[staged] the publication was not admitted: {error}");
                 self.commit = Some(*stage);
                 let cleanup = self.discard();
                 Err(failure(error, cleanup))
             }
             Err(StagedWriteError::Io { error, stage }) => {
+                eprintln!("[staged] publishing the staged output failed: {error}");
                 self.commit = Some(*stage);
                 let cleanup = self.discard();
                 Err(failure(error.to_string(), cleanup))

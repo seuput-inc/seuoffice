@@ -1390,6 +1390,7 @@ impl WindowsHost for NativeWindows {
         });
     }
     fn view_focus(&self, view: ViewId) {
+        crate::trace::trace!("focus", "the tabs give view {} the focus", view.0);
         view_action(self, view, |view| view.set_focus());
     }
     fn view_close(&self, view: ViewId) {
@@ -1921,6 +1922,36 @@ fn popup(
     }
 }
 
+/// The window the OS has activated and not deactivated since, where `Focused` alone does not
+/// say so.
+///
+/// Electron's window `focus` is the window's activation. On Windows Tauri makes `Focused` out
+/// of the focus of the window's webviews, so it also comes when the focus leaves a webview and
+/// returns while the window stays in the foreground. The tabs answer a window focus by
+/// focusing the active view. S116 runs show an editor page there receiving window `focus`
+/// events several times a second with nothing going on, and an editor that ends an edit when
+/// it loses the focus (a slide's text box, a mind map topic) kept none.
+static ACTIVE_WINDOW: Mutex<Option<WindowId>> = Mutex::new(None);
+
+/// Whether `Focused(focused)` of `window` is its activation. `foreground`: the OS still has
+/// the window in the foreground, so a focus that was lost stayed inside the window.
+fn is_activation(
+    active: &mut Option<WindowId>,
+    window: WindowId,
+    focused: bool,
+    foreground: bool,
+) -> bool {
+    if focused {
+        // one window is active at a time: the activation of another ends this one's, also
+        // when its own loss of the focus was read while it was still in the foreground
+        return active.replace(window) != Some(window);
+    }
+    if !foreground && *active == Some(window) {
+        *active = None;
+    }
+    false
+}
+
 pub(crate) fn window_event(window: WindowId, event: &tauri::WindowEvent) {
     let Some(host) = NATIVE_WINDOWS.get() else {
         return;
@@ -1944,6 +1975,11 @@ pub(crate) fn window_event(window: WindowId, event: &tauri::WindowEvent) {
         }
         tauri::WindowEvent::Destroyed => {
             host.detached.lock().unwrap().remove(&window);
+            let mut active = ACTIVE_WINDOW.lock().unwrap();
+            if *active == Some(window) {
+                *active = None;
+            }
+            drop(active);
             events.send(HostEvent::Window(window, WindowEvent::Closed));
             // Electron's `closed` handler checks `appQuitting` once, as the
             // window goes; a quit that starts later must not be judged by it
@@ -1957,8 +1993,37 @@ pub(crate) fn window_event(window: WindowId, event: &tauri::WindowEvent) {
                 }));
             }
         }
-        tauri::WindowEvent::Focused(true) => {
-            events.send(HostEvent::Window(window, WindowEvent::Focus));
+        tauri::WindowEvent::Focused(focused) => {
+            let activation = if cfg!(windows) {
+                let foreground = host.cx.views.label_of_window(window).is_some_and(|label| {
+                    crate::native::window::native_app_key_window_handle(&host.cx.app)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|key| key.label() == label.as_str())
+                });
+                let activation = is_activation(
+                    &mut ACTIVE_WINDOW.lock().unwrap(),
+                    window,
+                    *focused,
+                    foreground,
+                );
+                crate::trace::trace!(
+                    "focus",
+                    "window {} focused={focused}, in the foreground={foreground}: {}",
+                    window.0,
+                    if activation {
+                        "its activation"
+                    } else {
+                        "not an activation"
+                    }
+                );
+                activation
+            } else {
+                *focused
+            };
+            if activation {
+                events.send(HostEvent::Window(window, WindowEvent::Focus));
+            }
         }
         tauri::WindowEvent::Moved(_) => {
             events.send(HostEvent::Window(window, WindowEvent::Move));
@@ -2000,7 +2065,27 @@ fn blank_pdf() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::blank_pdf;
+    use super::{WindowId, blank_pdf, is_activation};
+
+    #[test]
+    fn a_focus_that_returns_inside_the_foreground_window_is_no_activation() {
+        let (shell, other) = (WindowId(1), WindowId(2));
+        let mut active = None;
+        assert!(is_activation(&mut active, shell, true, true));
+        // the focus left a webview and came back; the window never left the foreground
+        assert!(!is_activation(&mut active, shell, false, true));
+        assert!(!is_activation(&mut active, shell, true, true));
+        // another application took the foreground, then the window came back
+        assert!(!is_activation(&mut active, shell, false, false));
+        assert!(is_activation(&mut active, shell, true, true));
+        // another window of the app is activated while this one's loss was read too early
+        assert!(!is_activation(&mut active, shell, false, true));
+        assert!(is_activation(&mut active, other, true, true));
+        assert!(is_activation(&mut active, shell, true, true));
+        // a loss of the focus reported for a window that is not the active one changes nothing
+        assert!(!is_activation(&mut active, other, false, false));
+        assert!(!is_activation(&mut active, shell, true, true));
+    }
 
     #[test]
     fn blank_pdf_has_one_a4_page_and_valid_cross_reference() {

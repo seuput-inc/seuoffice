@@ -406,6 +406,7 @@ impl Contents for ShellContents {
     }
 
     fn focus(&self, view: ViewId) {
+        crate::trace::trace!("focus", "a host gives view {} the focus", view.0);
         if let Some(webview) = self.windows.webview(view)
             && let Err(error) = webview.set_focus()
         {

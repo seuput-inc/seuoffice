@@ -98,6 +98,9 @@ const PAGE_ERROR_SCRIPT: &str = "(() => { \
     addEventListener('securitypolicyviolation', (e) => log('csp', e.violatedDirective + ' blocked ' + e.blockedURI)); \
     addEventListener('keydown', (e) => { try { (window.__e2eKeys = window.__e2eKeys || []).push(e.key.length === 1 ? e.key : '<' + e.key + '>') } catch (error) {} }, true); \
     addEventListener('beforeinput', (e) => { try { (window.__e2eText = window.__e2eText || []).push(e.data == null ? '<' + e.inputType + '>' : e.data) } catch (error) {} }, true); \
+    const turn = (which) => { try { const f = (window.__e2eFocus = window.__e2eFocus || { gained: 0, lost: 0 }); f[which] += 1 } catch (error) {} }; \
+    addEventListener('focus', () => turn('gained')); \
+    addEventListener('blur', () => turn('lost')); \
     const original = console.error; \
     console.error = function () { log('console.error', Array.prototype.map.call(arguments, String).join(' ')); return original.apply(console, arguments) }; \
 })()";

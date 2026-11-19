@@ -15,8 +15,9 @@ const RING: usize = 600;
 
 /// The tags of the per-message path: the first lines of each tell the story,
 /// the rest (thousands in a measurement, which they would slow down) are
-/// counted and one in a hundred is shown
-const BUSY: [&str; 4] = ["ipc", "outlet", "measure", "sync"];
+/// counted and one in a hundred is shown. `focus` is quiet unless the focus
+/// goes back and forth, and then its first lines show between whom.
+const BUSY: [&str; 5] = ["ipc", "outlet", "measure", "sync", "focus"];
 const BUSY_FULL: u64 = 40;
 const BUSY_EVERY: u64 = 100;
 

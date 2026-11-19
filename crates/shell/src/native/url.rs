@@ -4,9 +4,10 @@
 //! serves a custom scheme as it is named. WebView2 (through wry) only serves
 //! `http://<scheme>.localhost/<path>`, so on Windows the authority becomes the first path
 //! segment: `http://html-asset.localhost/<authority>/<path>`. Navigation hooks, request
-//! policies, `ObservedDocument::url` and scheme handlers all see the platform shape; grants
-//! and tokens are written in the logical one. [`platform_url`] and [`logical_url`] are the
-//! only translators for such schemes.
+//! policies and `ObservedDocument::url` see the platform shape; grants and tokens are written
+//! in the logical one. [`platform_url`] and [`logical_url`] are the only translators for such
+//! schemes. A scheme handler is handed a third shape there, which
+//! [`handler_logical_url_for`] reads.
 //!
 //! The renderer pages of `genoffice-app-<host>` keep their own translators in
 //! `app_scheme` (`webview_url`, `electron_url`): their host lives in the scheme name.
@@ -58,9 +59,43 @@ pub fn platform_url_text(logical: &str) -> String {
     Url::parse(logical).map_or_else(|_| logical.to_owned(), |url| platform_url(&url).into())
 }
 
-/// [`into_logical`] on a URL text; text that is not a URL is returned unchanged.
-pub fn logical_url_text(text: &str) -> String {
-    Url::parse(text).map_or_else(|_| text.to_owned(), |url| into_logical(url).into())
+/// The logical URL of a request as a scheme handler is handed it; text that is not a URL is
+/// returned unchanged.
+pub fn handler_logical_url_text(text: &str) -> String {
+    Url::parse(text).map_or_else(
+        |_| text.to_owned(),
+        |url| handler_logical_url_for(Flavor::CURRENT, url).into(),
+    )
+}
+
+/// WKWebView hands a handler the logical URL. For the page's
+/// `http://<scheme>.localhost/<authority>/<path>` wry hands a WebView2 handler
+/// `<scheme>://localhost/<authority>/<path>`: its `revert_uri_work_around` puts the scheme
+/// back and nothing else. That is neither shape, and read as a logical URL its authority is
+/// `localhost`.
+pub fn handler_logical_url_for(flavor: Flavor, url: Url) -> Url {
+    let url = logical_url_for(flavor, &url).unwrap_or(url);
+    if flavor != Flavor::LocalhostHttp
+        || is_builtin(url.scheme())
+        || url.host_str() != Some("localhost")
+    {
+        return url;
+    }
+    let rest = url.path().strip_prefix('/').unwrap_or("");
+    let (authority, path) = match rest.split_once('/') {
+        Some((authority, path)) => (authority, format!("/{path}")),
+        None => (rest, "/".to_owned()),
+    };
+    if authority.is_empty() {
+        return url;
+    }
+    let Ok(mut out) = Url::parse(&format!("{}://{authority}/", url.scheme())) else {
+        return url;
+    };
+    out.set_path(&path);
+    out.set_query(url.query());
+    out.set_fragment(url.fragment());
+    out
 }
 
 pub fn platform_url_for(flavor: Flavor, logical: &Url) -> Url {
@@ -206,6 +241,40 @@ mod tests {
     #[test]
     fn text_helpers_leave_what_is_not_a_url_alone() {
         assert_eq!(platform_url_text("not a url"), "not a url");
-        assert_eq!(logical_url_text("not a url"), "not a url");
+        assert_eq!(handler_logical_url_text("not a url"), "not a url");
+    }
+
+    #[test]
+    fn a_webview2_handler_address_keeps_its_authority_in_the_path() {
+        let handed = |text: &str| handler_logical_url_for(Flavor::LocalhostHttp, url(text));
+        // what wry hands the handler for http://drawio-app.localhost/editor/index.html?ui=min
+        assert_eq!(
+            handed("drawio-app://localhost/editor/index.html?ui=min").as_str(),
+            "drawio-app://editor/index.html?ui=min"
+        );
+        assert_eq!(
+            handed("epub-asset://localhost/0123456789abcdef/OEBPS/ch1.xhtml").as_str(),
+            "epub-asset://0123456789abcdef/OEBPS/ch1.xhtml"
+        );
+        // the page's own shape and the logical one are read as before
+        assert_eq!(
+            handed("http://drawio-app.localhost/editor/index.html").as_str(),
+            "drawio-app://editor/index.html"
+        );
+        assert_eq!(
+            handed("drawio-app://editor/index.html").as_str(),
+            "drawio-app://editor/index.html"
+        );
+        // nothing after the placeholder host names no authority
+        assert_eq!(
+            handed("drawio-app://localhost/").as_str(),
+            "drawio-app://localhost/"
+        );
+        // WKWebView hands the logical address, where `localhost` is an authority like any other
+        assert_eq!(
+            handler_logical_url_for(Flavor::Scheme, url("drawio-app://localhost/editor/a.js"))
+                .as_str(),
+            "drawio-app://localhost/editor/a.js"
+        );
     }
 }
