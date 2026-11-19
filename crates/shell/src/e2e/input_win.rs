@@ -53,8 +53,10 @@ const SETTLE: Duration = Duration::from_millis(300);
 /// after the Korean layout is active and after Hangul mode is toggled: the IME of a freshly
 /// switched window took longer than `SETTLE` to start composing (the first keys came out raw)
 const IME_SETTLE: Duration = Duration::from_millis(1000);
-const FOREGROUND_TRIES: u32 = 20;
+/// how long the window may be refused the foreground before the step fails
+const FOREGROUND_TIMEOUT: Duration = Duration::from_secs(20);
 const FOREGROUND_WAIT: Duration = Duration::from_millis(100);
+const FOREGROUND_WAIT_MAX: Duration = Duration::from_millis(1000);
 const LAYOUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// the language id of Korean, the low word of its keyboard layout handle
 const KOREAN_LANGID: usize = 0x0412;
@@ -78,7 +80,11 @@ fn foreground(hwnd: HWND) -> Result<(), String> {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
     }
-    for _ in 0..FOREGROUND_TRIES {
+    // Right after launch Windows refuses the change for a while (the foreground lock of a
+    // process that has not yet received input); keep asking with a growing wait, bounded.
+    let end = Instant::now() + FOREGROUND_TIMEOUT;
+    let mut wait = FOREGROUND_WAIT;
+    loop {
         // SAFETY: reads the foreground window and asks for it to change.
         let done = unsafe {
             if GetForegroundWindow() == hwnd {
@@ -91,9 +97,12 @@ fn foreground(hwnd: HWND) -> Result<(), String> {
         if done {
             return Ok(());
         }
-        sleep(FOREGROUND_WAIT);
+        if Instant::now() >= end {
+            return Err("Windows did not let the app window become the foreground window.".into());
+        }
+        sleep(wait);
+        wait = (wait * 2).min(FOREGROUND_WAIT_MAX);
     }
-    Err("Windows did not let the app window become the foreground window.".into())
 }
 
 fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {

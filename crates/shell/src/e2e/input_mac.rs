@@ -386,9 +386,36 @@ fn post_click(window: &Window, x: f64, y: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// Activates the application and waits, a turn at a time, until `window` is its key window: the
+/// first press on a window that is not key only activates it (a click on Home did nothing), and
+/// the activation completes only after the UI thread has run its event loop.
+fn wait_key_window(ui: &Arc<dyn Thread>, window: &Window) -> Result<(), String> {
+    /// how long the window may take to become the key window before a click
+    const TIMEOUT: Duration = Duration::from_secs(5);
+    let end = std::time::Instant::now() + TIMEOUT;
+    loop {
+        let probe = window.clone();
+        let key = on_ui(ui, move || -> Result<bool, String> {
+            let mtm = MainThreadMarker::new()
+                .ok_or_else(|| "AppKit can only be asked on the UI thread.".to_owned())?;
+            let native = ns_window(&probe)?;
+            activate(mtm, native);
+            Ok(native.isKeyWindow())
+        })?;
+        if key {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= end {
+            return Err("The app window did not become the key window.".into());
+        }
+        sleep(Duration::from_millis(100));
+    }
+}
+
 /// A native left click at `x`, `y`, pixels from the top left of the window's content area
 pub(super) fn click(ui: &Arc<dyn Thread>, window: &Window, x: f64, y: f64) -> Result<(), String> {
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    wait_key_window(ui, window)?;
     let window = window.clone();
     on_ui(ui, move || post_click(&window, x / scale, y / scale))
 }
