@@ -330,7 +330,7 @@ impl PrivateDirectory {
             match child(
                 parent,
                 &name,
-                GENERIC_READ | GENERIC_WRITE | FILE_TRAVERSE,
+                GENERIC_READ | GENERIC_WRITE | FILE_TRAVERSE | DELETE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 true,
                 true,
