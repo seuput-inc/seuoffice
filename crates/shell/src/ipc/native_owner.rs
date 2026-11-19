@@ -259,6 +259,42 @@ pub(crate) fn register_recovery_open_target(
     }
 }
 
+/// The owner the document of a recovery opening has now, to finish the opening with. The
+/// target keeps the owner of the page's first registration. A Docs owner carries the media
+/// permit of the document its page shows, and loading the recovered document replaces that
+/// permit: the registered owner is then lost though the native document and the renderer are
+/// the same (run 44487876611). The current owner of that same native document stands for it,
+/// as it does in the page's own calls, and the admission still compares it with the
+/// registered one. A registered owner that still lives is itself the answer. Nothing is
+/// revived: a revoked document, a retired renderer or a view without a current permit has no
+/// owner to capture, and the owner of another native document is refused, whether or not that
+/// document shows the same address.
+pub(crate) fn current_recovery_owner(
+    views: &crate::views::ViewTable,
+    target: &shell_contract::ipc::RecoveryOpenTarget,
+    origin: Option<&DocumentContext>,
+    registered: &NativeRequestOwner,
+) -> Result<NativeRequestOwner, String> {
+    if registered
+        .loss_token()
+        .is_some_and(|loss| !loss.is_cancelled())
+    {
+        return Ok(registered.clone());
+    }
+    let current = capture_owner(views, target.view(), target.created())?;
+    let same_document = origin.is_some_and(|origin| {
+        current
+            .context
+            .authority_ref::<NativeOwnerAuthority>()
+            .is_some_and(|authority| &authority.origin == origin)
+    });
+    if same_document {
+        Ok(current)
+    } else {
+        Err("The recovery document was replaced before it became ready".into())
+    }
+}
+
 pub(crate) fn authenticated_owner(context: &NativeContext) -> Option<NativeRequestOwner> {
     let authority = context.authority_ref::<NativeOwnerAuthority>()?;
     Some(NativeRequestOwner {
@@ -656,5 +692,245 @@ mod tests {
         let receipt = commit_recovery_seed(&target, || Ok(())).unwrap();
         assert!(receipt.matches(&target));
         assert!(operation.loss_token().is_cancelled());
+    }
+
+    struct Inline;
+
+    impl Thread for Inline {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            job();
+        }
+        fn is_current(&self) -> bool {
+            true
+        }
+    }
+
+    /// A Docs view of a real view table, bound to a real registered native document, and a
+    /// recovery opening of it under a native tab load. The seed is committed and the owner of
+    /// the page's first registration is retained, as when the page has loaded and has not yet
+    /// loaded the recovered document.
+    struct DocsOpening {
+        views: crate::views::ViewTable,
+        browser: crate::native::browser::BrowserIdentity,
+        origin: DocumentContext,
+        lease: MediaViewLease,
+        command: shell_contract::ipc::NativeInvocationOperation,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        receipt: shell_contract::ipc::RecoverySeedReceipt,
+        registered: NativeRequestOwner,
+        _closure: shell_contract::ipc::NativeClosureIssuer,
+    }
+
+    impl DocsOpening {
+        fn new(label: &str) -> Self {
+            use shell_contract::ipc::{
+                CommandRecoveryConstraint, NativeClosureIssuer, NativeEditorCommand,
+                NativeInvocationIssuer, NativeInvocationSelection, RecoveryOpenContext,
+                RecoveryOpenTarget,
+            };
+            let views = crate::views::ViewTable::new(
+                std::sync::Arc::new(crate::ipc::outlet::TauriOutlet::default()),
+                std::sync::Arc::new(Inline),
+            );
+            let window = shell_contract::ids::WindowId(1);
+            let _lifecycle = views.add_window(window, label.into());
+            let (view, created) = views
+                .register_view(
+                    views.allocate_view().unwrap(),
+                    window,
+                    shell_contract::Surface::Docs,
+                )
+                .unwrap();
+            let lease = MediaViewLease::new(view.0).unwrap();
+            views.set_docs_media_lease(view, lease.clone()).unwrap();
+            let (browser, origin) = crate::native::browser::testing::registered_context(label);
+            assert!(views.bind_verified_native_origin(view, &created, &origin));
+            let registered = capture_owner(&views, view, &created).unwrap();
+
+            let issuer = NativeInvocationIssuer::new(CancelToken::default());
+            let command = issuer.issue_command(
+                NativeEditorCommand::HydrateTab {
+                    tab_id: "tab-1".into(),
+                },
+                CancelToken::default(),
+            );
+            let child = issuer
+                .issue_tab_recovery_child(
+                    &command,
+                    "tab-1",
+                    NativeInvocationSelection::RecoveryBlank {
+                        surface: shell_contract::Surface::Docs,
+                        title: "Recovered".into(),
+                    },
+                    CancelToken::default(),
+                )
+                .unwrap();
+            let (closure_issuer, closure, browser_owner) =
+                NativeClosureIssuer::new_with_owner(view, created.clone());
+            let target = RecoveryOpenTarget::bind_command(
+                RecoveryOpenContext::NativeStartup(child),
+                view,
+                created,
+                closure,
+                browser_owner,
+                CommandRecoveryConstraint {
+                    command: command.clone(),
+                    participants: Vec::new(),
+                    cancel: CancelToken::default(),
+                    pending: CancelToken::default(),
+                },
+            )
+            .unwrap();
+            let receipt = commit_recovery_seed(&target, || Ok(())).unwrap();
+            register_recovery_open_target(&target, registered.clone()).unwrap();
+            Self {
+                views,
+                browser,
+                origin,
+                lease,
+                command,
+                target,
+                receipt,
+                registered,
+                _closure: closure_issuer,
+            }
+        }
+
+        /// What the opening asks for when its document is ready.
+        fn current_owner(&self) -> Result<NativeRequestOwner, String> {
+            current_recovery_owner(
+                &self.views,
+                &self.target,
+                Some(&self.origin),
+                &self.registered,
+            )
+        }
+
+        /// The last admission of the opening, the one that hands the ready tab over.
+        fn hands_over(&self, receiver: &NativeRequestOwner) -> bool {
+            let Ok(snapshot) = self.target.authority_snapshot() else {
+                return false;
+            };
+            let cancel = self.target.created().loss_token();
+            with_recovery_open_service_snapshot(
+                &self.receipt,
+                &snapshot,
+                receiver,
+                &[],
+                None,
+                None,
+                &cancel,
+                None,
+                &[],
+                || (),
+            )
+            .is_some()
+        }
+
+        /// The admission the native tab load adopts the opened tab under, with the owner
+        /// the opening delivered.
+        fn adopts(&self, owner: &NativeRequestOwner) -> bool {
+            let Some(Ok(document)) = self
+                .target
+                .invocation_target()
+                .map(|target| target.registered_document())
+            else {
+                return false;
+            };
+            let cancel = CancelToken::default();
+            let pending = CancelToken::default();
+            with_command_recovery_target_effect(
+                &self.command,
+                &document,
+                owner,
+                &[],
+                &cancel,
+                &pending,
+                || (),
+            )
+            .is_some()
+        }
+    }
+
+    fn lost(owner: &NativeRequestOwner) -> bool {
+        owner.loss_token().is_none_or(|loss| loss.is_cancelled())
+    }
+
+    #[test]
+    fn a_docs_opening_finishes_under_the_owner_its_loaded_document_has() {
+        let opening = DocsOpening::new("docs-permit");
+        let before = opening.current_owner().unwrap();
+        assert!(
+            before
+                .loss_token()
+                .zip(opening.registered.loss_token())
+                .is_some_and(|(before, registered)| before.same_token(&registered)),
+            "a registered owner that still lives is the one to finish with",
+        );
+        assert!(opening.hands_over(&before));
+        assert!(opening.adopts(&before));
+
+        // The page loads the recovered document: its media permit is replaced, while the
+        // native document and the renderer stay.
+        let next = opening.lease.stage_document().unwrap();
+        opening.lease.commit_document(&next).unwrap();
+        assert!(lost(&opening.registered));
+        assert!(opening.origin.is_live());
+        assert!(opening.target.created().is_active());
+        assert!(!opening.hands_over(&opening.registered));
+        assert!(!opening.adopts(&opening.registered));
+
+        let current = opening.current_owner().unwrap();
+        assert!(!lost(&current));
+        assert!(opening.hands_over(&current));
+        assert!(opening.adopts(&current));
+    }
+
+    #[test]
+    fn a_docs_opening_is_not_handed_to_a_document_that_replaced_its_page() {
+        use crate::native::browser::testing::{TEST_NONCE, url};
+        use shell_contract::runtime::Views;
+        let opening = DocsOpening::new("docs-navigation");
+        let view = opening.target.view();
+
+        // The page leaves its document, here for the very address it already shows.
+        let address = url("https://example.test/a");
+        assert!(opening.browser.core.admit_navigation(&address));
+        assert!(opening.origin.is_revoked());
+        assert!(lost(&opening.registered));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&opening.registered));
+        assert!(!opening.adopts(&opening.registered));
+
+        // Its successor commits and registers at that address and takes the view.
+        opening.browser.core.commit(&address);
+        let successor = opening.browser.core.register_document(TEST_NONCE).unwrap();
+        assert!(successor != opening.origin);
+        assert!(opening.views.bind_verified_native_origin(
+            view,
+            opening.target.created(),
+            &successor
+        ));
+        let renderer = opening.views.renderer_generation(view).unwrap();
+        let successor_owner = capture_owner(&opening.views, view, &renderer).unwrap();
+        assert!(!lost(&successor_owner));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&successor_owner));
+        assert!(!opening.adopts(&successor_owner));
+    }
+
+    #[test]
+    fn a_docs_opening_stays_lost_without_a_current_permit_or_renderer() {
+        let opening = DocsOpening::new("docs-revoked-permit");
+        opening.lease.revoke();
+        assert!(lost(&opening.registered));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&opening.registered));
+
+        let opening = DocsOpening::new("docs-revoked-renderer");
+        opening.target.created().revoke();
+        assert!(lost(&opening.registered));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&opening.registered));
     }
 }
