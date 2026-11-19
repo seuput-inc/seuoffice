@@ -506,6 +506,7 @@ impl Runner<'_> {
                 let target = self.target()?;
                 let focus = Self::focus_page(&target.webview)?;
                 let keys = typed_keys(text);
+                Self::reset_record(&target.webview, "__e2eText");
                 // One key at a time: the page must have handled a key before the next arrives,
                 // or an editor under load drops characters out of the text. Windows also loses
                 // injected keys before they reach the page (S82 runs: `diagram` arrived as
@@ -569,6 +570,7 @@ impl Runner<'_> {
                     "focusAfter": after,
                     "resent": resent,
                     "unconfirmed": unconfirmed,
+                    "inserted": Self::inserted(&target.webview),
                 })))
             }
             Step::Ime { keys, prime } => {
@@ -760,12 +762,36 @@ impl Runner<'_> {
     }
 
     fn reset_keys(webview: &Webview) {
+        Self::reset_record(webview, "__e2eKeys");
+    }
+
+    /// Empties one of the recorder's lists (`__e2eKeys`, `__e2eText`) in the top document and
+    /// in every same-origin iframe
+    fn reset_record(webview: &Webview, list: &str) {
         let Ok(page) = webview.page() else { return };
-        let expression = "(() => { const clear = (w) => { try { w.__e2eKeys = [] } catch (error) {} }; \
-             clear(window); for (const f of document.querySelectorAll('iframe')) clear(f.contentWindow); return true })()";
+        let expression = format!(
+            "(() => {{ const clear = (w) => {{ try {{ w.{list} = [] }} catch (error) {{}} }}; \
+             clear(window); for (const f of document.querySelectorAll('iframe')) clear(f.contentWindow); return true }})()"
+        );
         let _ = page.blocking(FOCUS_QUERY, |done| {
-            page.evaluate(expression, false, None, done)
+            page.evaluate(&expression, false, None, done)
         });
+    }
+
+    /// The text the engine offered the page since the last reset of `__e2eText`, as its
+    /// `beforeinput` events carried it (an event without text is named by its input type), for
+    /// the top document and each same-origin iframe (`null` for a frame out of reach). The
+    /// recorder listens at the window in the capture phase, so this is what arrived before any
+    /// editor code ran: text that is here and not in the document was dropped by the editor,
+    /// text that is not here never came out of the key event.
+    fn inserted(webview: &Webview) -> Option<Value> {
+        let page = webview.page().ok()?;
+        let expression = "(() => { const text = (w) => { try { return (w.__e2eText || []).join('') } catch (error) { return null } }; \
+             return { top: text(window), frames: [...document.querySelectorAll('iframe')].map((f) => text(f.contentWindow)) } })()";
+        page.blocking(FOCUS_QUERY, |done| {
+            page.evaluate(expression, false, None, done)
+        })
+        .ok()
     }
 
     /// A native left click at a point of an element of the top document. The page reports the
