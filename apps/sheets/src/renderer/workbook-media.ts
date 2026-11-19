@@ -38,8 +38,11 @@ export function useWorkbookMediaUrl(
   useEffect(() => {
     if (sessionId === undefined) return
     let isCurrent = true
-    void window.desktopApi
-      .readWorkbookMedia({ sessionId, visualId })
+    // Asked from inside the chain: a host whose reader throws, or that has
+    // none (a web bridge may leave a member out), lands in the catch below
+    // instead of throwing out of the effect and unmounting the sheet.
+    void Promise.resolve()
+      .then(() => window.desktopApi.readWorkbookMedia({ sessionId, visualId }))
       .then(async (media) => {
         const next = await workbookMediaDataUrl(media)
         if (!isCurrent) return
