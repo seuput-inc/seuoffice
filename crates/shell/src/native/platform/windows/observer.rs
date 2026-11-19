@@ -34,6 +34,7 @@ use webview2_com::{
     NavigationStartingEventHandler, ProcessFailedEventHandler, SourceChangedEventHandler,
     take_pwstr,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
 use windows::core::{BOOL, PWSTR};
 
 use super::Platform;
@@ -145,7 +146,12 @@ fn file_shortcut() -> Option<&'static str> {
     if held & CTRL == 0 || held & ALT != 0 {
         return None;
     }
-    Some(if held & SHIFT != 0 {
+    // Shift alone raises no accelerator event, so it is never seen going down here: its own
+    // state is read, which holds for a hand on the keyboard (the key is still down when the
+    // letter is handled)
+    // SAFETY: a plain read of the keyboard's physical state.
+    let shift = held & SHIFT != 0 || unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } < 0;
+    Some(if shift {
         "CmdOrCtrl+Shift+S"
     } else {
         "CmdOrCtrl+S"

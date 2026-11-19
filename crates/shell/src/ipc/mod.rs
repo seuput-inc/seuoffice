@@ -398,6 +398,12 @@ pub(crate) fn invoke_verified(
     bytes: &[u8],
 ) -> Result<(), String> {
     if sender.view != owner.view || with_verified(&owner, || ()).is_none() {
+        trace!(
+            "refused",
+            "the owner of view {} did not verify for an invoke (same view: {})",
+            sender.view.0,
+            sender.view == owner.view
+        );
         return Err("Renderer document is no longer available.".into());
     }
     let Call { id, channel, args } = parse_bytes(bytes, true)?;
@@ -437,6 +443,12 @@ pub(crate) fn send_verified(
     bytes: &[u8],
 ) -> Result<(), String> {
     if sender.view != owner.view || with_verified(&owner, || ()).is_none() {
+        trace!(
+            "refused",
+            "the owner of view {} did not verify for a send (same view: {})",
+            sender.view.0,
+            sender.view == owner.view
+        );
         return Err("Renderer document is no longer available.".into());
     }
     let Call { channel, args, .. } = parse_bytes(bytes, false)?;
@@ -514,6 +526,11 @@ pub(super) fn verified_sender(
         .authority_ref::<native_owner::NativeOwnerAuthority>()
         .ok_or(NOT_READY)?;
     if authority.origin != *origin {
+        trace!(
+            "refused",
+            "the owner of view {} is bound to another document than the caller's",
+            sender.view.0
+        );
         return Err("Renderer document is no longer available.".into());
     }
     Ok((sender, owner, reserved))

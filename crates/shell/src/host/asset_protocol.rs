@@ -46,10 +46,16 @@ fn respond(reply: &Reply, answer: MediaAnswer) {
         *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
         response
     });
+    let (status, bytes) = (response.status().as_u16(), response.body().len());
     let responder = reply
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .take();
+    crate::trace::trace!(
+        "asset",
+        "answered {status} ({bytes} bytes){}",
+        if responder.is_some() { "" } else { ", but the request was already answered" }
+    );
     if let Some(responder) = responder {
         responder.respond(response);
     }
@@ -148,11 +154,17 @@ impl Authorization {
 
 fn original_slide_uri(uri: &str) -> Option<String> {
     let url = tauri::Url::parse(uri).ok()?;
-    if url.scheme() == "seuoffice-slide-media" {
-        return Some(uri.to_owned());
-    }
-    if url.scheme() != "http" || url.host_str()? != "seuoffice-slide-media.localhost" {
-        return None;
+    match url.scheme() {
+        "seuoffice-slide-media" => {
+            // wry hands a handler `<scheme>://localhost/<authority>/<rest>` on Windows for the
+            // page's `http://<scheme>.localhost/<authority>/<rest>` (see
+            // `document_assets::docx_original_uri`)
+            if !(cfg!(windows) && url.host_str() == Some("localhost")) {
+                return Some(uri.to_owned());
+            }
+        }
+        "http" if url.host_str()? == "seuoffice-slide-media.localhost" => {}
+        _ => return None,
     }
     let path = url.path().strip_prefix('/')?;
     let (authority, rest) = path.split_once('/')?;
@@ -331,6 +343,12 @@ pub fn handle(
 ) {
     let reply = Arc::new(Mutex::new(Some(responder)));
     let method = request.method().clone();
+    // the start of the address only: a hand-off address ends in its one-time token
+    crate::trace::trace!(
+        "asset",
+        "'{label}' {method} {}",
+        request.uri().to_string().chars().take(48).collect::<String>()
+    );
     let response = context.response_gate();
     let cancel = CancelToken::default();
     let cancelled = cancel.clone();

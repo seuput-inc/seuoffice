@@ -2739,6 +2739,16 @@ pub(crate) fn capture_owner(
         );
         "Renderer document authentication is not ready."
     })?;
+    let (origin, renderer) = (captured.origin.clone(), captured.renderer.clone());
+    let kind = if captured.asset.is_some() {
+        "asset"
+    } else if captured.slides.is_some() {
+        "slides"
+    } else if captured.docs.is_some() {
+        "docs"
+    } else {
+        "plain"
+    };
     let captured = if let Some(asset) = captured.asset {
         super::asset_owner_with_browser(
             view,
@@ -2772,7 +2782,20 @@ pub(crate) fn capture_owner(
             captured.browser_owner,
         )
     };
-    captured.ok_or_else(|| "Renderer document is no longer available.".into())
+    captured.ok_or_else(|| {
+        // which of the owner's lifetimes ended between the capture and the build: the page is
+        // told its document is gone for good, so a call lost in a hand-over is not retried
+        crate::trace::trace!(
+            "refused",
+            "the {kind} owner of view {} could not be built: origin live {}, registered {}, \
+             renderer active {}",
+            view.0,
+            origin.is_live(),
+            origin.is_registered(),
+            renderer.is_active()
+        );
+        "Renderer document is no longer available.".into()
+    })
 }
 
 pub(crate) fn host(cx: &HostContext) -> OwnedEffectsHost {

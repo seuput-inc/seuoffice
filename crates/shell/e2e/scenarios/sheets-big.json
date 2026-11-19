@@ -83,6 +83,12 @@
     },
     {
       "op": "query",
+      "as": "prep-far-cell",
+      "timeoutMs": 30000,
+      "js": "(async () => { const r = await window.__seuofficeControl?.({cmd:'selection'}); return r?.result?.values?.[0]?.[0] ?? null })()"
+    },
+    {
+      "op": "query",
       "as": "big-after",
       "js": "window.__seuofficeControl?.({cmd:'selection'}) ?? null"
     }

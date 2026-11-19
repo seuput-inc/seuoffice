@@ -1916,12 +1916,23 @@ pub(crate) fn handle_target(
 
 /// Convert the Windows `http://<scheme>.localhost` media URL back to the original authority-based DOCX URL.
 pub(crate) fn docx_original_uri(uri: &str) -> Option<String> {
+    docx_original_uri_for(uri, cfg!(windows))
+}
+
+/// `localhost_shape`: whether a scheme handler is handed `<scheme>://localhost/<authority>/<rest>`
+/// for the page's `http://<scheme>.localhost/<authority>/<rest>`, as wry does on Windows. Read
+/// as a logical URL its authority was `localhost`: the hand-off of a document's bytes never
+/// matched its token, and every document opened blank there ("document bytes unavailable (404)").
+fn docx_original_uri_for(uri: &str, localhost_shape: bool) -> Option<String> {
     let url = tauri::Url::parse(uri).ok()?;
-    if url.scheme() == "seuoffice-docx-media" {
-        return Some(uri.to_owned());
-    }
-    if url.scheme() != "http" || url.host_str()? != "seuoffice-docx-media.localhost" {
-        return None;
+    match url.scheme() {
+        "seuoffice-docx-media" => {
+            if !(localhost_shape && url.host_str() == Some("localhost")) {
+                return Some(uri.to_owned());
+            }
+        }
+        "http" if url.host_str()? == "seuoffice-docx-media.localhost" => {}
+        _ => return None,
     }
     let path = url.path().strip_prefix('/')?;
     let (authority, rest) = path.split_once('/')?;
@@ -2278,5 +2289,32 @@ mod tests {
             docx_original_uri("http://other.localhost/handoff/abc"),
             None
         );
+    }
+
+    #[test]
+    fn docx_handler_url_of_windows_restores_the_original_authority() {
+        // what wry hands a scheme handler on Windows for the page's
+        // http://seuoffice-docx-media.localhost/handoff/abc
+        assert_eq!(
+            docx_original_uri_for("seuoffice-docx-media://localhost/handoff/abc", true),
+            Some("seuoffice-docx-media://handoff/abc".into())
+        );
+        assert_eq!(
+            docx_original_uri_for("seuoffice-docx-media://localhost/abc/word/media/a.png?x=1", true),
+            Some("seuoffice-docx-media://abc/word/media/a.png?x=1".into())
+        );
+        // the logical shape passes unchanged on both platforms
+        for localhost_shape in [false, true] {
+            assert_eq!(
+                docx_original_uri_for("seuoffice-docx-media://handoff/abc", localhost_shape),
+                Some("seuoffice-docx-media://handoff/abc".into())
+            );
+        }
+        // where the scheme is served as it is named, `localhost` is an authority like any other
+        assert_eq!(
+            docx_original_uri_for("seuoffice-docx-media://localhost/handoff/abc", false),
+            Some("seuoffice-docx-media://localhost/handoff/abc".into())
+        );
+        assert_eq!(docx_original_uri_for("seuoffice-docx-media://localhost/", true), None);
     }
 }

@@ -56,6 +56,8 @@ const IME_SETTLE: Duration = Duration::from_millis(1000);
 /// how long the window may be refused the foreground before the step fails
 const FOREGROUND_TIMEOUT: Duration = Duration::from_secs(20);
 const FOREGROUND_WAIT: Duration = Duration::from_millis(100);
+/// how long a shortcut's keys are held down
+const SHORTCUT_HOLD: Duration = Duration::from_millis(120);
 const FOREGROUND_WAIT_MAX: Duration = Duration::from_millis(1000);
 const LAYOUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// the language id of Korean, the low word of its keyboard layout handle
@@ -288,7 +290,14 @@ pub(super) fn shortcut(
     shortcut: Shortcut,
 ) -> Result<(), String> {
     foreground(hwnd_of(window)?)?;
-    send(&shortcut_inputs(shortcut))
+    // The presses, then the releases a moment later, as a hand holds the modifiers. Sent in one
+    // batch the modifiers are up again before the app reads them for the letter: the shell's
+    // accelerator handler saw Ctrl+Shift+S as Ctrl+S.
+    let inputs = shortcut_inputs(shortcut);
+    let (presses, releases) = inputs.split_at(inputs.len() / 2);
+    send(presses)?;
+    sleep(SHORTCUT_HOLD);
+    send(releases)
 }
 
 /// The events of a raw key for the IME: the letter's own virtual key, Shift for a capital

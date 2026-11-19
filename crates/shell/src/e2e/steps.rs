@@ -39,7 +39,7 @@ const POLL: Duration = Duration::from_millis(50);
 /// how often a key the page did not record is sent before it counts as lost
 const KEY_TRIES: u32 = 4;
 /// how long a key the page has not recorded yet is given before it counts as lost
-const KEY_LATE: Duration = Duration::from_millis(400);
+const KEY_LATE: Duration = Duration::from_millis(1500);
 /// the shell window and its first tab are up within this, or nothing can run
 const SHELL_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// the core thread answers the runner's questions within this, or it is stuck in a job
@@ -384,6 +384,23 @@ impl Runner<'_> {
         }
     }
 
+    /// What a page that did not become ready was doing: its last resource loads (a fetch that
+    /// never ended has no entry), what it shows, and what its recorder caught
+    fn page_state(webview: &Webview) -> Option<Value> {
+        let page = webview.page().ok()?;
+        let expression = "(() => ({ \
+             resources: performance.getEntriesByType('resource').slice(-8).map((e) => \
+             e.name.split('/').pop().slice(0, 40) + ' ' + Math.round(e.startTime) + '+' + \
+             Math.round(e.duration) + 'ms ' + e.initiatorType), \
+             now: Math.round(performance.now()), \
+             text: document.body ? document.body.innerText.replace(/\\s+/g, ' ').slice(-200) : null, \
+             errors: window.__e2eErrors || [] }))()";
+        page.blocking(FOCUS_QUERY, |done| {
+            page.evaluate(expression, false, None, done)
+        })
+        .ok()
+    }
+
     fn wait_ready(&mut self, timeout: Duration) -> StepResult {
         let deadline = Instant::now() + timeout;
         let mut last = None;
@@ -396,14 +413,19 @@ impl Runner<'_> {
                     self.switch = None;
                     let quiet = Self::settle(&webview);
                     let control = Self::wait_control(&webview, active.kind, deadline);
-                    return Ok(Some(json!({
+                    let mut value = json!({
                         "kind": active.kind,
                         "view": active.view.0,
                         "title": active.title,
                         "file": active.file,
                         "quiet": quiet,
                         "control": control,
-                    })));
+                    });
+                    if matches!(control, "not_ready" | "absent") {
+                        // the editor never came up: what the page last loaded and shows
+                        value["page"] = json!(Self::page_state(&webview));
+                    }
+                    return Ok(Some(value));
                 }
                 last = Some(active);
             }
@@ -509,9 +531,11 @@ impl Runner<'_> {
                         let Some(want) = &want else { break };
                         Self::flush_input(&target.webview);
                         let mut arrival = Self::key_arrived(&target.webview, want);
-                        if matches!(arrival, Some((false, _))) {
-                            // a key still on its way would be typed twice by a resend
-                            sleep(KEY_LATE);
+                        // a key still on its way would be typed twice by a resend, and a second
+                        // Tab or Enter undoes the first: look again for a while before that
+                        let late = Instant::now() + KEY_LATE;
+                        while matches!(arrival, Some((false, _))) && Instant::now() < late {
+                            sleep(POLL * 2);
                             Self::flush_input(&target.webview);
                             arrival = Self::key_arrived(&target.webview, want);
                         }
@@ -656,7 +680,23 @@ impl Runner<'_> {
     /// Keys go to the first responder. `set_focus` is asked of the UI thread and answers before
     /// it has run, so the first keys of a `type` were lost: wait until the page says it has the
     /// focus (the last state is returned either way; the checker sees what the keys met).
+    ///
+    /// A page that has the focus already is left alone. Focusing it again can move the focus
+    /// inside the page on Windows (WebView2's `MoveFocus`), and an editor that ends an edit
+    /// when it loses the focus (a mind map topic, a slide's text box) would then lose what the
+    /// step before began.
     fn focus_page(webview: &Webview) -> Result<Option<Value>, StepError> {
+        let state = Self::focus_state(webview);
+        let focused = |state: &Option<Value>| {
+            state
+                .as_ref()
+                .and_then(|state| state.get("hasFocus"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        if focused(&state) {
+            return Ok(state);
+        }
         webview.set_focus().map_err(failed)?;
         let end = Instant::now() + FOCUS_WAIT;
         loop {
