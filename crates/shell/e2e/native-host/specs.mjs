@@ -59,15 +59,21 @@ export function baseSteps(name) {
         )
       : -1
   const typed = steps.find((step) => step.op === 'type' && step.text.startsWith('SEU-E2E-'))
+  const edit = save < 0 ? [] : steps.slice(ready[0] + 1, save)
+  // the scenario's own read of the edited page, where it has one
+  const before = edit.find((step) => step.op === 'query' && String(step.as).endsWith('-before'))
   return {
     file: steps[0].path.replace('${WORK}/', '').replace('${FIXTURES}/', ''),
     /** open the file and wait for it */
     open: steps.slice(0, ready[0] + 1),
     /** type the marker text, up to the save */
-    edit: save < 0 ? [] : steps.slice(ready[0] + 1, save),
+    edit,
     /** after a reopen: bring the text into view and read it */
     read: after < 0 ? [] : steps.slice(ready[1] + 1, after + 1),
-    proof: after < 0 ? undefined : { query: steps[after].as, marker: typed?.text },
+    proof:
+      after < 0
+        ? undefined
+        : { query: steps[after].as, marker: typed?.text, ...(before && { before: before.as }) },
   }
 }
 
@@ -101,6 +107,19 @@ const press = (as, selector, timeoutMs) => ({
 })
 /** The first launch of a profile, before anything else: the onboarding is skipped. */
 const firstLaunch = [press('prep-onboarding', ONBOARDING_SKIP, 30000), wait(1000)]
+
+/**
+ * What an editor's page shows once the opened document is in it, where `waitReady` cannot tell.
+ * `waitReady` ends when the page is registered and its network has been quiet for a moment; the
+ * HWP page asks for its editor frame after that (run 44526047099, Windows: the frame was
+ * requested 3.6 s after the page had loaded, `waitReady` had ended, and the text was typed into
+ * an editor that held no document). The step asks again until the page shows it.
+ */
+const LOADED = {
+  hwp: "document.querySelector('.hwp-app')?.dataset.phase === 'ready'",
+}
+const loaded = (kind, as, timeoutMs) =>
+  LOADED[kind] ? [{ op: 'query', as: `prep-${as}`, timeoutMs, js: LOADED[kind] }] : []
 
 /** A recorded flag (`{type: 'boolean', value}`), or undefined when the argument is something else. */
 const flag = (shape) => (shape?.type === 'boolean' ? shape.value : undefined)
@@ -197,6 +216,7 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
         steps: [
           ...firstLaunch,
           ...base.open,
+          ...loaded(kind, `${kind}-loaded`, ready),
           ...base.edit,
           ...probes.steps,
           ...more.first,
@@ -207,6 +227,7 @@ function recoveryVariant(kind, { channel, second, extra = () => ({}) }) {
         steps: [
           press(LIST_PRESS, LIST_CONFIRM, 60000),
           { op: 'waitReady', timeoutMs: ready },
+          ...loaded(kind, `${kind}-restored`, ready),
           ...base.read,
           invoke(`${kind}-twice`, channel, form.with(replay('self', ...form.path))),
           ...openFile(second, ready),
@@ -251,10 +272,20 @@ const intact = (spec) => ({ spec, scenario: 'successful-ack' })
  */
 function damagedVariant(kind, channel, { both = false } = {}) {
   const base = baseSteps(`${kind}-edit`)
+  const ready = base.open.at(-1).timeoutMs
   return {
     about: `${kind}: edit, crash, restore a damaged recovery copy`,
     runs: [
-      { end: 'kill', steps: [...firstLaunch, ...base.open, ...base.edit, wait(COPY_WAIT_MS)] },
+      {
+        end: 'kill',
+        steps: [
+          ...firstLaunch,
+          ...base.open,
+          ...loaded(kind, `${kind}-loaded`, ready),
+          ...base.edit,
+          wait(COPY_WAIT_MS),
+        ],
+      },
       {
         damage: both ? ['copies', base.file] : 'copies',
         steps: [press(LIST_PRESS, LIST_CONFIRM, 60000), wait(20000)],

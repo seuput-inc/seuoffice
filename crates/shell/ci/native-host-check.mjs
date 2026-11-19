@@ -125,6 +125,20 @@ function proofHolds(value, marker) {
   return JSON.stringify(value ?? null).includes(marker)
 }
 
+/**
+ * Where a restored page lacks the text, what the edited page of the first run showed before the
+ * crash, when its scenario read it. A text that was never in the editor is the runner's input or
+ * the editor's loading; a text the editor held and the restored page lacks is the recovery.
+ */
+function lostWhere(first, { before, marker }) {
+  if (!before) return ''
+  const edited = stepRecord(first, (step) => step.op === 'query' && step.as === before)
+  if (edited?.ok && proofHolds(edited.value, marker))
+    return '; the edited page showed it before the crash, so the restore lost it'
+  const shown = clip(JSON.stringify(edited?.value ?? edited?.error ?? null), 80)
+  return `; the edited page did not show it before the crash either (${shown}), so the edit never reached the document`
+}
+
 const RULES = {
   /** A page of the channel's own surface sent it and was refused by the handler. */
   refused(run, rule, channel) {
@@ -168,7 +182,7 @@ const RULES = {
   },
 
   /** The app's own page acknowledged with this verdict and the shell accepted it. */
-  ack(run, rule, channel, spec) {
+  ack(run, rule, channel, spec, runs) {
     const on = rule.on ?? channel
     if (rule.list) {
       const press = stepRecord(run, (s) => s.op === 'query' && s.as === LIST_PRESS)
@@ -222,7 +236,8 @@ const RULES = {
       const read = stepRecord(run, (step) => step.op === 'query' && step.as === query)
       if (!read?.ok || !marker || !proofHolds(read.value, marker))
         return fail(
-          `the restored page does not show ${marker}: ${clip(JSON.stringify(read?.value ?? read?.error ?? null))}`,
+          `the restored page does not show ${marker}: ${clip(JSON.stringify(read?.value ?? read?.error ?? null))}` +
+            lostWhere(runs[0], rule.proof),
         )
       proof = `; the page shows ${marker}`
     }
@@ -276,7 +291,7 @@ function checkSpec(root, name, spec) {
         artifact: runs.findLast(Boolean).artifact,
       }
     }
-    return { ...row, ...RULES[rule.kind](run, rule, channel, spec), artifact: run.artifact }
+    return { ...row, ...RULES[rule.kind](run, rule, channel, spec, runs), artifact: run.artifact }
   })
 }
 

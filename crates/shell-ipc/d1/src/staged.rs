@@ -200,7 +200,11 @@ impl StagedOutput {
         let written = match pending.quarantine() {
             Ok(written) => written,
             Err((error, pending)) => {
-                note(path, "moving the written stage into its private directory", &error);
+                note(
+                    path,
+                    "moving the written stage into its private directory",
+                    &error,
+                );
                 let (stage, _) = pending.into_parts();
                 let cleanup = abandon(Retained::Pending(stage));
                 return Err(failure(error.to_string(), cleanup));

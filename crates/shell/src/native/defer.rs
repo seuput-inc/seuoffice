@@ -141,6 +141,12 @@ pub(crate) fn hold() -> Hold {
     Hold(())
 }
 
+/// Whether this thread is inside a state gate (see [`hold`]): what it would wait for there, it
+/// may be holding itself.
+pub(crate) fn holding() -> bool {
+    HELD.with(Cell::get) > 0
+}
+
 impl Drop for Hold {
     fn drop(&mut self) {
         let remaining = HELD.with(|held| {

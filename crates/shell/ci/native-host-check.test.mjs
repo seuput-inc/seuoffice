@@ -325,6 +325,37 @@ describe('the specs against the contracts', () => {
     expect(press(page(button, label))).toEqual({ pressed: '.recovery-confirm' })
     expect(clicks).toBe(2)
   })
+
+  it('types into the HWP editor only once its page shows the document', () => {
+    // run 44526047099, Windows: `waitReady` ended before the editor frame was requested
+    const phase = (value) => ({
+      querySelector: (selector) =>
+        selector === '.hwp-app' && value ? { dataset: { phase: value } } : null,
+    })
+    for (const name of ['hwp-recovery', 'hwp-damaged']) {
+      const { steps } = SPECS[name].runs[0]
+      const gate = steps.findIndex((step) => step.as === 'prep-hwp-loaded')
+      expect(gate, name).toBeGreaterThan(steps.findIndex((step) => step.op === 'waitReady'))
+      expect(gate, name).toBeLessThan(steps.findIndex((step) => step.as === 'prep-caret'))
+      expect(steps[gate].timeoutMs, name).toBeGreaterThanOrEqual(60000)
+      const shown = (document) => new Function('document', `return ${steps[gate].js}`)(document)
+      expect(['ready', 'loading', 'booting', 'failed', undefined].map(phase).map(shown)).toEqual([
+        true,
+        false,
+        false,
+        false,
+        false,
+      ])
+    }
+    const restore = SPECS['hwp-recovery'].runs[1].steps
+    const restored = restore.findIndex((step) => step.as === 'prep-hwp-restored')
+    expect(restored).toBe(restore.findIndex((step) => step.op === 'waitReady') + 1)
+    expect(restored).toBeLessThan(restore.findIndex((step) => step.as === 'hwp-after'))
+    // an editor whose page has no such sign gets no gate
+    expect(SPECS['docs-recovery'].runs[0].steps.some((step) => /-loaded$/.test(step.as))).toBe(
+      false,
+    )
+  })
 })
 
 describe('an invoke step', () => {
@@ -444,8 +475,19 @@ describe('the rules', () => {
       if (number === 2)
         records.find((record) => record.as === 'markdown-after').value = 'the saved text'
     })
+    const lost = rowOf(check('markdown-recovery'), channel, 'successful-ack').evidence
+    expect(lost).toContain('does not show SEU-E2E-markdown')
+    // the editor held the text before the crash: the restore is what lost it
+    expect(lost).toContain('the edited page showed it before the crash, so the restore lost it')
+
+    // run 44526047099, Windows: the typed text never reached the editor
+    simulate('markdown-recovery', undefined, (number, _lines, records) => {
+      const read = number === 1 ? 'markdown-before' : 'markdown-after'
+      records.find((record) => record.as === read).value = 'the saved text'
+    })
     expect(rowOf(check('markdown-recovery'), channel, 'successful-ack').evidence).toContain(
-      'does not show SEU-E2E-markdown',
+      'the edited page did not show it before the crash either ("the saved text"), ' +
+        'so the edit never reached the document',
     )
 
     simulate('markdown-recovery', undefined, (number, lines) => {

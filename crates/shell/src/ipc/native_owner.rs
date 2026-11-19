@@ -342,6 +342,51 @@ pub(crate) fn authenticated_browser_owner(
         .as_ref()
 }
 
+/// The revocation subscription of an owner under construction, which cancels `loss`.
+/// [`DocumentContext::on_revoke`] does not wait for the document's lock: while another thread
+/// holds it for a moment (each request of the bridge has its nonce checked under it), a live
+/// document answers as a revoked one does, and the caller is told its document is gone for
+/// good (run 44526047099, Windows: ten calls of live documents were refused so, none on macOS).
+/// A live document is asked again for as long as `again` allows. A revoked one is not, and
+/// neither is one asked from inside a state gate, whose lock this thread may hold itself.
+fn subscribe_origin_loss(
+    origin: &DocumentContext,
+    loss: &CancelToken,
+    mut again: impl FnMut() -> bool,
+) -> Option<DocumentRevocation> {
+    let mut waited = 0_u32;
+    loop {
+        let cancelled = loss.clone();
+        if let Some(subscription) = origin.on_revoke(move || cancelled.cancel()) {
+            if waited > 0 {
+                // how often a live document was busy, and for how many questions
+                crate::trace::trace!("owner", "a busy document answered after {waited} more");
+            }
+            return Some(subscription);
+        }
+        if origin.is_revoked() || crate::native::defer::holding() || !again() {
+            return None;
+        }
+        waited += 1;
+    }
+}
+
+/// How long a held document lock is waited out: the thread gives way a number of times, then
+/// sleeps a millisecond sixteen times (a coarse system timer makes that a quarter of a second
+/// at most). What holds the lock holds it for one short effect.
+fn briefly() -> impl FnMut() -> bool {
+    let mut asked = 0_u32;
+    move || {
+        asked += 1;
+        match asked {
+            1..=64 => std::thread::yield_now(),
+            65..=80 => std::thread::sleep(std::time::Duration::from_millis(1)),
+            _ => return false,
+        }
+        true
+    }
+}
+
 /// Assemble only after ingress has authenticated and bound all three identities.
 pub(crate) fn asset_owner_with_browser(
     view: ViewId,
@@ -354,8 +399,7 @@ pub(crate) fn asset_owner_with_browser(
         return None;
     }
     let loss = CancelToken::default();
-    let cancelled = loss.clone();
-    let origin_loss = origin.on_revoke(move || cancelled.cancel())?;
+    let origin_loss = subscribe_origin_loss(&origin, &loss, briefly())?;
     let cancelled = loss.clone();
     let renderer_loss = renderer.loss_token().on_cancel(move || cancelled.cancel());
     let cancelled = loss.clone();
@@ -400,8 +444,7 @@ pub(crate) fn owner_with_browser<T: std::any::Any + Send + Sync>(
     browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
 ) -> Option<NativeRequestOwner> {
     let loss = CancelToken::default();
-    let cancelled = loss.clone();
-    let origin_loss = origin.on_revoke(move || cancelled.cancel())?;
+    let origin_loss = subscribe_origin_loss(&origin, &loss, briefly())?;
     let cancelled = loss.clone();
     let renderer_loss = renderer.loss_token().on_cancel(move || cancelled.cancel());
     let value = &payload as &dyn std::any::Any;
@@ -998,5 +1041,85 @@ mod tests {
             done.recv_timeout(std::time::Duration::from_secs(60)),
             Ok((false, true, true, false)),
         );
+    }
+
+    #[test]
+    fn an_owner_of_a_live_document_waits_out_a_lock_another_thread_holds() {
+        use crate::native::browser::testing::registered_context;
+        let (_browser, origin) = registered_context("owner-contended");
+        let (held, holding) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let gate = origin.clone();
+        let holder = std::thread::spawn(move || {
+            gate.with_live(|| {
+                held.send(()).unwrap();
+                let _ = released.recv();
+            })
+        });
+        holding.recv().unwrap();
+
+        // the lock is held elsewhere: asked once, the document answers as a lost one does
+        let loss = CancelToken::default();
+        assert!(subscribe_origin_loss(&origin, &loss, || false).is_none());
+
+        // asked again after the other thread has let go, the live document subscribes
+        let mut holder = Some(holder);
+        let mut asked = 0;
+        let subscription = subscribe_origin_loss(&origin, &loss, || {
+            asked += 1;
+            if let Some(holder) = holder.take() {
+                release.send(()).unwrap();
+                assert_eq!(holder.join().unwrap(), Some(()));
+            }
+            true
+        });
+        assert!(subscription.is_some());
+        assert_eq!(asked, 1);
+        assert!(!loss.is_cancelled());
+
+        // and the subscription is still that document's loss
+        origin
+            .0
+            .revoke(crate::native::events::RevokeReason::Close)
+            .unwrap()
+            .deliver();
+        assert!(loss.is_cancelled());
+    }
+
+    #[test]
+    fn an_owner_is_not_waited_for_where_no_wait_can_help() {
+        use crate::native::browser::testing::registered_context;
+        let renderer = RendererGeneration::new();
+
+        // inside the document's own gate this thread holds the lock: nothing is asked again
+        let (_browser, origin) = registered_context("owner-own-gate");
+        let mut asked = 0;
+        let inside = origin.with_live(|| {
+            subscribe_origin_loss(&origin, &CancelToken::default(), || {
+                asked += 1;
+                true
+            })
+            .is_some()
+        });
+        assert_eq!((inside, asked), (Some(false), 0));
+        assert!(owner(ViewId(31), origin.clone(), renderer.clone(), ()).is_some());
+
+        // a revoked document is lost, not busy
+        origin
+            .0
+            .revoke(crate::native::events::RevokeReason::Close)
+            .unwrap()
+            .deliver();
+        let gone = subscribe_origin_loss(&origin, &CancelToken::default(), || {
+            asked += 1;
+            true
+        });
+        assert!(gone.is_none());
+        assert_eq!(asked, 0);
+        assert!(owner(ViewId(31), origin, renderer, ()).is_none());
+
+        // the wait the owners use ends
+        let mut again = briefly();
+        assert_eq!((0..200).take_while(|_| again()).count(), 80);
     }
 }

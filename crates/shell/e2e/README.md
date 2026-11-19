@@ -93,3 +93,11 @@ over Home, the list included), and the list's confirm button in the second. The 
 button's `click()` only while the button is what lies at its own centre, and answers `false`
 otherwise; the checker fails a list that was not pressed. These two steps are setup, not evidence
 of user input: the evidence is what the restored page then sends by itself.
+
+`waitReady` ends when the page is registered and its network has been quiet for a moment. The HWP
+page loads its editor frame after that, so the HWP specs wait in a `prep-` query until the page
+shows the document (`data-phase="ready"`) before they type and before they read a restored one.
+
+When a restored page lacks the typed text, the checker also says what the edited page showed
+before the crash, where the scenario read it (`<kind>-before`): a text that was never in the
+editor is the runner's input or the editor's loading, a text the editor held is the recovery.
