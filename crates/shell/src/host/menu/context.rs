@@ -301,12 +301,23 @@ fn image_png_at(webview: &tauri::Webview, x: f64, y: f64) -> Result<Vec<u8>, Str
             const canvas = document.createElement('canvas');
             canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
             canvas.getContext('2d').drawImage(img, 0, 0);
-            return canvas.toDataURL('image/png').slice('data:image/png;base64,'.length);
+            return canvas.toDataURL('image/png');
         }})()"
     );
     let answer = evaluate(webview, &script)?;
-    let base64 = answer.as_str().ok_or("no image data")?;
-    Ok(jscompat::buffer_from_base64(base64))
+    decode_canvas_png(answer.as_str().ok_or("no image data")?)
+}
+
+fn decode_canvas_png(data_url: &str) -> Result<Vec<u8>, String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let payload = data_url
+        .strip_prefix("data:image/png;base64,")
+        .filter(|s| !s.is_empty())
+        .ok_or("canvas returned no PNG image")?;
+    STANDARD
+        .decode(payload)
+        .map_err(|_| "invalid base64 in canvas PNG".to_owned())
 }
 
 /// How long the page may take to answer a script of a menu action
@@ -492,6 +503,22 @@ mod tests {
     use main_core::packages::electron_utils::dialog_memory::show_save_dialog_with_memory;
 
     use super::*;
+
+    #[test]
+    fn copy_image_decodes_only_a_nonempty_canvas_png_response() {
+        assert_eq!(
+            decode_canvas_png("data:image/png;base64,iVBORw0KGgo=").unwrap(),
+            b"\x89PNG\r\n\x1a\n"
+        );
+        for url in [
+            "data:,",
+            "data:image/png;base64,",
+            "data:image/jpeg;base64,/9j/",
+            "data:image/png;base64,AA!A",
+        ] {
+            assert!(decode_canvas_png(url).is_err(), "{url}");
+        }
+    }
 
     #[test]
     fn only_an_image_click_offers_image_actions() {
