@@ -7,6 +7,8 @@
 //! arguments) and a `reply` (the shape of the answer, or the refusal text). A text value is
 //! written as its length only, so a receipt or a token never leaves the process.
 //! crates/shell/ci/native-host-check.mjs reads the file. Without `--e2e` nothing here runs.
+//! Sheets opening milestones use separate `sheets-call` and `sheets-reply` events in the same
+//! file. They are diagnostic only: not native-host receipts and never inputs to replay.
 //!
 //! The record changes no call. The one thing that does, the replay markers of the real-app
 //! test build (replay.rs), is compiled only with the `e2e-replay` feature: a build without it
@@ -46,8 +48,8 @@ pub(super) struct Call<'a> {
 }
 
 /// What `dispatch` goes on with: the arguments and a delivery that also records the reply.
-/// Anything but a native-only channel of a `--e2e` run passes through untouched. With the
-/// `e2e-replay` feature the arguments have their replay markers filled in, and the answer is
+/// Only a native-only channel of a `--e2e` run enters replay. With the
+/// `e2e-replay` feature its arguments have their replay markers filled in, and the answer is
 /// `None` when a marker named a value nothing recorded: that call is answered here.
 pub(super) fn observe(
     call: &Call<'_>,
@@ -55,8 +57,8 @@ pub(super) fn observe(
     deliver: Deliver,
 ) -> Option<(Vec<IpcValue>, Deliver)> {
     match RECORDER.as_ref() {
-        Some(recorder) if is_native(call.channel) => recorder.observe(call, args, deliver),
-        _ => Some((args, deliver)),
+        Some(recorder) => recorder.observe(call, args, deliver),
+        None => Some((args, deliver)),
     }
 }
 
@@ -142,6 +144,21 @@ impl Recorder {
         args: Vec<IpcValue>,
         deliver: Deliver,
     ) -> Option<(Vec<IpcValue>, Deliver)> {
+        if !is_native(call.channel) {
+            const SHEETS_OPEN: [&str; 3] = [
+                "sheets:has-queued-workbook",
+                "workbook:select",
+                "workbook:read-range",
+            ];
+            let deliver = if call.sender.surface == shell_contract::Surface::Sheets
+                && let Some(channel) = SHEETS_OPEN.into_iter().find(|&name| name == call.channel)
+            {
+                self.sheets_milestone(call.sender.view.0, channel, deliver)
+            } else {
+                deliver
+            };
+            return Some((args, deliver));
+        }
         let view = call.sender.view;
         let mut state = self.lock();
         state.seq += 1;
@@ -200,6 +217,53 @@ impl Recorder {
             deliver(reply);
         });
         Some((args, recorded))
+    }
+
+    /// Deliberately takes no call arguments. A range (or an error) can contain workbook data.
+    fn sheets_milestone(
+        self: &Arc<Self>,
+        view: u32,
+        channel: &'static str,
+        deliver: Deliver,
+    ) -> Deliver {
+        let seq = {
+            let mut state = self.lock();
+            state.seq += 1;
+            let seq = state.seq;
+            self.write(
+                &mut state,
+                &json!({
+                    "event": "sheets-call", "seq": seq, "ms": self.elapsed_ms(),
+                    "view": view, "channel": channel,
+                }),
+            );
+            seq
+        };
+        let recorder = Arc::clone(self);
+        Box::new(move |reply| {
+            let mut line = json!({
+                "event": "sheets-reply", "seq": seq, "ms": recorder.elapsed_ms(),
+                "view": view, "channel": channel, "ok": reply.is_ok(),
+            });
+            match (channel, &reply) {
+                ("sheets:has-queued-workbook", Ok(IpcValue::Bool(queued))) => {
+                    line["queued"] = Value::Bool(*queued);
+                }
+                ("workbook:select", Ok(file)) => {
+                    let present = match file {
+                        IpcValue::Object(fields) => fields.iter().any(|(key, value)| {
+                            key == "savedLoadId"
+                                && matches!(value, IpcValue::String(id) if !id.is_empty())
+                        }),
+                        _ => false,
+                    };
+                    line["hasSavedLoadId"] = Value::Bool(present);
+                }
+                _ => {}
+            }
+            recorder.write(&mut recorder.lock(), &line);
+            deliver(reply);
+        })
     }
 
     fn replied(&self, seq: u64, args: &[IpcValue], reply: &Reply) {
@@ -362,11 +426,50 @@ mod tests {
     }
 
     #[test]
-    fn only_the_native_namespace_is_recorded() {
+    fn only_the_native_namespace_is_eligible_for_replay() {
         assert!(is_native(CHANNEL));
         assert!(is_native("workbook:saved-open-result"));
         assert!(!is_native("docs:print-pdf-buffer"));
         assert!(!is_native("no:such-channel"));
+    }
+
+    #[test]
+    fn sheets_opening_records_only_milestones_and_delivers_the_original_reply() {
+        let (recorder, folder) = recorder("sheets-milestones");
+        let mut opening = call(3, 17);
+        opening.sender.surface = Surface::Sheets;
+        let secret = "private-workbook-value";
+        let args = vec![marker("self", &[text(secret)])];
+        for (channel, reply) in [
+            ("sheets:has-queued-workbook", Ok(IpcValue::Bool(false))),
+            (
+                "workbook:select",
+                Ok(IpcValue::Object(vec![("savedLoadId".into(), text(secret))])),
+            ),
+            ("workbook:read-range", refused(secret)),
+        ] {
+            opening.channel = channel;
+            let (seen, delivered) = exchange(&recorder, &opening, args.clone(), reply.clone());
+            assert_eq!(seen, Some(args.clone()));
+            assert_eq!(delivered, reply);
+        }
+        let records = lines(&folder);
+        assert_eq!(records.len(), 6);
+        for pair in records.chunks_exact(2) {
+            assert_eq!(pair[0]["event"], "sheets-call");
+            assert_eq!(pair[1]["event"], "sheets-reply");
+            assert_eq!(pair[0]["seq"], pair[1]["seq"]);
+            for event in pair {
+                assert_eq!(event["view"], 3);
+                assert!(event.get("args").is_none() && event.get("value").is_none());
+                assert!(!event.to_string().contains(secret));
+            }
+        }
+        assert_eq!(records[1]["queued"], false);
+        assert_eq!(records[3]["hasSavedLoadId"], true);
+        assert_eq!(records[5]["ok"], false);
+        drop(recorder);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
