@@ -121,23 +121,25 @@ describe('saving never asks the model', () => {
   it('leaves the untitled name to the main process', async () => {
     await save(() => ctxWith({ path: null }), true)
 
-    // No proposed name is passed, only the autosave flag: the deck keeps the localized "Untitled
-    // presentation" the main process produces in pickDraftPath.
-    expect(slidesApi.save).toHaveBeenCalledWith(true)
+    // The main process supplies the localized untitled name.
+    expect(slidesApi.save).toHaveBeenCalledOnce()
+    expect(slidesApi.save.mock.calls[0]?.[0]).toBe(true)
   })
 
   it('does not call the model for a deck that already has a name', async () => {
     await save(() => ctxWith({ path: '/tmp/deck.pptx' }), true)
 
     expect(suggestFileName).not.toHaveBeenCalled()
-    expect(slidesApi.save).toHaveBeenCalledWith(true)
+    expect(slidesApi.save).toHaveBeenCalledOnce()
+    expect(slidesApi.save.mock.calls[0]?.[0]).toBe(true)
   })
 
   it('does not call the model for a deck with nothing to name', async () => {
     await save(() => ctxWith({ path: null, slides: [] }), true)
 
     expect(suggestFileName).not.toHaveBeenCalled()
-    expect(slidesApi.save).toHaveBeenCalledWith(true)
+    expect(slidesApi.save).toHaveBeenCalledOnce()
+    expect(slidesApi.save.mock.calls[0]?.[0]).toBe(true)
   })
 })
 
@@ -148,7 +150,8 @@ describe('the reader asks for a name, and the answer goes to the Save As dialog'
     expect(suggestFileName).toHaveBeenCalledTimes(1)
     // the answer goes into the Save As dialog, not onto the file behind the
     // reader's back
-    expect(slidesApi.saveAs).toHaveBeenCalledWith(`${MODEL_NAME}.pptx`)
+    expect(slidesApi.saveAs).toHaveBeenCalledOnce()
+    expect(slidesApi.saveAs.mock.calls[0]?.[0]).toBe(`${MODEL_NAME}.pptx`)
     expect(slidesApi.save).not.toHaveBeenCalled()
   })
 

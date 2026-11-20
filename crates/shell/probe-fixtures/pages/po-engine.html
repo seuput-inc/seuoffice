@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>po engine</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+  }
+  body {
+    height: 3000px;
+  }
+  #box {
+    position: absolute;
+    left: 50px;
+    top: 60px;
+    width: 200px;
+    height: 100px;
+    background: #f00;
+  }
+  #tl {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 20px;
+    height: 20px;
+    background: #0f0;
+  }
+  #br {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 20px;
+    height: 20px;
+    background: #00f;
+  }
+  #tail {
+    position: absolute;
+    left: 0;
+    top: 2900px;
+    width: 100px;
+    height: 100px;
+    background: #00f;
+  }
+</style>
+<div id="box">
+  <div id="tl"></div>
+  <div id="br"></div>
+</div>
+<div id="tail"></div>
+<script src="probe.js"></script>
+<script>
+  // P5/P6: a page the shell's page operations act on. The script sets a flag the policy test
+  // reads to learn whether page scripts ran at all.
+  window.__probeLoaded = true
+  P.log('po.load', {
+    dpr: devicePixelRatio,
+    innerWidth,
+    innerHeight,
+    scrollHeight: document.documentElement.scrollHeight,
+  })
+  P.done({})
+</script>

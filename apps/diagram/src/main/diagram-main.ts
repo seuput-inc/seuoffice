@@ -197,7 +197,11 @@ const dirtyByWc = new Set<number>()
 const closeSaveWaiters = new Map<number, (ok: boolean) => void>()
 const saveWaiters = new Map<number, (ok: boolean) => void>()
 const contentsByWc = new Map<number, WebContents>()
-const copyNowWaiters = new Map<number, () => void>()
+const copyNowWaiters = new Map<
+  number,
+  { generation: number; finish: (error: string | null) => void }
+>()
+let nextCopyNowGeneration = 0
 /** Save targets handed out by `saveTarget`, by view and token; each is used once */
 const targetsByWc = new Map<number, Map<string, { path: string; format: DiagramFormat }>>()
 /** The path whose bytes on disk are the diagram as opened or last written: an unchanged save there writes nothing */
@@ -460,26 +464,40 @@ export function diagramRecoveryIdentity(webContentsId: number): RecoveryIdentity
 export async function writeDiagramCopiesNow(timeoutMs = COPY_NOW_TIMEOUT_MS): Promise<void> {
   const waits: Promise<void>[] = []
   for (const [wcId, contents] of contentsByWc) {
-    if (contents.isDestroyed() || !dirtyByWc.has(wcId) || !mayWrite(wcId)) continue
-    waits.push(
-      new Promise<void>((resolve) => {
-        const finish = (): void => {
-          clearTimeout(timer)
-          if (copyNowWaiters.get(wcId) === finish) copyNowWaiters.delete(wcId)
-          resolve()
-        }
-        const timer = setTimeout(finish, timeoutMs)
-        copyNowWaiters.get(wcId)?.()
-        copyNowWaiters.set(wcId, finish)
-        try {
-          contents.send(DIAGRAM_CHANNELS.recoveryCopyNow)
-        } catch {
-          finish()
-        }
-      }),
-    )
+    if (!dirtyByWc.has(wcId) || !mayWrite(wcId)) continue
+    if (contents.isDestroyed()) {
+      waits.push(Promise.reject(new Error('The diagram view was closed')))
+      continue
+    }
+    let resolve!: () => void
+    let reject!: (error: Error) => void
+    const promise = new Promise<void>((yes, no) => {
+      resolve = yes
+      reject = no
+    })
+    const generation = ++nextCopyNowGeneration
+    let settled = false
+    const finish = (error: string | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      if (copyNowWaiters.get(wcId)?.generation === generation) copyNowWaiters.delete(wcId)
+      if (error === null) resolve()
+      else reject(new Error(error))
+    }
+    const timer = setTimeout(() => finish('Timed out writing the diagram recovery copy'), timeoutMs)
+    copyNowWaiters.get(wcId)?.finish('Diagram recovery request was replaced')
+    copyNowWaiters.set(wcId, { generation, finish })
+    try {
+      contents.send(DIAGRAM_CHANNELS.recoveryCopyNow, generation)
+    } catch (error: unknown) {
+      finish(error instanceof Error ? error.message : String(error))
+    }
+    waits.push(promise)
   }
-  await Promise.all(waits)
+  const results = await Promise.allSettled(waits)
+  const failed = results.find((result) => result.status === 'rejected')
+  if (failed?.status === 'rejected') throw failed.reason
 }
 
 /** Open `filePath` in a view the shell made, with the recovery question already answered. */
@@ -919,7 +937,11 @@ function registerDiagramIpc(): void {
     },
   )
 
-  ipcMain.on(DIAGRAM_CHANNELS.recoveryCopyNowDone, (e) => copyNowWaiters.get(e.sender.id)?.())
+  ipcMain.on(DIAGRAM_CHANNELS.recoveryCopyNowDone, (e, generation: unknown, error: unknown) => {
+    const waiter = copyNowWaiters.get(e.sender.id)
+    if (waiter && generation === waiter.generation && (error === null || typeof error === 'string'))
+      waiter.finish(error)
+  })
 
   ipcMain.handle(DIAGRAM_CHANNELS.seedTake, (e): DiagramSeed | null => {
     if (openPathByWc.has(e.sender.id)) return null
@@ -964,11 +986,14 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
       details.preventDefault()
     }
   })
-  wc.on('render-process-gone', () => viewCrashed(wcId))
+  wc.on('render-process-gone', () => {
+    viewCrashed(wcId)
+    copyNowWaiters.get(wcId)?.finish('The diagram renderer crashed')
+  })
   wc.once('destroyed', () => {
     viewGone(wcId, dirtyByWc.has(wcId))
     contentsByWc.delete(wcId)
-    copyNowWaiters.get(wcId)?.()
+    copyNowWaiters.get(wcId)?.finish('The diagram view was closed')
     openPathByWc.delete(wcId)
     allowedByWc.delete(wcId)
     savePathByWc.delete(wcId)

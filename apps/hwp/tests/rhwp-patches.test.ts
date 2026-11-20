@@ -37,6 +37,9 @@ describe('rhwp scheme patches', () => {
     const transport = join(dirname(require.resolve('@rhwp/editor')), 'transport.js')
     const patched = applyPatch('sdk-scheme', readFileSync(transport, 'utf8'))
     expect(patched).toContain(`targetUrl.protocol !== '${APP_SCHEME}:'`)
+    // the shell's per-module schemes (`genoffice-app-hwp`) and their opaque "null" origin
+    expect(patched).toContain(`targetUrl.protocol.startsWith('${APP_SCHEME}-')`)
+    expect(patched).toContain("targetUrl.origin !== 'null'")
     // http and https stay accepted: the dev server origin depends on them
     expect(patched).toContain("targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'")
   })
@@ -44,7 +47,7 @@ describe('rhwp scheme patches', () => {
   it('patch the studio origin check', () => {
     const source = "    return protocol === 'http:' || protocol === 'https:';\n"
     expect(applyPatch('studio-scheme', source)).toBe(
-      `    return protocol === 'http:' || protocol === 'https:' || protocol === '${APP_SCHEME}:';\n`,
+      `    return protocol === 'http:' || protocol === 'https:' || protocol === '${APP_SCHEME}:' || protocol.startsWith('${APP_SCHEME}-');\n`,
     )
   })
 })

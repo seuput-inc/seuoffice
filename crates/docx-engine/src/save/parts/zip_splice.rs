@@ -52,6 +52,9 @@ pub struct ZipEntry {
 pub trait ByteSource {
     fn size(&self) -> u64;
     fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, String>;
+    fn check_cancelled(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// `bufferSource`
@@ -73,6 +76,44 @@ impl ByteSource for BufferSource<'_> {
     }
 }
 
+struct CheckedBuffer<'a> {
+    bytes: &'a [u8],
+    check: &'a dyn Fn() -> Result<(), String>,
+}
+impl ByteSource for CheckedBuffer<'_> {
+    fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+    fn check_cancelled(&self) -> Result<(), String> {
+        (self.check)()
+    }
+    fn read(&self, offset: u64, length: u64) -> Result<Vec<u8>, String> {
+        self.check_cancelled()?;
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(self.bytes.len());
+        let end = usize::try_from(offset.saturating_add(length))
+            .unwrap_or(usize::MAX)
+            .min(self.bytes.len())
+            .max(start);
+        let mut out = Vec::with_capacity(end - start);
+        for chunk in self.bytes[start..end].chunks(64 * 1024) {
+            self.check_cancelled()?;
+            out.extend_from_slice(chunk);
+        }
+        self.check_cancelled()?;
+        Ok(out)
+    }
+}
+
+pub fn read_zip_entries_checked(
+    bytes: &[u8],
+    limits: &ZipLimits,
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<ZipEntry>, String> {
+    read_zip_entries(&CheckedBuffer { bytes, check }, limits)
+}
+
 /// `ZipFile`: an archive read through a source, its entries by name.
 pub struct ZipFile<S: ByteSource> {
     pub source: S,
@@ -84,6 +125,7 @@ impl<S: ByteSource> ZipFile<S> {
     pub fn open(source: S) -> Result<Self, String> {
         let mut entries = JsMap::new();
         for entry in read_zip_entries(&source, &DEFAULT_ZIP_LIMITS)? {
+            source.check_cancelled()?;
             entries.set(entry.name.clone(), entry);
         }
         Ok(Self { source, entries })
@@ -116,12 +158,16 @@ fn u32_at(bytes: &[u8], at: usize) -> u32 {
 
 /// `readZipEntries`
 pub fn read_zip_entries(src: &dyn ByteSource, limits: &ZipLimits) -> Result<Vec<ZipEntry>, String> {
+    src.check_cancelled()?;
     let size = src.size();
     let tail_len = size.min(22 + 0xffff);
     let tail = src.read(size - tail_len, tail_len)?;
     let mut eocd: Option<usize> = None;
     if tail.len() >= 22 {
         for i in (0..=tail.len() - 22).rev() {
+            if i % 4096 == 0 {
+                src.check_cancelled()?;
+            }
             if u32_at(&tail, i) == SIG_EOCD {
                 eocd = Some(i);
                 break;
@@ -150,6 +196,7 @@ pub fn read_zip_entries(src: &dyn ByteSource, limits: &ZipLimits) -> Result<Vec<
     let mut entries: Vec<ZipEntry> = Vec::new();
     let mut pos = 0usize;
     for _ in 0..count {
+        src.check_cancelled()?;
         if pos + 46 > cd.len() || u32_at(&cd, pos) != SIG_CENTRAL {
             return Err("zip: corrupt central directory".to_owned());
         }
@@ -193,17 +240,20 @@ pub fn read_zip_entries(src: &dyn ByteSource, limits: &ZipLimits) -> Result<Vec<
     }
     // The bounded-archive gate the normal parse path applies, run before a
     // single entry is read; directories carry no payload, so they are not counted.
-    let declared: Vec<DeclaredPart<'_>> = entries
-        .iter()
-        .filter(|entry| !entry.name.ends_with('/'))
-        .map(|entry| DeclaredPart {
-            name: &entry.name,
-            usize: f64::from(entry.usize),
-        })
-        .collect();
+    let mut declared = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        src.check_cancelled()?;
+        if !entry.name.ends_with('/') {
+            declared.push(DeclaredPart {
+                name: &entry.name,
+                usize: f64::from(entry.usize),
+            });
+        }
+    }
     assert_declared_sizes_within_limits(&declared, limits)?;
     // the local header's name/extra lengths may differ from the central copy
     for entry in &mut entries {
+        src.check_cancelled()?;
         let local = src.read(entry.data_offset, 30)?;
         if local.len() < 30 || u32_at(&local, 0) != SIG_LOCAL {
             return Err(format!("zip: corrupt local header for {}", entry.name));
@@ -236,6 +286,13 @@ fn crc32(bytes: &[u8]) -> u32 {
 /// `writeZip`: a plain (non-zip64) archive: data descriptors are folded into
 /// the headers and extra fields dropped, so every entry is self-describing.
 pub fn write_zip(entries: &[OutEntry]) -> Result<Vec<u8>, String> {
+    write_zip_checked(entries, &|| Ok(()))
+}
+
+fn write_zip_checked(
+    entries: &[OutEntry],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
     if entries.len() >= 0xffff {
         return Err("zip: too many entries for a plain archive".to_owned());
     }
@@ -243,6 +300,7 @@ pub fn write_zip(entries: &[OutEntry]) -> Result<Vec<u8>, String> {
     let mut centrals: Vec<u8> = Vec::new();
     let mut offset: u64 = 0;
     for OutEntry { meta, data } in entries {
+        check()?;
         let flags = meta.flags & !FLAG_DATA_DESCRIPTOR;
         let name_len = meta.name_bytes.len() as u16;
         chunks.extend_from_slice(&SIG_LOCAL.to_le_bytes());
@@ -257,7 +315,10 @@ pub fn write_zip(entries: &[OutEntry]) -> Result<Vec<u8>, String> {
         chunks.extend_from_slice(&name_len.to_le_bytes());
         chunks.extend_from_slice(&0u16.to_le_bytes());
         chunks.extend_from_slice(&meta.name_bytes);
-        chunks.extend_from_slice(data);
+        for chunk in data.chunks(64 * 1024) {
+            check()?;
+            chunks.extend_from_slice(chunk);
+        }
         centrals.extend_from_slice(&SIG_CENTRAL.to_le_bytes());
         centrals.extend_from_slice(&meta.ver_made.to_le_bytes());
         centrals.extend_from_slice(&meta.ver_need.to_le_bytes());
@@ -285,7 +346,10 @@ pub fn write_zip(entries: &[OutEntry]) -> Result<Vec<u8>, String> {
         return Err("zip: archive too large for a plain archive".to_owned());
     }
     let mut out = chunks;
-    out.extend_from_slice(&centrals);
+    for chunk in centrals.chunks(64 * 1024) {
+        check()?;
+        out.extend_from_slice(chunk);
+    }
     out.extend_from_slice(&SIG_EOCD.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
@@ -312,13 +376,15 @@ pub fn slim_docx<S: ByteSource>(
     min_bytes: f64,
 ) -> Result<Option<SlimDocx>, String> {
     let is_lazy = |entry: &ZipEntry| is_lazy_media_part(&entry.name) && entry.usize > 0;
-    let lazy: Vec<&ZipEntry> = zip
-        .entries
-        .iter()
-        .map(|(_, entry)| entry)
-        .filter(|e| is_lazy(e))
-        .collect();
-    let total: f64 = lazy.iter().map(|entry| f64::from(entry.usize)).sum();
+    let mut lazy = Vec::new();
+    let mut total = 0.0;
+    for (_, entry) in zip.entries.iter() {
+        zip.source.check_cancelled()?;
+        if is_lazy(entry) {
+            total += f64::from(entry.usize);
+            lazy.push(entry);
+        }
+    }
     if total < min_bytes {
         return Ok(None);
     }
@@ -326,6 +392,7 @@ pub fn slim_docx<S: ByteSource>(
     let placeholder_crc = crc32(&placeholder);
     let mut out: Vec<OutEntry> = Vec::new();
     for (_, entry) in zip.entries.iter() {
+        zip.source.check_cancelled()?;
         if is_lazy(entry) {
             let mut meta = entry.clone();
             meta.method = 0;
@@ -344,20 +411,35 @@ pub fn slim_docx<S: ByteSource>(
         }
     }
     Ok(Some(SlimDocx {
-        bytes: write_zip(&out)?,
+        bytes: write_zip_checked(&out, &|| zip.source.check_cancelled())?,
         lazy_parts: lazy.iter().map(|entry| entry.name.clone()).collect(),
     }))
 }
 
 /// `inflated`
-fn inflated(entry: &ZipEntry, raw: &[u8]) -> Result<Vec<u8>, String> {
+fn inflated(
+    entry: &ZipEntry,
+    raw: &[u8],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
+    check()?;
     match entry.method {
-        0 => Ok(raw.to_vec()),
+        0 => CheckedBuffer { bytes: raw, check }.read(0, raw.len() as u64),
         8 => {
             let mut out = Vec::new();
-            DeflateDecoder::new(raw)
-                .read_to_end(&mut out)
-                .map_err(|error| error.to_string())?;
+            let mut decoder = DeflateDecoder::new(raw);
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                check()?;
+                let count = decoder
+                    .read(&mut buffer)
+                    .map_err(|error| error.to_string())?;
+                check()?;
+                if count == 0 {
+                    break;
+                }
+                out.extend_from_slice(&buffer[..count]);
+            }
             Ok(out)
         }
         method => Err(format!(
@@ -368,22 +450,34 @@ fn inflated(entry: &ZipEntry, raw: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// `placeholderHash`: the placeholder hash when the entry is one, else None.
-fn placeholder_hash(entry: &ZipEntry, raw: &[u8]) -> Result<Option<String>, String> {
+fn placeholder_hash(
+    entry: &ZipEntry,
+    raw: &[u8],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Option<String>, String> {
     if entry.usize as usize != LAZY_MEDIA_PLACEHOLDER_BYTES {
         return Ok(None);
     }
-    let bytes = inflated(entry, raw)?;
+    let bytes = inflated(entry, raw, check)?;
     Ok(lazy_media_hash_of(&bytes).map(str::to_owned))
 }
 
 /// `lazyMediaHashesIn`: the hashes named by the placeholders in a saved
 /// archive (empty when none), in order of first appearance.
 pub fn lazy_media_hashes_in(bytes: &[u8]) -> Result<Vec<String>, String> {
-    let src = BufferSource(bytes);
+    lazy_media_hashes_in_checked(bytes, &|| Ok(()))
+}
+
+pub fn lazy_media_hashes_in_checked(
+    bytes: &[u8],
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<String>, String> {
+    let src = CheckedBuffer { bytes, check };
     let mut hashes: Vec<String> = Vec::new();
     for entry in read_zip_entries(&src, &DEFAULT_ZIP_LIMITS)? {
+        check()?;
         let raw = src.read(entry.data_offset, u64::from(entry.csize))?;
-        if let Some(hash) = placeholder_hash(&entry, &raw)?
+        if let Some(hash) = placeholder_hash(&entry, &raw, check)?
             && !hashes.contains(&hash)
         {
             hashes.push(hash);
@@ -403,15 +497,24 @@ pub fn materialize_docx(
     bytes: &[u8],
     source_for: &mut dyn FnMut(&str) -> SourceOpen,
 ) -> Result<Vec<u8>, String> {
-    let src = BufferSource(bytes);
+    materialize_docx_checked(bytes, source_for, &|| Ok(()))
+}
+
+pub fn materialize_docx_checked(
+    bytes: &[u8],
+    source_for: &mut dyn FnMut(&str) -> SourceOpen,
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
+    let src = CheckedBuffer { bytes, check };
     let entries = read_zip_entries(&src, &DEFAULT_ZIP_LIMITS)?;
     let mut out: Vec<OutEntry> = Vec::new();
     let mut swapped = false;
     let mut cache: Vec<(String, Option<Box<dyn ZipArchive>>)> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for entry in &entries {
+        check()?;
         let raw = src.read(entry.data_offset, u64::from(entry.csize))?;
-        let Some(hash) = placeholder_hash(entry, &raw)? else {
+        let Some(hash) = placeholder_hash(entry, &raw, check)? else {
             out.push(OutEntry {
                 meta: entry.clone(),
                 data: raw,
@@ -439,8 +542,54 @@ pub fn materialize_docx(
         swapped = true;
     }
     if swapped {
-        write_zip(&out)
+        write_zip_checked(&out, check)
     } else {
-        Ok(bytes.to_vec())
+        src.read(0, bytes.len() as u64)
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn entry_scan_stops_after_request_cancellation() {
+        let archive = write_zip(&[]).unwrap();
+        let checks = Cell::new(0usize);
+        let check = || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            if next >= 3 {
+                Err("cancelled".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        assert!(
+            matches!(read_zip_entries_checked(&archive, &DEFAULT_ZIP_LIMITS, &check), Err(error) if error == "cancelled")
+        );
+        assert_eq!(checks.get(), 3);
+    }
+
+    #[test]
+    fn buffer_copy_stops_between_chunks() {
+        let bytes = vec![7u8; 1024 * 1024];
+        let checks = Cell::new(0usize);
+        let check = || {
+            let next = checks.get() + 1;
+            checks.set(next);
+            if next == 4 {
+                Err("cancelled".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+        let source = CheckedBuffer {
+            bytes: &bytes,
+            check: &check,
+        };
+        assert!(matches!(source.read(0, bytes.len() as u64), Err(error) if error == "cancelled"));
+        assert_eq!(checks.get(), 4);
     }
 }

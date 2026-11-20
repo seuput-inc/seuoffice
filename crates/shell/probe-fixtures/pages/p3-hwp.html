@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p3 hwp frames</title>
+<script src="probe.js"></script>
+<body>
+  <iframe id="studio" src="studio/p3-child.html" width="300" height="100"></iframe>
+</body>
+<script>
+  // P3 (design 3.5): the HWP shell page and its studio child are both `genoffice-app-hwp`, so
+  // the shell reads the child's location and calls a function of its window directly.
+  ;(async () => {
+    const frame = document.getElementById('studio')
+    await P.until(() => window.__childReady === true, 8000)
+    const record = { ready: window.__childReady === true }
+    try {
+      record.childHref = frame.contentWindow.location.href
+      record.keyAnswer = frame.contentWindow.__ieumHancomKey('x')
+    } catch (error) {
+      record.error = String(error)
+    }
+    P.log('p3.hwp', record)
+    P.done({})
+  })()
+</script>

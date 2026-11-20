@@ -217,6 +217,11 @@ describe('DiagramCopier', () => {
     expect(await copier.tick()).toBe('failed')
     expect(await copier.tick()).toBe('backoff')
   })
+
+  it('reports the actual write error for an immediate recovery copy', async () => {
+    const { copier } = host({ write: async () => Promise.reject(new Error('disk')) })
+    await expect(copier.writeNow()).rejects.toThrow('disk')
+  })
 })
 
 describe('languages and channels', () => {

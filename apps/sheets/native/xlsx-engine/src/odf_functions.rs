@@ -53,7 +53,10 @@ pub(crate) const RENAMED: &[(&str, &str)] = &[
     ("FLOOR.PRECISE", "COM.MICROSOFT.FLOOR.PRECISE"),
     ("FORECAST.ETS", "COM.MICROSOFT.FORECAST.ETS"),
     ("FORECAST.ETS.CONFINT", "COM.MICROSOFT.FORECAST.ETS.CONFINT"),
-    ("FORECAST.ETS.SEASONALITY", "COM.MICROSOFT.FORECAST.ETS.SEASONALITY"),
+    (
+        "FORECAST.ETS.SEASONALITY",
+        "COM.MICROSOFT.FORECAST.ETS.SEASONALITY",
+    ),
     ("FORECAST.ETS.STAT", "COM.MICROSOFT.FORECAST.ETS.STAT"),
     ("FORECAST.LINEAR", "COM.MICROSOFT.FORECAST.LINEAR"),
     ("FORMULATEXT", "FORMULA"),
@@ -326,7 +329,4 @@ pub(crate) const XLFN: &[&str] = &[
     "Z.TEST",
 ];
 /// Functions stored behind `_xlfn._xlws.`.
-pub(crate) const XLWS: &[&str] = &[
-    "FILTER",
-    "SORT",
-];
+pub(crate) const XLWS: &[&str] = &["FILTER", "SORT"];

@@ -1,0 +1,22 @@
+{
+  "checker": { "kind": "tlc", "config": "MC_serialized.cfg", "timeoutSec": 300 },
+  "properties": ["NoLateCallback", "NoDuplicate"],
+  "mutations": [
+    {
+      "name": "remove-owner-lifetime-validation",
+      "why": "Deliver a queued native event without checking the current owner lifetime.",
+      "search": "/\\ SerializedDelivery /\\ pending # 0 /\\ pending \\in alive /\\ pending = current",
+      "replace": "/\\ SerializedDelivery /\\ pending # 0",
+      "breaks": "NoLateCallback",
+      "isolate": true
+    },
+    {
+      "name": "double-delivery",
+      "why": "Deliver a captured loss twice.",
+      "search": "emitted' = [emitted EXCEPT ![pending] = @ + 1]",
+      "replace": "emitted' = [emitted EXCEPT ![pending] = @ + 2]",
+      "breaks": "NoDuplicate",
+      "isolate": true
+    }
+  ]
+}

@@ -123,6 +123,7 @@ const ai = createAiStreamBridge()
 
 const hwpApi: Partial<HwpApi> = {
   consumePending: async () => (await waitForDocument())?.virtualPath ?? null,
+  consumeRecovery: async () => null,
   untitledCopy: async () => null,
   readFile: async (path) => {
     const doc = documentByPath(path)

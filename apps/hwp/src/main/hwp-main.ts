@@ -570,6 +570,7 @@ function registerHwpIpc(): void {
   })
   ipcMain.handle(HWP_CHANNELS.memoModalState, () => memoModalByWc.size > 0)
 
+  ipcMain.handle(HWP_CHANNELS.consumeRecovery, () => null)
   ipcMain.handle(HWP_CHANNELS.consumePending, (e) => {
     noteHwpPathConsumed(e.sender.id)
     return openPathByWc.get(e.sender.id) ?? null

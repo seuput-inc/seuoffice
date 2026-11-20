@@ -385,12 +385,21 @@ pub fn cleanup_superseded_slide_resources(
     previous_xml: &str,
     current_xml: &str,
 ) -> Result<ResourceCleanupStats, String> {
-    let OpenedPptx { deck, archive, .. } = opened;
-    let Some(slide) = deck.slides.get(slide_index) else {
+    let Some(slide) = opened.deck.slides.get(slide_index) else {
         return Err("cleanup: no such slide".to_owned());
     };
     let slide_path = slide.path.as_deref().unwrap_or("").to_owned();
-    let rels = archive.read_rels(&slide_path)?;
+    cleanup_superseded_part_resources(opened, &slide_path, previous_xml, current_xml)
+}
+
+pub fn cleanup_superseded_part_resources(
+    opened: &mut OpenedPptx,
+    slide_path: &str,
+    previous_xml: &str,
+    current_xml: &str,
+) -> Result<ResourceCleanupStats, String> {
+    let OpenedPptx { deck, archive, .. } = opened;
+    let rels = archive.read_rels(slide_path)?;
     let previous_values = attribute_values(previous_xml);
     let current_values = attribute_values(current_xml);
     let mut live_slide_xml: HashMap<String, String> = HashMap::new();
@@ -400,7 +409,7 @@ pub fn cleanup_superseded_slide_resources(
             current_slide_xml(deck_slide),
         );
     }
-    live_slide_xml.insert(slide_path.clone(), current_xml.to_owned());
+    live_slide_xml.insert(slide_path.to_owned(), current_xml.to_owned());
     let mut ids: Vec<String> = Vec::new();
     let mut candidates = Set::new();
     for id in rels.keys() {
@@ -419,7 +428,7 @@ pub fn cleanup_superseded_slide_resources(
 
     remove_relationships_and_collect_owned_targets(
         archive,
-        &slide_path,
+        slide_path,
         &ids,
         &candidates,
         &live_slide_xml,

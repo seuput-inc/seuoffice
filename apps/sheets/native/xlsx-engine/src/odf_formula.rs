@@ -237,7 +237,10 @@ fn is_identifier_start(character: char) -> bool {
 fn word_end(text: &str) -> usize {
     let mut end = 0;
     for character in text.chars() {
-        if !(character.is_alphanumeric() || character == '_' || character == '.' || character == '$')
+        if !(character.is_alphanumeric()
+            || character == '_'
+            || character == '.'
+            || character == '$')
         {
             break;
         }
@@ -524,8 +527,7 @@ fn excel_function(name: &str) -> Option<String> {
     if ODF_ONLY.contains(&upper.as_str()) {
         return None;
     }
-    let (excel, newer) = if let Some((excel, _)) = RENAMED.iter().find(|(_, odf)| *odf == upper)
-    {
+    let (excel, newer) = if let Some((excel, _)) = RENAMED.iter().find(|(_, odf)| *odf == upper) {
         ((*excel).to_owned(), false)
     } else if let Some(stripped) = upper.strip_prefix("COM.MICROSOFT.") {
         // An Excel function the table predates: the namespace alone says it
@@ -676,10 +678,9 @@ fn odf_expression(raw: &str, names: &Names) -> Option<String> {
             character if character.is_whitespace() => {
                 rest = rest.trim_start();
                 if previous_operand
-                    && rest
-                        .chars()
-                        .next()
-                        .is_some_and(|next| next.is_alphabetic() || matches!(next, '$' | '\'' | '_' | '('))
+                    && rest.chars().next().is_some_and(|next| {
+                        next.is_alphabetic() || matches!(next, '$' | '\'' | '_' | '(')
+                    })
                 {
                     // Intersection, which OpenFormula spells `!`.
                     out.push('!');
@@ -1031,19 +1032,13 @@ mod tests {
 
     #[test]
     fn translates_whole_column_and_whole_row_ranges() {
-        assert_eq!(
-            translate("of:=SUM([.A:.A])").as_deref(),
-            Some("SUM(A:A)")
-        );
+        assert_eq!(translate("of:=SUM([.A:.A])").as_deref(), Some("SUM(A:A)"));
         assert_eq!(translate("of:=SUM([.1:.2])").as_deref(), Some("SUM(1:2)"));
         assert_eq!(
             translate("of:=SUM([.$1:.$2])").as_deref(),
             Some("SUM($1:$2)")
         );
-        assert_eq!(
-            to_odf("=SUM($1:$2)").as_deref(),
-            Some("of:=SUM([.$1:.$2])")
-        );
+        assert_eq!(to_odf("=SUM($1:$2)").as_deref(), Some("of:=SUM([.$1:.$2])"));
         // Half a reference is not one in Excel: a bare column would read as a
         // defined name.
         assert_eq!(translate("of:=[.A]"), None);
@@ -1116,15 +1111,9 @@ mod tests {
 
     #[test]
     fn writes_references_and_ranges_for_the_export() {
-        assert_eq!(
-            to_odf("=SUM(B1:B2)").as_deref(),
-            Some("of:=SUM([.B1:.B2])")
-        );
+        assert_eq!(to_odf("=SUM(B1:B2)").as_deref(), Some("of:=SUM([.B1:.B2])"));
         assert_eq!(to_odf("=B1*2+C3").as_deref(), Some("of:=[.B1]*2+[.C3]"));
-        assert_eq!(
-            to_odf("=SUM($A:$A)").as_deref(),
-            Some("of:=SUM([.$A:.$A])")
-        );
+        assert_eq!(to_odf("=SUM($A:$A)").as_deref(), Some("of:=SUM([.$A:.$A])"));
         assert_eq!(to_odf("=SUM(1:2)").as_deref(), Some("of:=SUM([.1:.2])"));
     }
 
@@ -1181,10 +1170,7 @@ mod tests {
         );
         assert_eq!(to_odf("=A1,B1"), None);
         // Grouping without a comma is an ordinary expression.
-        assert_eq!(
-            to_odf("=(A1+B1)*2").as_deref(),
-            Some("of:=([.A1]+[.B1])*2")
-        );
+        assert_eq!(to_odf("=(A1+B1)*2").as_deref(), Some("of:=([.A1]+[.B1])*2"));
     }
 
     #[test]
@@ -1284,23 +1270,43 @@ mod tests {
         // Functions Excel added later go out under its namespace and come
         // back behind the marker Excel stores them with.
         for (excel, odf, stored) in [
-            ("IFS(A1>0,1)", "of:=COM.MICROSOFT.IFS([.A1]>0;1)", "_xlfn.IFS(A1>0,1)"),
+            (
+                "IFS(A1>0,1)",
+                "of:=COM.MICROSOFT.IFS([.A1]>0;1)",
+                "_xlfn.IFS(A1>0,1)",
+            ),
             (
                 "XLOOKUP(A1,B1:B2,C1:C2)",
                 "of:=COM.MICROSOFT.XLOOKUP([.A1];[.B1:.B2];[.C1:.C2])",
                 "_xlfn.XLOOKUP(A1,B1:B2,C1:C2)",
             ),
-            ("STDEV.S(A1:A9)", "of:=COM.MICROSOFT.STDEV.S([.A1:.A9])", "_xlfn.STDEV.S(A1:A9)"),
-            ("FILTER(A1:A9,B1:B9)", "of:=COM.MICROSOFT.FILTER([.A1:.A9];[.B1:.B9])", "_xlfn._xlws.FILTER(A1:A9,B1:B9)"),
+            (
+                "STDEV.S(A1:A9)",
+                "of:=COM.MICROSOFT.STDEV.S([.A1:.A9])",
+                "_xlfn.STDEV.S(A1:A9)",
+            ),
+            (
+                "FILTER(A1:A9,B1:B9)",
+                "of:=COM.MICROSOFT.FILTER([.A1:.A9];[.B1:.B9])",
+                "_xlfn._xlws.FILTER(A1:A9,B1:B9)",
+            ),
             ("IFNA(A1,0)", "of:=IFNA([.A1];0)", "_xlfn.IFNA(A1,0)"),
-            ("FORMULATEXT(A1)", "of:=FORMULA([.A1])", "_xlfn.FORMULATEXT(A1)"),
+            (
+                "FORMULATEXT(A1)",
+                "of:=FORMULA([.A1])",
+                "_xlfn.FORMULATEXT(A1)",
+            ),
             (
                 "NETWORKDAYS.INTL(A1,B1)",
                 "of:=COM.MICROSOFT.NETWORKDAYS.INTL([.A1];[.B1])",
                 "NETWORKDAYS.INTL(A1,B1)",
             ),
         ] {
-            assert_eq!(to_odf(&format!("={excel}")).as_deref(), Some(odf), "{excel}");
+            assert_eq!(
+                to_odf(&format!("={excel}")).as_deref(),
+                Some(odf),
+                "{excel}"
+            );
             assert_eq!(translate(odf).as_deref(), Some(stored), "{odf}");
         }
         // A marker that survived to the exporter is not part of the name.
@@ -1343,9 +1349,16 @@ mod tests {
             ("SUM(A1:C3 B2:D4)", "of:=SUM([.A1:.C3]![.B2:.D4])"),
             ("SUM({1,2,3})", "of:=SUM({1;2;3})"),
             ("SUM({1,2;3,4}*A1)", "of:=SUM({1;2|3;4}*[.A1])"),
-            (r#"MATCH("b",{"a","b;c"},0)"#, r#"of:=MATCH("b";{"a";"b;c"};0)"#),
+            (
+                r#"MATCH("b",{"a","b;c"},0)"#,
+                r#"of:=MATCH("b";{"a";"b;c"};0)"#,
+            ),
         ] {
-            assert_eq!(to_odf(&format!("={excel}")).as_deref(), Some(odf), "{excel}");
+            assert_eq!(
+                to_odf(&format!("={excel}")).as_deref(),
+                Some(odf),
+                "{excel}"
+            );
             assert_eq!(translate(odf).as_deref(), Some(excel), "{odf}");
         }
         // A space after a closing parenthesis is an intersection too; it must
@@ -1387,8 +1400,14 @@ mod tests {
             odf_internal_link("#Sheet1!B2:C3", "Data").as_deref(),
             Some("#Sheet1.B2:C3")
         );
-        assert_eq!(odf_internal_link("#B7", "Data").as_deref(), Some("#Data.B7"));
-        assert_eq!(odf_internal_link("#MyName", "Data").as_deref(), Some("#MyName"));
+        assert_eq!(
+            odf_internal_link("#B7", "Data").as_deref(),
+            Some("#Data.B7")
+        );
+        assert_eq!(
+            odf_internal_link("#MyName", "Data").as_deref(),
+            Some("#MyName")
+        );
         assert_eq!(
             translate_expression("[$Data.$1:.$1]", &Names::default()).as_deref(),
             Some("Data!$1:$1")

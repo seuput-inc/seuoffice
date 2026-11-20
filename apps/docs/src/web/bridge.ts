@@ -306,6 +306,8 @@ const desktop: Partial<DesktopApi> = {
   kbList: undefined,
   aiToolCapabilities: undefined,
   zoteroCommand: undefined,
+  // no Save As dialog: without it the page leaves Ctrl/Cmd+Shift+S to the browser (save-key.ts)
+  pickSaveAsPath: undefined,
 }
 
 /** An object whose listed members are explicitly absent: the renderer's `typeof x === 'function'` probes see no service. */

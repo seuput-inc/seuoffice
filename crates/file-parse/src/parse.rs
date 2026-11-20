@@ -25,6 +25,9 @@ use serde_json::{Map, Value, json};
 
 use crate::csv::decode_csv_buffer;
 
+/// Explicit dependency boundary for native request-owned readers.
+pub type HostCall<'a> = dyn Fn(&str, &Value) -> Result<Value, seu_host::HostError> + 'a;
+
 /// Up to this size a zip-based document is read whole; a larger one is read
 /// for its text parts only (`WHOLE_ZIP_READ_MAX_BYTES`).
 pub const WHOLE_ZIP_READ_MAX_BYTES: f64 = 50.0 * 1024.0 * 1024.0;
@@ -98,18 +101,6 @@ fn is_text_ext(ext: &str) -> bool {
         ext,
         "txt" | "md" | "markdown" | "csv" | "tsv" | "json" | "xml" | "html" | "htm" | "log" | "py"
     )
-}
-
-/// A text reader's redaction: the source with every withheld span rewritten.
-type TextRedactor = fn(&str) -> Result<String, String>;
-
-/// `TEXT_REDACTORS[ext]`
-fn text_redactor(ext: &str) -> Option<TextRedactor> {
-    match ext {
-        "md" | "markdown" | "txt" | "json" => Some(crate::markdown::redact_markdown_source),
-        "html" | "htm" => Some(crate::html::redact_html_source),
-        _ => None,
-    }
 }
 
 /// `ZIP_DOCUMENT_EXTS.has(ext)`
@@ -270,8 +261,8 @@ fn parse_odt(hosted: Option<&Value>) -> Result<Value, (String, bool)> {
 /// `readDiagramText` through the host, as `parseFileToText` uses it:
 /// `Some(answer)` where it decides the read, `None` for a picture that only
 /// carries the name (`no_original`), which is read on by its last extension.
-fn read_diagram(file_path: &str, bytes: &[u8]) -> Option<Value> {
-    let read = seu_host::call(
+fn read_diagram(file_path: &str, bytes: &[u8], host: &HostCall<'_>) -> Option<Value> {
+    let read = host(
         "fileparse.readDiagramText",
         &json!({ "fileName": file_path, "bytesBase64": jscompat::base64(bytes) }),
     );
@@ -306,17 +297,28 @@ pub fn parse_file_to_text(
     opts: ParseFileOptions,
     hosted: Option<&Value>,
 ) -> Value {
+    parse_file_to_text_with_host(file_path, bytes, opts, hosted, &seu_host::call)
+}
+
+/// Same parser and errors, with an explicit request-scoped host dependency.
+pub fn parse_file_to_text_with_host(
+    file_path: &str,
+    bytes: &[u8],
+    opts: ParseFileOptions,
+    hosted: Option<&Value>,
+    host: &HostCall<'_>,
+) -> Value {
     let ext = extension_of(file_path).to_lowercase();
     let ext = ext.as_str();
     // a draw.io diagram is named first: `.drawio.png` and `.drawio.svg` are read
     // as diagram text, not by their last extension
-    match seu_host::call(
+    match host(
         "fileparse.diagramFormatOf",
         &json!({ "filePath": file_path }),
     ) {
         Ok(Value::Null) => {}
         Ok(_) => {
-            if let Some(answer) = read_diagram(file_path, bytes) {
+            if let Some(answer) = read_diagram(file_path, bytes, host) {
                 return answer;
             }
         }
@@ -329,7 +331,7 @@ pub fn parse_file_to_text(
             ("mime", json!(mime)),
         ]);
     }
-    match read(ext, bytes, opts, hosted) {
+    match read(ext, bytes, opts, hosted, host) {
         Ok(Some(answer)) => answer,
         Ok(None) => object([
             ("ok", json!(false)),
@@ -353,6 +355,7 @@ fn read(
     bytes: &[u8],
     opts: ParseFileOptions,
     hosted: Option<&Value>,
+    host: &HostCall<'_>,
 ) -> Result<Option<Value>, (String, bool)> {
     let caught = |message: String| {
         let damaged = message.starts_with(DAMAGED);
@@ -374,9 +377,14 @@ fn read(
                 "Unsupported text encoding: BOM-declared UTF-32 cannot be decoded (UTF-8 and UTF-16 are supported)".to_owned(),
             )));
         };
-        let text = match text_redactor(ext) {
-            Some(redact) => redact(&text).map_err(caught)?,
-            None => text,
+        let text = match ext {
+            "md" | "markdown" | "txt" | "json" => {
+                crate::markdown::redact_markdown_source(&text).map_err(caught)?
+            }
+            "html" | "htm" => {
+                crate::html::redact_html_source_with_host(&text, host).map_err(caught)?
+            }
+            _ => text,
         };
         return Ok(Some(read_ok(text)));
     }
@@ -445,8 +453,67 @@ fn read(
         }
         "pdf" => hosted_text(hosted, "pdf")?,
         "xmind" => hosted_text(hosted, "xmind")?,
-        "epub" => crate::epub::epub_to_text(bytes).map_err(caught)?,
+        "epub" => crate::epub::epub_to_text_with_host(bytes, host).map_err(caught)?,
         _ => return Ok(None),
     };
     Ok(Some(read_ok(text)))
+}
+
+#[cfg(test)]
+mod owned_host_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn explicit_host_is_used_for_diagram_and_html_redaction() {
+        let calls = RefCell::new(Vec::new());
+        let source = "<p data-gx-redact=\"name\">secret</p>";
+        let host = |name: &str, input: &Value| {
+            calls.borrow_mut().push(name.to_owned());
+            match name {
+                "fileparse.diagramFormatOf" => Ok(Value::Null),
+                "fileparse.htmlSourceElements" => {
+                    assert_eq!(input["source"], source);
+                    Ok(
+                        json!([{"tagName":"p","attrs":[{"name":"data-gx-redact","value":"name"}],"startTag":[0,25],"inner":[25,31]}]),
+                    )
+                }
+                _ => panic!("unexpected dependency {name}"),
+            }
+        };
+        let result = parse_file_to_text_with_host(
+            "a.html",
+            source.as_bytes(),
+            ParseFileOptions::default(),
+            None,
+            &host,
+        );
+        assert_eq!(result["ok"], true);
+        assert!(!result["text"].as_str().unwrap().contains("secret"));
+        assert_eq!(
+            *calls.borrow(),
+            ["fileparse.diagramFormatOf", "fileparse.htmlSourceElements"]
+        );
+    }
+
+    #[test]
+    fn dependency_failure_keeps_original_parse_error_shape() {
+        let host = |_: &str, _: &Value| {
+            Err(seu_host::HostError {
+                name: "AbortError".into(),
+                message: "request ended".into(),
+            })
+        };
+        let result = parse_file_to_text_with_host(
+            "a.txt",
+            b"text",
+            ParseFileOptions::default(),
+            None,
+            &host,
+        );
+        assert_eq!(
+            result,
+            json!({"ok":false,"kind":"text","error":"request ended"})
+        );
+    }
 }

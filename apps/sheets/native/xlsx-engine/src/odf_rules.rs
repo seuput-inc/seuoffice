@@ -148,7 +148,10 @@ fn shift_references(expression: &str, rows: i64, columns: i64) -> Option<String>
                 cursor += 1;
             }
             let letters_from = cursor;
-            while characters.get(cursor).is_some_and(char::is_ascii_alphabetic) {
+            while characters
+                .get(cursor)
+                .is_some_and(char::is_ascii_alphabetic)
+            {
                 cursor += 1;
             }
             let letters: String = characters[letters_from..cursor].iter().collect();
@@ -205,7 +208,9 @@ struct Operands<'a> {
 
 impl<'a> Operands<'a> {
     fn new(names: &'a Names, base: &str, anchor: (u32, u32)) -> Self {
-        let base = parse_cell_address(base).map(|(_, cell)| cell).unwrap_or(anchor);
+        let base = parse_cell_address(base)
+            .map(|(_, cell)| cell)
+            .unwrap_or(anchor);
         Self {
             names,
             rows: i64::from(anchor.0) - i64::from(base.0),
@@ -250,7 +255,13 @@ fn validation_rule(condition: &str, operands: &Operands<'_>) -> Option<Rule> {
     let body = match condition.split_once(':') {
         // The namespace in front (`of:`), when the text before the colon is
         // one and not part of the expression.
-        Some((prefix, rest)) if prefix.chars().all(|character| character.is_ascii_alphanumeric()) => rest,
+        Some((prefix, rest))
+            if prefix
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric()) =>
+        {
+            rest
+        }
         _ => condition,
     };
     let body = body.trim();
@@ -274,7 +285,10 @@ fn validation_rule(condition: &str, operands: &Operands<'_>) -> Option<Rule> {
             let mut values = Vec::new();
             for item in &items {
                 let item = item.trim();
-                let value = match item.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) {
+                let value = match item
+                    .strip_prefix('"')
+                    .and_then(|rest| rest.strip_suffix('"'))
+                {
                     Some(text) => text.replace("\"\"", "\""),
                     None => item.to_owned(),
                 };
@@ -307,7 +321,9 @@ fn validation_rule(condition: &str, operands: &Operands<'_>) -> Option<Rule> {
         "cell-content-is-decimal-number()" => ("decimal", second, ("-1E+307", "1E+307")),
         "cell-content-is-date()" => ("date", second, ("1", "2958465")),
         "cell-content-is-time()" => ("time", second, ("0", "0.999988426")),
-        _ if first.starts_with("cell-content-text-length") => ("textLength", Some(first), ("0", "32767")),
+        _ if first.starts_with("cell-content-text-length") => {
+            ("textLength", Some(first), ("0", "32767"))
+        }
         _ => return None,
     };
     let Some(range) = range else {
@@ -339,7 +355,10 @@ fn validation_rule(condition: &str, operands: &Operands<'_>) -> Option<Rule> {
         ("cell-content-is-between", None),
         ("cell-content-is-not-between", Some("notBetween")),
         ("cell-content-text-length-is-between", None),
-        ("cell-content-text-length-is-not-between", Some("notBetween")),
+        (
+            "cell-content-text-length-is-not-between",
+            Some("notBetween"),
+        ),
     ] {
         if let Some(bounds) = between(name) {
             let (low, high) = bounds?;
@@ -383,8 +402,9 @@ pub(crate) fn data_validations_xml(
     let mut rules = String::new();
     let mut count = 0usize;
     for (name, mut areas) in areas {
-        let Some(validation): Option<&Validation> =
-            formats.name(name).and_then(|name| formats.validations.get(name))
+        let Some(validation): Option<&Validation> = formats
+            .name(name)
+            .and_then(|name| formats.validations.get(name))
         else {
             continue;
         };
@@ -430,8 +450,15 @@ pub(crate) fn data_validations_xml(
             continue;
         }
         if validation.show_error {
-            if let Some(title) = validation.error_title.as_deref().filter(|title| !title.is_empty()) {
-                attributes.push_str(&format!(r#" errorTitle="{}""#, escape_xml(&clip(title, 32))));
+            if let Some(title) = validation
+                .error_title
+                .as_deref()
+                .filter(|title| !title.is_empty())
+            {
+                attributes.push_str(&format!(
+                    r#" errorTitle="{}""#,
+                    escape_xml(&clip(title, 32))
+                ));
             }
             if !validation.error_text.is_empty() {
                 attributes.push_str(&format!(
@@ -441,8 +468,15 @@ pub(crate) fn data_validations_xml(
             }
         }
         if has_help {
-            if let Some(title) = validation.help_title.as_deref().filter(|title| !title.is_empty()) {
-                attributes.push_str(&format!(r#" promptTitle="{}""#, escape_xml(&clip(title, 32))));
+            if let Some(title) = validation
+                .help_title
+                .as_deref()
+                .filter(|title| !title.is_empty())
+            {
+                attributes.push_str(&format!(
+                    r#" promptTitle="{}""#,
+                    escape_xml(&clip(title, 32))
+                ));
             }
             if !validation.help_text.is_empty() {
                 attributes.push_str(&format!(
@@ -484,7 +518,11 @@ fn escape_attribute(text: &str) -> String {
 }
 
 /// The body of a `cfRule` and its attributes, for one `calcext:condition`.
-fn condition_rule(value: &str, operands: &Operands<'_>, anchor: (u32, u32)) -> Option<(String, String)> {
+fn condition_rule(
+    value: &str,
+    operands: &Operands<'_>,
+    anchor: (u32, u32),
+) -> Option<(String, String)> {
     let value = value.trim();
     let anchor_reference = cell_reference(anchor.0, anchor.1);
     let formula = |text: &str| format!("<formula>{}</formula>", escape_xml(text));
@@ -746,16 +784,26 @@ mod tests {
         assert_eq!(list.formula1.as_deref(), Some(r#""a,b ""x"",c""#));
         let range = rule("of:cell-content-is-in-list([$Data.$A$1:.$A$5])");
         assert_eq!(range.formula1.as_deref(), Some("Data!$A$1:$A$5"));
-        let comma = rule("of:cell-content-is-decimal-number() and cell-content-is-between(2000,2100)");
-        assert_eq!((comma.formula1.as_deref(), comma.formula2.as_deref()), (Some("2000"), Some("2100")));
+        let comma =
+            rule("of:cell-content-is-decimal-number() and cell-content-is-between(2000,2100)");
+        assert_eq!(
+            (comma.formula1.as_deref(), comma.formula2.as_deref()),
+            (Some("2000"), Some("2100"))
+        );
         let whole = rule("of:cell-content-is-whole-number() and cell-content-is-between(1;10)");
         assert_eq!((whole.kind, whole.operator), (Some("whole"), None));
-        assert_eq!((whole.formula1.as_deref(), whole.formula2.as_deref()), (Some("1"), Some("10")));
+        assert_eq!(
+            (whole.formula1.as_deref(), whole.formula2.as_deref()),
+            (Some("1"), Some("10"))
+        );
         let decimal = rule("of:cell-content-is-decimal-number() and cell-content()>=[.B1]");
         assert_eq!(decimal.operator, Some("greaterThanOrEqual"));
         assert_eq!(decimal.formula1.as_deref(), Some("B1"));
         let length = rule("of:cell-content-text-length()<=10");
-        assert_eq!((length.kind, length.operator), (Some("textLength"), Some("lessThanOrEqual")));
+        assert_eq!(
+            (length.kind, length.operator),
+            (Some("textLength"), Some("lessThanOrEqual"))
+        );
         let custom = rule("of:is-true-formula(LEN([.A1])>2)");
         assert_eq!(custom.kind, Some("custom"));
         assert_eq!(custom.formula1.as_deref(), Some("LEN(A1)>2"));
@@ -770,18 +818,36 @@ mod tests {
         let rule = |value: &str| condition_rule(value, &operands, (1, 1)).unwrap();
         assert_eq!(
             rule(">5"),
-            (r#" type="cellIs" operator="greaterThan""#.to_owned(), "<formula>5</formula>".to_owned())
+            (
+                r#" type="cellIs" operator="greaterThan""#.to_owned(),
+                "<formula>5</formula>".to_owned()
+            )
         );
         assert_eq!(
             rule("between(1;[.C2])").1,
             "<formula>1</formula><formula>C2</formula>"
         );
-        assert_eq!(rule("formula-is(MOD(ROW();2)=0)").0, r#" type="expression""#);
-        assert_eq!(rule("top-percent(10)").0, r#" type="top10" percent="1" rank="10""#);
-        assert_eq!(rule("below-equal-average").0, r#" type="aboveAverage" aboveAverage="0" equalAverage="1""#);
+        assert_eq!(
+            rule("formula-is(MOD(ROW();2)=0)").0,
+            r#" type="expression""#
+        );
+        assert_eq!(
+            rule("top-percent(10)").0,
+            r#" type="top10" percent="1" rank="10""#
+        );
+        assert_eq!(
+            rule("below-equal-average").0,
+            r#" type="aboveAverage" aboveAverage="0" equalAverage="1""#
+        );
         let contains = rule(r#"contains-text("ab")"#);
-        assert_eq!(contains.0, r#" type="containsText" operator="containsText" text="ab""#);
-        assert_eq!(contains.1, "<formula>NOT(ISERROR(SEARCH(&quot;ab&quot;,B2)))</formula>");
+        assert_eq!(
+            contains.0,
+            r#" type="containsText" operator="containsText" text="ab""#
+        );
+        assert_eq!(
+            contains.1,
+            "<formula>NOT(ISERROR(SEARCH(&quot;ab&quot;,B2)))</formula>"
+        );
         assert_eq!(rule("duplicate").0, r#" type="duplicateValues""#);
         assert!(condition_rule("date-is(today)", &operands, (0, 0)).is_none());
     }

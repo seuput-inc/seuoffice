@@ -231,6 +231,40 @@ const OPEN: EpubOpenFileResult = {
   readOnly: null,
 }
 
+describe('native recovery initialization', () => {
+  it('acknowledges only after the opened reader is committed', async () => {
+    const fake = fakeApi(OPEN)
+    const acknowledgements: Array<[string, boolean, boolean]> = []
+    fake.api.consumePending = async () => ({ path: 'C:/books/moby.epub', receipt: 'receipt-1' })
+    fake.api.recoveryInitialized = async (receipt, ok) => {
+      acknowledgements.push([receipt, ok, container.querySelector('.epub-reader') !== null])
+    }
+    let release!: (value: EpubOpenFileResult) => void
+    fake.api.openFile = () =>
+      new Promise((resolve) => {
+        release = resolve
+      })
+    await mount(fake)
+    expect(acknowledgements).toEqual([])
+    await act(async () => {
+      release(OPEN)
+    })
+    await settle()
+    expect(acknowledgements).toEqual([['receipt-1', true, true]])
+  })
+
+  it('settles a refused book as a failure', async () => {
+    const fake = fakeApi({ status: 'refused', reason: 'drm' })
+    const acknowledge = vi.fn(async () => {})
+    fake.api.consumePending = async () => ({ path: 'C:/books/moby.epub', receipt: 'receipt-2' })
+    fake.api.recoveryInitialized = acknowledge
+    await mount(fake)
+    expect(acknowledge).toHaveBeenCalledOnce()
+    expect(acknowledge).toHaveBeenCalledWith('receipt-2', false, 'drm')
+    expect(container.querySelector('.epub-refusal')?.getAttribute('data-reason')).toBe('drm')
+  })
+})
+
 describe('a file that does not open', () => {
   it('says a protected book cannot be opened, in the words of the spec', async () => {
     const fake = fakeApi({ status: 'refused', reason: 'drm' })

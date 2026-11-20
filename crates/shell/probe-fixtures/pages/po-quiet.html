@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>po quiet</title>
+<script src="probe.js"></script>
+<script>
+  // A resource that answers after `ms` milliseconds, through the html-asset stand-in scheme.
+  window.slow = (ms, id) =>
+    fetch(P.base('html-asset') + 'slow?ms=' + ms + '&id=' + id, {
+      mode: 'no-cors',
+      cache: 'no-store',
+    }).then(
+      () => P.log('po.slow.done', { id }),
+      (error) => P.log('po.slow.error', { id, error: String(error) }),
+    )
+  P.log('po.quiet.load', {})
+  P.done({})
+</script>

@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p7 frame</title>
+<body>
+  <!-- a document in a child frame that the shell's one-shot rule must not mistake for the page -->
+  <iframe id="ok" src="p7-ok.html" width="200" height="60"></iframe>
+  <!-- a scheme nothing handles, in a child frame: not a failure of the page -->
+  <iframe
+    id="refused"
+    src="x-seuoffice-probe-unregistered://frame/"
+    width="200"
+    height="60"
+  ></iframe>
+</body>
+<script src="probe.js"></script>
+<script>
+  ;(async () => {
+    await P.loaded()
+    await P.sleep(800)
+    P.log('p7.frame.loaded', { frames: document.querySelectorAll('iframe').length })
+    P.done({})
+  })()
+</script>

@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p2 b</title>
+<script src="probe.js"></script>
+<script>
+  ;(async () => {
+    const phase = sessionStorage.getItem('p2.phase')
+    P.log('p2.load', {
+      doc: 'b',
+      phase,
+      navType: P.navType(),
+      bridge: typeof window.__seuofficeCheck,
+    })
+    await P.loaded()
+    await P.sleep(600)
+    if (phase === '1') {
+      sessionStorage.setItem('p2.phase', 'reload')
+      P.log('p2.reload.request')
+      location.reload()
+    } else if (phase === 'reload') {
+      sessionStorage.setItem('p2.phase', 'back')
+      P.log('p2.back.request')
+      history.back()
+    }
+  })()
+</script>

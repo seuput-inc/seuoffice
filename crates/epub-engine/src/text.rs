@@ -10,8 +10,8 @@ use jscompat::trim;
 use serde_json::{Value, json};
 
 use crate::utf16::{lossy, units};
-use crate::xml::host_thrown;
-use crate::xml_positions::parse_xml;
+use crate::xml::{HostCall, host_thrown};
+use crate::xml_positions::{parse_xml, parse_xml_with_host};
 use crate::xml_positions_types::{
     ElementId, MAX_DEPTH, Thrown, XmlDocument, XmlNode as PositionNode, XmlParseResult, deeper,
 };
@@ -263,11 +263,24 @@ impl TextCollector {
 /// lines. `Err` is what the TypeScript throws: the host's, or the stack
 /// overflow of a nesting deeper than `MAX_DEPTH`.
 pub fn extract_chapter_text(source: &str) -> Result<String, Thrown> {
-    let roots = match parse_xml(&units(source)) {
+    chapter_text_from_parse(source, parse_xml(&units(source)), &seu_host::call)
+}
+
+/// Extracts with a request-bound parser for both entities and HTML repair.
+pub fn extract_chapter_text_with_host(source: &str, host: &HostCall<'_>) -> Result<String, Thrown> {
+    chapter_text_from_parse(source, parse_xml_with_host(&units(source), host), host)
+}
+
+fn chapter_text_from_parse(
+    source: &str,
+    parsed: XmlParseResult,
+    host: &HostCall<'_>,
+) -> Result<String, Thrown> {
+    let roots = match parsed {
         XmlParseResult::Ok(doc) => vec![from_xml(&doc, doc.root, 0)?],
         XmlParseResult::Err { .. } => {
-            let answer = seu_host::call("epub.chapterTextRoots", &json!({ "text": source }))
-                .map_err(host_thrown)?;
+            let answer =
+                host("epub.chapterTextRoots", &json!({ "text": source })).map_err(host_thrown)?;
             roots_from_flat(&answer).map_err(|message| {
                 if message.starts_with("the roots are nested") {
                     Thrown::stack_overflow()

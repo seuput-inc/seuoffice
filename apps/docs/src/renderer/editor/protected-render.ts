@@ -1,4 +1,5 @@
 import type { Node as PmNode } from '@tiptap/pm/model'
+import { toPlatformSchemeUrl } from '@seuoffice/electron-utils/custom-scheme-url'
 import { asciiFamilyResolver, runFaceDecls } from '../text-layout/run-faces'
 import {
   inlineRunsOf,
@@ -1834,7 +1835,7 @@ export function textboxBoxStyle(
   // picture fill (photo boxes / a:blipFill): tiles repeat at natural size,
   // stretch fills cover the whole box. Document data, hence inline.
   const fillImage = box.fillImageDataUrl
-    ? `background-image:url("${box.fillImageDataUrl}");` +
+    ? `background-image:url("${toPlatformSchemeUrl(box.fillImageDataUrl)}");` +
       (box.fillTile
         ? 'background-repeat:repeat'
         : 'background-repeat:no-repeat;background-size:100% 100%')
@@ -1968,7 +1969,10 @@ export function runSpanSpecs(run: Run, autoSpace?: AutoSpace, segs?: InlineSegme
       { class: INLINE_RULE_CLASS, ...(decls.length ? { style: decls.join(';') } : {}) },
     ])
   } else if (run.image) {
-    const attrs: Record<string, string> = { class: 'doc-inline-img', src: run.image.dataUrl }
+    const attrs: Record<string, string> = {
+      class: 'doc-inline-img',
+      src: toPlatformSchemeUrl(run.image.dataUrl),
+    }
     const { widthPx, heightPx, rotDeg, flipH, flipV } = run.image
     const styles: string[] = []
     if (widthPx)

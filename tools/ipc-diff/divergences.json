@@ -1,0 +1,3318 @@
+[
+  {
+    "id": "d1-diagram-unlistened-sends",
+    "group": "d1/diagram",
+    "case": 41,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "thrown": "Error: No handler registered for 'diagram:read-result'"
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "thrown": "Error: No handler registered for 'diagram:read-result'"
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "thrown": "Error: No handler registered for 'diagram:apply-result'"
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "thrown": "Error: No handler registered for 'diagram:bytes-result'"
+            },
+            "events": []
+          }
+        ],
+        "log": []
+      },
+      "files": {}
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {},
+            "events": []
+          },
+          {
+            "answer": {},
+            "events": []
+          },
+          {
+            "answer": {},
+            "events": []
+          },
+          {
+            "answer": {},
+            "events": []
+          }
+        ],
+        "log": []
+      },
+      "files": {}
+    },
+    "reason": "The TypeScript registers read-result and apply-result only when the in-app MCP server first asks a question (mcp-queries listen()), and nothing ever listens to bytes-result. The harness records the TypeScript side's missing listener as a thrown 'No handler registered'; Electron drops such a send, so the renderer sees nothing. The Rust side must register a handler for every send channel of the table (shell start rule) and ignores a reply nobody waits for."
+  },
+  {
+    "id": "d2-hwp-attach-split-surrogate",
+    "group": "d2/hwp-attach",
+    "case": 15,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 0,
+                "text": "a\ud83d"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 2,
+                "text": "\ude00"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [["parseFileToText", "$DIR/e.txt"]]
+      },
+      "files": { "e.txt": "file 644 \"a\ud83d\ude00b\"" }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 0,
+                "text": "a\ufffd"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "name": "e.txt",
+                "totalChars": 4,
+                "offset": 2,
+                "text": "\ufffd"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [["parseFileToText", "$DIR/e.txt"]]
+      },
+      "files": { "e.txt": "file 644 \"a\ud83d\ude00b\"" }
+    },
+    "reason": "hwp:files-read slices the text in UTF-16 units as JavaScript does; a window that ends or starts inside a surrogate pair is a lone surrogate in JavaScript and U+FFFD in Rust (a Rust String cannot hold one). Only a read window that cuts an emoji in two shows it; the model reading the next window gets the character's other half as U+FFFD too."
+  },
+  {
+    "id": "m-settings-lone-surrogate",
+    "group": "m/settings",
+    "case": 22,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "value": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\ud83d",
+                "fallback": "tester"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\ud83d"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 2,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\ud83d"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 3,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\ud83d"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 4,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\ud83d"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 5,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\ud83d"
+                ],
+                "buffers": []
+              }
+            ]
+          }
+        ],
+        "log": []
+      },
+      "files": {
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\n  \\\"language\\\": \\\"en\\\",\\n  \\\"authorName\\\": \\\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\\\ud83d\\\"\\n}\""
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "value": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�",
+                "fallback": "tester"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 2,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 3,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 4,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�"
+                ],
+                "buffers": []
+              },
+              {
+                "view": 5,
+                "channel": "app:author-name-changed",
+                "args": [
+                  "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�"
+                ],
+                "buffers": []
+              }
+            ]
+          }
+        ],
+        "log": []
+      },
+      "files": {
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\n  \\\"language\\\": \\\"en\\\",\\n  \\\"authorName\\\": \\\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�\\\"\\n}\""
+      }
+    },
+    "reason": "main-core holds the author name as a Rust String: cutting a surrogate pair at 120 UTF-16 units leaves a lone surrogate that JS keeps (answer, event and the escaped file text) and Rust turns into U+FFFD"
+  },
+  {
+    "id": "a-ai-core-undefined-keys",
+    "group": "a/ai-core",
+    "case": 0,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "provider": "auto",
+                "providers": {
+                  "claude-code": {
+                    "apiKey": "",
+                    "model": "",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": ""
+                  },
+                  "chatgpt": {
+                    "apiKey": "",
+                    "model": "",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "codex": {
+                    "apiKey": "",
+                    "model": "",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": ""
+                  },
+                  "anthropic": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-5-5",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "gemini": {
+                    "apiKey": "",
+                    "model": "gemini-3.8-flash",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "deepseek": {
+                    "apiKey": "",
+                    "model": "deepseek-v4-pro",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "openai": {
+                    "apiKey": "",
+                    "model": "gpt-6.1-terra",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "kimi": {
+                    "apiKey": "",
+                    "model": "kimi-k3.1-pro",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "glm": {
+                    "apiKey": "",
+                    "model": "glm-5.3",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "qwen": {
+                    "apiKey": "",
+                    "model": "qwen3.8-max",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "doubao": {
+                    "apiKey": "",
+                    "model": "doubao-seed-2-1-pro-260628",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "mimo": {
+                    "apiKey": "",
+                    "model": "mimo-v2.6-pro",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "hunyuan": {
+                    "apiKey": "",
+                    "model": "hy4-preview",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "ling": {
+                    "apiKey": "",
+                    "model": "Ling-3.0-flash",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "spark": {
+                    "apiKey": "",
+                    "model": "spark-x2.5",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "longcat": {
+                    "apiKey": "",
+                    "model": "LongCat-2.0",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "minimax": {
+                    "apiKey": "",
+                    "model": "MiniMax-M3.1-Flash",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "xai": {
+                    "apiKey": "",
+                    "model": "grok-4.6",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "mistral": {
+                    "apiKey": "",
+                    "model": "mistral-medium-latest",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "upstage": {
+                    "apiKey": "",
+                    "model": "solar-pro4",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "exaone": {
+                    "apiKey": "",
+                    "model": "k-exaone_v2.5",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "openrouter": {
+                    "apiKey": "",
+                    "model": "openrouter/auto",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "requesty": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-5",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "opper": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-4-6",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "cheaperinference": {
+                    "apiKey": "",
+                    "model": "gpt-5.4-mini",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "atlascloud": {
+                    "apiKey": "",
+                    "model": "deepseek-ai/deepseek-v4-pro",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "runcrate": {
+                    "apiKey": "",
+                    "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "cloudgpu": {
+                    "apiKey": "",
+                    "model": "deepseek-v4.1-flash",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "siliconflow": {
+                    "apiKey": "",
+                    "model": "deepseek-ai/DeepSeek-V4-Pro",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "ppio": {
+                    "apiKey": "",
+                    "model": "deepseek/deepseek-v4.1-flash",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "opencode-zen": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-5",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "opencode-go": {
+                    "apiKey": "",
+                    "model": "kimi-k2.7-code",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "commandcode": {
+                    "apiKey": "",
+                    "model": "zai-org/GLM-5.3",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "custom": {
+                    "apiKey": "",
+                    "model": "",
+                    "baseUrl": "",
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  },
+                  "gateway": {
+                    "apiKey": "",
+                    "model": "",
+                    "baseUrl": {
+                      "$": "u"
+                    },
+                    "cliPath": {
+                      "$": "u"
+                    }
+                  }
+                },
+                "media": {
+                  "imageProvider": "codex",
+                  "analysisProvider": "chat",
+                  "videoAnalysisProvider": "none",
+                  "providers": {
+                    "openai": {
+                      "apiKey": "",
+                      "imageModel": "gpt-image-2",
+                      "analysisModel": "gpt-5.6-luna",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "gemini": {
+                      "apiKey": "",
+                      "imageModel": "gemini-nano-banana-2.1",
+                      "analysisModel": "gemini-3.8-flash",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "doubao": {
+                      "apiKey": "",
+                      "imageModel": "doubao-seedream-5-0-pro-260628",
+                      "analysisModel": "doubao-seed-2-1-pro-260915",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "glm": {
+                      "apiKey": "",
+                      "imageModel": "glm-image",
+                      "analysisModel": "glm-4.6v",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "xai": {
+                      "apiKey": "",
+                      "imageModel": "grok-imagine-image-2.0",
+                      "analysisModel": "grok-4.6",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "qwen": {
+                      "apiKey": "",
+                      "imageModel": "qwen-image-3.0-pro",
+                      "analysisModel": "qwen3-vl-plus",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "minimax": {
+                      "apiKey": "",
+                      "imageModel": "image-01",
+                      "analysisModel": "MiniMax-M3",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "stability": {
+                      "apiKey": "",
+                      "imageModel": "stable-image-ultra",
+                      "analysisModel": "",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "bfl": {
+                      "apiKey": "",
+                      "imageModel": "flux-2-pro",
+                      "analysisModel": "",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "microsoft": {
+                      "apiKey": "",
+                      "imageModel": "MAI-Image-2.6",
+                      "analysisModel": "",
+                      "baseUrl": ""
+                    },
+                    "deepseek": {
+                      "apiKey": "",
+                      "imageModel": "",
+                      "analysisModel": "deepseek-flash",
+                      "baseUrl": {
+                        "$": "u"
+                      }
+                    },
+                    "custom": {
+                      "apiKey": "",
+                      "imageModel": "",
+                      "analysisModel": "",
+                      "baseUrl": ""
+                    }
+                  }
+                },
+                "search": {
+                  "provider": "parallel",
+                  "providers": {
+                    "serper": {
+                      "apiKey": ""
+                    },
+                    "serply": {
+                      "apiKey": ""
+                    },
+                    "searchapi": {
+                      "apiKey": ""
+                    },
+                    "tavily": {
+                      "apiKey": ""
+                    },
+                    "parallel": {
+                      "apiKey": ""
+                    },
+                    "exa": {
+                      "apiKey": ""
+                    },
+                    "firecrawl": {
+                      "apiKey": ""
+                    },
+                    "keenable": {
+                      "apiKey": ""
+                    }
+                  }
+                },
+                "meteredAccepted": {
+                  "claude-code": false,
+                  "codex": false
+                },
+                "headlessSubscriptionEnabled": false,
+                "headlessSubscriptionConsentVersion": 0,
+                "subscriptionNoticeSeen": false,
+                "subscriptionNoticeVersion": 0,
+                "pdfSendNoticeSeen": 0
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": []
+      },
+      "files": {}
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "provider": "auto",
+                "providers": {
+                  "claude-code": {
+                    "apiKey": "",
+                    "model": "",
+                    "cliPath": ""
+                  },
+                  "chatgpt": {
+                    "apiKey": "",
+                    "model": ""
+                  },
+                  "codex": {
+                    "apiKey": "",
+                    "model": "",
+                    "cliPath": ""
+                  },
+                  "anthropic": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-5-5"
+                  },
+                  "gemini": {
+                    "apiKey": "",
+                    "model": "gemini-3.8-flash"
+                  },
+                  "deepseek": {
+                    "apiKey": "",
+                    "model": "deepseek-v4-pro"
+                  },
+                  "openai": {
+                    "apiKey": "",
+                    "model": "gpt-6.1-terra"
+                  },
+                  "kimi": {
+                    "apiKey": "",
+                    "model": "kimi-k3.1-pro"
+                  },
+                  "glm": {
+                    "apiKey": "",
+                    "model": "glm-5.3"
+                  },
+                  "qwen": {
+                    "apiKey": "",
+                    "model": "qwen3.8-max"
+                  },
+                  "doubao": {
+                    "apiKey": "",
+                    "model": "doubao-seed-2-1-pro-260628"
+                  },
+                  "mimo": {
+                    "apiKey": "",
+                    "model": "mimo-v2.6-pro"
+                  },
+                  "hunyuan": {
+                    "apiKey": "",
+                    "model": "hy4-preview"
+                  },
+                  "ling": {
+                    "apiKey": "",
+                    "model": "Ling-3.0-flash"
+                  },
+                  "spark": {
+                    "apiKey": "",
+                    "model": "spark-x2.5"
+                  },
+                  "longcat": {
+                    "apiKey": "",
+                    "model": "LongCat-2.0"
+                  },
+                  "minimax": {
+                    "apiKey": "",
+                    "model": "MiniMax-M3.1-Flash"
+                  },
+                  "xai": {
+                    "apiKey": "",
+                    "model": "grok-4.6"
+                  },
+                  "mistral": {
+                    "apiKey": "",
+                    "model": "mistral-medium-latest"
+                  },
+                  "upstage": {
+                    "apiKey": "",
+                    "model": "solar-pro4"
+                  },
+                  "exaone": {
+                    "apiKey": "",
+                    "model": "k-exaone_v2.5"
+                  },
+                  "openrouter": {
+                    "apiKey": "",
+                    "model": "openrouter/auto"
+                  },
+                  "requesty": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-5"
+                  },
+                  "opper": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-4-6"
+                  },
+                  "cheaperinference": {
+                    "apiKey": "",
+                    "model": "gpt-5.4-mini"
+                  },
+                  "atlascloud": {
+                    "apiKey": "",
+                    "model": "deepseek-ai/deepseek-v4-pro"
+                  },
+                  "runcrate": {
+                    "apiKey": "",
+                    "model": "deepseek-ai/DeepSeek-V4.1-Flash"
+                  },
+                  "cloudgpu": {
+                    "apiKey": "",
+                    "model": "deepseek-v4.1-flash"
+                  },
+                  "siliconflow": {
+                    "apiKey": "",
+                    "model": "deepseek-ai/DeepSeek-V4-Pro"
+                  },
+                  "ppio": {
+                    "apiKey": "",
+                    "model": "deepseek/deepseek-v4.1-flash"
+                  },
+                  "opencode-zen": {
+                    "apiKey": "",
+                    "model": "claude-sonnet-5"
+                  },
+                  "opencode-go": {
+                    "apiKey": "",
+                    "model": "kimi-k2.7-code"
+                  },
+                  "commandcode": {
+                    "apiKey": "",
+                    "model": "zai-org/GLM-5.3"
+                  },
+                  "custom": {
+                    "apiKey": "",
+                    "model": "",
+                    "baseUrl": ""
+                  },
+                  "gateway": {
+                    "apiKey": "",
+                    "model": ""
+                  }
+                },
+                "media": {
+                  "imageProvider": "codex",
+                  "analysisProvider": "chat",
+                  "videoAnalysisProvider": "none",
+                  "providers": {
+                    "openai": {
+                      "apiKey": "",
+                      "imageModel": "gpt-image-2",
+                      "analysisModel": "gpt-5.6-luna"
+                    },
+                    "gemini": {
+                      "apiKey": "",
+                      "imageModel": "gemini-nano-banana-2.1",
+                      "analysisModel": "gemini-3.8-flash"
+                    },
+                    "doubao": {
+                      "apiKey": "",
+                      "imageModel": "doubao-seedream-5-0-pro-260628",
+                      "analysisModel": "doubao-seed-2-1-pro-260915"
+                    },
+                    "glm": {
+                      "apiKey": "",
+                      "imageModel": "glm-image",
+                      "analysisModel": "glm-4.6v"
+                    },
+                    "xai": {
+                      "apiKey": "",
+                      "imageModel": "grok-imagine-image-2.0",
+                      "analysisModel": "grok-4.6"
+                    },
+                    "qwen": {
+                      "apiKey": "",
+                      "imageModel": "qwen-image-3.0-pro",
+                      "analysisModel": "qwen3-vl-plus"
+                    },
+                    "minimax": {
+                      "apiKey": "",
+                      "imageModel": "image-01",
+                      "analysisModel": "MiniMax-M3"
+                    },
+                    "stability": {
+                      "apiKey": "",
+                      "imageModel": "stable-image-ultra",
+                      "analysisModel": ""
+                    },
+                    "bfl": {
+                      "apiKey": "",
+                      "imageModel": "flux-2-pro",
+                      "analysisModel": ""
+                    },
+                    "microsoft": {
+                      "apiKey": "",
+                      "imageModel": "MAI-Image-2.6",
+                      "analysisModel": "",
+                      "baseUrl": ""
+                    },
+                    "deepseek": {
+                      "apiKey": "",
+                      "imageModel": "",
+                      "analysisModel": "deepseek-flash"
+                    },
+                    "custom": {
+                      "apiKey": "",
+                      "imageModel": "",
+                      "analysisModel": "",
+                      "baseUrl": ""
+                    }
+                  }
+                },
+                "search": {
+                  "provider": "parallel",
+                  "providers": {
+                    "serper": {
+                      "apiKey": ""
+                    },
+                    "serply": {
+                      "apiKey": ""
+                    },
+                    "searchapi": {
+                      "apiKey": ""
+                    },
+                    "tavily": {
+                      "apiKey": ""
+                    },
+                    "parallel": {
+                      "apiKey": ""
+                    },
+                    "exa": {
+                      "apiKey": ""
+                    },
+                    "firecrawl": {
+                      "apiKey": ""
+                    },
+                    "keenable": {
+                      "apiKey": ""
+                    }
+                  }
+                },
+                "meteredAccepted": {
+                  "claude-code": false,
+                  "codex": false
+                },
+                "headlessSubscriptionEnabled": false,
+                "headlessSubscriptionConsentVersion": 0,
+                "subscriptionNoticeSeen": false,
+                "subscriptionNoticeVersion": 0,
+                "pdfSendNoticeSeen": 0
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": []
+      },
+      "files": {}
+    },
+    "reason": "keys whose value is undefined: defaultAiSettings() leaves baseUrl, cliPath and others undefined, which Electronʼs structured clone sends as present keys; main-core builds the settings view as JSON (jscompat::JsonValue has no undefined), so Rust leaves the keys out. The two answers are JSON-equal and no renderer or package reads those keys by presence (stage 2: no `in` or hasOwnProperty checks, no spread over them)."
+  },
+  {
+    "id": "d1-sheets-headless-pdf-without-reservation",
+    "group": "d1/sheets-save",
+    "case": 36,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "canceled": false,
+                "path": "$DIR/h.pdf"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "canceled": true
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pdf.renderPdf"],
+          [
+            "dialog.showSaveDialog",
+            1,
+            {
+              "defaultPath": "a.pdf",
+              "filters": [
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "files": {
+        "documents": "dir 755",
+        "h.pdf": "file 644 \"%PDF-1.7\"",
+        "temp": "dir 755",
+        "userData": "dir 755"
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "error": "Error invoking remote method 'workbook:export-pdf': Error: The headless PDF has no native invocation reservation"
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "error": "Error invoking remote method 'workbook:export-pdf': Error: The headless PDF has no native invocation reservation"
+            },
+            "events": []
+          }
+        ],
+        "log": []
+      },
+      "files": {
+        "documents": "dir 755",
+        "temp": "dir 755",
+        "userData": "dir 755"
+      }
+    },
+    "reason": "A closed-side refusal. The TypeScript honors an `outPath` the renderer sends whenever the process is in headless mode and writes the PDF there with no dialog. The Rust port writes a headless PDF only for the tab its native invocation reserved (HeadlessExport: input and output chosen by the command line, the path checked against it) and refuses every other tab of a headless process. A headless process holds exactly that tab, so the refusal never meets a real run. The case's ordinary tab in a headless process is a state only the TypeScript allows: it writes h.pdf for the call with a path and opens the Save dialog for the call without one, where the Rust answers the refusal twice and writes nothing. The reserved headless path is covered by the unit tests of sheets/tests.rs."
+  },
+  {
+    "id": "d1-mindmap-save-as-export-needs-native-request",
+    "group": "d1/mindmap",
+    "case": 20,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "export": {
+                  "format": "png",
+                  "path": "$DIR/pic.png"
+                }
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: this export path was not picked in Save As"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "path": "$DIR/pic.png"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: this export path was not picked in Save As"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "export": {
+                  "format": "pdf",
+                  "path": "$DIR/doc.pdf"
+                }
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: this export path was not picked in Save As"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: this export path was not picked in Save As"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["xmind-engine.openXmind", 9],
+          ["mindmap-main.newDocumentDir", 1],
+          [
+            "dialog.showSaveDialog",
+            1,
+            {
+              "title": "Save Mind Map",
+              "defaultPath": "$DIR/documents/SeuOffice/x",
+              "filters": [
+                {
+                  "name": "Mind Maps",
+                  "extensions": ["xmind"]
+                },
+                {
+                  "name": "PNG Image",
+                  "extensions": ["png"]
+                },
+                {
+                  "name": "SVG Image",
+                  "extensions": ["svg"]
+                },
+                {
+                  "name": "PDF Documents",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "Markdown Outline",
+                  "extensions": ["md"]
+                }
+              ]
+            }
+          ],
+          ["xmind-engine.openXmind", 9],
+          ["mindmap-main.newDocumentDir", 1],
+          [
+            "dialog.showSaveDialog",
+            1,
+            {
+              "title": "Save Mind Map",
+              "defaultPath": "$DIR/documents/SeuOffice/Untitled",
+              "filters": [
+                {
+                  "name": "Mind Maps",
+                  "extensions": ["xmind"]
+                },
+                {
+                  "name": "PNG Image",
+                  "extensions": ["png"]
+                },
+                {
+                  "name": "SVG Image",
+                  "extensions": ["svg"]
+                },
+                {
+                  "name": "PDF Documents",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "Markdown Outline",
+                  "extensions": ["md"]
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "files": {
+        "Upper.MM": "file 644 \"<map/>\"",
+        "a.xmind": "file 644 \"XMIND-map\"",
+        "b.xmind": "file 644 \"XMIND-map\"",
+        "bad.xmind": "file 644 \"junk\"",
+        "dir.mm": "dir 755",
+        "dir.xmind": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.xmind": "file 644 \"\"",
+        "enc.xmind": "file 644 \"ENC-protected\"",
+        "m.mm": "file 644 \"<map version=\\\"1.0\\\"/>\"",
+        "n.txt": "file 644 \"0123456789\"",
+        "notes.md": "file 644 \"# notes\"",
+        "old.xmind": "file 644 \"OLD-format\"",
+        "pic.png": "file 644 hex:89504e470d0a1a0a010203",
+        "x.zip": "file 644 \"zz\""
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "export": {
+                  "format": "png",
+                  "path": "$DIR/pic.png",
+                  "ownedSaveRequestId": "1"
+                }
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: a Save As export requires its native save request identifier"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: a Save As export requires its native save request identifier"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: a Save As export requires its native save request identifier"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "export": {
+                  "format": "pdf",
+                  "path": "$DIR/doc.pdf",
+                  "ownedSaveRequestId": "2"
+                }
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: a Save As export requires its native save request identifier"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "mindmap: a Save As export requires its native save request identifier"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["xmind-engine.openXmind", 9],
+          ["mindmap-main.newDocumentDir", 1],
+          [
+            "dialog.showSaveDialog",
+            1,
+            {
+              "title": "Save Mind Map",
+              "defaultPath": "$DIR/documents/SeuOffice/x",
+              "filters": [
+                {
+                  "name": "Mind Maps",
+                  "extensions": ["xmind"]
+                },
+                {
+                  "name": "PNG Image",
+                  "extensions": ["png"]
+                },
+                {
+                  "name": "SVG Image",
+                  "extensions": ["svg"]
+                },
+                {
+                  "name": "PDF Documents",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "Markdown Outline",
+                  "extensions": ["md"]
+                }
+              ]
+            }
+          ],
+          ["xmind-engine.openXmind", 9],
+          ["mindmap-main.newDocumentDir", 1],
+          [
+            "dialog.showSaveDialog",
+            1,
+            {
+              "title": "Save Mind Map",
+              "defaultPath": "$DIR/documents/SeuOffice/Untitled",
+              "filters": [
+                {
+                  "name": "Mind Maps",
+                  "extensions": ["xmind"]
+                },
+                {
+                  "name": "PNG Image",
+                  "extensions": ["png"]
+                },
+                {
+                  "name": "SVG Image",
+                  "extensions": ["svg"]
+                },
+                {
+                  "name": "PDF Documents",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "Markdown Outline",
+                  "extensions": ["md"]
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "files": {
+        "Upper.MM": "file 644 \"<map/>\"",
+        "a.xmind": "file 644 \"XMIND-map\"",
+        "b.xmind": "file 644 \"XMIND-map\"",
+        "bad.xmind": "file 644 \"junk\"",
+        "dir.mm": "dir 755",
+        "dir.xmind": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.xmind": "file 644 \"\"",
+        "enc.xmind": "file 644 \"ENC-protected\"",
+        "m.mm": "file 644 \"<map version=\\\"1.0\\\"/>\"",
+        "n.txt": "file 644 \"0123456789\"",
+        "notes.md": "file 644 \"# notes\"",
+        "old.xmind": "file 644 \"OLD-format\"",
+        "pic.png": "file 644 \"png-bytes\"",
+        "x.zip": "file 644 \"zz\""
+      }
+    },
+    "reason": "A closed-side refusal. The Rust shell hands every Save As copy a native save request identifier and takes no export target without it; the TypeScript has no such notion and authorizes a picked name per tab instead. The Save As answer of the Rust port therefore carries `ownedSaveRequestId` next to the export path, and an export that names a path without that identifier (the TypeScript accepts a name its own Save As picked, once) is refused with `a Save As export requires its native save request identifier`. The case checks the TypeScript one-shot authorization (a name never picked, a name picked once, the same name again, another type, another path); the Rust path through the native request is covered by the mindmap unit tests of the owned export (`crates/shell-ipc/d1/src/mindmap/tests.rs`)."
+  },
+  {
+    "id": "d1-slides-save-as-png-needs-native-request",
+    "group": "d1/slides-export",
+    "case": 6,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "$DIR/a.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "export target was not authorized"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "png",
+                "path": "$DIR/page.png"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "export target was not authorized"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "Save As images are PNG"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "paths": ["$DIR/page-01.png", "$DIR/page-02.png", "$DIR/page-03.png"]
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "export target was not authorized"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.openPptx", 103],
+          ["slidesOpenedHook", 1, "$DIR/a.pptx"],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "page-01.png": "file 644 \"\\u0000\\u0001\\u0002\"",
+        "page-02.png": "file 644 \"\\u0003\\u0004\\u0005\"",
+        "page-03.png": "file 644 \"\\u0006\\u0007\\b\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/a.pptx\\\"]\""
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "$DIR/a.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "The Save As copy request identifier is required"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "png",
+                "path": "$DIR/page.png",
+                "saveRequestId": "00000000-0000-4000-8000-000000000001"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "The Save As copy request identifier is required"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "Save As images are PNG"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "The Save As copy request identifier is required"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "error": "The Save As copy request identifier is required"
+              },
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.openPptx", 103],
+          ["slidesOpenedHook", 1, "$DIR/a.pptx"],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/a.pptx\\\"]\""
+      }
+    },
+    "reason": "A closed-side refusal. The Rust shell hands every Save As copy a native save request identifier and takes no export target without it; the TypeScript has no such notion and authorizes a picked name per tab instead. `slides:save-as` therefore answers `saveRequestId` next to `exportAs` and `path`, and `slides:export-images` with a `saveAsTarget` but no request identifier answers `The Save As copy request identifier is required` where the TypeScript writes the numbered PNG files for a name this tab picked once. The case checks the TypeScript authorization (a name never picked, a name picked once, the same name again, a JPG); the Rust path through the native request is covered by `save_as_png_authorizes_one_image_export_for_that_tab_only` in `crates/shell-ipc/d1/src/slides/tests.rs`."
+  },
+  {
+    "id": "d1-slides-save-as-copy-request-id-lifecycle",
+    "group": "d1/slides-lifecycle",
+    "case": 8,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "$DIR/a.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "partPath": "ppt/slides/slide1.xml",
+                "hidden": true,
+                "elements": [
+                  {
+                    "id": "e1",
+                    "text": "Hello"
+                  },
+                  {
+                    "id": "e2",
+                    "text": "World"
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": true,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "pdf",
+                "path": "$DIR/page.pdf"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "png",
+                "path": "$DIR/slide.png"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "png",
+                "path": "$DIR/Slide.PNG"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "path": "$DIR/deck.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": true,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:renamed",
+                "args": ["$DIR/deck.pptx"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": false,
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": ["$DIR/deck.pptx", "$DIR/a.pptx"],
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.openPptx", 103],
+          ["slidesOpenedHook", 1, "$DIR/a.pptx"],
+          ["pptx-ops.runTxn", 1, true],
+          ["pptx-ops.runTxn", 1, false],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          ["pptx-engine.savePptxToFile"],
+          ["slidesOpenedHook", 1, "$DIR/deck.pptx"]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "deck.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 1 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/deck.pptx\\\",\\\"$DIR/a.pptx\\\"]\""
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "$DIR/a.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "partPath": "ppt/slides/slide1.xml",
+                "hidden": true,
+                "elements": [
+                  {
+                    "id": "e1",
+                    "text": "Hello"
+                  },
+                  {
+                    "id": "e2",
+                    "text": "World"
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": true,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "pdf",
+                "path": "$DIR/page.pdf",
+                "saveRequestId": "00000000-0000-4000-8000-000000000001"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "png",
+                "path": "$DIR/slide.png",
+                "saveRequestId": "00000000-0000-4000-8000-000000000002"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "png",
+                "path": "$DIR/Slide.PNG",
+                "saveRequestId": "00000000-0000-4000-8000-000000000003"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "path": "$DIR/deck.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": true,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:renamed",
+                "args": ["$DIR/deck.pptx"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": false,
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": ["$DIR/deck.pptx", "$DIR/a.pptx"],
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.openPptx", 103],
+          ["slidesOpenedHook", 1, "$DIR/a.pptx"],
+          ["pptx-ops.runTxn", 1, true],
+          ["pptx-ops.runTxn", 1, false],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          ["pptx-engine.savePptxToFile"],
+          ["slidesOpenedHook", 1, "$DIR/deck.pptx"]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "deck.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 1 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/deck.pptx\\\",\\\"$DIR/a.pptx\\\"]\""
+      }
+    },
+    "reason": "An answer field only the Rust shell adds. The Rust shell hands every Save As copy a native save request identifier and takes no export target without it; the TypeScript has no such notion and authorizes a picked name per tab instead. Picking a PDF or PNG in Save As answers `{ok:false, exportAs, path}` on both sides; the Rust answer carries the `saveRequestId` the renderer echoes into the export call that follows. Nothing else differs: the deck, its path and the recent list are untouched on both sides."
+  },
+  {
+    "id": "d1-slides-save-as-copy-request-id-events",
+    "group": "d1/slides-events",
+    "case": 7,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "$DIR/a.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "partPath": "ppt/slides/slide1.xml",
+                "hidden": true,
+                "elements": [
+                  {
+                    "id": "e1",
+                    "text": "Hello"
+                  },
+                  {
+                    "id": "e2",
+                    "text": "World"
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": true,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "path": "$DIR/menu.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": true,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:renamed",
+                "args": ["$DIR/menu.pptx"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": false,
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "pdf",
+                "path": "$DIR/menu.pdf"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": ["$DIR/menu.pptx", "$DIR/a.pptx"],
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.openPptx", 103],
+          ["slidesOpenedHook", 1, "$DIR/a.pptx"],
+          ["pptx-ops.runTxn", 1, true],
+          ["pptx-ops.runTxn", 1, false],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          ["pptx-engine.savePptxToFile"],
+          ["slidesOpenedHook", 1, "$DIR/menu.pptx"],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "menu.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 1 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/menu.pptx\\\",\\\"$DIR/a.pptx\\\"]\""
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "$DIR/a.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "partPath": "ppt/slides/slide1.xml",
+                "hidden": true,
+                "elements": [
+                  {
+                    "id": "e1",
+                    "text": "Hello"
+                  },
+                  {
+                    "id": "e2",
+                    "text": "World"
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": true,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "path": "$DIR/menu.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": true,
+                    "elements": [
+                      {
+                        "id": "e1",
+                        "text": "Hello"
+                      },
+                      {
+                        "id": "e2",
+                        "text": "World"
+                      }
+                    ]
+                  },
+                  {
+                    "partPath": "ppt/slides/slide2.xml",
+                    "hidden": false,
+                    "elements": [
+                      {
+                        "id": "e3",
+                        "text": "Second"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:renamed",
+                "args": ["$DIR/menu.pptx"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": false,
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "$": "u"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:menu",
+                "args": ["save-as"],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "exportAs": "pdf",
+                "path": "$DIR/menu.pdf",
+                "saveRequestId": "00000000-0000-4000-8000-000000000004"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": ["$DIR/menu.pptx", "$DIR/a.pptx"],
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.openPptx", 103],
+          ["slidesOpenedHook", 1, "$DIR/a.pptx"],
+          ["pptx-ops.runTxn", 1, true],
+          ["pptx-ops.runTxn", 1, false],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ],
+          ["pptx-engine.savePptxToFile"],
+          ["slidesOpenedHook", 1, "$DIR/menu.pptx"],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/Deck",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                },
+                {
+                  "name": "PDF",
+                  "extensions": ["pdf"]
+                },
+                {
+                  "name": "PNG images (one per slide)",
+                  "extensions": ["png"]
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "menu.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 1 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/menu.pptx\\\",\\\"$DIR/a.pptx\\\"]\""
+      }
+    },
+    "reason": "An answer field only the Rust shell adds. The Rust shell hands every Save As copy a native save request identifier and takes no export target without it; the TypeScript has no such notion and authorizes a picked name per tab instead. The renderer answering the menuʼs Save As with its own `slides:save-as` call is answered `{ok:false, exportAs:\"pdf\", path}` on both sides; the Rust answer carries the `saveRequestId` the renderer echoes into the export call that follows. Nothing else differs."
+  },
+  {
+    "id": "d1-slides-first-save-hook-after-write",
+    "group": "d1/slides-lifecycle",
+    "case": 6,
+    "typescript": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": []
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "partPath": "ppt/slides/slide1.xml",
+                "hidden": true,
+                "elements": []
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": true,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "reason": "external-modified"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "path": "$DIR/new.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": true,
+                    "elements": []
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": false,
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": ["$DIR/new.pptx"],
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.createBlankPptx"],
+          ["pptx-engine.openPptx", 52],
+          ["pptx-ops.runTxn", 1, true],
+          ["pptx-ops.runTxn", 1, false],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/documents/SeuOffice/Untitled Presentation.pptx",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/documents/SeuOffice/Untitled Presentation.pptx",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                }
+              ]
+            }
+          ],
+          ["slidesOpenedHook", 1, "$DIR/new.pptx"],
+          ["pptx-engine.savePptxToFile"]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "new.pptx": "file 644 \"FAKEPPTX 9144000 5143500 1\\nppt/slides/slide1.xml 1 \\n\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/new.pptx\\\"]\""
+      }
+    },
+    "rust": {
+      "record": {
+        "calls": [
+          {
+            "answer": {
+              "value": {
+                "path": "",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": false,
+                    "elements": []
+                  }
+                ],
+                "size": {
+                  "cx": 9144000,
+                  "cy": 5143500
+                },
+                "defaultFont": "Calibri"
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": false,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "partPath": "ppt/slides/slide1.xml",
+                "hidden": true,
+                "elements": []
+              },
+              "buffers": []
+            },
+            "events": [
+              {
+                "view": 1,
+                "channel": "slides:history-changed",
+                "args": [
+                  {
+                    "canUndo": true,
+                    "canRedo": false,
+                    "aiRunActive": false
+                  }
+                ],
+                "buffers": []
+              }
+            ]
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": false,
+                "reason": "external-modified"
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": {
+                "ok": true,
+                "path": "$DIR/new.pptx",
+                "slides": [
+                  {
+                    "partPath": "ppt/slides/slide1.xml",
+                    "hidden": true,
+                    "elements": []
+                  }
+                ]
+              },
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": false,
+              "buffers": []
+            },
+            "events": []
+          },
+          {
+            "answer": {
+              "value": ["$DIR/new.pptx"],
+              "buffers": []
+            },
+            "events": []
+          }
+        ],
+        "log": [
+          ["pptx-engine.createBlankPptx"],
+          ["pptx-engine.openPptx", 52],
+          ["pptx-ops.runTxn", 1, true],
+          ["pptx-ops.runTxn", 1, false],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/documents/SeuOffice/Untitled Presentation.pptx",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                }
+              ]
+            }
+          ],
+          [
+            "dialog.showSaveDialog",
+            null,
+            {
+              "defaultPath": "$DIR/documents/SeuOffice/Untitled Presentation.pptx",
+              "filters": [
+                {
+                  "name": "PowerPoint",
+                  "extensions": ["pptx"]
+                }
+              ]
+            }
+          ],
+          ["pptx-engine.savePptxToFile"],
+          ["slidesOpenedHook", 1, "$DIR/new.pptx"]
+        ]
+      },
+      "files": {
+        "a.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=Hello|e2=World\\nppt/slides/slide2.xml 0 e3=Second\\n\"",
+        "b.pptx": "file 644 \"FAKEPPTX 9144000 5143500 5\\nppt/slides/slide1.xml 0 e1=B one\\n\"",
+        "bad.pptx": "file 644 \"junk\"",
+        "dir.pptx": "dir 755",
+        "documents": "dir 755",
+        "documents/SeuOffice": "dir 755",
+        "empty.pptx": "file 644 \"\"",
+        "new.pptx": "file 644 \"FAKEPPTX 9144000 5143500 1\\nppt/slides/slide1.xml 1 \\n\"",
+        "userData": "dir 755",
+        "userData/app-settings.json": "file 644 \"{\\\"authorName\\\":\\\"Ann\\\"}\"",
+        "userData/slides-recent.json": "file 644 \"[\\\"$DIR/new.pptx\\\"]\""
+      }
+    },
+    "reason": "A deliberate order, not a refusal. The first save of an untitled deck sets `session.path` and calls `slidesOpenedHook` before it writes in the TypeScript, so a write that fails leaves the deck with a path no file has. The Rust port publishes the new path to the shell (the opened hook, the tab title, the recent list) only after the file is durably written, which puts `slidesOpenedHook` after `savePptxToFile` in the host log. The answers, the events and the folder are equal."
+  }
+]

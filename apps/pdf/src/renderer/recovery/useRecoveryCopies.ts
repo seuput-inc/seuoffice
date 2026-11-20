@@ -89,8 +89,15 @@ export function useRecoveryCopies(
     }
     for (const type of INPUT_EVENTS) window.addEventListener(type, note, true)
     window.addEventListener('pointermove', move, true)
-    const off = apiRef.current?.onRecoveryFlushRequest?.(() => {
-      void scheduler.flushNow().finally(() => apiRef.current?.sendRecoveryFlushDone?.())
+    const off = apiRef.current?.onRecoveryFlushRequest?.((token) => {
+      void scheduler.flushNow().then(
+        (result) =>
+          apiRef.current?.sendRecoveryFlushDone?.(
+            token,
+            result === 'written' || result === 'unchanged' ? undefined : `PDF recovery ${result}`,
+          ),
+        (error) => apiRef.current?.sendRecoveryFlushDone?.(token, String(error)),
+      )
     })
     const offDropped = apiRef.current?.onRecoveryDropped?.((value) => {
       // false: the shell reported the cancelled close and main already resumed

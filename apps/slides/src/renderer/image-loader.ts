@@ -5,10 +5,11 @@
  * so re-collecting urls after an edit never reloads or discards progress.
  */
 import { metafileToDataUrl } from '@seuoffice/docx-engine/metafile'
+import { isSchemeUrl } from '@seuoffice/electron-utils/custom-scheme-url'
 
 /** Slide media is cross-origin: without CORS a canvas that draws it is tainted (cutout, export). */
 export function setImageSource(img: HTMLImageElement, url: string): void {
-  if (url.startsWith('seuoffice-slide-media:')) img.crossOrigin = 'anonymous'
+  if (isSchemeUrl(url, 'seuoffice-slide-media')) img.crossOrigin = 'anonymous'
   img.src = url
 }
 
@@ -16,7 +17,9 @@ export type ApplyImages = (entries: ReadonlyArray<readonly [string, HTMLImageEle
 
 /** EMF/WMF data URLs: browsers cannot decode metafiles — rasterize to PNG first (keyed by the original url). */
 const METAFILE_RE = /^data:(image\/x-(?:emf|wmf)|image\/(?:emf|wmf));base64,/
-const LAZY_METAFILE_RE = /^seuoffice-slide-media:.*[?&]mime=image%2F(?:x-)?(emf|wmf)(?:&|$)/i
+// the shell hands the URL over as `seuoffice-slide-media://…`, or `http://seuoffice-slide-media.localhost/…` on WebView2
+const LAZY_METAFILE_RE =
+  /^(?:seuoffice-slide-media:|http:\/\/seuoffice-slide-media\.localhost\/).*[?&]mime=image%2F(?:x-)?(emf|wmf)(?:&|$)/i
 
 /**
  * EMF headers size the raster from their device bounds, up to the converter's 8192px cap:

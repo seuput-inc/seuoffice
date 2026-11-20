@@ -1022,17 +1022,21 @@ describe('metafile pictures get an opaque white backdrop (PlanS academy banner)'
           mk('data:image/png;base64,AAAA'),
           mk('seuoffice-slide-media://archive/emf?mime=image%2Fx-emf'),
           mk('seuoffice-slide-media://archive/png?mime=image%2Fpng'),
+          mk('http://seuoffice-slide-media.localhost/archive/emf?mime=image%2Fx-emf'),
+          mk('http://seuoffice-slide-media.localhost/archive/png?mime=image%2Fpng'),
         ],
         decorations: [],
       },
       deck.size,
       { fitWidthPx: 1280 },
     )
-    const [emf, png, lazyEmf, lazyPng] = rs.nodes as any[]
+    const [emf, png, lazyEmf, lazyPng, wireEmf, wirePng] = rs.nodes as any[]
     expect(emf.bgColor).toBe('#FFFFFF')
     expect(png.bgColor).toBeUndefined()
     expect(lazyEmf.bgColor).toBe('#FFFFFF')
     expect(lazyPng.bgColor).toBeUndefined()
+    expect(wireEmf.bgColor).toBe('#FFFFFF')
+    expect(wirePng.bgColor).toBeUndefined()
   })
 
   it('a clrChange metafile drops the white DC backing (the recolor sees through it)', async () => {

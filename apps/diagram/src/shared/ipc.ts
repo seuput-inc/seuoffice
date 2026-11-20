@@ -81,6 +81,7 @@ export const DIAGRAM_CHANNELS = {
   // ---- a new tab that starts with given content (a converter's result, a template) ----
   /** invoke → `DiagramSeed | null`: take the content left for this view, once */
   seedTake: 'diagram:seed-take',
+  recoveryInitialized: 'diagram:recovery-initialized',
 
   // ---- chat attachments (same shapes as the other editors; `src/main/ai-attachments.ts`) ----
   /** invoke → `AttachmentAddResult | null`: the open dialog; null when cancelled */
@@ -185,7 +186,7 @@ export type DiagramOpenStatus =
  *   renderer hands `bytes` to the importer registered for it. The diagram is
  *   untitled; `title` is the tab's name.
  */
-export type OpenFileResult =
+export type OpenFileResult = (
   | {
       status: 'ok'
       xml: string
@@ -195,6 +196,7 @@ export type OpenFileResult =
     }
   | { status: 'import'; importer: DiagramImportKind; bytes: Uint8Array; title: string }
   | { status: Exclude<DiagramOpenStatus, 'ok'> }
+) & { recoveryToken?: string }
 
 /** Files another program made that the editor turns into a new diagram. */
 export type DiagramImportKind = 'vsdx'
@@ -212,6 +214,7 @@ export type SaveRequestMode = SaveMode | 'retarget'
 
 export interface SaveTargetRequest {
   mode: SaveRequestMode
+  requestId?: string
   /** file name (no extension) offered by the save dialog of an untitled diagram */
   defaultName?: string
 }
@@ -228,6 +231,7 @@ export type SaveTargetResult =
 
 export interface SaveDiagramRequest {
   token: string
+  requestId?: string
   /** the whole file, as draw.io serialized it in the target's format */
   bytes: Uint8Array
   /**
@@ -369,6 +373,7 @@ export type RecoveryCopyResult = 'written' | 'superseded' | 'skipped'
 /** draw.io XML for a new, unsaved diagram (`.drawio` when saved). */
 export interface DiagramSeed {
   xml: string
+  recoveryToken?: string
 }
 
 // ---- chat attachments (same shapes as the other editors) ----
@@ -487,8 +492,8 @@ export interface DiagramCoreApi {
   save(request: SaveDiagramRequest): Promise<SaveDiagramResult>
   saveIntoProject(request: SaveIntoProjectRequest): Promise<SaveIntoProjectResult>
   setDirty(dirty: boolean): void
-  onSaveRequest(handler: (mode: SaveRequestMode) => void): () => void
-  sendSaveRequestAck(ok: boolean): void
+  onSaveRequest(handler: (mode: SaveRequestMode, requestId?: string) => void): () => void
+  sendSaveRequestAck(ok: boolean, requestId?: string): void
   onCloseSaveRequest(handler: () => void): () => void
   sendCloseSaveResult(ok: boolean): void
   onFileRenamed(handler: (newPath: string) => void): () => void
@@ -506,6 +511,7 @@ export interface DiagramCoreApi {
   onAutoSaveDefaultChanged(handler: (value: AutoSaveDefault) => void): () => void
   onChromePressed(handler: () => void): () => void
   takeSeed(): Promise<DiagramSeed | null>
+  recoveryInitialized(token: string, ok: boolean, error?: string): Promise<void>
 }
 
 export interface DiagramExportApi {
@@ -518,8 +524,8 @@ export interface DiagramExportApi {
 
 export interface DiagramRecoveryApi {
   writeRecoveryCopy(request: RecoveryCopyRequest): Promise<RecoveryCopyResult>
-  onRecoveryCopyNow(handler: () => void): () => void
-  sendRecoveryCopyNowDone(): void
+  onRecoveryCopyNow(handler: (generation: number) => void): () => void
+  sendRecoveryCopyNowDone(generation: number, error: string | null): void
   onRecoveryReset(handler: () => void): () => void
 }
 
