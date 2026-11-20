@@ -99,7 +99,7 @@ function load(probe) {
 // ----------------------------------------------------------------------------------- results
 
 const short = (rec) => {
-  const { _line, _probe, wall, href, seq, ...rest } = rec
+  const { _line, _probe, wall: _wall, href: _href, seq: _seq, ...rest } = rec
   const text = JSON.stringify(rest)
   return text.length > 300 ? `${text.slice(0, 297)}...` : text
 }
@@ -1959,7 +1959,7 @@ if (jsonOut)
   fs.writeFileSync(
     jsonOut,
     JSON.stringify(
-      results.map(({ check, ...rest }) => rest),
+      results.map(({ check: _check, ...rest }) => rest),
       null,
       2,
     ),

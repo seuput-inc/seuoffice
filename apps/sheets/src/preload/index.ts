@@ -1163,6 +1163,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
   if (!isRecord(input)) throw new Error('Invalid workbook response.')
   const {
     sessionId,
+    savedLoadId,
     name,
     path,
     sha256,
@@ -1183,6 +1184,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
   } = input
   if (
     !isUuid(sessionId) ||
+    (savedLoadId !== undefined && (typeof savedLoadId !== 'string' || savedLoadId.length === 0)) ||
     typeof name !== 'string' ||
     (path !== undefined && (typeof path !== 'string' || path.length === 0)) ||
     typeof sha256 !== 'string' ||
@@ -1495,6 +1497,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
     typeof input.shortDateFormat === 'string' ? input.shortDateFormat : undefined
   return {
     sessionId,
+    ...(savedLoadId === undefined ? {} : { savedLoadId }),
     name,
     ...(path === undefined ? {} : { path }),
     sha256,

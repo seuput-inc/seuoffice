@@ -51,7 +51,7 @@ function encodeFrame(
   try {
     return frame({ ...head, args: e.values(args) }, e.buffers)
   } catch (err) {
-    if (err instanceof WireError) throw new Error(UNCLONABLE)
+    if (err instanceof WireError) throw new Error(UNCLONABLE, { cause: err })
     throw err
   }
 }

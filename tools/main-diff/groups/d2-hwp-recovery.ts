@@ -488,7 +488,6 @@ const HWPX_TAB = hwpxWithTab()
 const A = '/d/a.hwp'
 const B = '/d/b.hwpx'
 const C = '/d/c.txt'
-const A_COPY = `${A}.copy`
 
 const OLD = 946_684_800_000
 const FUTURE = 4_102_444_800_000
@@ -907,7 +906,6 @@ group['recovery.noteHwpPathConsumed'] = fnSpec('recovery.noteHwpPathConsumed', [
 
 // ---- the read path ----
 
-const ASK = { response: 0 }
 group['recovery.hwpRecoveryOnRead'] = fnSpec('recovery.hwpRecoveryOnRead', [
   one([onRead(1, A)], { host: host({ '1': saved(A) }) }, { note: 'no copy: the file' }),
   one(

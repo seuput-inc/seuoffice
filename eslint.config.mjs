@@ -94,4 +94,11 @@ export default tseslint.config(
       globals: { ...globals.browser, __INVOKE_KEY__: 'readonly' },
     },
   },
+  {
+    // pages the shell's probe harness loads in a webview; probe.js puts `P` on the window
+    files: ['crates/shell/probe-fixtures/pages/*.js'],
+    languageOptions: {
+      globals: { ...globals.browser, P: 'readonly' },
+    },
+  },
 )
