@@ -11,12 +11,17 @@
  *
  * - a report of another commit or another OS, or one whose records are missing, is refused:
  *   nothing is merged and the exit status is 1, so the native-host track stays pending;
+ * - so is a report with a receipt that names a scenario the comparison waives from the
+ *   native-host proof (tools/shell-inventory/native-waivers.mjs): a spec that reaches it makes
+ *   the waiver wrong. This is checked on each OS's receipts, before the two are intersected,
+ *   which would drop such a scenario passed on one OS only;
  * - a scenario passes only where the macOS and the Windows receipts both pass it;
  * - a failed receipt of either OS stays a failed receipt.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SYNTHETIC_ONLY } from '../shell-inventory/native-waivers.mjs'
 import type { NativeEvidence } from './native-contracts.ts'
 
 export const HOSTS = ['macOS', 'Windows'] as const
@@ -57,6 +62,14 @@ export function loadReport(dir: string, os: Host, sha: string): HostReceipt[] {
     if (receipt.kind !== 'native-host' || receipt.os !== os)
       throw new Error(
         `${os}: a receipt of ${receipt.channel} is not a native-host receipt of ${os}`,
+      )
+    const waived = receipt.scenarios.filter(
+      (scenario) => SYNTHETIC_ONLY[receipt.channel]?.[scenario] !== undefined,
+    )
+    if (waived.length > 0)
+      throw new Error(
+        `${os}: a receipt of ${receipt.channel} names the waived scenario ${waived.join(', ')}: ` +
+          'a spec drives it, so drop its waiver (tools/shell-inventory/native-waivers.mjs)',
       )
     const artifact = resolve(dirname(file), receipt.artifact)
     if (!existsSync(artifact))
@@ -122,7 +135,8 @@ export function mergeInto(evidenceFile: string, receipts: readonly HostReceipt[]
   return kept.length
 }
 
-function main(argv: readonly string[]): number {
+/** The command: 0 when the receipts of both OSes were merged into the evidence file, else 1 or 2 */
+export function main(argv: readonly string[]): number {
   const option = (name: string): string | undefined => {
     const at = argv.indexOf(name)
     return at >= 0 ? argv[at + 1] : undefined

@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { NATIVE_CHANNEL_CONTRACTS } from '../shell-inventory/native-channels.ts'
 import { nativeContractCoverage, nativeEvidence } from './native-contracts.ts'
 import { CHANNELS } from './channels.ts'
 import {
@@ -10,6 +11,7 @@ import {
   describe as describeHosts,
   findReport,
   loadReport,
+  main,
   mergeHosts,
   mergeInto,
 } from './native-host-evidence.ts'
@@ -127,5 +129,62 @@ describe('native-host receipts of an e2e run', () => {
     expect(report!.nativeHost.status).toBe('pending')
     expect(report!.nativeHost.missingScenarios).toContain('duplicate-ack')
     expect(report!.nativeHost.missingScenarios).not.toContain('successful-ack')
+  })
+
+  it('are refused when one OS names a waived scenario, before the two are intersected', () => {
+    // html:recovery-applied failed-apply is waived (tools/shell-inventory/native-waivers.mjs)
+    const waived = 'html:recovery-applied'
+    const reached = (os: Host, status: HostReceipt['status'] = 'passed') => ({
+      ...receipt(os, ['failed-apply'], status),
+      channel: waived,
+    })
+    // every other scenario of the channel, passed on both OSes
+    const contract = NATIVE_CHANNEL_CONTRACTS.find((entry) => entry.name === waived)!
+    const rest = contract.requiredScenarios.filter((scenario) => scenario !== 'failed-apply')
+    const complete = (os: Host) => [
+      receipt(os, ['successful-ack']),
+      { ...receipt(os, rest), channel: waived },
+    ]
+    const evidence = join(root, 'native-evidence.json')
+    const merge = () =>
+      main([
+        '--sha',
+        SHA,
+        '--mac',
+        join(root, 'macOS'),
+        '--windows',
+        join(root, 'Windows'),
+        '--evidence',
+        evidence,
+      ])
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const refusal = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      artifact('macOS', complete('macOS'))
+      artifact('Windows', complete('Windows'))
+      expect(merge()).toBe(0)
+      rmSync(evidence)
+
+      // passed on macOS alone: the intersection would have dropped it, and the waiver with it
+      for (const [os, status] of [
+        ['macOS', 'passed'],
+        ['Windows', 'passed'],
+        ['macOS', 'failed'],
+      ] as const) {
+        artifact('macOS', complete('macOS'))
+        artifact('Windows', complete('Windows'))
+        artifact(os, [...complete(os), reached(os, status)])
+        refusal.mockClear()
+        expect(merge(), `${os} ${status}`).toBe(1)
+        expect(refusal).toHaveBeenCalledWith(
+          `native-host receipts refused: ${os}: a receipt of ${waived} names the waived scenario ` +
+            'failed-apply: a spec drives it, so drop its waiver (tools/shell-inventory/native-waivers.mjs)',
+        )
+        expect(existsSync(evidence)).toBe(false)
+      }
+    } finally {
+      log.mockRestore()
+      refusal.mockRestore()
+    }
   })
 })

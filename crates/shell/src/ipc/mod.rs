@@ -462,36 +462,92 @@ fn late_reply(ipc: &Ipc, authority: &ReplyAuthority, frame: Vec<u8>, channel: &s
     }
 }
 
+/// The calls a Docs page makes to take what its tab's opening queued for it (the boot
+/// `Promise.all` of `apps/docs/src/renderer/App.tsx`). They are about the page, not about a
+/// document it shows: the open among them loads the document while the others are still on
+/// their way, and the page shows nothing until every one is answered (S121, macOS `docs-edit`:
+/// `docs:consume-new-blank`). Any other call was made for the document the page showed when
+/// it made it, and must not run with the permit of a document loaded since: `docs:save-new`
+/// would save A's text under B's permit and make A's path the view's open file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpeningCall {
+    PendingOpen,
+    NewBlank,
+    AiDocContent,
+    UntitledCopy,
+}
+
+impl OpeningCall {
+    const ALL: [Self; 4] = [
+        Self::PendingOpen,
+        Self::NewBlank,
+        Self::AiDocContent,
+        Self::UntitledCopy,
+    ];
+
+    const fn channel(self) -> &'static str {
+        match self {
+            Self::PendingOpen => "docs:consume-pending-open",
+            Self::NewBlank => "docs:consume-new-blank",
+            Self::AiDocContent => "docs:consume-ai-doc-content",
+            Self::UntitledCopy => "docs:consume-copy",
+        }
+    }
+
+    fn of(channel: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|call| call.channel() == channel)
+    }
+}
+
+/// What a posted call is dispatched under.
+enum Posted {
+    /// its own owner, or for an [`OpeningCall`] the owner its native document has now
+    Dispatch(NativeRequestOwner),
+    /// the page loaded another document since: the call is answered with an error under the
+    /// owner the page has now, and runs nowhere
+    Refuse(NativeRequestOwner),
+    /// the page's document is gone, with nobody to answer
+    Gone,
+}
+
 /// The owner a posted call is dispatched under: its own while that still verifies. Between its
 /// arrival and its turn on the core thread the page may have loaded a document, which takes the
 /// owner from every other call the page has on its way, though the page still waits for their
-/// answers. The owner its native document has now then stands for the lost one
-/// ([`native_owner::succeeding_owner`]). `None`: the document is gone, with nobody to answer.
+/// answers. The owner its native document has now ([`native_owner::succeeding_owner`]) then
+/// stands for the lost one, for an [`OpeningCall`] only.
 fn posted_owner(
     views: &ViewTable,
     owner: NativeRequestOwner,
     kind: &str,
     channel: &str,
-) -> Option<NativeRequestOwner> {
+) -> Posted {
     if with_verified(&owner, || ()).is_some() {
-        return Some(owner);
+        return Posted::Dispatch(owner);
     }
-    let current = native_owner::succeeding_owner(views, &owner)
-        .filter(|current| with_verified(current, || ()).is_some());
-    if current.is_some() {
+    let view = owner.view.0;
+    let Some(current) = native_owner::succeeding_owner(views, &owner)
+        .filter(|current| with_verified(current, || ()).is_some())
+    else {
+        trace!(
+            "refused",
+            "the {kind} '{channel}' of view {view} was not dispatched: its document is gone"
+        );
+        return Posted::Gone;
+    };
+    if OpeningCall::of(channel).is_some() {
         trace!(
             "owner",
-            "the {kind} '{channel}' of view {} goes on under the owner its document has now",
-            owner.view.0
+            "the {kind} '{channel}' of view {view} goes on under the owner its document has now"
         );
+        Posted::Dispatch(current)
     } else {
         trace!(
             "refused",
-            "the {kind} '{channel}' of view {} was not dispatched: its document is gone",
-            owner.view.0
+            "the {kind} '{channel}' of view {view} was refused: the page loaded another document \
+             since it made the call"
         );
+        Posted::Refuse(current)
     }
-    current
 }
 
 /// Accepts only a sender and owner bound by authenticated native ingress.
@@ -523,8 +579,17 @@ pub(crate) fn invoke_verified(
     }
     let shell = ipc.clone();
     ipc.core.post(Box::new(move || {
-        let Some(mut owner) = posted_owner(&shell.views, owner, "invoke", &channel) else {
-            return;
+        let mut owner = match posted_owner(&shell.views, owner, "invoke", &channel) {
+            Posted::Dispatch(owner) => owner,
+            Posted::Refuse(current) => {
+                let authority = Arc::new(ReplyAuthority::new(id, current));
+                verified_reply(&shell, authority, id, channel)(Err(IpcError {
+                    name: Some("Error".into()),
+                    message: "The document this call was made for was replaced.".into(),
+                }));
+                return;
+            }
+            Posted::Gone => return,
         };
         let authority = Arc::new(ReplyAuthority::new(id, owner.clone()));
         owner.context = owner.context.with_request_authority(authority.clone());
@@ -562,7 +627,7 @@ pub(crate) fn send_verified(
     ipc.note_call();
     let views = ipc.views.clone();
     ipc.core.post(Box::new(move || {
-        let Some(owner) = posted_owner(&views, owner, "send", &channel) else {
+        let Posted::Dispatch(owner) = posted_owner(&views, owner, "send", &channel) else {
             return;
         };
         let name = channel.clone();
@@ -951,6 +1016,7 @@ mod posted_call_tests {
     use shell_contract::runtime::RendererGeneration;
     use shell_core::table::Table;
     use shell_core::wire::{Encoder, frame};
+    use std::cell::Cell;
     use std::rc::Rc;
 
     struct Inline;
@@ -977,8 +1043,40 @@ mod posted_call_tests {
         }
     }
 
+    /// A handler that answers at once and counts its calls.
+    struct Counts(Rc<Cell<u32>>);
+
+    impl Handler for Counts {
+        fn call(&self, _: &CallContext, _: Vec<IpcValue>, reply: Responder) {
+            self.0.set(self.0.get() + 1);
+            reply.reply(Ok(IpcValue::Bool(true)));
+        }
+    }
+
+    /// The core thread's channel table, while this lives: a later test of the thread starts
+    /// without one again.
+    struct Serving;
+
+    impl Drop for Serving {
+        fn drop(&mut self) {
+            DISPATCHER.with(|dispatcher| *dispatcher.borrow_mut() = None);
+        }
+    }
+
+    fn serves(channels: &[&'static str], handler: Rc<dyn Handler>) -> Serving {
+        let mut table = Table::default();
+        for &channel in channels {
+            let batch = shell_core::table::spec_of(channel).unwrap().batch;
+            let handler = handler.clone();
+            table.register(batch, channel, ChannelKind::Invoke, handler).unwrap();
+        }
+        install_dispatcher(Dispatcher::new(table));
+        Serving
+    }
+
     /// A Docs page of a real view table, bound to a real registered native document, with its
-    /// output stream open. `answered` lists the requests the page was answered.
+    /// output stream open. `answered` lists the requests the page was answered, each with
+    /// whether the answer was an error.
     struct DocsPage {
         ipc: Ipc,
         core: Arc<Waiting>,
@@ -986,7 +1084,7 @@ mod posted_call_tests {
         created: RendererGeneration,
         lease: MediaViewLease,
         browser: BrowserIdentity,
-        answered: Arc<Mutex<Vec<u64>>>,
+        answered: Arc<Mutex<Vec<(u64, bool)>>>,
     }
 
     impl DocsPage {
@@ -1010,7 +1108,7 @@ mod posted_call_tests {
                     && let Ok((header, _)) = unframe(&bytes)
                     && let Some(id) = header.get("reply").and_then(Value::as_u64)
                 {
-                    seen.lock().unwrap().push(id);
+                    seen.lock().unwrap().push((id, header.get("error").is_some()));
                 }
                 Ok(())
             });
@@ -1062,17 +1160,10 @@ mod posted_call_tests {
                 }
             }
             let kept = Rc::new(RefCell::new(None));
-            let mut table = Table::default();
-            let batch = shell_core::table::spec_of(SLOW).unwrap().batch;
-            let handler = Rc::new(Keeps(kept.clone()));
-            table
-                .register(batch, SLOW, ChannelKind::Invoke, handler)
-                .unwrap();
-            install_dispatcher(Dispatcher::new(table));
+            let serving = serves(&[SLOW], Rc::new(Keeps(kept.clone())));
             self.invokes_channel(id, SLOW);
             self.core_thread_runs();
-            // a later test of this thread starts without a table again
-            DISPATCHER.with(|dispatcher| *dispatcher.borrow_mut() = None);
+            drop(serving);
             let answer = kept.borrow_mut().take();
             answer.expect("the call was dispatched")
         }
@@ -1085,19 +1176,66 @@ mod posted_call_tests {
         }
 
         fn answered(&self) -> Vec<u64> {
-            self.answered.lock().unwrap().clone()
+            let answered = self.answered.lock().unwrap();
+            answered.iter().map(|(id, _)| *id).collect()
+        }
+
+        /// The requests the page was answered with an error.
+        fn refused(&self) -> Vec<u64> {
+            let answered = self.answered.lock().unwrap();
+            answered.iter().filter(|(_, error)| *error).map(|(id, _)| *id).collect()
         }
     }
 
     #[test]
-    fn a_call_that_waits_while_its_page_loads_a_document_is_still_answered() {
+    fn the_calls_of_an_opening_are_answered_though_its_open_loads_the_document_first() {
         let page = DocsPage::open("posted-call-document-load");
-        page.invokes(7);
-        // the open ahead of it finishes first: the page shows another document now
+        let ran = Rc::new(Cell::new(0));
+        let opening = OPENING.map(|(_, channel)| channel);
+        let _serving = serves(&opening, Rc::new(Counts(ran.clone())));
+        for (id, channel) in OPENING {
+            page.invokes_channel(id, channel);
+        }
+        // the open ahead of them finishes first: the page shows its document now
         let next = page.lease.stage_document().unwrap();
         page.lease.commit_document(&next).unwrap();
         page.core_thread_runs();
-        assert_eq!(page.answered(), [7]);
+        assert_eq!(ran.get(), 4);
+        assert_eq!(page.answered(), [1, 2, 3, 4]);
+        assert!(page.refused().is_empty());
+    }
+
+    /// The calls of the boot `Promise.all` of the Docs page, with request ids.
+    const OPENING: [(u64, &str); 4] = [
+        (1, "docs:consume-pending-open"),
+        (2, "docs:consume-new-blank"),
+        (3, "docs:consume-ai-doc-content"),
+        (4, "docs:consume-copy"),
+    ];
+
+    #[test]
+    fn a_call_made_for_the_document_a_page_showed_before_its_open_never_runs() {
+        let page = DocsPage::open("posted-call-replaced-document");
+        let saved = Rc::new(Cell::new(0));
+        let _serving = serves(&["docs:save-new"], Rc::new(Counts(saved.clone())));
+        // document A asks to be saved; before the core thread gets to it, the page opens B
+        page.invokes_channel(30, "docs:save-new");
+        let next = page.lease.stage_document().unwrap();
+        page.lease.commit_document(&next).unwrap();
+        page.core_thread_runs();
+        assert_eq!(saved.get(), 0, "A's save ran under B's owner");
+        assert_eq!(page.refused(), [30]);
+    }
+
+    #[test]
+    fn every_opening_call_is_a_docs_invoke_of_the_channel_table() {
+        for call in OpeningCall::ALL {
+            let spec = shell_core::table::spec_of(call.channel()).expect("a channel of the table");
+            assert!(spec.kinds.contains(&ChannelKind::Invoke), "{call:?}");
+            assert!(spec.surfaces.contains(&shell_contract::Surface::Docs), "{call:?}");
+            assert_eq!(OpeningCall::of(call.channel()), Some(call));
+        }
+        assert_eq!(OpeningCall::of("docs:save-new"), None);
     }
 
     #[test]
