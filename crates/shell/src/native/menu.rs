@@ -115,8 +115,7 @@ pub struct ContextMenuParams {
     pub selection_text: String,
     pub misspelled_word: String,
     pub dictionary_suggestions: Vec<String>,
-    pub media_type: Option<String>,
-    pub src_url: Option<String>,
+    pub image_src: Option<String>,
     /// The click in CSS pixels of the page's viewport.
     pub x: f64,
     pub y: f64,
@@ -187,8 +186,7 @@ pub async fn ipc_context_menu(webview: Webview, request: Request<'_>) -> Result<
 struct Payload {
     is_editable: bool,
     selection_text: String,
-    src_url: Option<String>,
-    media_type: Option<String>,
+    image_src: Option<String>,
     x: f64,
     y: f64,
     word: Option<String>,
@@ -203,8 +201,8 @@ impl Payload {
         Ok(Self {
             is_editable: flag(object, "isEditable")?,
             selection_text: selection_text.chars().take(SELECTION_MAX_CHARS).collect(),
-            src_url: bounded(text(object, "srcUrl")?, "srcUrl", SRC_URL_MAX_CHARS)?,
-            media_type: text(object, "mediaType")?,
+            image_src: bounded(text(object, "imageSrc")?, "imageSrc", SRC_URL_MAX_CHARS)?
+                .filter(|src| !src.is_empty()),
             x: coordinate(object, "x")?,
             y: coordinate(object, "y")?,
             word: text(object, "word")?.filter(|word| {
@@ -246,8 +244,7 @@ impl Payload {
             selection_text: self.selection_text,
             misspelled_word,
             dictionary_suggestions,
-            media_type: self.media_type,
-            src_url: self.src_url,
+            image_src: self.image_src,
             x: self.x,
             y: self.y,
         }
@@ -398,8 +395,7 @@ mod tests {
         json!({
             "isEditable": true,
             "selectionText": "teh",
-            "srcUrl": null,
-            "mediaType": "none",
+            "imageSrc": null,
             "x": 12.5,
             "y": 40,
             "word": "teh",
@@ -414,8 +410,7 @@ mod tests {
         assert_eq!(params.selection_text, "teh");
         assert_eq!(params.misspelled_word, "teh");
         assert_eq!(params.dictionary_suggestions, ["the"]);
-        assert_eq!(params.media_type.as_deref(), Some("none"));
-        assert_eq!(params.src_url, None);
+        assert_eq!(params.image_src, None);
         assert_eq!((params.x, params.y), (12.5, 40.0));
     }
 
@@ -447,7 +442,7 @@ mod tests {
         let payload = Payload::parse(&value).unwrap();
         assert_eq!(payload.selection_text.chars().count(), SELECTION_MAX_CHARS);
         let mut value = click();
-        value["srcUrl"] = json!("u".repeat(SRC_URL_MAX_CHARS + 1));
+        value["imageSrc"] = json!("u".repeat(SRC_URL_MAX_CHARS + 1));
         assert!(Payload::parse(&value).is_err());
     }
 

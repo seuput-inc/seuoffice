@@ -112,8 +112,8 @@ fn params_of(raw: native::menu::ContextMenuParams) -> ContextMenuParams {
         misspelled_word: raw.misspelled_word,
         dictionary_suggestions: raw.dictionary_suggestions,
         edit_flags,
-        media_type: raw.media_type,
-        src_url: raw.src_url,
+        media_type: raw.image_src.as_ref().map(|_| "image".to_owned()),
+        src_url: raw.image_src,
         x: raw.x,
         y: raw.y,
     }
@@ -492,6 +492,32 @@ mod tests {
     use main_core::packages::electron_utils::dialog_memory::show_save_dialog_with_memory;
 
     use super::*;
+
+    #[test]
+    fn only_an_image_click_offers_image_actions() {
+        use main_core::packages::electron_utils::context_menu::{
+            ContextMenuItem, build_context_menu_items,
+        };
+
+        let actions = |image_src: Option<&str>| {
+            let params = params_of(native::menu::ContextMenuParams {
+                image_src: image_src.map(str::to_owned),
+                ..Default::default()
+            });
+            build_context_menu_items(&params, &context_menu_labels("en"))
+                .into_iter()
+                .map(|item| match item {
+                    ContextMenuItem::Image { action, .. } => action.name(),
+                    other => panic!("unexpected menu entry: {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(actions(None).is_empty());
+        assert_eq!(
+            actions(Some("asset://diagram.png")),
+            ["viewImage", "copyImage", "saveImageAs"]
+        );
+    }
 
     /// A save dialog that picks `path`
     struct Picks(Option<PathBuf>);
