@@ -81,9 +81,8 @@ fn open_worker(
             Ok(guard) => guard,
             Err(error) => return reply.reply(Err(error)),
         };
-        if matches!(channel, "workbook:select" | "workbook:reopen") {
-            core_at(env.slot).bind_save_renderer(cx);
-        }
+        // A saved workbook's selection comes first: it keeps the tab's document, which the
+        // binding below would replace (see `claim_saved_selection`).
         let reply = if channel == "workbook:select" {
             match core_at(env.slot).claim_saved_selection(cx, reply) {
                 Some(reply) => reply,
@@ -92,6 +91,9 @@ fn open_worker(
         } else {
             reply
         };
+        if matches!(channel, "workbook:select" | "workbook:reopen") {
+            core_at(env.slot).bind_save_renderer(cx);
+        }
         let authority = open::OpenAuthority {
             owner: cx
                 .native

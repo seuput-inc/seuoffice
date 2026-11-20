@@ -43,10 +43,17 @@ pub struct FakeEngine {
     script: Value,
     sessions: AtomicU64,
     exit: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-    effects: Option<shell_contract::hosts::OwnedEffectsHost>,
+    effects: Mutex<Option<shell_contract::hosts::OwnedEffectsHost>>,
 }
 
 impl FakeEngine {
+    /// The kit of the unit tests installs the owned effects after the fakes were made, so a
+    /// test that opens a saved workbook hands them to its engine here.
+    #[cfg(all(test, unix))]
+    pub fn use_effects(&self, effects: shell_contract::hosts::OwnedEffectsHost) {
+        *self.effects.lock().unwrap() = Some(effects);
+    }
+
     fn line(&self, items: Vec<Value>) {
         if let Some(log) = &self.log {
             log.lock().unwrap().push(Value::Array(items));
@@ -150,7 +157,9 @@ impl FakeEngine {
     ) -> EngineResult<shell_contract::ipc::NativeSavedInput> {
         let effects = self
             .effects
-            .as_ref()
+            .lock()
+            .unwrap()
+            .clone()
             .ok_or_else(|| engine_error("Saved workbook effects are unavailable"))?;
         let target = document.target();
         let additional: Vec<_> = target.additional().iter().collect();
@@ -1624,9 +1633,11 @@ pub fn insert_fakes(hosts: &mut Hosts, case: &Value) {
         script: script.clone(),
         sessions: AtomicU64::new(0),
         exit: Mutex::new(None),
-        effects: hosts
-            .get::<shell_contract::hosts::OwnedEffectsHost>()
-            .cloned(),
+        effects: Mutex::new(
+            hosts
+                .get::<shell_contract::hosts::OwnedEffectsHost>()
+                .cloned(),
+        ),
     });
     let statuses: Vec<String> = script
         .get("screenStatus")

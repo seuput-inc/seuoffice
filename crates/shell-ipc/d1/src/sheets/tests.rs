@@ -2814,3 +2814,280 @@ fn native_evidence_workbook_saved_open_result_needs_native_authority_and_a_live_
         .to_string(),
     );
 }
+
+/// A workbook the shell wrote and opens in a tab of its own: what the page of that tab is told,
+/// and what its selection and its report get
+#[cfg(unix)]
+mod saved_workbook {
+    use shell_contract::editors::{
+        DocumentEditors, SavedActorRegistration, SavedDocumentLoadOutcome,
+    };
+    use shell_contract::hosts::OwnedEffectsHost;
+    use shell_contract::hosts::synthetic::SyntheticOwnedEffects;
+    use shell_contract::ipc::{
+        NativeClosureIssuer, NativeInvocationIssuer, NativeRequestOwner, NativeSaveDestination,
+        NativeSaveSelection, NativeSavedInput, NativeSavedPath, NativeSavedTarget,
+    };
+    use shell_contract::runtime::CancelToken;
+
+    use super::*;
+
+    const CANCELLED: &str = "The saved workbook opening was cancelled";
+
+    type Outcomes = Rc<RefCell<Vec<Result<SavedDocumentLoadOutcome, String>>>>;
+
+    /// A saved workbook whose tab is registered and whose document has not arrived
+    struct SavedTab {
+        /// the tab whose save wrote the workbook
+        source: Sender,
+        /// the tab made for the workbook
+        tab: Sender,
+        target: NativeSavedTarget,
+        cancel: CancelToken,
+        pending: CancelToken,
+        editor: Rc<dyn DocumentEditors>,
+        effects: Arc<SyntheticOwnedEffects>,
+        outcomes: Outcomes,
+        _issuer: NativeClosureIssuer,
+        _registration: Rc<dyn SavedActorRegistration>,
+    }
+
+    /// The bytes a committed save of `existing` retained, as the native shell hands them to
+    /// the load
+    fn saved_input(
+        w: &World,
+        existing: &NativeRequestOwner,
+        path: &std::path::Path,
+    ) -> (NativeSavedInput, NativeSavedPath) {
+        use std::ffi::CString;
+        let effects = w.kit.host::<OwnedEffectsHost>();
+        let issuer = NativeInvocationIssuer::new(CancelToken::default());
+        let binding = issuer
+            .issue_existing_document_save(
+                Surface::Sheets,
+                existing.view,
+                NativeSaveSelection::ExactPath(path.to_owned()),
+                existing.clone(),
+                CancelToken::default(),
+            )
+            .unwrap();
+        let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
+        let parent = fs::File::open(path.parent().unwrap()).unwrap();
+        let directory = file_commit::PrivateDirectory::create(&parent).unwrap();
+        let stage = directory
+            .create_stage(0o600)
+            .unwrap()
+            .quarantine()
+            .ok()
+            .unwrap();
+        let stage = stage.write_owned(b"saved workbook".to_vec()).ok().unwrap();
+        let name = CString::new(path.file_name().unwrap().to_str().unwrap()).unwrap();
+        let stage = stage
+            .prepare(&parent, &name, path, file_commit::PublicationMode::Replace)
+            .ok()
+            .unwrap();
+        let (publication, snapshot) = effects
+            .publish_native_staged_write(
+                &selection,
+                &[],
+                &CancelToken::default(),
+                &CancelToken::default(),
+                &[],
+                stage,
+            )
+            .ok()
+            .unwrap();
+        let input = NativeSavedInput::from_written_snapshot(publication.clone(), snapshot).unwrap();
+        (input, NativeSavedPath::Selected(publication))
+    }
+
+    /// Tab 1 saved `saved.xlsx`, and the shell made view 2 for what was written: the editor has
+    /// registered that tab and its barrier, the saved document is still to come
+    fn saved_tab(w: &World) -> SavedTab {
+        let effects = w.kit.host::<Arc<SyntheticOwnedEffects>>();
+        // the native host gives every capture of one renderer the same origin
+        effects.share_capture_origins();
+        w.engine().use_effects(w.kit.host::<OwnedEffectsHost>());
+        let source = w.tab(1);
+        w.open(source, &w.file("source.xlsx", b"source workbook"));
+        let editor = editor_for(&w.registry.provided, source.view).unwrap();
+        let existing = editor
+            .capture_document_owner(source.view, w.native_owner(source))
+            .unwrap();
+        let path = PathBuf::from(w.file("saved.xlsx", b"old workbook"));
+        let (input, saved_path) = saved_input(w, &existing, &path);
+        let tab = w.kit.view(2, Surface::Sheets);
+        let generation = w.kit.services.views.renderer_generation(tab.view).unwrap();
+        let (issuer, reservation, browser) =
+            NativeClosureIssuer::new_with_owner(tab.view, generation.clone());
+        let cancel = CancelToken::default();
+        let pending = CancelToken::default();
+        let target = NativeSavedTarget::prepare(
+            input,
+            saved_path,
+            Surface::Sheets,
+            tab.view,
+            generation,
+            reservation,
+            browser,
+            vec![],
+            cancel.clone(),
+            pending.clone(),
+            vec![],
+        )
+        .unwrap();
+        let mut prepared = editor.prepare_saved_document(target.clone()).unwrap();
+        effects
+            .with_saved_target_creation(&target, &[], &cancel, &pending, &[], &mut |transition| {
+                prepared
+                    .with_validated(transition, &mut || Ok(()))
+                    .map_err(|error| error.message)
+            })
+            .unwrap();
+        let registration = prepared.finish();
+        w.kit.take_events();
+        SavedTab {
+            source,
+            tab,
+            target,
+            cancel,
+            pending,
+            editor,
+            effects,
+            outcomes: Rc::default(),
+            _issuer: issuer,
+            _registration: registration,
+        }
+    }
+
+    impl SavedTab {
+        /// The native host registers the tab's renderer for the saved target, and the editor
+        /// gets the saved document
+        fn load(&self, w: &World) {
+            let owner = self
+                .editor
+                .capture_document_owner(self.tab.view, w.native_owner(self.tab))
+                .unwrap();
+            let mut document = None;
+            self.effects
+                .with_saved_target_registration(
+                    &self.target,
+                    &owner,
+                    &[],
+                    &self.cancel,
+                    &self.pending,
+                    &[],
+                    &mut |_| {
+                        document = Some(self.target.register_from_native_admitted(owner.clone())?);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            let seen = Rc::clone(&self.outcomes);
+            self.editor.load_saved_document(
+                document.unwrap(),
+                Box::new(move |result| {
+                    seen.borrow_mut()
+                        .push(result.map_err(|error| error.message))
+                }),
+            );
+        }
+    }
+
+    /// What the page of `sender` is answered when it asks, as it starts, whether a workbook
+    /// waits for it
+    fn queued(w: &World, sender: Sender) -> bool {
+        let answer = w
+            .call(sender, "sheets:has-queued-workbook", vec![])
+            .unwrap();
+        matches!(answer, IpcValue::Bool(true))
+    }
+
+    /// The arguments of each `menu:action` the page of `sender` was sent since the last look
+    fn nudges(w: &World, sender: Sender) -> Vec<Vec<IpcValue>> {
+        w.kit
+            .take_events()
+            .into_iter()
+            .filter(|(target, channel, _)| {
+                *target == Target::View(sender.view) && *channel == "menu:action"
+            })
+            .map(|(_, _, args)| args)
+            .collect()
+    }
+
+    #[test]
+    fn the_page_of_a_saved_workbook_is_told_to_select_it_and_its_report_finishes_the_opening() {
+        let w = world("sheets-saved-select", Value::Null);
+        let saved = saved_tab(&w);
+        // a page asks this once as it starts: the saved workbook is in no queue, and is there
+        assert!(queued(&w, saved.tab));
+        assert!(!queued(&w, saved.source));
+
+        // a page that was up before the document came is nudged, once
+        saved.load(&w);
+        assert_eq!(nudges(&w, saved.tab), vec![vec![string("open")]]);
+        assert!(saved.outcomes.borrow().is_empty());
+
+        // the selection is answered with the saved workbook and with what the page reports by
+        let file = w.call(saved.tab, "workbook:select", vec![]).unwrap();
+        assert_eq!(text(&file, "name"), "saved.xlsx");
+        let id = text(&file, "savedLoadId");
+        assert!(!id.is_empty());
+        assert!(!queued(&w, saved.tab));
+        assert!(
+            saved.outcomes.borrow().is_empty(),
+            "the opening waits for the page's report"
+        );
+
+        let report = saved_open_ack(&[("id", string(id)), ("ok", IpcValue::Bool(true))]);
+        assert_eq!(
+            w.call(saved.tab, "workbook:saved-open-result", report)
+                .unwrap(),
+            IpcValue::Bool(true)
+        );
+        assert_eq!(
+            *saved.outcomes.borrow(),
+            vec![Ok(SavedDocumentLoadOutcome::Applied)]
+        );
+    }
+
+    #[test]
+    fn a_page_that_selected_before_its_saved_workbook_came_is_not_nudged() {
+        let w = world("sheets-saved-select-first", Value::Null);
+        let saved = saved_tab(&w);
+        let selection = w.start(saved.tab, "workbook:select", vec![]);
+        assert!(
+            selection.try_recv().is_err(),
+            "the selection waits for the saved workbook"
+        );
+        assert!(!queued(&w, saved.tab));
+
+        saved.load(&w);
+        assert!(nudges(&w, saved.tab).is_empty());
+        let file = selection
+            .try_recv()
+            .expect("the saved workbook answers the selection")
+            .unwrap();
+        assert_eq!(text(&file, "name"), "saved.xlsx");
+        assert!(!text(&file, "savedLoadId").is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_saved_workbook_is_not_queued_and_its_selection_gets_the_failure() {
+        let w = world("sheets-saved-select-cancelled", Value::Null);
+        let saved = saved_tab(&w);
+        saved.load(&w);
+        assert!(queued(&w, saved.tab));
+
+        saved.cancel.cancel();
+        assert_eq!(*saved.outcomes.borrow(), vec![Err(CANCELLED.to_owned())]);
+        assert!(!queued(&w, saved.tab));
+        // The page was nudged before the loss, and selects now. Handed on to an ordinary open
+        // it would be shown the file picker, which nobody answers here: `null`.
+        w.kit.take_log();
+        let refused = w.call(saved.tab, "workbook:select", vec![]).unwrap_err();
+        assert_eq!(message(refused), CANCELLED);
+        let picker = |line: &String| line.starts_with("open ");
+        assert!(!w.kit.take_log().iter().any(picker));
+    }
+}

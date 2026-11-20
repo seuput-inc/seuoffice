@@ -935,26 +935,47 @@ impl Core {
     /// The renderer's `workbook:select` while a saved workbook is loading: the
     /// saved opening answers it. A call that does not belong to a saved barrier
     /// is handed back for the ordinary picker or queue.
+    ///
+    /// The route asks this before it binds the caller as the tab's renderer, because that
+    /// binding starts a new document for the tab and revokes the old one. A saved workbook is
+    /// registered with the tab's document, so its selection must leave that document alone:
+    /// here the caller becomes the tab's renderer and the document stays.
     pub(super) fn claim_saved_selection(
         &self,
         cx: &shell_contract::ipc::CallContext,
         reply: shell_contract::ipc::Responder,
     ) -> Option<shell_contract::ipc::Responder> {
         let view = cx.sender.view;
+        // A saved workbook that failed is all its view was made for, and that view is being
+        // taken down: its page's selection gets the failure, never the file picker of an
+        // ordinary open.
+        let failure = self.state.borrow().tab(view).and_then(|tab| {
+            tab.saved_load
+                .borrow()
+                .as_ref()
+                .and_then(|saved| saved.failure.clone())
+        });
+        if let Some(failure) = failure {
+            reply.reply(Err(thrown(failure)));
+            return None;
+        }
         let Some(context) = cx.native.clone() else {
             return Some(reply);
         };
         {
-            let state = self.state.borrow();
-            let Some(tab) = state.tab(view) else {
+            let mut state = self.state.borrow_mut();
+            let Some(tab) = state.tab_mut(view) else {
                 return Some(reply);
             };
-            let mut saved = tab.saved_load.borrow_mut();
+            let slot = tab.saved_load.clone();
+            let mut saved = slot.borrow_mut();
             let Some(saved) = saved.as_mut().filter(|saved| saved.awaits_selection()) else {
                 return Some(reply);
             };
+            let owner = shell_contract::ipc::NativeRequestOwner { view, context };
+            tab.native_owner = Some(owner.clone());
             saved.selection = Some(super::core::SavedSelection {
-                owner: shell_contract::ipc::NativeRequestOwner { view, context },
+                owner,
                 cancel: cx.cancel.clone(),
                 reply,
             });
