@@ -5,9 +5,9 @@
   Pure black and white on purpose: the shell flips it for dark themes with a
   CSS invert filter, so it must not carry any colour.
 
-  The mark is the fanned cards of apps/shell/build/brand/app-icon.svg in a
-  single colour: black cards separated by white gaps, with a white spark on
-  the top card. The wordmark is "SeuOffice" set in Roboto Bold 2.137 (Apache
+  The mark is the three overlapping pages of app-icon.svg, separated by white
+  gaps. The front page carries a folded corner and a centered white star.
+  The wordmark is "SeuOffice" set in Roboto Bold 2.137 (Apache
   License 2.0) and converted to outlines so it renders without the font
   installed. See NOTICE.
 
@@ -17,12 +17,11 @@
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="976" height="240" viewBox="0 0 976 240" fill="none">
   <svg width="240" height="240" viewBox="0 0 1024 1024">
-    <g transform="translate(14 -24)">
-    <rect x="-200" y="-200" width="400" height="400" rx="92" fill="black" transform="translate(412 590) rotate(-26)"/>
-    <rect x="-200" y="-200" width="400" height="400" rx="92" fill="black" stroke="white" stroke-width="28" paint-order="stroke" transform="translate(500 534) rotate(-12)"/>
-    <rect x="-210" y="-210" width="420" height="420" rx="96" fill="black" stroke="white" stroke-width="28" paint-order="stroke" transform="translate(612 470)"/>
-    <path d="M0 -1 C0.12 -0.28 0.28 -0.12 1 0 C0.28 0.12 0.12 0.28 0 1 C-0.12 0.28 -0.28 0.12 -1 0 C-0.28 -0.12 -0.12 -0.28 0 -1 Z" fill="white" transform="translate(690 390) scale(78)"/>
-  </g>
+    <path fill="black" d="M282 397 651 332 687 684 408 825C373 843 332 834 312 800L181 539C160 497 177 451 216 430Z"/>
+    <path fill="black" stroke="white" stroke-width="28" paint-order="stroke" d="M417 289 698 254 744 611C750 649 727 681 691 691L449 748C408 758 373 737 363 698L283 400C273 362 293 324 330 311Z"/>
+    <path fill="black" stroke="white" stroke-width="28" paint-order="stroke" d="M489 168H713L838 287 840 597C840 637 809 669 769 669L487 668C448 668 417 637 417 598V240C417 200 449 168 489 168Z"/>
+    <path stroke="white" stroke-width="22" d="M713 168V287H838"/>
+    <path fill="white" d="M631 311C640 382 667 414 747 426 670 437 643 464 629 541 617 468 595 438 512 426 594 414 618 386 631 311Z"/>
   </svg>
   <g fill="black">
     <path d="M364.6 146.7Q364.6 140.3 360.1 137Q355.7 133.6 344.1 129.8Q332.5 126.1 325.7 122.5Q307.3 112.5 307.3 95.7Q307.3 86.9 312.3 80Q317.2 73.2 326.4 69.3Q335.7 65.5 347.2 65.5Q358.8 65.5 367.8 69.7Q376.9 73.8 381.9 81.5Q386.9 89.1 386.9 98.9L364.6 98.9Q364.6 91.4 360 87.3Q355.3 83.2 346.8 83.2Q338.7 83.2 334.1 86.6Q329.6 90.1 329.6 95.7Q329.6 101 334.9 104.6Q340.2 108.1 350.5 111.2Q369.5 117 378.2 125.4Q386.9 133.9 386.9 146.5Q386.9 160.5 376.3 168.5Q365.7 176.5 347.7 176.5Q335.2 176.5 325 171.9Q314.8 167.4 309.4 159.4Q304 151.5 304 141L326.3 141Q326.3 158.9 347.7 158.9Q355.7 158.9 360.1 155.7Q364.6 152.4 364.6 146.7"/>

@@ -1,23 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  SeuOffice app icon (source of truth).
-
-  The symbol is three rounded cards fanned out like a hand of documents (amber,
-  violet, indigo: the formats SeuOffice opens), with a white four-point spark
-  on the top card for AI editing. No letters, so it reads the same in every
-  language. Drawn from the concept the owner chose (decision 0019).
-
-  Every raster/container icon in the repo is derived from this file:
-    node tools/gen-brand-assets.mjs
-  Keep the 1024x1024 canvas and the full-bleed rounded tile; the generator
-  insets the whole drawing for the macOS variants.
--->
+<!-- App and installer source. Regenerate the platform sizes with tools/gen-brand-assets.mjs. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <rect width="1024" height="1024" rx="230" fill="#FFFFFF"/>
-  <g transform="translate(14 -24)">
-    <rect x="-200" y="-200" width="400" height="400" rx="92" fill="#FFB020" transform="translate(412 590) rotate(-26)"/>
-    <rect x="-200" y="-200" width="400" height="400" rx="92" fill="#6D5DF6" transform="translate(500 534) rotate(-12)"/>
-    <rect x="-210" y="-210" width="420" height="420" rx="96" fill="#4338CA" transform="translate(612 470)"/>
-    <path d="M0 -1 C0.12 -0.28 0.28 -0.12 1 0 C0.28 0.12 0.12 0.28 0 1 C-0.12 0.28 -0.28 0.12 -1 0 C-0.28 -0.12 -0.12 -0.28 0 -1 Z" fill="#FFFFFF" transform="translate(690 390) scale(78)"/>
-  </g>
+  <path fill="#FFB016" d="M282 397 651 332 687 684 408 825C373 843 332 834 312 800L181 539C160 497 177 451 216 430Z"/>
+  <path fill="#6D5CF1" d="M417 289 698 254 744 611C750 649 727 681 691 691L449 748C408 758 373 737 363 698L283 400C273 362 293 324 330 311Z"/>
+  <path fill="#4539B8" d="M489 168H713L838 287 840 597C840 637 809 669 769 669L487 668C448 668 417 637 417 598V240C417 200 449 168 489 168Z"/>
+  <path fill="#9081F5" d="M713 168 838 287H713Z"/>
+  <path fill="#FFF" d="M631 311C640 382 667 414 747 426 670 437 643 464 629 541 617 468 595 438 512 426 594 414 618 386 631 311Z"/>
 </svg>

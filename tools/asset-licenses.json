@@ -72,6 +72,12 @@
     "source": "copy of apps/shell/build/brand/logo-lockup.svg made by tools/gen-brand-assets.mjs"
   },
   {
+    "files": "apps/web/public/favicon.png",
+    "licence": "FSL-1.1-ALv2",
+    "record": "tools/gen-brand-assets.mjs",
+    "source": "32 px web icon drawn from the small SeuOffice app icon"
+  },
+  {
     "files": "apps/shell/build/hwp.*",
     "licence": "Apache-2.0 AND OFL-1.1",
     "record": "tools/gen-file-association-icons.mjs",

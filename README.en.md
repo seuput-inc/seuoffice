@@ -1,7 +1,7 @@
 <p align="center"><a href="README.md">한국어</a> · <b>English</b></p>
 
 <p align="center">
-  <img src="apps/shell/build/brand/app-icon.svg" width="96" height="96" alt="SeuOffice">
+  <a href="docs/seuoffice/브랜드.md"><img src="apps/shell/build/brand/app-icon.svg" width="128" height="128" alt="SeuOffice logo and brand guide (Korean)"></a>
 </p>
 
 <h1 align="center">SeuOffice</h1>
