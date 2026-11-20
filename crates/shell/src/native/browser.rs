@@ -1498,11 +1498,8 @@ mod tests {
     /// transitions."
     #[test]
     fn a_view_gets_one_blur_for_each_loss_of_the_focus() {
-        let (browser, events) = browser_with_events(
-            "focus-once",
-            FakeControl::new(),
-            NavigationStart::Automatic,
-        );
+        let (browser, events) =
+            browser_with_events("focus-once", FakeControl::new(), NavigationStart::Automatic);
         browser.observe_view(ViewEvent::Focus);
         // one loss, reported by the webview and by its window
         browser.observe_view(ViewEvent::Blur);
@@ -1558,11 +1555,8 @@ mod tests {
     /// queue; the browser closes before the gate ends.
     #[test]
     fn a_blur_seen_before_the_close_is_not_delivered_after_it() {
-        let (browser, events) = browser_with_events(
-            "focus-late",
-            FakeControl::new(),
-            NavigationStart::Automatic,
-        );
+        let (browser, events) =
+            browser_with_events("focus-late", FakeControl::new(), NavigationStart::Automatic);
         browser.observe_view(ViewEvent::Focus);
         {
             let _hold = hold();
