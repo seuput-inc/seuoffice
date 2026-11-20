@@ -365,74 +365,41 @@ fn public_source_replacement_is_rejected_before_any_move() {
     private.remove().unwrap();
 }
 
+/// A handle pins its file's name only when it may read, write or delete the file and does
+/// not share delete: the sharing check of Windows skips a handle opened for attributes
+/// alone. A stage is held to write and delete, so its name cannot be taken while it is
+/// written; a handle that asks for no access is not a lease.
 #[test]
-fn copyfileex_overwrite_with_zero_access_source_destination_and_ancestor_leases() {
-    use windows_sys::Win32::Storage::FileSystem::{
-        CopyFileExW, FILE_ATTRIBUTE_HIDDEN, GetFileAttributesW, SetFileAttributesW,
-    };
+fn a_held_stage_pins_its_name_and_a_handle_without_access_pins_nothing() {
     let sandbox = Sandbox::new();
-    let dir = sandbox.0.join("leased");
-    fs::create_dir(&dir).unwrap();
-    let source = dir.join("source.txt");
-    let target = dir.join("rescue.txt");
-    fs::write(&source, b"staged bytes").unwrap();
-    fs::write(&target, b"older rescue").unwrap();
-    let source_stream = PathBuf::from(format!("{}:extra", source.display()));
-    let target_stream = PathBuf::from(format!("{}:extra", target.display()));
-    fs::write(&source_stream, b"alternate stream").unwrap();
-    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target_wide: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    assert_ne!(
-        unsafe { SetFileAttributesW(source_wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) },
-        0
-    );
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE;
-    let _dir_lease = open(
-        &dir,
-        FILE_TRAVERSE,
-        share,
-        OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS,
-    );
-    let _source_lease = open(
-        &source,
-        0,
-        share,
-        OPEN_EXISTING,
-        FILE_FLAG_OPEN_REPARSE_POINT,
-    );
-    let _target_lease = open(
-        &target,
-        0,
-        share,
-        OPEN_EXISTING,
-        FILE_FLAG_OPEN_REPARSE_POINT,
-    );
-    assert!(fs::rename(&dir, sandbox.0.join("moved-ancestor")).is_err());
-    assert!(fs::rename(&source, dir.join("moved-source")).is_err());
-    assert!(fs::rename(&target, dir.join("moved-rescue")).is_err());
-    let copied = unsafe {
-        CopyFileExW(
-            source_wide.as_ptr(),
-            target_wide.as_ptr(),
-            None,
-            ptr::null(),
-            ptr::null_mut(),
-            0,
-        )
+    let parent = parent(&sandbox.0);
+    let private = file_commit::PrivateDirectory::create(&parent).unwrap();
+    let pending = match private.create_stage_for("output.txt", 0o666).unwrap() {
+        file_commit::CreatedStage::Movable(pending) => pending,
+        file_commit::CreatedStage::RenameUnavailable(stage) => {
+            panic!("DELETE unavailable: {}", stage.error())
+        }
     };
-    assert_ne!(
-        copied,
+    let stage = fs::read_dir(&sandbox.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "tmp"))
+        .unwrap();
+    let refused = fs::rename(&stage, sandbox.0.join("taken.txt")).unwrap_err();
+    assert_eq!(refused.raw_os_error(), Some(32), "{refused}");
+    assert!(stage.exists());
+
+    let plain = sandbox.0.join("plain.txt");
+    fs::write(&plain, b"plain").unwrap();
+    let _without_access = open(
+        &plain,
         0,
-        "CopyFileExW with retained leases: {:?}",
-        std::io::Error::last_os_error()
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT,
     );
-    assert_eq!(fs::read(&target).unwrap(), b"staged bytes");
-    assert_eq!(fs::read(&target_stream).unwrap(), b"alternate stream");
-    assert_ne!(
-        unsafe { GetFileAttributesW(target_wide.as_ptr()) } & FILE_ATTRIBUTE_HIDDEN,
-        0
-    );
+    fs::rename(&plain, sandbox.0.join("moved.txt")).unwrap();
+    drop(pending);
 }
 
 #[test]
