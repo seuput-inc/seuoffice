@@ -17,9 +17,9 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use zip::ZipArchive;
 
+use crate::PagePrintInfo;
 use crate::ods_styles::StyleRegistry;
 use crate::xlsx_package::escape_xml;
-use crate::PagePrintInfo;
 
 /// Excel's default margins, in inches, for a sheet that declares none.
 const DEFAULT_SIDE_MARGIN: f64 = 0.7;
@@ -217,8 +217,10 @@ impl PageStyles {
         let right = margins.map_or(DEFAULT_SIDE_MARGIN, |margins| margins.right.max(0.0));
         let top = margins.map_or(DEFAULT_EDGE_MARGIN, |margins| margins.top.max(0.0));
         let bottom = margins.map_or(DEFAULT_EDGE_MARGIN, |margins| margins.bottom.max(0.0));
-        let header_margin = margins.map_or(DEFAULT_HEADER_MARGIN, |margins| margins.header.max(0.0));
-        let footer_margin = margins.map_or(DEFAULT_HEADER_MARGIN, |margins| margins.footer.max(0.0));
+        let header_margin =
+            margins.map_or(DEFAULT_HEADER_MARGIN, |margins| margins.header.max(0.0));
+        let footer_margin =
+            margins.map_or(DEFAULT_HEADER_MARGIN, |margins| margins.footer.max(0.0));
 
         let header = setup.map(|setup| Band::header(setup)).unwrap_or_default();
         let footer = setup.map(|setup| Band::footer(setup)).unwrap_or_default();
@@ -245,9 +247,7 @@ impl PageStyles {
         // Left unsaid, a reader starts every sheet at page one; Excel carries
         // the count on from the sheet before.
         match extras.first_page_number {
-            Some(number) => {
-                properties.push_str(&format!(r#" style:first-page-number="{number}""#))
-            }
+            Some(number) => properties.push_str(&format!(r#" style:first-page-number="{number}""#)),
             None => properties.push_str(r#" style:first-page-number="continue""#),
         }
         if let Some(setup) = setup {
@@ -448,11 +448,21 @@ struct Band {
 
 impl Band {
     fn header(setup: &PagePrintInfo) -> Self {
-        Self::new(setup, &setup.odd_header, &setup.even_header, &setup.first_header)
+        Self::new(
+            setup,
+            &setup.odd_header,
+            &setup.even_header,
+            &setup.first_header,
+        )
     }
 
     fn footer(setup: &PagePrintInfo) -> Self {
-        Self::new(setup, &setup.odd_footer, &setup.even_footer, &setup.first_footer)
+        Self::new(
+            setup,
+            &setup.odd_footer,
+            &setup.even_footer,
+            &setup.first_footer,
+        )
     }
 
     fn new(
@@ -589,7 +599,8 @@ fn parse_header(text: &str) -> Sections {
             'T' => field = Some("<text:time/>"),
             'A' => field = Some("<text:sheet-name>?</text:sheet-name>"),
             'F' => {
-                field = Some(r#"<text:file-name text:display="name-and-extension">?</text:file-name>"#)
+                field =
+                    Some(r#"<text:file-name text:display="name-and-extension">?</text:file-name>"#)
             }
             'Z' => field = Some(r#"<text:file-name text:display="path">?</text:file-name>"#),
             // A picture: nothing this export carries.
@@ -698,7 +709,9 @@ fn paper_size(code: Option<u32>) -> (f64, f64) {
 /// The rows and columns a sheet repeats on every printed page, as 0-based
 /// inclusive spans, read from its `_xlnm.Print_Titles` formula
 /// (`Data!$1:$2,Data!$A:$B`).
-pub(crate) fn print_titles(formula: Option<&str>) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
+pub(crate) fn print_titles(
+    formula: Option<&str>,
+) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
     let mut rows = None;
     let mut columns = None;
     let Some(formula) = formula else {
@@ -780,17 +793,29 @@ mod tests {
         };
         let pages = registered(&setup);
         assert!(
-            pages.masters.contains(r#"<style:header style:display="false"/>"#),
+            pages
+                .masters
+                .contains(r#"<style:header style:display="false"/>"#),
             "{}",
             pages.masters
         );
         assert!(
-            pages.masters.contains(r#"<style:footer style:display="false"/>"#),
+            pages
+                .masters
+                .contains(r#"<style:footer style:display="false"/>"#),
             "{}",
             pages.masters
         );
-        assert!(pages.layouts.contains(r#"fo:margin-top="1.0000in""#), "{}", pages.layouts);
-        assert!(pages.layouts.contains(r#"fo:margin-bottom="0.9000in""#), "{}", pages.layouts);
+        assert!(
+            pages.layouts.contains(r#"fo:margin-top="1.0000in""#),
+            "{}",
+            pages.layouts
+        );
+        assert!(
+            pages.layouts.contains(r#"fo:margin-bottom="0.9000in""#),
+            "{}",
+            pages.layouts
+        );
     }
 
     #[test]
@@ -810,7 +835,11 @@ mod tests {
         };
         let pages = registered(&setup);
         // 0.3in to the header, then a 0.7in band: the body still starts 1in in.
-        assert!(pages.layouts.contains(r#"fo:margin-top="0.3000in""#), "{}", pages.layouts);
+        assert!(
+            pages.layouts.contains(r#"fo:margin-top="0.3000in""#),
+            "{}",
+            pages.layouts
+        );
         assert!(
             pages.layouts.contains(
                 r#"<style:header-style><style:header-footer-properties svg:height="0.7000in""#
@@ -832,9 +861,21 @@ mod tests {
             "{}",
             pages.masters
         );
-        assert!(pages.text_styles.contains(r#"style:font-name="Arial""#), "{}", pages.text_styles);
-        assert!(pages.text_styles.contains(r#"fo:font-size="14pt""#), "{}", pages.text_styles);
-        assert!(pages.text_styles.contains(r#"fo:font-weight="bold""#), "{}", pages.text_styles);
+        assert!(
+            pages.text_styles.contains(r#"style:font-name="Arial""#),
+            "{}",
+            pages.text_styles
+        );
+        assert!(
+            pages.text_styles.contains(r#"fo:font-size="14pt""#),
+            "{}",
+            pages.text_styles
+        );
+        assert!(
+            pages.text_styles.contains(r#"fo:font-weight="bold""#),
+            "{}",
+            pages.text_styles
+        );
         assert!(
             pages.masters.contains(
                 "<style:region-center><text:p>Page <text:page-number>1</text:page-number></text:p></style:region-center>"
@@ -843,7 +884,9 @@ mod tests {
             pages.masters
         );
         assert!(
-            pages.masters.contains(r#"<style:header-left style:display="false"/>"#),
+            pages
+                .masters
+                .contains(r#"<style:header-left style:display="false"/>"#),
             "{}",
             pages.masters
         );
@@ -860,25 +903,47 @@ mod tests {
             print_headings: true,
             ..PagePrintInfo::default()
         });
-        assert!(fitted.layouts.contains(r#"style:scale-to-X="1""#), "{}", fitted.layouts);
-        assert!(!fitted.layouts.contains("style:scale-to-Y"), "{}", fitted.layouts);
         assert!(
-            fitted.layouts.contains(r#"style:print="charts drawings objects zero-values grid headers""#),
+            fitted.layouts.contains(r#"style:scale-to-X="1""#),
             "{}",
             fitted.layouts
         );
-        assert!(fitted.layouts.contains(r#"fo:page-width="29.700cm""#), "{}", fitted.layouts);
+        assert!(
+            !fitted.layouts.contains("style:scale-to-Y"),
+            "{}",
+            fitted.layouts
+        );
+        assert!(
+            fitted
+                .layouts
+                .contains(r#"style:print="charts drawings objects zero-values grid headers""#),
+            "{}",
+            fitted.layouts
+        );
+        assert!(
+            fitted.layouts.contains(r#"fo:page-width="29.700cm""#),
+            "{}",
+            fitted.layouts
+        );
         // "Fit to page" with no counts is one page each way.
         let one_page = registered(&PagePrintInfo {
             fit_to_page: true,
             ..PagePrintInfo::default()
         });
-        assert!(one_page.layouts.contains(r#"style:scale-to-X="1" style:scale-to-Y="1""#));
+        assert!(
+            one_page
+                .layouts
+                .contains(r#"style:scale-to-X="1" style:scale-to-Y="1""#)
+        );
         let scaled = registered(&PagePrintInfo {
             scale: Some(80),
             ..PagePrintInfo::default()
         });
-        assert!(scaled.layouts.contains(r#"style:scale-to="80%""#), "{}", scaled.layouts);
+        assert!(
+            scaled.layouts.contains(r#"style:scale-to="80%""#),
+            "{}",
+            scaled.layouts
+        );
     }
 
     #[test]
@@ -896,8 +961,16 @@ mod tests {
             "{}",
             pages.masters
         );
-        assert!(pages.masters.contains("<style:footer-first>"), "{}", pages.masters);
-        assert!(pages.masters.contains("<text:p>first</text:p>"), "{}", pages.masters);
+        assert!(
+            pages.masters.contains("<style:footer-first>"),
+            "{}",
+            pages.masters
+        );
+        assert!(
+            pages.masters.contains("<text:p>first</text:p>"),
+            "{}",
+            pages.masters
+        );
     }
 
     #[test]
@@ -926,7 +999,10 @@ mod tests {
             print_titles(Some("Data!$1:$2,Data!$A:$B")),
             (Some((0, 1)), Some((0, 1)))
         );
-        assert_eq!(print_titles(Some("'My, Sheet'!$3:$3")), (Some((2, 2)), None));
+        assert_eq!(
+            print_titles(Some("'My, Sheet'!$3:$3")),
+            (Some((2, 2)), None)
+        );
         assert_eq!(print_titles(Some("Sheet1!$C:$D")), (None, Some((2, 3))));
         assert_eq!(print_titles(None), (None, None));
     }
@@ -951,7 +1027,8 @@ mod tests {
             "the custom view's settings are not the sheet's"
         );
         // A first page number Excel was not told to use is not one.
-        let unused = parse_print_extras(br#"<pageSetup firstPageNumber="5" pageOrder="overThenDown"/>"#);
+        let unused =
+            parse_print_extras(br#"<pageSetup firstPageNumber="5" pageOrder="overThenDown"/>"#);
         assert_eq!(unused.first_page_number, None);
         assert!(unused.over_then_down);
 
@@ -971,7 +1048,11 @@ mod tests {
         );
         assert_ne!(plain, centred, "different extras are different page styles");
         assert!(pages.layouts.contains(r#"style:print-page-order="ltr" style:table-centering="both" style:first-page-number="3""#), "{}", pages.layouts);
-        assert!(pages.layouts.contains("zero-values annotations"), "{}", pages.layouts);
+        assert!(
+            pages.layouts.contains("zero-values annotations"),
+            "{}",
+            pages.layouts
+        );
     }
 
     #[test]
@@ -982,7 +1063,10 @@ mod tests {
             let path = dir.path().join(name);
             let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
             writer
-                .start_file("xl/worksheets/sheet1.xml", zip::write::SimpleFileOptions::default())
+                .start_file(
+                    "xl/worksheets/sheet1.xml",
+                    zip::write::SimpleFileOptions::default(),
+                )
                 .unwrap();
             writer.write_all(sheet.as_bytes()).unwrap();
             writer.finish().unwrap();
@@ -999,15 +1083,22 @@ mod tests {
             }
             sheet.push_str("</sheetData>");
             sheet.push_str(tail);
-            let extras = read_print_extras(&package("big.xlsx", &sheet), "xl/worksheets/sheet1.xml");
-            assert!(extras.center_horizontal && extras.over_then_down, "padding {padding}");
+            let extras =
+                read_print_extras(&package("big.xlsx", &sheet), "xl/worksheets/sheet1.xml");
+            assert!(
+                extras.center_horizontal && extras.over_then_down,
+                "padding {padding}"
+            );
         }
         let empty = format!("<worksheet><sheetData/>{tail}");
         let extras = read_print_extras(&package("empty.xlsx", &empty), "xl/worksheets/sheet1.xml");
         assert!(extras.center_horizontal && extras.over_then_down);
         // A part that is not there answers the defaults instead of failing.
         assert_eq!(
-            read_print_extras(&package("none.xlsx", "<worksheet/>"), "xl/worksheets/missing.xml"),
+            read_print_extras(
+                &package("none.xlsx", "<worksheet/>"),
+                "xl/worksheets/missing.xml"
+            ),
             PrintExtras::default()
         );
     }

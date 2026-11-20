@@ -35,6 +35,7 @@
     "./remote-table": "./src/remote-table.ts",
     "./renderer-protocol": "./src/renderer-protocol.ts",
     "./renderer-scheme": "./src/renderer-scheme.ts",
+    "./custom-scheme-url": "./src/custom-scheme-url.ts",
     "./safe-external-url": "./src/safe-external-url.ts",
     "./safe-remote-url": "./src/safe-remote-url.ts",
     "./split-pane-bridge": "./src/split-pane-bridge.ts",

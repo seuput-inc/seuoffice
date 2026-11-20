@@ -149,8 +149,10 @@ describe('no trace of the upstream update service', () => {
     const text = readFileSync(join(ROOT, file), 'utf8')
     expect(text).not.toMatch(/azure/i)
     expect(text).not.toContain('SEUOFFICE_UPDATE_URL')
-    // no literal address at all: every link comes from the repository constants
-    expect(text).not.toMatch(/https?:\/\//)
+    // no literal address at all: every link comes from the repository constants. The page's
+    // CSP names the shell's own IPC origins, which are loopback names and no link.
+    const linkable = text.replaceAll(/http:\/\/(?:seuoffice-)?ipc\.localhost/g, '')
+    expect(linkable).not.toMatch(/https?:\/\//)
   })
 
   it('the updater takes its download links from the repository constants', () => {

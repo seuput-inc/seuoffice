@@ -71,6 +71,14 @@ function setup(
 const { intervalMs, idleMs } = RECOVERY_TIMING
 
 describe('a recovery copy', () => {
+  it('keeps a refused write dirty so a forced flush cannot report unchanged', async () => {
+    const { copier, api } = setup({ write: async () => 'refused' })
+    copier.noteChange()
+    expect(await copier.flush()).toBe('refused')
+    expect(await copier.flush()).toBe('refused')
+    expect(api.recoveryWrite).toHaveBeenCalledTimes(2)
+  })
+
   it('is not taken while the user types, however long', async () => {
     const { copier, editor, api, advance } = setup()
     // two minutes of typing, a key every 300 ms, the copier looking every second

@@ -7,7 +7,7 @@
  * and draw.io's exports are answered by id, one export at a time.
  */
 import {
-  DRAWIO_ORIGIN,
+  drawioFrameOrigin,
   isFromDrawioFrame,
   parseBridgeMessage,
   parseEmbedEvent,
@@ -124,7 +124,7 @@ export class DrawioFrame {
 
   #post(message: unknown): void {
     if (!this.#window) throw new Error('the editor is not there')
-    this.#window.postMessage(message, DRAWIO_ORIGIN)
+    this.#window.postMessage(message, drawioFrameOrigin())
   }
 
   /** draw.io's embed actions (`load`, `export`, …), as the JSON string it reads. */

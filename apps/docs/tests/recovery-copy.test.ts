@@ -400,12 +400,12 @@ describe('a restored untitled copy', () => {
     expect(desktop.saveDocxNew).not.toHaveBeenCalled()
     pickedPath = '/docs/rescued.docx'
     expect(await save(ctx, false)).toBe(true)
-    expect(desktop.pickSaveAsPath).toHaveBeenCalledWith(
+    expect(desktop.pickSaveAsPath.mock.calls[0].slice(0, 4)).toEqual([
       'gone.docx',
       '/usb/reports/gone.docx',
       'docx',
       false,
-    )
+    ])
     expect(desktop.saveDocxNew).not.toHaveBeenCalled()
     // the source of the Save As is still "no file": the main process drops the untitled copy
     expect(desktop.saveDocxAs.mock.calls[0][2]).toBeNull()

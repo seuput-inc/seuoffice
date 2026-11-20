@@ -217,7 +217,10 @@ fn read_styles(document: &Document<'_>) -> HashMap<String, Style> {
     for node in automatic.children().filter(Node::is_element) {
         formats.read(node);
     }
-    for node in automatic.children().filter(|node| is(*node, STYLE, "style")) {
+    for node in automatic
+        .children()
+        .filter(|node| is(*node, STYLE, "style"))
+    {
         let Some(name) = attr(node, STYLE, "name") else {
             continue;
         };
@@ -250,7 +253,12 @@ fn read_styles(document: &Document<'_>) -> HashMap<String, Style> {
             }
         }
         // A style that follows its source has no format of its own.
-        if style.chart.get("link-data-style-to-source").map(String::as_str) == Some("false") {
+        if style
+            .chart
+            .get("link-data-style-to-source")
+            .map(String::as_str)
+            == Some("false")
+        {
             style.format = attr(node, STYLE, "data-style-name")
                 .and_then(|name| formats.code(name))
                 .map(|(code, _)| code)
@@ -273,7 +281,10 @@ fn read_table(chart: Node<'_, '_>) -> (Vec<Vec<Cell>>, usize) {
             "table-rows" => false,
             _ => continue,
         };
-        for row in group.children().filter(|node| is(*node, TABLE, "table-row")) {
+        for row in group
+            .children()
+            .filter(|node| is(*node, TABLE, "table-row"))
+        {
             if rows.len() > MAX_CACHE_ROWS {
                 return (Vec::new(), 0);
             }
@@ -348,7 +359,12 @@ fn local_range(address: &str) -> Option<(usize, usize, usize, usize)> {
         }
         None => start,
     };
-    Some((start.0.min(end.0), start.1.min(end.1), start.0.max(end.0), start.1.max(end.1)))
+    Some((
+        start.0.min(end.0),
+        start.1.min(end.1),
+        start.0.max(end.0),
+        start.1.max(end.1),
+    ))
 }
 
 /// `$B$2:$B$7` from `B2:B7`, the form a chart formula uses. A range of one
@@ -412,7 +428,13 @@ fn formula(address: &str) -> Option<String> {
 /// XML cannot carry control characters.
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|character| if character == '\n' || character == '\r' { ' ' } else { character })
+        .map(|character| {
+            if character == '\n' || character == '\r' {
+                ' '
+            } else {
+                character
+            }
+        })
         .filter(|character| *character == '\t' || (*character as u32) >= 0x20)
         .collect()
 }
@@ -462,7 +484,11 @@ fn outline_properties(style: &Style, default_color: &str) -> String {
     let width = line_width(style.stroke_width);
     format!(
         "<c:spPr><a:ln{}>{}</a:ln></c:spPr>",
-        if width.is_empty() { r#" w="9525""# } else { &width },
+        if width.is_empty() {
+            r#" w="9525""#
+        } else {
+            &width
+        },
         solid_fill(style.stroke_color.as_deref().unwrap_or(default_color))
     )
 }
@@ -537,12 +563,19 @@ fn line_width(points: Option<f64>) -> String {
 /// colour as a fill, which draws nothing on a line but tells a reader that
 /// colours markers and legend keys from the series which colour that is.
 fn stroke_properties(style: &Style, named: bool) -> String {
-    let colour = style.fill_color.as_deref().or(style.stroke_color.as_deref());
+    let colour = style
+        .fill_color
+        .as_deref()
+        .or(style.stroke_color.as_deref());
     let fill = colour.filter(|_| named).map(solid_fill).unwrap_or_default();
     if style.stroke.as_deref() == Some("none") {
         return format!(r#"<c:spPr>{fill}<a:ln w="19050"><a:noFill/></a:ln></c:spPr>"#);
     }
-    match style.stroke_color.as_deref().or(style.fill_color.as_deref()) {
+    match style
+        .stroke_color
+        .as_deref()
+        .or(style.fill_color.as_deref())
+    {
         Some(color) => format!(
             r#"<c:spPr>{fill}<a:ln{} cap="rnd">{}<a:round/></a:ln></c:spPr>"#,
             line_width(style.stroke_width),
@@ -566,14 +599,20 @@ fn trendline_xml(style: &Style) -> String {
             "poly",
             format!(
                 r#"<c:order val="{}"/>"#,
-                style.number("regression-max-degree").unwrap_or(2.0).clamp(2.0, 6.0) as u8
+                style
+                    .number("regression-max-degree")
+                    .unwrap_or(2.0)
+                    .clamp(2.0, 6.0) as u8
             ),
         ),
         Some("moving-average") => (
             "movingAvg",
             format!(
                 r#"<c:period val="{}"/>"#,
-                style.number("regression-period").unwrap_or(2.0).clamp(2.0, 255.0) as u32
+                style
+                    .number("regression-period")
+                    .unwrap_or(2.0)
+                    .clamp(2.0, 255.0) as u32
             ),
         ),
         _ => return String::new(),
@@ -600,9 +639,8 @@ fn marker_xml(style: &Style, plot: &Style) -> String {
             let shape = match style.text("symbol-name") {
                 Some("square") => "square",
                 Some("diamond") => "diamond",
-                Some("arrow-up") | Some("arrow-down") | Some("arrow-left") | Some("arrow-right") => {
-                    "triangle"
-                }
+                Some("arrow-up") | Some("arrow-down") | Some("arrow-left")
+                | Some("arrow-right") => "triangle",
                 Some("x") => "x",
                 Some("plus") => "plus",
                 Some("star") | Some("asterisk") => "star",
@@ -611,7 +649,11 @@ fn marker_xml(style: &Style, plot: &Style) -> String {
             };
             // A marker left to the reader takes the series' automatic
             // colour, not the colour its line was given.
-            let look = match style.fill_color.as_deref().or(style.stroke_color.as_deref()) {
+            let look = match style
+                .fill_color
+                .as_deref()
+                .or(style.stroke_color.as_deref())
+            {
                 Some(color) => format!(
                     r#"<c:spPr>{0}<a:ln w="9525">{0}</a:ln></c:spPr>"#,
                     solid_fill(color)
@@ -635,7 +677,12 @@ fn labels_xml(style: &Style) -> String {
     let format = style
         .format
         .as_deref()
-        .map(|code| format!(r#"<c:numFmt formatCode="{}" sourceLinked="0"/>"#, escape_xml(code)))
+        .map(|code| {
+            format!(
+                r#"<c:numFmt formatCode="{}" sourceLinked="0"/>"#,
+                escape_xml(code)
+            )
+        })
         .unwrap_or_default();
     let flag = |on: bool| if on { "1" } else { "0" };
     format!(
@@ -719,7 +766,10 @@ fn categories_xml(formula: Option<&str>, cells: &[Cell]) -> String {
 /// `"name"` of a `loext:label-string`, without the quotes.
 fn label_string(text: &str) -> String {
     let text = text.trim();
-    match text.strip_prefix('"').and_then(|rest| rest.strip_suffix('"')) {
+    match text
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
         Some(inner) => inner.replace("\"\"", "\""),
         None => text.to_owned(),
     }
@@ -790,7 +840,11 @@ fn caches(series: &[Series], table: &[Vec<Cell>], header_rows: usize, scatter: b
                     .map(|cell| cell.text)
                     .filter(|text| !text.is_empty());
                 cache.categories = column(0);
-                if let Some(cells) = entry.domains.first().and_then(|domain| direct(Some(domain))) {
+                if let Some(cells) = entry
+                    .domains
+                    .first()
+                    .and_then(|domain| direct(Some(domain)))
+                {
                     cache.domain = cells.into_iter().map(|cell| cell.number).collect();
                 } else if scatter {
                     cache.domain = numbers(0);
@@ -845,9 +899,7 @@ impl Chart {
 
     /// The category range of the chart: said once, on the category axis.
     fn categories(&self) -> Option<&str> {
-        self.axes
-            .iter()
-            .find_map(|axis| axis.categories.as_deref())
+        self.axes.iter().find_map(|axis| axis.categories.as_deref())
     }
 
     fn series_xml(&self, index: usize) -> String {
@@ -861,12 +913,18 @@ impl Chart {
         // A name typed into the chart, or one kept in the chart's own table.
         // The heading a table gives a series that names no cell is the
         // writer's placeholder, not a name.
-        let literal = series.label_string.as_deref().map(label_string).or_else(|| {
-            cache
-                .name
-                .clone()
-                .filter(|_| series.label_address.as_deref().is_some_and(|label| local_range(label).is_some()))
-        });
+        let literal = series
+            .label_string
+            .as_deref()
+            .map(label_string)
+            .or_else(|| {
+                cache.name.clone().filter(|_| {
+                    series
+                        .label_address
+                        .as_deref()
+                        .is_some_and(|label| local_range(label).is_some())
+                })
+            });
         match (label, literal) {
             (Some(label), _) => out.push_str(&format!(
                 "<c:tx>{}</c:tx>",
@@ -981,7 +1039,10 @@ impl Chart {
 
     /// One plot element: the series of one kind on one pair of axes.
     fn plot_xml(&self, kind: Kind, secondary: bool, members: &[usize]) -> String {
-        let series: String = members.iter().map(|index| self.series_xml(*index)).collect();
+        let series: String = members
+            .iter()
+            .map(|index| self.series_xml(*index))
+            .collect();
         let (category_axis, value_axis) = if secondary {
             (SECONDARY_CATEGORY_AXIS, SECONDARY_VALUE_AXIS)
         } else {
@@ -1078,7 +1139,8 @@ impl Chart {
         let category = self.axis("x", secondary).or(self.axis("x", false));
         let value = self.axis("y", secondary);
         let horizontal = self.horizontal();
-        let reversed = |axis: Option<&Axis>| axis.is_some_and(|axis| axis.style.flag("reverse-direction"));
+        let reversed =
+            |axis: Option<&Axis>| axis.is_some_and(|axis| axis.style.flag("reverse-direction"));
         // A radar's categories run the other way round in ODF, so the two
         // directions swap.
         let category_reversed = reversed(category) != radar;
@@ -1092,7 +1154,11 @@ impl Chart {
         } else {
             near
         };
-        let category_side = if reversed(value) { category_far } else { category_side };
+        let category_side = if reversed(value) {
+            category_far
+        } else {
+            category_side
+        };
 
         let scaling = |axis: Option<&Axis>, reversed: bool| -> String {
             let mut out = String::from("<c:scaling>");
@@ -1117,7 +1183,8 @@ impl Chart {
         // crosses.
         let common = |axis: Option<&Axis>, side: &str, deleted: bool| -> String {
             let mut out = String::new();
-            let hidden = deleted || axis.is_some_and(|axis| axis.style.text("visible") == Some("false"));
+            let hidden =
+                deleted || axis.is_some_and(|axis| axis.style.text("visible") == Some("false"));
             out.push_str(&format!(
                 r#"<c:delete val="{}"/><c:axPos val="{side}"/>"#,
                 if hidden { "1" } else { "0" }
@@ -1267,7 +1334,11 @@ pub(crate) fn chart_part(content: &str) -> Option<String> {
             }
             // The series of a ring are circles; the ring is the chart.
             let own = attr(node, CHART, "class").map_or(Some(kind), Kind::of)?;
-            let own = if kind == Kind::Ring && own == Kind::Pie { Kind::Ring } else { own };
+            let own = if kind == Kind::Ring && own == Kind::Pie {
+                Kind::Ring
+            } else {
+                own
+            };
             let mut points = Vec::new();
             let mut domains = Vec::new();
             let mut trends = Vec::new();
@@ -1319,7 +1390,10 @@ pub(crate) fn chart_part(content: &str) -> Option<String> {
         Kind::Radar | Kind::FilledRadar => 2,
         Kind::Bar | Kind::Line | Kind::Area => 3,
     };
-    if series.iter().any(|entry| family(entry.kind) != family(kind)) {
+    if series
+        .iter()
+        .any(|entry| family(entry.kind) != family(kind))
+    {
         return None;
     }
     let scatter = kind == Kind::Scatter;
@@ -1497,8 +1571,14 @@ mod tests {
 
     #[test]
     fn translates_chart_addresses() {
-        assert_eq!(formula("Sales.B2:Sales.B7").as_deref(), Some("Sales!$B$2:$B$7"));
-        assert_eq!(formula("$Sales.$B$2:.$B$7").as_deref(), Some("Sales!$B$2:$B$7"));
+        assert_eq!(
+            formula("Sales.B2:Sales.B7").as_deref(),
+            Some("Sales!$B$2:$B$7")
+        );
+        assert_eq!(
+            formula("$Sales.$B$2:.$B$7").as_deref(),
+            Some("Sales!$B$2:$B$7")
+        );
         assert_eq!(
             formula("'My Sheet'.A1:'My Sheet'.A1").as_deref(),
             Some("'My Sheet'!$A$1")
@@ -1545,7 +1625,10 @@ mod tests {
             styles,
             "chart:bar",
             body,
-            &table(&["east", "west"], &[("a", &["1", "4.5"]), ("b", &["", "5"]), ("c", &["3", "6"])]),
+            &table(
+                &["east", "west"],
+                &[("a", &["1", "4.5"]), ("b", &["", "5"]), ("c", &["3", "6"])],
+            ),
         ))
         .unwrap();
         assert!(Document::parse(&xml).is_ok(), "{xml}");
@@ -1654,7 +1737,10 @@ mod tests {
                 r#"<c:firstSliceAng val="0"/><c:holeSize val="50"/></c:doughnutChart></c:plotArea>"#,
             ],
         );
-        assert!(!xml.contains("<c:catAx>") && !xml.contains("<c:valAx>"), "{xml}");
+        assert!(
+            !xml.contains("<c:catAx>") && !xml.contains("<c:valAx>"),
+            "{xml}"
+        );
 
         // A scatter chart as another application writes it: the X column
         // sits in front of the Y column in the table.
@@ -1713,14 +1799,22 @@ mod tests {
             r#"<c:trendline><c:spPr><a:ln w="12700"><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></a:ln></c:spPr><c:trendlineType val="linear"/><c:dispRSqr val="0"/><c:dispEq val="0"/></c:trendline>"#
         );
         assert!(
-            trendline_xml(&style(&[("regression-type", "polynomial"), ("regression-max-degree", "9")]))
-                .contains(r#"<c:trendlineType val="poly"/><c:order val="6"/>"#)
+            trendline_xml(&style(&[
+                ("regression-type", "polynomial"),
+                ("regression-max-degree", "9")
+            ]))
+            .contains(r#"<c:trendlineType val="poly"/><c:order val="6"/>"#)
         );
         assert!(
-            trendline_xml(&style(&[("regression-type", "moving-average"), ("regression-period", "3")]))
-                .contains(r#"<c:trendlineType val="movingAvg"/><c:period val="3"/>"#)
+            trendline_xml(&style(&[
+                ("regression-type", "moving-average"),
+                ("regression-period", "3")
+            ]))
+            .contains(r#"<c:trendlineType val="movingAvg"/><c:period val="3"/>"#)
         );
-        assert!(trendline_xml(&style(&[("regression-type", "logarithmic")])).contains(r#"val="log""#));
+        assert!(
+            trendline_xml(&style(&[("regression-type", "logarithmic")])).contains(r#"val="log""#)
+        );
         // No kind, or one a chart part has no word for: no trend line.
         assert_eq!(trendline_xml(&style(&[("regression-type", "none")])), "");
         assert_eq!(trendline_xml(&style(&[])), "");

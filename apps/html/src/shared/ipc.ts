@@ -16,6 +16,8 @@ export const HTML_CHANNELS = {
   readFile: 'html:read-file',
   /** invoke → the recovery copy's text to open instead of the file (or as the untitled document), else null */
   recoveryOpen: 'html:recovery-open',
+  recoveryApplied: 'html:recovery-applied',
+  savedInputApplied: 'html:saved-input-applied',
   /** invoke(text | null) → keep the text as this document's recovery copy */
   recoveryWrite: 'html:recovery-write',
   /** main → renderer: send the recovery copy now (the OS is ending the session) */
@@ -251,7 +253,9 @@ export interface ImageData {
 /** API exposed by preload to the renderer (window.htmlApi) */
 export interface HtmlApi {
   /** Take the md path pending for this view (queued at tab creation); null = new untitled document */
-  consumePending(): Promise<string | null>
+  consumePending(): Promise<
+    string | { path: string; text: string; savedInputToken: string; recovered: boolean } | null
+  >
   /** The text a new untitled tab starts with (a skill template's copy), once; null for none */
   takeSeed?(): Promise<string | null>
   /** open any shell-routed document path (an AI answer's filenav citation) */
@@ -270,15 +274,25 @@ export interface HtmlApi {
    * `originalPath`: the file an untitled restored copy was of (its original is
    * missing); it gives the document's format, never its save target.
    */
-  recoveryOpen?(): Promise<{ text: string; originalPath?: string } | null>
+  recoveryOpen?(): Promise<
+    | { text: string; originalPath?: string; recoveryToken?: string }
+    | { recoveryToken: string; text?: never }
+    | null
+  >
+  recoveryApplied?(result: { token: string; ok: boolean; error?: string }): Promise<void>
+  savedInputApplied(result: {
+    token: string
+    outcome: 'applied' | 'recovered' | 'failed'
+    error?: string
+  }): Promise<void>
   /**
    * Keep `text` (exactly what a save would write now) as this document's
    * crash-recovery copy; null only answers a flush request. Rejects on a disk
    * error (the caller backs off).
    */
-  writeRecoveryCopy?(text: string | null): Promise<string>
+  writeRecoveryCopy?(text: string | null, token?: string, error?: string): Promise<string>
   /** The main process wants the recovery copy now; answer with writeRecoveryCopy */
-  onRecoveryFlushRequest?(handler: () => void): () => void
+  onRecoveryFlushRequest?(handler: (token?: string) => void): () => void
   /** Push the current buffer so html-preview:// serves it to the preview iframe */
   updatePreview(text: string): void
   /** The html-preview:// URL bound to this view (a present tab gets its owner's URL) */

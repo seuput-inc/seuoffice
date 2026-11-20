@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p8 studio child</title>
+<body>
+  <p id="text">studio frame text</p>
+</body>
+<script>
+  // Reported through the parent's `P` (same origin), so the child needs no scripts of its own.
+  window.__fire = () => {
+    const element = document.getElementById('text')
+    const event = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 10,
+      clientY: 10,
+      button: 2,
+    })
+    element.dispatchEvent(event)
+    return {
+      defaultPrevented: event.defaultPrevented,
+      bridge: typeof window.__seuofficeCheck,
+      internals: typeof window.__TAURI_INTERNALS__,
+      nativeSendSync: typeof window.__seuofficeNativeSendSync,
+    }
+  }
+  parent.__childReady = true
+</script>

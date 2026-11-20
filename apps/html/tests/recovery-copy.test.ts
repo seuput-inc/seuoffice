@@ -22,7 +22,7 @@ afterEach(() => {
 describe('startRecoveryCopies', () => {
   it('sends the current text every interval while there is something to keep', async () => {
     let text: string | null = null
-    const write = vi.fn(async () => 'written')
+    const write = vi.fn(async (_text: string | null, _token?: string) => 'written')
     const stop = startRecoveryCopies({ read: () => text, write })
 
     await vi.advanceTimersByTimeAsync(RECOVERY_COPY_INTERVAL_MS)
@@ -30,7 +30,7 @@ describe('startRecoveryCopies', () => {
 
     text = '# edited'
     await vi.advanceTimersByTimeAsync(RECOVERY_COPY_INTERVAL_MS)
-    expect(write).toHaveBeenCalledWith('# edited')
+    expect(write.mock.calls.map(([text]) => text)).toContain('# edited')
 
     stop()
     await vi.advanceTimersByTimeAsync(RECOVERY_COPY_INTERVAL_MS * 3)
@@ -55,7 +55,7 @@ describe('startRecoveryCopies', () => {
   it('answers a flush request at once, with null when nothing is unsaved', async () => {
     const flush: { current: (() => void) | null } = { current: null }
     let text: string | null = null
-    const write = vi.fn(async () => 'written')
+    const write = vi.fn(async (_text: string | null, _token?: string) => 'written')
     const stop = startRecoveryCopies({
       read: () => text,
       write,
@@ -69,12 +69,12 @@ describe('startRecoveryCopies', () => {
 
     flush.current?.()
     await vi.advanceTimersByTimeAsync(0)
-    expect(write).toHaveBeenLastCalledWith(null)
+    expect(write.mock.lastCall?.[0]).toBeNull()
 
     text = 'unsaved'
     flush.current?.()
     await vi.advanceTimersByTimeAsync(0)
-    expect(write).toHaveBeenLastCalledWith('unsaved')
+    expect(write.mock.lastCall?.[0]).toBe('unsaved')
 
     stop()
     expect(flush.current).toBeNull()

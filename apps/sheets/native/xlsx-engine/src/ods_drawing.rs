@@ -15,8 +15,8 @@ use std::collections::HashMap;
 
 use crate::odf_formula;
 use crate::ods_chart::ChartDocument;
-use crate::xlsx_package::escape_xml;
 use crate::visuals::DrawingAnchor;
+use crate::xlsx_package::escape_xml;
 use crate::{ColumnWidth, SheetMetadata, VisualObject};
 
 const EMU_PER_POINT: f64 = 12_700.0;
@@ -36,7 +36,10 @@ pub(crate) fn default_column_points(sheet: &SheetMetadata) -> f64 {
     match sheet.default_column_width.filter(|width| *width > 0.0) {
         Some(width) => width_points(width),
         None => {
-            let base = sheet.base_column_width.filter(|base| *base > 0.0).unwrap_or(8.0);
+            let base = sheet
+                .base_column_width
+                .filter(|base| *base > 0.0)
+                .unwrap_or(8.0);
             ((base * 7.0 + 5.0) / 8.0).ceil() * 8.0 * 0.75
         }
     }
@@ -310,7 +313,8 @@ impl Drawings {
             for run in &paragraph.runs {
                 let mut properties = String::new();
                 if let Some(color) = run.color.as_deref().or(visual.text_color.as_deref()) {
-                    properties.push_str(&format!(r#" fo:color="{}""#, escape_xml(&hex_color(color))));
+                    properties
+                        .push_str(&format!(r#" fo:color="{}""#, escape_xml(&hex_color(color))));
                 }
                 if let Some(size) = run.size.filter(|size| *size > 0.0) {
                     properties.push_str(&format!(
@@ -337,7 +341,9 @@ impl Drawings {
                     out.push_str(&text);
                 } else {
                     let name = self.style("gt", "text", "style:text-properties", &properties);
-                    out.push_str(&format!(r#"<text:span text:style-name="{name}">{text}</text:span>"#));
+                    out.push_str(&format!(
+                        r#"<text:span text:style-name="{name}">{text}</text:span>"#
+                    ));
                 }
             }
             out.push_str("</text:p>");
@@ -427,8 +433,8 @@ impl Drawings {
         if anchor.explicit_to && visual.edit_as.as_deref() != Some("absolute") && turn.is_none() {
             let end_x = (anchor.to_column_offset as f64)
                 .clamp(0.0, geometry.column(anchor.to_column) * EMU_PER_POINT);
-            let end_y =
-                (anchor.to_row_offset as f64).clamp(0.0, geometry.row(anchor.to_row) * EMU_PER_POINT);
+            let end_y = (anchor.to_row_offset as f64)
+                .clamp(0.0, geometry.row(anchor.to_row) * EMU_PER_POINT);
             attributes.push_str(&format!(
                 r#" table:end-cell-address="{}.{}{}" table:end-x="{}" table:end-y="{}""#,
                 escape_xml(&odf_formula::odf_sheet_name(&sheet.name)),
@@ -492,7 +498,10 @@ impl Drawings {
         let placement = self.placement(sheet, geometry, visual)?;
         let name = self.picture(source, visual.media_type.as_deref());
         let mut graphic = String::from(r#" draw:stroke="none" draw:fill="none""#);
-        if let Some(opacity) = visual.opacity.filter(|opacity| (0.0..1.0).contains(opacity)) {
+        if let Some(opacity) = visual
+            .opacity
+            .filter(|opacity| (0.0..1.0).contains(opacity))
+        {
             graphic.push_str(&format!(
                 r#" draw:image-opacity="{}%""#,
                 (opacity * 100.0).round()
@@ -607,7 +616,10 @@ impl Drawings {
                 };
                 graphic.push_str(&format!(
                     r#" draw:stroke="{stroke}" svg:stroke-width="{}pt" svg:stroke-color="{}""#,
-                    visual.line_width.filter(|width| *width > 0.0).unwrap_or(0.75),
+                    visual
+                        .line_width
+                        .filter(|width| *width > 0.0)
+                        .unwrap_or(0.75),
                     escape_xml(&hex_color(color))
                 ));
             }
@@ -638,8 +650,16 @@ impl Drawings {
                 anchor.explicit_to,
             )
             .max(0.0);
-            let (x1, x2) = if visual.flip_h { (x + width, x) } else { (x, x + width) };
-            let (y1, y2) = if visual.flip_v { (y + height, y) } else { (y, y + height) };
+            let (x1, x2) = if visual.flip_h {
+                (x + width, x)
+            } else {
+                (x, x + width)
+            };
+            let (y1, y2) = if visual.flip_v {
+                (y + height, y)
+            } else {
+                (y, y + height)
+            };
             // `placement` wrote the box; a line wants its two ends instead.
             let shared = placement
                 .split(" svg:width=")
@@ -703,7 +723,9 @@ impl Drawings {
                 let shape_type = if shape_type == "rectangle"
                     && kind != "rect"
                     && !kind.is_empty()
-                    && kind.chars().all(|character| character.is_ascii_alphanumeric())
+                    && kind
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric())
                 {
                     format!("ooxml-{kind}")
                 } else {
@@ -749,7 +771,13 @@ fn linked(visual: &VisualObject, shape: String) -> String {
 /// space.
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|character| if character == '\n' || character == '\r' { ' ' } else { character })
+        .map(|character| {
+            if character == '\n' || character == '\r' {
+                ' '
+            } else {
+                character
+            }
+        })
         .filter(|character| *character == '\t' || (*character as u32) >= 0x20)
         .collect()
 }
@@ -781,8 +809,14 @@ fn preset_path(kind: &str) -> (&'static str, &'static str) {
             "non-primitive",
             "M 10800 0 L 21600 10800 10800 21600 0 10800 Z N",
         ),
-        "parallelogram" => ("non-primitive", "M 5400 0 L 21600 0 16200 21600 0 21600 Z N"),
-        "trapezoid" => ("non-primitive", "M 0 21600 L 5400 0 16200 0 21600 21600 Z N"),
+        "parallelogram" => (
+            "non-primitive",
+            "M 5400 0 L 21600 0 16200 21600 0 21600 Z N",
+        ),
+        "trapezoid" => (
+            "non-primitive",
+            "M 0 21600 L 5400 0 16200 0 21600 21600 Z N",
+        ),
         "hexagon" => (
             "non-primitive",
             "M 5400 0 L 16200 0 21600 10800 16200 21600 5400 21600 0 10800 Z N",
@@ -943,7 +977,11 @@ mod tests {
             enhanced_path("M0,0 L10.4,0 C1 2 3 4 5 6 Q7-8 9 10Z").as_deref(),
             Some("M 0 0 L 10 0 C 1 2 3 4 5 6 Q 7 -8 9 10 Z N")
         );
-        assert_eq!(enhanced_path("M 0 0 A 5 5 0 0 1 10 10"), None, "arcs do not carry over");
+        assert_eq!(
+            enhanced_path("M 0 0 A 5 5 0 0 1 10 10"),
+            None,
+            "arcs do not carry over"
+        );
         assert_eq!(enhanced_path("  "), None);
         assert_eq!(preset_path("ellipse").0, "ellipse");
         assert_eq!(preset_path("cloudCallout").0, "rectangle");
@@ -969,7 +1007,11 @@ mod tests {
         // left-to-right; in ODF it is the unturned gradient.
         let down = FillGradient {
             angle: 90.0,
-            stops: vec![stop(1.0, "#0000FF"), stop(0.0, "#FF0000"), stop(0.5, "#FFFFFF")],
+            stops: vec![
+                stop(1.0, "#0000FF"),
+                stop(0.0, "#FF0000"),
+                stop(0.5, "#FFFFFF"),
+            ],
         };
         let name = drawings.gradient(&down).unwrap();
         assert_eq!(drawings.gradient(&down).as_deref(), Some(name.as_str()));

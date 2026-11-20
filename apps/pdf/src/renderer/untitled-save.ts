@@ -12,9 +12,9 @@ import type { AdoptUntitledCopyResult } from '../shared/ipc'
 
 export interface UntitledSaveApi {
   /** the save dialog, answered in the main process; false when it was cancelled */
-  pickUntitledCopyTarget(path: string, defaultName: string): Promise<boolean>
+  pickUntitledCopyTarget(path: string, defaultName: string, ownedSaveId?: string): Promise<boolean>
   /** copies the working file to the picked place, which becomes the tab's document */
-  adoptUntitledCopy(path: string): Promise<AdoptUntitledCopyResult>
+  adoptUntitledCopy(path: string, ownedSaveId?: string): Promise<AdoptUntitledCopyResult>
 }
 
 export type UntitledSave =
@@ -40,26 +40,42 @@ export interface UntitledSaver {
    * place is still being asked for, a second request is this same save: one
    * dialog, one answer, and nothing written if it is cancelled.
    */
-  save(path: string, defaultName: string, saveEdits: () => Promise<boolean>): Promise<UntitledSave>
+  save(
+    path: string,
+    defaultName: string,
+    saveEdits: () => Promise<boolean>,
+    ownedSaveId?: string,
+  ): Promise<UntitledSave>
 }
 
 export function createUntitledSaver(api: UntitledSaveApi): UntitledSaver {
   let running: Promise<UntitledSave> | null = null
   let writing = false
+  let runningOwner: string | undefined
 
   const run = async (
     path: string,
     defaultName: string,
     saveEdits: () => Promise<boolean>,
+    ownedSaveId?: string,
   ): Promise<UntitledSave> => {
-    if (!(await api.pickUntitledCopyTarget(path, defaultName).catch(() => false))) {
+    const picked =
+      ownedSaveId === undefined
+        ? api.pickUntitledCopyTarget(path, defaultName)
+        : api.pickUntitledCopyTarget(path, defaultName, ownedSaveId)
+    if (!(await picked.catch(() => false))) {
       return { saved: false, why: 'cancelled' }
     }
     writing = true
     if (!(await saveEdits())) return { saved: false, why: 'unsaved' }
-    const adopted = await api
-      .adoptUntitledCopy(path)
-      .catch((err: unknown): AdoptUntitledCopyResult => ({ ok: false, error: String(err) }))
+    const adoption =
+      ownedSaveId === undefined
+        ? api.adoptUntitledCopy(path)
+        : api.adoptUntitledCopy(path, ownedSaveId)
+    const adopted = await adoption.catch((err: unknown): AdoptUntitledCopyResult => ({
+      ok: false,
+      error: String(err),
+    }))
     return adopted.ok
       ? { saved: true, path: adopted.path }
       : { saved: false, why: 'failed', error: adopted.error }
@@ -69,11 +85,15 @@ export function createUntitledSaver(api: UntitledSaveApi): UntitledSaver {
     get writing() {
       return writing
     },
-    save(path, defaultName, saveEdits) {
+    save(path, defaultName, saveEdits, ownedSaveId) {
+      if (running !== null && ownedSaveId !== runningOwner) {
+        return running.then(() => this.save(path, defaultName, saveEdits, ownedSaveId))
+      }
+      runningOwner = ownedSaveId
       // registered before the flow starts: a request that arrives while the dialog is
       // being opened is this save too
       running ??= Promise.resolve()
-        .then(() => run(path, defaultName, saveEdits))
+        .then(() => run(path, defaultName, saveEdits, ownedSaveId))
         .finally(() => {
           running = null
           writing = false

@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>po target</title>
+<script src="probe.js"></script>
+<script>
+  // Loaded after `add_init_script`: the marker the script set must already be there when the
+  // page's own first script runs.
+  P.log('po.target.load', {
+    initMarker: typeof window.__initMarker === 'undefined' ? null : window.__initMarker,
+  })
+  P.done({})
+</script>

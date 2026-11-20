@@ -1,0 +1,976 @@
+name: seuoffice shell
+
+# The stage 3 shell uses Tauri 2 and the system webview, with main-core linked in.
+# Built on the Mac and Windows runners. The default gate (`full`) is, per job,
+#   1. bundles the preloads (crates/shell/bridge/preloads.mjs, 19 of them),
+#   2. builds the shell,
+#   3. runs `--measure-dialog` (the IPC measurement the contract asks of
+#      batch W) where the runner has a display, and uploads its JSON,
+#   4. runs clippy and the release unit tests, even when the measurement failed.
+# Start it by hand while the branch is young:
+#   gh workflow run "seuoffice shell" --ref <branch>
+# The other gates are for the Tauri 2 migration:
+#   gate=check  `cargo check` on both OSes in minutes (no wasm, engine host or bundle), then
+#               crates/shell/ci/slice-diagnostics.mjs counts the diagnostics in `owned`
+#   gate=lock   Ubuntu only: regenerates crates/shell/Cargo.lock from the exact `source_sha`
+#               and uploads it as an artifact. Nothing is committed from CI.
+#   gate=probe  the hosted WebView probes P1-P10 (crates/shell/src/probe): the real shell binary
+#               on the macOS and Windows runners drives real WKWebView / WebView2 pages and
+#               writes raw event logs and artifacts; crates/shell/ci/probe-check.mjs then states,
+#               per assertion, observed, violated or unobserved with the evidence line. Logs
+#               and artifacts are uploaded whatever the checker says. `probes` picks which
+#               (comma list, default all; p5 is macOS only, p6 Windows only).
+#   gate=e2e    the real-app tests of gate G3 (crates/shell/e2e): the real app bundle, built as the
+#               full gate builds it plus every renderer, runs each scenario with
+#               `--e2e <scenario.json> --out <dir>` against a throwaway profile and temp
+#               fixture/work folders (GitHub-hosted runners only, never a person's profile or
+#               keychain). Native key events, Korean 2-Set IME, clipboard, save/close/reopen,
+#               PDF export, a 50000-row sheet, PDF viewing and quit with a dirty document are
+#               driven; crates/shell/ci/e2e-check.mjs then prints PASS / FAIL / UNVERIFIED per
+#               check, reading the files the app saved with independent readers and the repo's
+#               own parsers. `scenarios` picks which (comma list, default all).
+#               The same job then runs the native-host specs (crates/shell/e2e/native-host): the
+#               native-only IPC channels driven in the real app, crashes and restores included.
+#               crates/shell/ci/native-host-check.mjs turns what the app's dispatcher recorded
+#               into receipts, uploaded with the test records; `seuoffice rust` takes them through
+#               its `native_host_run` input. `scenarios` picks the specs too: by name, or
+#               `native-host` for all of them.
+
+on:
+  push:
+    branches: ['feat/rust-shell-*', 'feat/tauri2-*']
+    paths:
+      - 'crates/shell/**'
+      - '.github/workflows/seuoffice-shell.yml'
+  workflow_dispatch:
+    inputs:
+      gate:
+        description: "full (build, clippy, tests, measurement), check (cargo check and per-file diagnostics), test (the shell's unit tests in debug, no bundle), lock (regenerate Cargo.lock on Ubuntu), fmt (rustfmt patch of both Rust workspaces), probe (hosted WebView probes P1-P10) or e2e (real-app tests, G3)"
+        type: choice
+        options: [full, check, test, lock, fmt, probe, e2e]
+        default: full
+      owned:
+        description: 'gate=check: comma-separated path prefixes whose diagnostics must be zero'
+        default: crates/shell/src/native/,crates/shell/src/main.rs
+      test_args:
+        description: 'gate=test: arguments after `--` for the test harness (a filter, --skip NAME, --exact)'
+        default: ''
+      probes:
+        description: 'gate=probe: comma list of probes p1..p10, or all'
+        default: all
+      scenarios:
+        description: 'gate=e2e: comma list of scenario names from crates/shell/e2e/scenarios and spec names from crates/shell/e2e/native-host/specs.mjs (native-host: every spec), or all'
+        default: all
+      source_sha:
+        description: 'gate=lock or fmt: the exact commit to work on (40 hex digits)'
+        default: ''
+      regenerate:
+        description: 'gate=lock: use `cargo generate-lockfile` (newest of everything) instead of `cargo update --workspace`'
+        type: boolean
+        default: false
+      bundle:
+        description: Also build the installers and their update feed (the bundle job, batch U)
+        type: boolean
+        default: false
+      version:
+        description: Version of the installers (empty is tauri.conf.json's)
+        default: ''
+      next_version:
+        description: A higher version built too, in the same run, for the migration test's second update (to_run = next_run = this run)
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seuoffice-shell-${{ github.ref }}-${{ inputs.gate || 'push' }}
+  cancel-in-progress: true
+
+env:
+  # the preload bundles need the workspace packages' sources, not Electron
+  ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+jobs:
+  mac:
+    if: github.event_name != 'workflow_dispatch' || inputs.gate == 'full'
+    runs-on: macos-latest
+    # release build, then clippy and the release tests each compile the whole shell again
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: crates/shell
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/shell
+          cache-on-failure: true
+
+      - name: tools
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: npm ci (esbuild and the workspace packages of the preloads)
+        working-directory: .
+        run: npm ci --ignore-scripts
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: format
+        run: cargo fmt --check
+
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
+      - name: preloads
+        working-directory: .
+        run: |
+          node crates/shell/bridge/preloads.mjs
+          cat crates/shell/out/preloads/manifest.json | head -40
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+      - name: native helpers
+        working-directory: .
+        run: |
+          npm run native:build -w @seuoffice/sheets
+          swiftc -O packages/pdf2docx/ocr-helper/vision-ocr.swift -o packages/pdf2docx/ocr-helper/vision-ocr
+
+      - name: Tauri CLI
+        run: npm install --no-audit --no-fund
+
+      - name: signing identity (decision 0035)
+        env:
+          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
+          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
+        run: ci/mac-self-sign.sh
+
+      - name: build the app bundle
+        id: build
+        run: |
+          start=$(date +%s)
+          export APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY"
+          npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host","../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar":"native/xlsx-sidecar","../../packages/pdf2docx/ocr-helper/vision-ocr":"ocr/vision-ocr"}}}' -- --locked
+          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          ci/mac-check-signature.sh target/release/bundle/macos/*.app
+
+      - name: measure the dialog (--measure-dialog)
+        timeout-minutes: 10
+        run: |
+          out="$RUNNER_TEMP/measure"
+          mkdir -p "$out"
+          app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          find "$app/Contents/MacOS" -maxdepth 1 -ls | tee "$out/app-contents.txt"
+          set +e
+          SEUOFFICE_USER_DATA="$out/userdata" "$app/Contents/MacOS/SeuOffice" --measure-dialog "$out/dialog.json" 2>&1 | tee "$out/shell.log"
+          status=${PIPESTATUS[0]}
+          cat "$out/dialog.json" || true
+          exit "$status"
+
+      - name: clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # the replay markers of the e2e build are not in the default features: the same lints for them
+      - name: clippy (e2e-replay)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets --features e2e-replay -- -D warnings
+
+      - name: unit tests
+        if: ${{ !cancelled() }}
+        # the tests that touch the file system take an isolated scratch of this run
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --locked --release
+          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
+          cargo test --locked --release real_sidecar -- --ignored
+
+      - name: upload shell-mac
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-mac
+          path: |
+            ${{ runner.temp }}/measure/dialog.json
+            ${{ runner.temp }}/measure/shell.log
+            ${{ runner.temp }}/measure/*.txt
+            crates/shell/out/preloads/manifest.json
+          if-no-files-found: warn
+
+  win:
+    if: github.event_name != 'workflow_dispatch' || inputs.gate == 'full'
+    runs-on: windows-latest
+    timeout-minutes: 180
+    # vendored OpenSSL configures with perl; Git Bash's perl lacks the modules it needs
+    env:
+      OPENSSL_SRC_PERL: C:\Strawberry\perl\bin\perl.exe
+    defaults:
+      run:
+        shell: bash
+        working-directory: crates/shell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          components: clippy
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/shell
+          cache-on-failure: true
+
+      - name: tools
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: npm ci (esbuild and the workspace packages of the preloads)
+        working-directory: .
+        run: npm ci --ignore-scripts
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
+      - name: preloads
+        working-directory: .
+        run: |
+          node crates/shell/bridge/preloads.mjs
+          head -40 crates/shell/out/preloads/manifest.json
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+      - name: native helpers
+        working-directory: .
+        run: |
+          npm run native:build -w @seuoffice/sheets
+          node packages/pdf2docx/ocr-helper/build-win.mjs
+          node apps/shell/src/main/quick-look/build-win.mjs
+
+      - name: build
+        id: build
+        run: |
+          start=$(date +%s)
+          cargo build --locked --release --verbose
+          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
+          mkdir -p target/release/resources/{engine-host,native,ocr,quicklook}
+          cp -R out/engine-host/. target/release/resources/engine-host/
+          cp ../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe target/release/resources/native/
+          cp ../../packages/pdf2docx/ocr-helper/win-ocr.exe target/release/resources/ocr/
+          cp ../../apps/shell/src/main/quick-look/win-quicklook.exe target/release/resources/quicklook/
+          ls -la target/release
+
+      - name: measure the dialog (--measure-dialog)
+        timeout-minutes: 10
+        run: |
+          out="$RUNNER_TEMP/measure"
+          mkdir -p "$out"
+          ls target/release > "$out/target-release.txt"
+          exe=./target/release/SeuOffice.exe
+          ls -la "$exe"
+          set +e
+          SEUOFFICE_USER_DATA="$out/userdata" "$exe" --measure-dialog "$out/dialog.json" 2>&1 | tee "$out/shell.log"
+          status=${PIPESTATUS[0]}
+          echo "exit status $status"
+          cat "$out/dialog.json" || true
+          exit "$status"
+
+      - name: clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: unit tests
+        if: ${{ !cancelled() }}
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          cargo test --locked --release
+          # needs the xlsx-sidecar built by the native helpers step; the `test` gate does not build it
+          cargo test --locked --release real_sidecar -- --ignored
+
+      # the staged moves and asset publishes the app makes through crates/file-commit and
+      # main-core's asset lifecycle are Windows-only code that the repository's own tests run on
+      # Ubuntu, where these tests compile to nothing
+      - name: file-commit and asset lifecycle tests (Windows)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo test --locked --manifest-path ../Cargo.toml -p file-commit
+          cargo test --locked --manifest-path ../Cargo.toml -p main-core --lib -- asset_lifecycle
+
+      - name: upload shell-win
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-win
+          path: |
+            ${{ runner.temp }}/measure/dialog.json
+            ${{ runner.temp }}/measure/shell.log
+            ${{ runner.temp }}/measure/*.txt
+            crates/shell/out/preloads/manifest.json
+          if-no-files-found: warn
+
+  bundle-version:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'full' && inputs.bundle
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          version="$VERSION"
+          [ -n "$version" ] || version=$(node -p "require('./crates/shell/tauri.conf.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  bundle:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    needs: bundle-version
+    uses: ./.github/workflows/seuoffice-rust-bundle.yml
+    with:
+      source_sha: ${{ github.sha }}
+      version: ${{ needs.bundle-version.outputs.version }}
+      next_version: ${{ inputs.next_version }}
+    secrets: inherit
+
+  # The per-slice gate of the Tauri 2 migration: `cargo check` of the real shell on both OSes.
+  # It skips the wasm engine, the engine host and the bundle, so it takes minutes, and
+  # slice-diagnostics.mjs says which files still carry compiler errors. Errors in files a
+  # slice does not own are expected until every slice landed (the crate cannot be green
+  # earlier), so the gate fails only on the owned prefixes.
+  check:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'check'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/shell
+          cache-on-failure: true
+
+      - name: npm ci (esbuild and the workspace packages of the preloads)
+        run: npm ci --ignore-scripts
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: preloads
+        run: node crates/shell/bridge/preloads.mjs
+
+      - name: cargo check
+        id: check
+        run: |
+          set +e
+          # vendored OpenSSL configures with perl; Git Bash's perl lacks the modules it needs
+          if [ "$RUNNER_OS" = Windows ]; then export OPENSSL_SRC_PERL='C:\Strawberry\perl\bin\perl.exe'; fi
+          bash crates/shell/ci/check-local.sh check --all-targets --message-format=json > "$RUNNER_TEMP/diag.json" 2> "$RUNNER_TEMP/check.stderr"
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          tail -n 40 "$RUNNER_TEMP/check.stderr"
+      - name: diagnostics of the owned files
+        env:
+          OWNED: ${{ inputs.owned }}
+          CHECK_STATUS: ${{ steps.check.outputs.status }}
+        run: |
+          node crates/shell/ci/slice-diagnostics.mjs "$RUNNER_TEMP/diag.json" --owned "$OWNED" --cargo-status "$CHECK_STATUS"
+      - name: upload the diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-check-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/diag.json
+            ${{ runner.temp }}/check.stderr
+          if-no-files-found: warn
+
+  # The shell's unit tests on both OSes without the wasm engine, the engine host or the
+  # bundle: minutes instead of the full gate's hours. Every failure of one OS is reported.
+  test:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'test'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/shell
+          cache-on-failure: true
+      - name: npm ci (esbuild and the workspace packages of the preloads)
+        run: npm ci --ignore-scripts
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: preloads
+        run: node crates/shell/bridge/preloads.mjs
+      - name: unit tests
+        env:
+          SEUOFFICE_TEST_SCRATCH: ${{ runner.temp }}/test-scratch
+          SEUOFFICE_NATIVE_TEST_SCRATCH: ${{ runner.temp }}/native-test-scratch
+          TEST_ARGS: ${{ inputs.test_args }}
+        run: |
+          mkdir -p "$SEUOFFICE_TEST_SCRATCH" "$SEUOFFICE_NATIVE_TEST_SCRATCH"
+          # vendored OpenSSL configures with perl; Git Bash's perl lacks the modules it needs
+          if [ "$RUNNER_OS" = Windows ]; then export OPENSSL_SRC_PERL='C:\Strawberry\perl\bin\perl.exe'; fi
+          # the Windows-only code of crates/file-commit and main-core's asset lifecycle (staged
+          # moves, asset publishes) is tested on Windows here; check-local.sh below execs cargo,
+          # so this runs first
+          if [ "$RUNNER_OS" = Windows ]; then
+            # shellcheck disable=SC2086
+            cargo test --locked --manifest-path crates/Cargo.toml -p file-commit -p main-core --lib --tests -- $TEST_ARGS
+          fi
+          # with the replay markers of the e2e build, so their tests run here; the full gate's
+          # release tests run without them, and with the test that a default build has none
+          # shellcheck disable=SC2086 # the arguments are split as typed
+          bash crates/shell/ci/check-local.sh test --features e2e-replay -- $TEST_ARGS
+
+  # Cargo.lock of crates/shell, generated once on Ubuntu from an exact commit and handed over
+  # as an artifact. The shell is its own workspace, so no other lock moves. A person reviews
+  # the diff and imports it; CI never commits.
+  lock:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'lock'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: the checkout is the exact commit asked for
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "source_sha must be 40 lowercase hex digits" >&2; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40 || { echo "source_sha must be 40 hex digits" >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      # crates/file-parse names rhwp by a path into crates/.rhwp-source, which cargo
+      # reads while it resolves
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+      - name: input hashes
+        run: |
+          mkdir -p "$RUNNER_TEMP/lock"
+          {
+            echo "source_sha $(git rev-parse HEAD)"
+            sha256sum crates/shell/Cargo.toml crates/shell/Cargo.lock
+          } | tee "$RUNNER_TEMP/lock/input-hashes.txt"
+      - name: resolve
+        env:
+          REGENERATE: ${{ inputs.regenerate }}
+        run: |
+          if [ "$REGENERATE" = "true" ]; then
+            cargo generate-lockfile --manifest-path crates/shell/Cargo.toml
+          else
+            cargo update --manifest-path crates/shell/Cargo.toml --workspace
+          fi
+      - name: the lock satisfies the manifest
+        run: cargo metadata --manifest-path crates/shell/Cargo.toml --locked --format-version 1 > /dev/null
+      - name: the lock is the Tauri 2 lock
+        run: |
+          if grep -nE '^name = "(cef|cef-dll-sys|tauri-runtime-cef)"$' crates/shell/Cargo.lock; then
+            echo "the lock still names the CEF runtime" >&2; exit 1
+          fi
+          grep -A1 -E '^name = "tauri"$' crates/shell/Cargo.lock | tee "$RUNNER_TEMP/lock/tauri.txt"
+          grep -q '^version = "2.12.5"$' "$RUNNER_TEMP/lock/tauri.txt"
+          grep -qE '^name = "objc2-web-kit"$' crates/shell/Cargo.lock
+          grep -qE '^name = "webview2-com"$' crates/shell/Cargo.lock
+      - name: output hashes
+        run: |
+          cp crates/shell/Cargo.lock "$RUNNER_TEMP/lock/Cargo.lock"
+          sha256sum crates/shell/Cargo.toml crates/shell/Cargo.lock | tee "$RUNNER_TEMP/lock/output-hashes.txt"
+      - name: upload the lock
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-cargo-lock
+          path: ${{ runner.temp }}/lock/
+          retention-days: 7
+          if-no-files-found: error
+
+  # rustfmt of the exact commit, handed over as a patch for machines without a Rust
+  # toolchain (`git apply`). Stable rustfmt, as the `seuoffice rust` quick gate runs it.
+  fmt:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'fmt'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: the checkout is the exact commit asked for
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          case "$SOURCE_SHA" in
+            *[!0-9a-f]*|'') echo "source_sha must be 40 lowercase hex digits" >&2; exit 1 ;;
+          esac
+          test "${#SOURCE_SHA}" -eq 40
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      # cargo resolves crates/file-parse's path into crates/.rhwp-source
+      - name: rhwp source
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          rustfmt --version
+          # a file rustfmt cannot parse is reported and left as it is; the rest is formatted
+          cargo fmt --manifest-path crates/Cargo.toml || echo "::warning::rustfmt failed on crates/"
+          cargo fmt --manifest-path crates/shell/Cargo.toml || echo "::warning::rustfmt failed on crates/shell"
+      - name: patch
+        run: |
+          mkdir -p "$RUNNER_TEMP/fmt"
+          git diff --binary -- crates > "$RUNNER_TEMP/fmt/rustfmt.patch"
+          git diff --stat -- crates | tail -n 1
+          {
+            echo "source_sha $(git rev-parse HEAD)"
+            sha256sum "$RUNNER_TEMP/fmt/rustfmt.patch"
+          } > "$RUNNER_TEMP/fmt/source.txt"
+      - name: upload the patch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rustfmt-patch
+          path: ${{ runner.temp }}/fmt/
+          retention-days: 7
+          if-no-files-found: error
+
+  # The hosted WebView probes (design 0.5, P1-P10): the real shell binary, built as the `mac` and
+  # `win` jobs build it, started once per probe with `--probe <name> --out <dir>` (p10 is
+  # `--measure-dialog`). A probe writes JSON lines and artifacts and decides nothing; the checker
+  # reads them. The pages are the mock fixtures of crates/shell/probe-fixtures, staged where the
+  # shell's app scheme serves its renderer bundles (SEUOFFICE_APPS_DIR).
+  probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'probe'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+        working-directory: crates/shell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: crates/shell
+          cache-on-failure: true
+
+      - name: build environment
+        run: |
+          # ad-hoc signing on the Mac (the probes read no keychain item, so they need no fixed
+          # identity), and the Strawberry perl vendored OpenSSL configures with (Git Bash's perl lacks modules)
+          if [ "$RUNNER_OS" = macOS ]; then echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"; fi
+          if [ "$RUNNER_OS" = Windows ]; then echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"; fi
+          rustc --version
+          cargo --version
+
+      - name: npm ci (esbuild and the workspace packages of the preloads)
+        working-directory: .
+        run: npm ci --ignore-scripts
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
+      - name: preloads
+        working-directory: .
+        run: node crates/shell/bridge/preloads.mjs
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+
+      # the pages: every host the probes load them from serves its own copy under /probe/, the
+      # engine host (served cross-origin isolated by the shell) from its own folder, which the
+      # build below carries into the resources
+      - name: stage the probe pages
+        run: |
+          stage="$RUNNER_TEMP/probe-apps"
+          rm -rf "$stage"
+          for host in shell docs sheets hwp; do
+            mkdir -p "$stage/$host/out/renderer"
+            cp -R probe-fixtures/pages "$stage/$host/out/renderer/probe"
+          done
+          rm -rf out/engine-host/probe
+          cp -R probe-fixtures/pages out/engine-host/probe
+          find "$stage" -type f | sort > "$RUNNER_TEMP/probe-stage.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/probe-stage.txt") staged files"
+
+      - name: Tauri CLI
+        if: runner.os == 'macOS'
+        run: npm install --no-audit --no-fund
+      - name: build the app bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host"}}}' -- --locked
+          app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          echo "SHELL_BIN=$PWD/$app/Contents/MacOS/SeuOffice" >> "$GITHUB_ENV"
+      - name: build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked --release --verbose
+          mkdir -p target/release/resources/engine-host
+          cp -R out/engine-host/. target/release/resources/engine-host/
+          echo "SHELL_BIN=$PWD/target/release/SeuOffice.exe" >> "$GITHUB_ENV"
+
+      - name: run the probes
+        env:
+          PROBES: ${{ inputs.probes }}
+        run: |
+          out="$RUNNER_TEMP/probes"
+          stage="$RUNNER_TEMP/probe-apps"
+          rm -rf "$out"
+          mkdir -p "$out"
+          ls -la "$SHELL_BIN"
+          list="${PROBES:-all}"
+          [ "$list" = all ] && list="p1,p2,p3,p4,p5,p6,p7,p8,p9,p10"
+          ran=""
+          for probe in ${list//,/ }; do
+            case "$probe:$RUNNER_OS" in
+              p5:Windows|p6:macOS) echo "skip $probe: it is not an $RUNNER_OS probe"; continue ;;
+            esac
+            mkdir -p "$out/$probe"
+            ran="${ran:+$ran,}$probe"
+            if [ "$probe" = p10 ]; then
+              args=(--measure-dialog "$out/p10/dialog.json")
+            else
+              args=(--probe "$probe" --out "$out/$probe")
+            fi
+            # a probe that never reaches its own deadline (a hang before it starts) is killed here
+            if [ "$RUNNER_OS" = Windows ]; then guard=(timeout 540); else guard=(perl -e 'alarm shift; exec @ARGV' 540); fi
+            set +e
+            SEUOFFICE_USER_DATA="$out/$probe/userdata" SEUOFFICE_APPS_DIR="$stage" \
+              SEUOFFICE_SHELL_PARTIAL=1 SEUOFFICE_SHELL_TRACE=1 \
+              "${guard[@]}" "$SHELL_BIN" "${args[@]}" > "$out/$probe/shell.log" 2>&1
+            status=$?
+            set -e
+            echo "$probe exit $status" | tee -a "$out/exit-codes.txt"
+            tail -n 15 "$out/$probe/shell.log" || true
+            # a crash (signal, exit above 128) leaves its report where the artifact can carry it
+            if [ "$RUNNER_OS" = macOS ] && [ "$status" -gt 128 ] && [ "$status" -lt 160 ]; then
+              sleep 5
+              cp "$HOME"/Library/Logs/DiagnosticReports/SeuOffice*.ips "$out/$probe/" 2>/dev/null || true
+            fi
+            # WebView2 helper processes outlive the shell for a moment and hold the profile
+            # files; the profile is only deleted to keep the artifact small (it is excluded from
+            # the upload anyway), so a busy file is a warning, never a failed probe run
+            rm -rf "$out/$probe/userdata" || echo "::warning::could not remove $out/$probe/userdata (files still in use)"
+          done
+          echo "$ran" > "$out/probes-run.txt"
+
+      - name: check the records
+        run: |
+          set +e
+          out="$RUNNER_TEMP/probes"
+          ran=$(cat "$out/probes-run.txt")
+          node ci/probe-check.mjs "$out" --probes "$ran" --json "$out/report.json" --markdown "$out/report.md" | tee "$out/report.txt"
+          status=${PIPESTATUS[0]}
+          { echo "### WebView probes on $RUNNER_OS"; cat "$out/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: upload the probe records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: probes-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/probes/**
+            !${{ runner.temp }}/probes/*/userdata/**
+          if-no-files-found: warn
+
+  # The real-app tests (gate G3). The app is the full gate's build plus the renderer bundles
+  # (`npm run build:all`) and the resources of the installer's bundle config that this runner
+  # builds (e2e/stage-resources.mjs). Each scenario of crates/shell/e2e/scenarios runs in its
+  # own throwaway profile (SEUOFFICE_USER_DATA with the `.seuoffice-e2e-profile` marker the app
+  # insists on), a fresh copy of the fixtures and its own output folder; the app decides nothing,
+  # ci/e2e-check.mjs reads what it left. Nothing here touches a person's machine: the job refuses
+  # to run anywhere but a GitHub-hosted runner, and every folder is below RUNNER_TEMP.
+  e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.gate == 'e2e'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+        working-directory: crates/shell
+    steps:
+      - name: refuse anything but a GitHub-hosted runner
+        # before the checkout crates/shell does not exist yet
+        working-directory: ${{ runner.temp }}
+        run: |
+          if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || [ "${GITHUB_ACTIONS:-}" != true ] || [ -z "${RUNNER_TEMP:-}" ]; then
+            echo "::error::the real-app tests run only on GitHub-hosted runners"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.95.0
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            crates/shell
+            apps/sheets/native/xlsx-engine
+          cache-on-failure: true
+
+      - name: build environment
+        run: |
+          # the Strawberry perl vendored OpenSSL configures with (Git Bash's perl lacks modules)
+          if [ "$RUNNER_OS" = Windows ]; then echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"; fi
+          rustc --version
+          cargo --version
+
+      - name: npm ci
+        working-directory: .
+        run: npm ci
+      - name: checker tests
+        working-directory: crates/shell/ci
+        run: npx vitest run
+      - name: rhwp source
+        working-directory: .
+        run: node tools/build-rhwp-core.mjs --source-only
+      - name: document engine
+        working-directory: .
+        run: npm run build:wasm
+      - name: apps (the renderer bundles the shell serves, the sheets sidecar, the HWP studio)
+        working-directory: .
+        run: npm run build:all
+      - name: preloads
+        working-directory: .
+        run: node crates/shell/bridge/preloads.mjs
+      - name: engine host
+        working-directory: .
+        run: node crates/shell/engine-host/build.mjs
+      - name: native helpers (macOS)
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: swiftc -O packages/pdf2docx/ocr-helper/vision-ocr.swift -o packages/pdf2docx/ocr-helper/vision-ocr
+      - name: native helpers (Windows)
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: |
+          node packages/pdf2docx/ocr-helper/build-win.mjs
+          node apps/shell/src/main/quick-look/build-win.mjs
+
+      - name: Tauri CLI
+        if: runner.os == 'macOS'
+        run: npm install --no-audit --no-fund
+      - name: signing identity (decision 0035)
+        if: runner.os == 'macOS'
+        env:
+          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
+          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
+        run: ci/mac-self-sign.sh
+      - name: build the app bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          export APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY"
+          config=$(node e2e/stage-resources.mjs mac-config)
+          npx tauri build --bundles app --verbose --config "$config" -- --locked --features e2e-replay
+          app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          ci/mac-check-signature.sh "$app"
+          echo "SHELL_BIN=$PWD/$app/Contents/MacOS/SeuOffice" >> "$GITHUB_ENV"
+      - name: build and stage the resources (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --locked --release --verbose --features e2e-replay
+          node e2e/stage-resources.mjs win-stage target/release
+          echo "SHELL_BIN=$(cygpath -m "$PWD")/target/release/SeuOffice.exe" >> "$GITHUB_ENV"
+      # The e2e-replay feature (the two builds above) is for this job alone. Its marker must be
+      # in this executable: the bundle job fails a shipped one that has it, with the same script.
+      - name: the e2e build has the replay markers
+        run: bash ci/replay-guard.sh present "$SHELL_BIN"
+
+      # Windows composes Hangul through the Korean IME of the language pack; the hosted image has
+      # English only. A failure here is not fatal: the ime scenarios then fail with their own evidence.
+      # The log says what the image had before the install and how long the install took (S116:
+      # 33 minutes), which is what a cheaper setup has to be judged against.
+      - name: Korean IME (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'e2e-ime-install.txt'
+          $tip = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A028AE76-01B1-46C2-99C4-ACD9858AE02F}'
+          $files = Join-Path $env:windir 'System32\IME\IMEKR'
+          "before the install: Korean IME registered: $(Test-Path $tip), IME files: $(Test-Path $files)" >> $log
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            Install-Language -Language ko-KR -ErrorAction Stop *>> $log
+          } catch {
+            "Install-Language failed: $_" | Tee-Object -FilePath $log -Append
+            Add-WindowsCapability -Online -Name 'Language.Basic~~~ko-KR~0.0.1.0' *>> $log
+          }
+          "the install took $([int]$watch.Elapsed.TotalSeconds) s" >> $log
+          $list = New-WinUserLanguageList en-US
+          $list.Add('ko-KR')
+          Set-WinUserLanguageList $list -Force
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips *>> $log
+          Get-Content $log
+
+      - name: run the scenarios
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          root="$base/e2e"
+          fixtures="$base/e2e-fixtures"
+          rm -rf "$root" "$fixtures"
+          mkdir -p "$root"
+          node e2e/make-fixtures.mjs "$fixtures" | tee "$root/fixtures.txt"
+          ls -la "$SHELL_BIN"
+          list="${SCENARIOS:-all}"
+          # a scenario that never reaches its own deadline (a hang before the runner starts) is killed here
+          if [ "$RUNNER_OS" = Windows ]; then guard=(timeout 1200); else guard=(perl -e 'alarm shift; exec @ARGV' 1200); fi
+          for file in e2e/scenarios/*.json; do
+            name=$(basename "$file" .json)
+            case ",$list," in *",all,"*|*",$name,"*) ;; *) echo "skip $name"; continue ;; esac
+            dir="$root/$name"
+            mkdir -p "$dir/out" "$dir/work" "$dir/userdata"
+            cp -R "$fixtures/." "$dir/work/"
+            : > "$dir/userdata/.seuoffice-e2e-profile"
+            node e2e/render-scenario.mjs "$file" "$dir/scenario.json" "$fixtures" "$dir/work"
+            set +e
+            SEUOFFICE_USER_DATA="$dir/userdata" SEUOFFICE_E2E_FIXTURES="$fixtures" SEUOFFICE_E2E_WORK="$dir/work" \
+              SEUOFFICE_SHELL_TRACE=1 \
+              "${guard[@]}" "$SHELL_BIN" --e2e "$dir/scenario.json" --out "$dir/out" > "$dir/run.log" 2>&1
+            status=$?
+            set -e
+            echo "$status" > "$dir/exit-code.txt"
+            echo "$name exit $status" | tee -a "$root/exit-codes.txt"
+            tail -n 15 "$dir/run.log" || true
+            # the next scenario starts from no app at all
+            if [ "$RUNNER_OS" = Windows ]; then taskkill //F //T //IM SeuOffice.exe > /dev/null 2>&1 || true; else pkill -x SeuOffice || true; fi
+            # WebView2's helpers can hold the profile's files a moment after the app is gone;
+            # the profile is not uploaded, so a cleanup that fails must not end the loop
+            rm -rf "$dir/userdata" || echo "::warning::$name: the profile could not be removed"
+          done
+
+      - name: check the records
+        if: ${{ !cancelled() }}
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set +e
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          root="$base/e2e"
+          node ci/e2e-check.mjs --root "$root" --scenarios e2e/scenarios --only "${SCENARIOS:-all}" --json "$root/report.json" --markdown "$root/report.md" | tee "$root/report.txt"
+          status=${PIPESTATUS[0]}
+          { echo "### Real-app tests on $RUNNER_OS"; cat "$root/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      # The native-only IPC channels in the real app (e2e/native-host/specs.mjs): each spec runs
+      # the app once or twice on one throwaway profile, kills it where a crash is wanted, and the
+      # dispatcher records every call of those channels (src/ipc/native_record.rs).
+      - name: run the native-host specs
+        if: ${{ !cancelled() && env.SHELL_BIN != '' }}
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          node e2e/native-host/run.mjs --bin "$SHELL_BIN" --root "$base/e2e/native-host" --fixtures "$base/e2e-fixtures" --only "${SCENARIOS:-all}"
+      # The receipts of this OS and this commit. A failed scenario fails the step and gets a
+      # failed receipt; a spec that did not run gets none.
+      - name: native-host receipts
+        if: ${{ !cancelled() && env.SHELL_BIN != '' }}
+        env:
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set +e
+          base="$RUNNER_TEMP"
+          if [ "$RUNNER_OS" = Windows ]; then base=$(cygpath -m "$RUNNER_TEMP"); fi
+          root="$base/e2e/native-host"
+          mkdir -p "$root"
+          node ci/native-host-check.mjs --root "$root" --os "$RUNNER_OS" --sha "$GITHUB_SHA" --only "${SCENARIOS:-all}" --markdown "$root/report.md" | tee "$root/report.txt"
+          status=${PIPESTATUS[0]}
+          { echo "### Native-host IPC evidence on $RUNNER_OS"; cat "$root/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - name: upload the test records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/e2e/**
+            ${{ runner.temp }}/e2e-ime-install.txt
+            !${{ runner.temp }}/e2e/*/userdata/**
+            !${{ runner.temp }}/e2e/native-host/*/userdata/**
+            !${{ runner.temp }}/e2e/*/work/big.xlsx
+          if-no-files-found: warn

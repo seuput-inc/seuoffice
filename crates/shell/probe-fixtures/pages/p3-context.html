@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p3 context</title>
+<script src="probe.js"></script>
+<script>
+  // P3: what the page's own origin gets from the system webview. One record per document.
+  // Served by the shell's app scheme hosts and by the five stand-in schemes (probe mode only).
+  ;(async () => {
+    const record = {
+      origin: location.origin,
+      protocol: location.protocol,
+      host: location.host,
+      secure: isSecureContext,
+      subtle: typeof (self.crypto && self.crypto.subtle),
+      isolated: self.crossOriginIsolated,
+      sab: typeof SharedArrayBuffer,
+      caches: typeof self.caches,
+      serviceWorker: 'serviceWorker' in navigator,
+      userAgent: navigator.userAgent,
+    }
+    try {
+      record.lsBefore = localStorage.getItem('p3.owner')
+      localStorage.setItem('p3.owner', location.origin)
+      record.lsAfter = localStorage.getItem('p3.owner')
+    } catch (error) {
+      record.lsError = String(error)
+    }
+    try {
+      record.idb = await new Promise((resolve, reject) => {
+        const request = indexedDB.open('p3-' + Date.now())
+        request.onsuccess = () => {
+          request.result.close()
+          resolve('ok')
+        }
+        request.onerror = () => reject(request.error && request.error.name)
+      })
+    } catch (error) {
+      record.idb = 'error:' + error
+    }
+    try {
+      await WebAssembly.instantiateStreaming(fetch('tiny.wasm'))
+      record.wasm = 'ok'
+    } catch (error) {
+      record.wasm = 'error:' + (error && error.name) + ':' + (error && error.message)
+    }
+    // what a Docs page does: read from the docx media scheme (its CSP names it in img-src and
+    // connect-src)
+    const media = P.base('seuoffice-docx-media') + 'p3/'
+    try {
+      const response = await fetch(media + 'data.json', { mode: 'cors' })
+      record.fetchMedia = { status: response.status, body: await response.text() }
+    } catch (error) {
+      record.fetchMedia = { error: String(error) }
+    }
+    record.imgMedia = await new Promise((resolve) => {
+      const image = new Image()
+      image.onload = () => resolve({ ok: true, width: image.naturalWidth })
+      image.onerror = () => resolve({ ok: false })
+      image.src = media + 'pixel.png'
+    })
+    P.log('p3.context', record)
+    P.done({})
+  })()
+</script>

@@ -1,0 +1,95 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/mindmap.xmind"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "click",
+      "selector": "me-root me-tpc"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "type",
+      "text": "\t"
+    },
+    {
+      "op": "wait",
+      "ms": 600
+    },
+    {
+      "op": "query",
+      "as": "diag-mindmap-editing",
+      "js": "(() => { const a = document.activeElement; const box = document.querySelector('#input-box'); return { active: a ? a.tagName + '.' + String(a.className).split(' ')[0] : null, box: box ? { text: box.innerText, focused: box === a, visible: box.offsetParent !== null } : null, topics: [...document.querySelectorAll('me-tpc')].map((e) => e.textContent), selected: [...document.querySelectorAll('.selected')].map((e) => e.tagName + ':' + e.textContent) } })()"
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-mindmap"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\n"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "query",
+      "as": "mindmap-before",
+      "js": "[...document.querySelectorAll('me-tpc')].map((e) => e.textContent).join(' | ')"
+    },
+    {
+      "op": "screenshot",
+      "name": "mindmap-typed"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/mindmap.xmind"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "query",
+      "as": "mindmap-after",
+      "js": "[...document.querySelectorAll('me-tpc')].map((e) => e.textContent).join(' | ')"
+    }
+  ]
+}

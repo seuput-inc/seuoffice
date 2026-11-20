@@ -74,12 +74,14 @@ fn name_target(formula: &str) -> Option<(String, String)> {
     let formula = formula.trim().trim_start_matches('=');
     let (sheet, cells) = formula.rsplit_once('!')?;
     range(cells)?;
-    let sheet = match sheet.strip_prefix('\'').and_then(|sheet| sheet.strip_suffix('\'')) {
+    let sheet = match sheet
+        .strip_prefix('\'')
+        .and_then(|sheet| sheet.strip_suffix('\''))
+    {
         Some(quoted) => quoted.replace("''", "'"),
         None => sheet.to_owned(),
     };
-    (!sheet.is_empty() && !sheet.contains(['!', '[', ']']))
-        .then(|| (sheet, cells.replace('$', "")))
+    (!sheet.is_empty() && !sheet.contains(['!', '[', ']'])).then(|| (sheet, cells.replace('$', "")))
 }
 
 /// The defined names and tables of the workbook a pivot table may name as
@@ -175,7 +177,8 @@ fn child<'a>(node: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
 }
 
 fn children<'a>(node: Node<'a, 'a>, name: &'a str) -> impl Iterator<Item = Node<'a, 'a>> {
-    node.children().filter(move |child| child.has_tag_name(name))
+    node.children()
+        .filter(move |child| child.has_tag_name(name))
 }
 
 fn flag(node: Node<'_, '_>, name: &str, default: bool) -> bool {
@@ -257,9 +260,9 @@ fn item_name(item: Node<'_, '_>) -> Option<String> {
             .filter(|value| {
                 !value.is_empty()
                     && value.parse::<f64>().is_ok_and(f64::is_finite)
-                    && value
-                        .chars()
-                        .all(|character| character.is_ascii_digit() || matches!(character, '-' | '.'))
+                    && value.chars().all(|character| {
+                        character.is_ascii_digit() || matches!(character, '-' | '.')
+                    })
             })
             .map(str::to_owned),
         _ => None,
@@ -337,19 +340,20 @@ fn data_pilot_xml(
     let names: Vec<&str> = children(child(cache_root, "cacheFields")?, "cacheField")
         .map(|field| field.attribute("name").unwrap_or(""))
         .collect();
-    let shared: Vec<Vec<Option<String>>> = children(child(cache_root, "cacheFields")?, "cacheField")
-        .map(|field| {
-            child(field, "sharedItems")
-                .map(|items| {
-                    items
-                        .children()
-                        .filter(Node::is_element)
-                        .map(item_name)
-                        .collect()
-                })
-                .unwrap_or_default()
-        })
-        .collect();
+    let shared: Vec<Vec<Option<String>>> =
+        children(child(cache_root, "cacheFields")?, "cacheField")
+            .map(|field| {
+                child(field, "sharedItems")
+                    .map(|items| {
+                        items
+                            .children()
+                            .filter(Node::is_element)
+                            .map(item_name)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
 
     // ---- where it writes to
     let location = child(table, "location")?;
@@ -360,7 +364,9 @@ fn data_pilot_xml(
         .attribute("rowPageCount")
         .and_then(|count| count.parse().ok())
         .unwrap_or(0);
-    let top = first.1.saturating_sub(if pages > 0 { pages + 1 } else { 0 });
+    let top = first
+        .1
+        .saturating_sub(if pages > 0 { pages + 1 } else { 0 });
     let first_data_row: usize = location
         .attribute("firstDataRow")
         .and_then(|count| count.parse().ok())
@@ -473,7 +479,11 @@ fn data_pilot_xml(
     for (position, index) in column_fields.iter().enumerate() {
         push_field(&mut fields, *index, "column")?;
         if *index >= 0 {
-            buttons.push(address(sheet, first.0 + first_data_column + position, first.1));
+            buttons.push(address(
+                sheet,
+                first.0 + first_data_column + position,
+                first.1,
+            ));
         }
     }
     if let Some(page_fields) = child(table, "pageFields") {
@@ -490,7 +500,11 @@ fn data_pilot_xml(
         .map(|list| children(list, "dataField").count())
         .unwrap_or(0);
     if values > 1 && !row_fields.contains(&-2) && !column_fields.contains(&-2) {
-        let side = if flag(table, "dataOnRows", false) { "row" } else { "column" };
+        let side = if flag(table, "dataOnRows", false) {
+            "row"
+        } else {
+            "column"
+        };
         push_field(&mut fields, -2, side)?;
     }
     let mut data_fields = 0;
@@ -622,7 +636,10 @@ mod tests {
             "{followed}"
         );
         // Fed by another file.
-        let external = CACHE.replace(r#"<worksheetSource ref"#, r#"<worksheetSource r:id="rId1" ref"#);
+        let external = CACHE.replace(
+            r#"<worksheetSource ref"#,
+            r#"<worksheetSource r:id="rId1" ref"#,
+        );
         assert_eq!(data_pilot_xml("Pivot", &table, &external, &none), None);
         // Fed by something that is not a sheet at all.
         let model = CACHE.replace(r#"type="worksheet""#, r#"type="external""#);
@@ -652,9 +669,16 @@ mod tests {
             let text = field(attributes);
             layout_info(Document::parse(&text).unwrap().root_element())
         };
-        assert!(layout("").contains(r#"table:layout-mode="tabular-layout" loext:layout-mode="compact-layout""#));
+        assert!(
+            layout("").contains(
+                r#"table:layout-mode="tabular-layout" loext:layout-mode="compact-layout""#
+            )
+        );
         assert!(layout(r#" compact="0""#).contains(r#"table:layout-mode="outline-subtotals-top""#));
-        assert!(layout(r#" compact="0" subtotalTop="0""#).contains(r#"table:layout-mode="outline-subtotals-bottom""#));
+        assert!(
+            layout(r#" compact="0" subtotalTop="0""#)
+                .contains(r#"table:layout-mode="outline-subtotals-bottom""#)
+        );
         assert!(
             layout(r#" compact="0" outline="0" insertBlankRow="1""#)
                 .contains(r#"table:add-empty-lines="true" table:layout-mode="tabular-layout"/>"#)

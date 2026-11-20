@@ -162,7 +162,9 @@ pub fn convert_to_xlsx(source: &Path, target: &Path) -> Result<ConvertResult, Si
     } else {
         None
     };
-    let mut odf_styles = formats.as_ref().map(|formats| XlsxStyles::new(&formats.book));
+    let mut odf_styles = formats
+        .as_ref()
+        .map(|formats| XlsxStyles::new(&formats.book));
     // The pivot tables came with that reading. Each one needs the header row
     // of the range it reads, which is taken as its sheet goes by.
     let mut pivots = formats
@@ -524,7 +526,11 @@ pub fn convert_to_xlsx(source: &Path, target: &Path) -> Result<ConvertResult, Si
             .active
             .as_deref()
             .and_then(|active| names.iter().position(|name| name == active))
-            .filter(|index| sheets.get(*index).is_some_and(|sheet| sheet.state.is_none()))
+            .filter(|index| {
+                sheets
+                    .get(*index)
+                    .is_some_and(|sheet| sheet.state.is_none())
+            })
             .unwrap_or(0);
         package_extras.book_views =
             format!(r#"<bookViews><workbookView activeTab="{active}"/></bookViews>"#);
@@ -556,7 +562,10 @@ fn with_sheet_head(mut xml: String, parts: &OdfSheetXml) -> String {
     let Some(dimension) = xml.find("<dimension ") else {
         return xml;
     };
-    let Some(end) = xml[dimension..].find("/>").map(|offset| dimension + offset + 2) else {
+    let Some(end) = xml[dimension..]
+        .find("/>")
+        .map(|offset| dimension + offset + 2)
+    else {
         return xml;
     };
     let mut head = parts.sheet_views.clone();
@@ -1129,9 +1138,7 @@ fn worksheet_xml(
     let (start_row, start_col) = range.start().unwrap_or((0, 0));
     for (row, column, value) in range.used_cells() {
         let absolute = (start_row + row as u32, start_col + column as u32);
-        let formula = formulas
-            .get(&absolute)
-            .and_then(|entry| entry.as_deref());
+        let formula = formulas.get(&absolute).and_then(|entry| entry.as_deref());
         let style = styles.cells.get(&absolute).copied();
         // Text with runs of its own formatting is written run by run.
         if let (Data::String(_), None, Some(runs)) = (
@@ -1247,7 +1254,10 @@ fn worksheet_xml(
             .and_then(|attributes| attributes.get(&row))
             .map(String::as_str)
             .unwrap_or("");
-        body.push_str(&format!(r#"<row r="{}"{height}{row_style}{more}>"#, row + 1));
+        body.push_str(&format!(
+            r#"<row r="{}"{height}{row_style}{more}>"#,
+            row + 1
+        ));
         for (_, cell) in line {
             body.push_str(&cell);
         }
@@ -1256,15 +1266,18 @@ fn worksheet_xml(
 
     // An ODF sheet's formatted empty cells count towards its extent.
     let styled_extent = if odf {
-        styles.cells.keys().fold(None, |extent: Option<((u32, u32), (u32, u32))>, position| {
-            Some(match extent {
-                Some((low, high)) => (
-                    (low.0.min(position.0), low.1.min(position.1)),
-                    (high.0.max(position.0), high.1.max(position.1)),
-                ),
-                None => (*position, *position),
-            })
-        })
+        styles.cells.keys().fold(
+            None,
+            |extent: Option<((u32, u32), (u32, u32))>, position| {
+                Some(match extent {
+                    Some((low, high)) => (
+                        (low.0.min(position.0), low.1.min(position.1)),
+                        (high.0.max(position.0), high.1.max(position.1)),
+                    ),
+                    None => (*position, *position),
+                })
+            },
+        )
     } else {
         None
     };
@@ -1360,7 +1373,11 @@ fn cell_xml(
         // ODF keeps a date as ISO text (`office:date-value="2026-03-05"`) rather
         // than as a serial, so the text form is turned back into one here: left
         // as text, every imported date would sort and calculate as a string.
-        Data::DateTimeIso(text) => match if odf { odf_date_serial(text) } else { iso_serial(text) } {
+        Data::DateTimeIso(text) => match if odf {
+            odf_date_serial(text)
+        } else {
+            iso_serial(text)
+        } {
             Some(serial) => date_cell(&reference, &formula_xml, serial, style),
             None => text_cell(&head, &formula_xml, text),
         },
@@ -1896,10 +1913,7 @@ mod tests {
             "{sheet}"
         );
         assert!(sheet.contains(r#"<c r="B1"><v>42</v></c>"#), "{sheet}");
-        assert!(
-            sheet.contains(r#"<c r="C1" t="b"><v>1</v></c>"#),
-            "{sheet}"
-        );
+        assert!(sheet.contains(r#"<c r="C1" t="b"><v>1</v></c>"#), "{sheet}");
         assert!(
             sheet.contains(r#"<c r="A2" s="1"><v>46086</v></c>"#),
             "{sheet}"
@@ -2033,7 +2047,10 @@ mod tests {
             sheet.contains(r#"<cols><col min="1" max="2" width="19.86" customWidth="1"/></cols>"#),
             "{sheet}"
         );
-        assert!(sheet.contains(r#"<row r="1" ht="43.20" customHeight="1">"#), "{sheet}");
+        assert!(
+            sheet.contains(r#"<row r="1" ht="43.20" customHeight="1">"#),
+            "{sheet}"
+        );
         // Rows the file does not size stay implicit.
         assert!(!sheet.contains(r#"<row r="2""#), "{sheet}");
     }
@@ -2251,9 +2268,6 @@ mod tests {
         );
         // The failed formula keeps its formula and no value at all.
         assert!(sheet.contains(r#"<c r="C3"><f>1/0</f></c>"#), "{sheet}");
-        assert!(
-            sheet.contains(r#"<f>_xlfn.IFS(A1&gt;1,A2)</f>"#),
-            "{sheet}"
-        );
+        assert!(sheet.contains(r#"<f>_xlfn.IFS(A1&gt;1,A2)</f>"#), "{sheet}");
     }
 }

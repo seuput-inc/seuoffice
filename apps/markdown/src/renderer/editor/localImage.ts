@@ -7,7 +7,11 @@ import { clipboardPictureIsRendering } from '@seuoffice/ui/clipboard-picture'
 import { MAX_PASTED_IMAGE_BYTES } from '../../shared/ipc'
 import { t } from '../i18n/locale'
 import { showToast } from '../components/toast-bus'
+import { toPlatformSchemeUrl } from '@seuoffice/electron-utils/custom-scheme-url'
 import { getImageHostConfig } from '../imageHostCache'
+
+/** The address every local image is served under, in the form this page can load */
+const ASSET_ROOT = (): string => toPlatformSchemeUrl('md-asset://')
 
 /** Directory of the open .md file; relative image paths resolve against it for display */
 let imageBaseDir: string | null = null
@@ -43,7 +47,7 @@ export function resolveImageSrc(src: string, baseDir: string | null = imageBaseD
   // Windows drive prefixes stay `C:` instead of the `C%3A` Chromium rejects
   const encodeSegment = (seg: string) => encodeURIComponent(seg).replace(/%3A/gi, ':')
   const toAssetUrl = (path: string) =>
-    `md-asset://${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/').split('/').map(encodeSegment).join('/')}`
+    `${ASSET_ROOT()}${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/').split('/').map(encodeSegment).join('/')}`
   // a Windows drive path would also match the URL-scheme regex — check it first
   if (src.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(src)) return toAssetUrl(decodePath(src))
   if (/^[a-z][a-z0-9+.-]*:/i.test(src)) return src
@@ -70,11 +74,13 @@ function decodePath(path: string): string {
  * bakes display URLs into the stored document / serialized markdown.
  */
 export function unresolveImageSrc(src: string, baseDir: string | null = imageBaseDir): string {
-  if (!src.startsWith('md-asset://')) return src
+  // the page's own form, or the logical one of a document saved in another shell
+  const root = [ASSET_ROOT(), 'md-asset://'].find((prefix) => src.startsWith(prefix))
+  if (root === undefined) return src
   // Reuse the guarded decoder: a lone `%` (e.g. in a file named `100%.png`)
   // throws a URIError from decodeURIComponent, and parseHTML calls this for
   // every md-asset img, so the throw would break paste/document load.
-  let path = decodePath(src.slice('md-asset://'.length))
+  let path = decodePath(src.slice(root.length))
   // Windows drive paths were prefixed with '/' to form a valid URL path
   if (/^\/[a-zA-Z]:\//.test(path)) path = path.slice(1)
   if (baseDir) {

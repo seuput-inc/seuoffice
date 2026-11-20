@@ -145,6 +145,7 @@ export async function runPrintJob(
   onProgress: (done: number, total: number) => void,
   /** the PDF path Save As picked: no dialog then */
   path?: string,
+  requestToken?: string,
 ): Promise<PrintResult> {
   if (!ports.ready) return { ok: false, error: 'the editor is not ready' }
   // the pages would show edits the person has not accepted
@@ -155,7 +156,10 @@ export async function runPrintJob(
     const job = await gatherPrintJob(ports.bridge, mode, onProgress, ports.hold)
     return await (path === undefined
       ? ports.api.printPages(job)
-      : ports.api.printPages(job, { path }))
+      : ports.api.printPages(job, {
+          path,
+          ...(requestToken === undefined ? {} : { requestToken }),
+        }))
   } catch (error) {
     return { ok: false, error: errorText(error) }
   } finally {

@@ -113,7 +113,12 @@ struct Scanner<R: Read> {
 
 impl<R: Read> Scanner<R> {
     fn new(inner: R) -> Self {
-        Self { inner, buf: Vec::with_capacity(2 * CHUNK), start: 0, eof: false }
+        Self {
+            inner,
+            buf: Vec::with_capacity(2 * CHUNK),
+            start: 0,
+            eof: false,
+        }
     }
 
     fn pending(&self) -> &[u8] {

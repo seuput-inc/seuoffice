@@ -280,5 +280,17 @@
     "licence": "Apache-2.0",
     "record": "vendor/drawio/README.md",
     "source": "the scripts and inventory that build the draw.io bundle; the bundle's own licences are checked by tools/check-drawio-bundle.mjs"
+  },
+  {
+    "files": "crates/shell/probe-fixtures/pages/pixel.png",
+    "licence": "FSL-1.1-ALv2",
+    "record": "crates/shell/probe-fixtures/README.md",
+    "source": "a one-pixel PNG written for the probes, embedded in the shell by src/probe/schemes.rs"
+  },
+  {
+    "files": "crates/shell/probe-fixtures/pages/tiny.wasm",
+    "licence": "FSL-1.1-ALv2",
+    "record": "crates/shell/probe-fixtures/README.md",
+    "source": "the 8-byte header of an empty WebAssembly module, embedded in the shell by src/probe/schemes.rs"
   }
 ]

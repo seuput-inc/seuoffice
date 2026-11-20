@@ -49,7 +49,7 @@ export interface RecoveryCopyScheduler {
   /** the copy was deleted (a save): the next round writes again if still dirty */
   invalidate(): void
   /** write now regardless of the pause (the OS is ending the session) */
-  flushNow(): Promise<void>
+  flushNow(): Promise<RecoveryCopyWrite | 'unchanged'>
 }
 
 const browserClock: RecoveryCopyClock = {
@@ -72,7 +72,7 @@ export function createRecoveryCopyScheduler(
   let copied: number | null = null
   let lastInputAt = Number.NEGATIVE_INFINITY
   let skipRounds = 0
-  let writing: Promise<void> | null = null
+  let writing: Promise<RecoveryCopyWrite> | null = null
   let roundTimer: unknown = null
   let retryTimer: unknown = null
   let running = false
@@ -82,7 +82,7 @@ export function createRecoveryCopyScheduler(
     retryTimer = null
   }
 
-  function write(): Promise<void> {
+  function write(): Promise<RecoveryCopyWrite> {
     const at = revision
     const run = (async () => {
       let result: RecoveryCopyWrite
@@ -93,6 +93,7 @@ export function createRecoveryCopyScheduler(
       }
       if (result === 'written') copied = at
       else if (result === 'failed') skipRounds = backoffTicks
+      return result
     })()
     const tracked = run.finally(() => {
       if (writing === tracked) writing = null
@@ -144,9 +145,10 @@ export function createRecoveryCopyScheduler(
       copied = null
     },
     async flushNow() {
-      if (writing) await writing
-      if (!host.wanted() || revision === copied) return
-      await write()
+      while (writing) await writing
+      if (revision === copied) return 'unchanged'
+      if (!host.wanted() || host.busy()) return 'skipped'
+      return write()
     },
   }
 }
