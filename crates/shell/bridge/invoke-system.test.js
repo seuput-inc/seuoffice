@@ -410,7 +410,6 @@ it('forwards an unclaimed contextmenu to ipc_context_menu and leaves claimed one
     mediaType: 'image',
     x: 12,
     y: 34,
-    editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
     word: null,
   })
 })

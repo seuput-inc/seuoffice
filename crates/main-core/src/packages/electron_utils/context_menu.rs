@@ -71,14 +71,8 @@ pub fn context_menu_labels(lang: &str) -> ContextMenuLabels {
         .unwrap_or(EN)
 }
 
-/// `editFlags` of Electron's `ContextMenuParams`, the four the menu reads
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct EditFlags {
-    pub can_cut: bool,
-    pub can_copy: bool,
-    pub can_paste: bool,
-    pub can_select_all: bool,
-}
+mod edit_flags;
+pub use edit_flags::EditFlags;
 
 /// The fields of Electron's `ContextMenuParams` the menu reads.
 #[derive(Debug, Clone, PartialEq, Default)]

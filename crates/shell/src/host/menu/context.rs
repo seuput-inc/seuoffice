@@ -66,7 +66,7 @@ pub(crate) fn install(app: &AppHandle, views: Arc<ViewTable>, windows: Arc<Windo
             return eprintln!("shell: a context menu of '{label}' was refused");
         };
         let (view, zoom) = (sender.view, views.zoom(sender.view));
-        let params = params_of(&params);
+        let params = params_of(params);
         let app = handle.clone();
         post_core(move |provided, services| {
             pop_up(&app, provided, services, view, &label, params, zoom);
@@ -104,20 +104,16 @@ pub(super) fn last_misspelling(view: ViewId) -> Option<(String, f64, f64)> {
 }
 
 /// The page's click as the menu template reads it
-fn params_of(raw: &native::menu::ContextMenuParams) -> ContextMenuParams {
+fn params_of(raw: native::menu::ContextMenuParams) -> ContextMenuParams {
+    let edit_flags = EditFlags::from_dom_selection(raw.is_editable, &raw.selection_text);
     ContextMenuParams {
         is_editable: raw.is_editable,
-        selection_text: raw.selection_text.clone(),
-        misspelled_word: raw.misspelled_word.clone(),
-        dictionary_suggestions: raw.dictionary_suggestions.clone(),
-        edit_flags: EditFlags {
-            can_cut: raw.edit_flags.can_cut,
-            can_copy: raw.edit_flags.can_copy,
-            can_paste: raw.edit_flags.can_paste,
-            can_select_all: raw.edit_flags.can_select_all,
-        },
-        media_type: raw.media_type.clone(),
-        src_url: raw.src_url.clone(),
+        selection_text: raw.selection_text,
+        misspelled_word: raw.misspelled_word,
+        dictionary_suggestions: raw.dictionary_suggestions,
+        edit_flags,
+        media_type: raw.media_type,
+        src_url: raw.src_url,
         x: raw.x,
         y: raw.y,
     }

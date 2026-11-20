@@ -453,12 +453,6 @@
       mediaType,
       x,
       y,
-      editFlags: {
-        canCut: editable && selection.length > 0,
-        canCopy: selection.length > 0,
-        canPaste: editable,
-        canSelectAll: true,
-      },
       word: editable ? wordAt(element, x, y) : null,
     })
     exchange(state, 'ipc_context_menu', 0, 0, 'application/json', message, undefined, ignore)
