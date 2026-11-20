@@ -216,6 +216,11 @@ impl SavedLoad {
             failure: None,
         }
     }
+
+    /// The page's `workbook:select` has not arrived, and this load can still take it.
+    pub fn awaits_selection(&self) -> bool {
+        self.failure.is_none() && self.selection.is_none() && !self.started
+    }
 }
 
 pub(super) struct SavedSelection {

@@ -80,7 +80,7 @@ The workflow's `scenarios` input picks specs too: by name, or `native-host` for 
 required scenario no spec drives is listed with its reason in `UNDRIVEN` of `specs.mjs`; the checker
 test fails when the specs and that list stop matching the contracts.
 
-Three specs drive a save the shell owns, where no person's step starts one:
+Four specs drive a save the shell owns, where no person's step starts one:
 
 - `markdown-saved-copy` and `html-saved-copy`: the Word page asks for a new Markdown or HTML
   document, as its AI's `create_document` tool does (`window.desktop.createDocument`). The shell
@@ -88,6 +88,13 @@ Three specs drive a save the shell owns, where no person's step starts one:
   acknowledges that text (`<app>:saved-input-applied`), and the same receipt again, and from the
   page of another file, is refused. The shell writes such a copy into the default save folder,
   so these specs set it to the work folder (`settings: { defaultSaveDir: '${WORK}' }`).
+- `sheets-saved-copy`: the Sheets page asks for a new workbook (`window.desktopApi.createDocument`,
+  `xlsx`). The shell writes it and opens it as a saved workbook; the page of the new tab selects
+  it, reads its first range and reports that (`workbook:saved-open-result`), which is what lets
+  the tab finish opening. The contract of that channel has no scenario of a success, so both rows
+  are its `no-opening`: the first passes only when the page's own report was accepted, the active
+  tab shows the marker in its first cell, and the same report again is refused (`settledOnce`);
+  the second is that report from the page of another file.
 - `docs-owned-print`: the runner step `saveAsOwned` asks the active editor for a Save As the
   shell owns (`request_save_owned`; no menu item, key or page call makes the shell ask a Word
   page for one), and the dialog of the page's Save As takes a PDF path. The document has two

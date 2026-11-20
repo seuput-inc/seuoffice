@@ -919,6 +919,19 @@ impl Core {
         }
     }
 
+    /// Whether the view has a saved workbook waiting for its page's `workbook:select`. The
+    /// page selects only when it is told a workbook is queued (`sheets:has-queued-workbook`,
+    /// asked once as it starts) or nudged (`menu:action` `open`). A saved workbook is in no
+    /// queue: it is handed over in the answer of that selection, so both must say it is there.
+    pub(super) fn awaits_saved_selection(&self, view: ViewId) -> bool {
+        self.state.borrow().tab(view).is_some_and(|tab| {
+            tab.saved_load
+                .borrow()
+                .as_ref()
+                .is_some_and(super::core::SavedLoad::awaits_selection)
+        })
+    }
+
     /// The renderer's `workbook:select` while a saved workbook is loading: the
     /// saved opening answers it. A call that does not belong to a saved barrier
     /// is handed back for the ordinary picker or queue.
@@ -937,9 +950,7 @@ impl Core {
                 return Some(reply);
             };
             let mut saved = tab.saved_load.borrow_mut();
-            let Some(saved) = saved.as_mut().filter(|saved| {
-                saved.failure.is_none() && saved.selection.is_none() && !saved.started
-            }) else {
+            let Some(saved) = saved.as_mut().filter(|saved| saved.awaits_selection()) else {
                 return Some(reply);
             };
             saved.selection = Some(super::core::SavedSelection {
@@ -2333,6 +2344,13 @@ impl DocumentEditors for SheetsEditors {
                 then(Err(thrown(error)));
             }
             return;
+        }
+        // A page that is already up (a spare view) asked whether a workbook was queued when it
+        // started, before this one existed; it is nudged as for an ordinary queued workbook. A
+        // page that is still loading asks by itself once it is up.
+        if self.core.awaits_saved_selection(view) {
+            self.core
+                .send(view, "menu:action", vec![IpcValue::String("open".into())]);
         }
         self.core.start_saved_open(view);
     }

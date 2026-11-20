@@ -206,6 +206,21 @@ export const ACKS = {
   'markdown:saved-input-applied': FORMS.outcome,
 }
 
+/**
+ * The report of a saved workbook's first range, `({id, ok, error?})`: the page hands back the
+ * identity the shell gave it with the workbook. It is not among the acknowledgements above: its
+ * contract has no receipt probes and no scenario of another surface.
+ */
+const REPORT = {
+  with: (id) => [{ id, ok: true }],
+  path: [0, 'id'],
+  verdict: (args) => flag(args[0]?.fields?.ok),
+}
+
+/** How a page's own call on `channel` carries its verdict and what it was handed. */
+export const formOf = (channel) =>
+  ACKS[channel] ?? (channel === 'workbook:saved-open-result' ? REPORT : undefined)
+
 const refused = (run, probe, error) => ({ kind: 'refused', run, probe, ...(error && { error }) })
 
 /** The probes one page can send on its own acknowledgement channel without a receipt of its own. */
@@ -381,13 +396,14 @@ const SAVED_COPIES = {
 const ASK_WAIT_MS = 4000
 
 /**
- * The Word page asks for a new document, as its AI's create_document tool does
- * (`window.desktop.createDocument`, `docs:create-document`). The answer comes once the new tab
- * is the active one, so the step waits a moment for it and no longer: it answers what the shell
- * said (`{answer}`, or `{refused}` with the reason), or `{pending: true}`.
+ * A page asks for a new document, as its AI's create_document tool does: the Word page through
+ * `window.desktop.createDocument` (`docs:create-document`), the Sheets page through
+ * `window.desktopApi.createDocument` (`workbook:create-document`). The answer comes once the new
+ * tab is the active one, so the step waits a moment for it and no longer: it answers what the
+ * shell said (`{answer}`, or `{refused}` with the reason), or `{pending: true}`.
  */
-const askForCopy = (request) =>
-  `(() => { const asked = window.desktop.createDocument(${JSON.stringify(request)}).then(` +
+const askForCopy = (request, api = 'desktop') =>
+  `(() => { const asked = window.${api}.createDocument(${JSON.stringify(request)}).then(` +
   '(answer) => ({ answer }), (error) => ({ refused: String(error?.message ?? error) })); ' +
   'const late = new Promise((done) => setTimeout(() => done({ pending: true }), ' +
   `${ASK_WAIT_MS})); return Promise.race([asked, late]) })()`
@@ -438,6 +454,81 @@ function savedCopyVariant(app) {
         channel,
         scenario: 'foreign-renderer',
         rule: { kind: 'replayRefused', run: 1, probe: `${app}-saved-other-renderer`, of: 'other' },
+      },
+    ],
+  }
+}
+
+/**
+ * A workbook the shell wrote and opened as a saved document. On the Sheets page's request for an
+ * `xlsx` the shell writes the file as a save it owns, into the default save folder, and opens it
+ * in a new tab from the bytes it kept. That opening ends only when the page of the new tab has
+ * read its first range and reports it (`workbook:saved-open-result`) with the identity the shell
+ * handed it in the workbook; until then the tab is not shown. So the tab that shows the
+ * workbook, and its accepted report, are the opening having finished.
+ *
+ * The contract of the report has no scenario of a success. What this proves of it is its
+ * `no-opening`, where an opening was: the same report again, and from the page of another
+ * workbook, finds no opening and is refused. Before the shell handed the identity over (and
+ * before it told a saved tab's page that a workbook was waiting), no page ever reported, the
+ * tab never showed, and the request failed after six minutes.
+ */
+function savedWorkbookCopy() {
+  const channel = 'workbook:saved-open-result'
+  const form = formOf(channel)
+  const base = baseSteps('sheets-edit')
+  const second = 'sheets-b.xlsx'
+  const marker = 'SEU-E2E-saved-sheets'
+  const asked = 'sheets-saved-create'
+  const shown = 'prep-sheets-saved-shown'
+  const twice = 'sheets-saved-twice'
+  const other = 'sheets-saved-other-renderer'
+  const request = {
+    type: 'xlsx',
+    title: 'seu-e2e-saved-sheets',
+    content: `${marker},1\n`,
+    sheetName: 'Sheet1',
+  }
+  // the first cell of the active tab's workbook, through the page's own control hook: only the
+  // copy has the text, and the tab the request came from stays the active one until it opens
+  const shows =
+    "(async () => { const control = window.__seuofficeControl; if (typeof control !== 'function') " +
+    "return false; try { await control({ cmd: 'goto', target: { kind: 'range', range: 'A1' } }); " +
+    "const text = JSON.stringify((await control({ cmd: 'selection' })) ?? null); " +
+    `return text.includes(${JSON.stringify(marker)}) ? { text } : false } catch { return false } })()`
+  return {
+    about: 'sheets: the Sheets page has a workbook written, the shell opens it as a saved document',
+    settings: { defaultSaveDir: '${WORK}' },
+    copies: { [second]: base.file },
+    runs: [
+      {
+        steps: [
+          ...base.open,
+          wait(1500),
+          {
+            op: 'query',
+            as: asked,
+            timeoutMs: ASK_WAIT_MS + 10000,
+            js: askForCopy(request, 'desktopApi'),
+          },
+          { op: 'query', as: shown, timeoutMs: 90000, js: shows },
+          wait(1500),
+          invoke(twice, channel, form.with(replay('self', ...form.path))),
+          ...openFile(second),
+          invoke(other, channel, form.with(replay('other', ...form.path))),
+        ],
+      },
+    ],
+    expect: [
+      {
+        channel,
+        scenario: 'no-opening',
+        rule: { kind: 'settledOnce', run: 1, asked, proof: { query: shown, marker }, probe: twice },
+      },
+      {
+        channel,
+        scenario: 'no-opening',
+        rule: { kind: 'replayRefused', run: 1, probe: other, of: 'other' },
       },
     ],
   }
@@ -656,6 +747,7 @@ function savedWorkbook() {
 export const SPECS = {
   surfaces: surfaces(),
   'sheets-saved-open': savedWorkbook(),
+  'sheets-saved-copy': savedWorkbookCopy(),
   'docs-recovery': recoveryVariant('docs', {
     channel: 'docs:recovery-initialized',
     second: 'docs-b.docx',

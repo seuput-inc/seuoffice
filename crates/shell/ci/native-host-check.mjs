@@ -27,11 +27,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  ACKS,
   LIST_PRESS,
   LIST_SHOWN,
   PROBE_BASE,
   SPECS,
+  formOf,
   selected,
   surfaceOf,
 } from '../e2e/native-host/specs.mjs'
@@ -277,13 +277,13 @@ const RULES = {
       (call) =>
         own(call, on) &&
         (view === undefined || call.view === view) &&
-        ACKS[on].verdict(call.args) === rule.verdict &&
+        formOf(on).verdict(call.args) === rule.verdict &&
         call.reply?.ok === true,
     )
     if (!acknowledged) {
       const seen = run.calls
         .filter((call) => own(call, on))
-        .map((call) => `view ${call.view} ${ACKS[on].verdict(call.args)}/${call.reply?.ok}`)
+        .map((call) => `view ${call.view} ${formOf(on).verdict(call.args)}/${call.reply?.ok}`)
       return fail(
         `no accepted ${rule.verdict ? 'success' : 'failure'} acknowledgement on ${on}` +
           `${view === undefined ? '' : ` from view ${view}`} (the page's calls: ${seen.join(', ') || 'none'})` +
@@ -310,6 +310,18 @@ const RULES = {
       proof = `; the page shows ${marker}`
     }
     return pass(`${where(acknowledged)} acknowledged ${rule.verdict}, accepted${proof}`)
+  },
+
+  /**
+   * The page's own report settled what it reported on, and the same report again finds nothing
+   * left to settle. The first half is `ack` with a success, the second `replayRefused` of the
+   * page's own receipt; the row fails with the text of the half that failed.
+   */
+  settledOnce(run, rule, channel, spec, runs) {
+    const settled = RULES.ack(run, { ...rule, verdict: true }, channel, spec, runs)
+    if (settled.status !== 'PASS') return settled
+    const again = RULES.replayRefused(run, { ...rule, of: 'self' }, channel)
+    return again.status === 'PASS' ? pass(`${settled.evidence}; then ${again.evidence}`) : again
   },
 
   /** The app's own call from a tab was answered with nothing, or with a restored document. */

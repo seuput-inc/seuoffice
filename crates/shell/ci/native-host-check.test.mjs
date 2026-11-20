@@ -73,6 +73,7 @@ function ackArgs(channel, verdict) {
   }
   if (channel.endsWith(':recovery-applied')) return [object({ token: text(), ok: flag(verdict) })]
   if (channel.startsWith('hwp:')) return [text(), object({ ok: flag(verdict) })]
+  if (channel === 'workbook:saved-open-result') return [object({ id: text(), ok: flag(verdict) })]
   return [text(), flag(verdict)]
 }
 
@@ -257,6 +258,8 @@ const SHEETS_REFUSALS = {
   'sheets-missing-result': 'The saved workbook acknowledgement has no result',
   'sheets-inconsistent-error': 'The saved workbook acknowledgement is invalid',
   'sheets-no-opening': 'The saved workbook opening is unavailable',
+  'sheets-saved-twice': 'The saved workbook opening is unavailable',
+  'sheets-saved-other-renderer': 'The saved workbook opening is unavailable',
 }
 
 const check = (name, specs = SPECS) => runChecks({ root, names: [name], specs })
@@ -504,6 +507,72 @@ describe('the specs against the contracts', () => {
     // only the HTML page has its source pane behind a view tab
     expect(presses).toBe(3)
   })
+
+  it('has the Sheets page ask for a workbook and reads it where the active tab shows it', async () => {
+    const spec = SPECS['sheets-saved-copy']
+    const { steps } = spec.runs[0]
+    const marker = 'SEU-E2E-saved-sheets'
+    const order = [
+      'sheets-saved-create',
+      'prep-sheets-saved-shown',
+      'sheets-saved-twice',
+      'sheets-saved-other-renderer',
+    ].map((as) => steps.findIndex((step) => step.as === as))
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    expect(order[0]).toBeGreaterThan(steps.findIndex((step) => step.op === 'waitReady'))
+    // the report is presented from another page only after that page's file was opened
+    expect(steps.findLastIndex((step) => step.op === 'waitReady')).toBeGreaterThan(order[2])
+    // the workbook lands in the work folder, and the other page opens a file of its own
+    expect(spec.settings).toEqual({ defaultSaveDir: '${WORK}' })
+    expect(spec.copies).toEqual({ 'sheets-b.xlsx': 'sheets.xlsx' })
+    // the contract of the report has no scenario of a success: both rows are its `no-opening`
+    expect(spec.expect.map(({ scenario, rule }) => [scenario, rule.kind])).toEqual([
+      ['no-opening', 'settledOnce'],
+      ['no-opening', 'replayRefused'],
+    ])
+
+    // the request is the Sheets page's own call
+    const create = steps[order[0]]
+    const requests = []
+    const ask = (createDocument) =>
+      new Function('window', 'setTimeout', `return ${create.js}`)(
+        { desktopApi: { createDocument: (request) => (requests.push(request), createDocument()) } },
+        () => {},
+      )
+    const answer = { ok: true, path: '/work/seu-e2e-saved-sheets.xlsx' }
+    expect(await ask(async () => answer)).toEqual({ answer })
+    expect(requests).toEqual([
+      {
+        type: 'xlsx',
+        title: 'seu-e2e-saved-sheets',
+        content: `${marker},1\n`,
+        sheetName: 'Sheet1',
+      },
+    ])
+
+    // the first cell of the active tab's workbook, asked of the page's own control hook
+    const { js, timeoutMs } = steps[order[1]]
+    expect(timeoutMs).toBeGreaterThanOrEqual(60000)
+    const shows = (window) => new Function('window', `return ${js}`)(window)
+    const commands = []
+    const cell = (value) => ({ status: 'ok', result: { range: 'A1', values: [[value]] } })
+    const control = (value) => (request) => {
+      commands.push(request.cmd)
+      return request.cmd === 'selection' ? cell(value) : { status: 'ok' }
+    }
+    expect(await shows({})).toBe(false)
+    // the tab the request came from is still the active one: its workbook has another text
+    expect(await shows({ __seuofficeControl: control('SEU-E2E-sheets') })).toBe(false)
+    expect(commands).toEqual(['goto', 'selection'])
+    const unready = () => {
+      throw new Error('the workbook is not ready')
+    }
+    expect(await shows({ __seuofficeControl: unready })).toBe(false)
+    const text = JSON.stringify(cell(marker))
+    expect(await shows({ __seuofficeControl: control(marker) })).toEqual({ text })
+    const later = async (request) => control(marker)(request)
+    expect(await shows({ __seuofficeControl: later })).toEqual({ text })
+  })
 })
 
 describe('an invoke step', () => {
@@ -748,6 +817,65 @@ describe('the rules', () => {
       lines.find((line) => line.replayed?.[0].of === 'self').surface = 'Docs'
     })
     expect(verdict('duplicate-ack').evidence).toMatch(/^it was sent from Docs view \d+$/)
+  })
+
+  it('fail a saved workbook whose page never reported, whose tab never showed it, or whose report was taken twice', () => {
+    const name = 'sheets-saved-copy'
+    const report = 'workbook:saved-open-result'
+    const own = (lines) =>
+      lines.findIndex(
+        (line) => line.event === 'call' && line.channel === report && line.request < PROBE_BASE,
+      )
+    const rows = () => check(name)
+    const shown = (records) => records.find((record) => record.as === 'prep-sheets-saved-shown')
+    simulate(name)
+    expect(rows().map((row) => [row.scenario, row.status])).toEqual([
+      ['no-opening', 'PASS'],
+      ['no-opening', 'PASS'],
+    ])
+    expect(rows()[0].evidence).toMatch(
+      /^Sheets view (\d+) acknowledged true, accepted; the page shows SEU-E2E-saved-sheets; then Sheets view \1 presented view \1's answered receipt, refused: The saved workbook opening is unavailable$/,
+    )
+
+    // the shell did not hand the page what it reports with, or never told it a workbook was
+    // waiting: no page reported, and the tab of the request stayed the active one
+    simulate(name, undefined, (_, lines, records) => {
+      lines.splice(own(lines), 2)
+      shown(records).value = false
+    })
+    expect(rows()[0]).toMatchObject({
+      status: 'FAIL',
+      evidence:
+        `no accepted success acknowledgement on ${report} (the page's calls: none); ` +
+        'sheets-saved-create was answered {"pending":true}',
+    })
+
+    // the page reported, and the tab that shows the workbook never became the active one
+    simulate(name, undefined, (_, _lines, records) => {
+      shown(records).value = false
+    })
+    expect(rows()[0].evidence).toBe(
+      'the page does not show SEU-E2E-saved-sheets: false; ' +
+        'sheets-saved-create was answered {"pending":true}',
+    )
+
+    // the page could not read its first range and said so
+    simulate(name, undefined, (_, lines) => {
+      lines[own(lines)].args[0].fields.ok.value = false
+    })
+    expect(rows()[0].evidence).toMatch(/the page's calls: view \d+ false\/true/)
+
+    // the opening was still there for the same report
+    simulate(name, undefined, (_, lines) => {
+      const twice = lines.find((line) => line.event === 'call' && line.replayed?.[0].of === 'self')
+      const reply = lines.find((line) => line.event === 'reply' && line.seq === twice.seq)
+      Object.assign(reply, { ok: true, error: undefined, value: { type: 'boolean', value: true } })
+    })
+    expect(rows()[0]).toMatchObject({
+      status: 'FAIL',
+      evidence: expect.stringContaining('was accepted'),
+    })
+    expect(rows()[1].status).toBe('PASS')
   })
 
   it('fail a Save As the shell owns that left no PDF or printed nothing under its token', () => {

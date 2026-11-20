@@ -443,7 +443,8 @@ pub fn routes(services: &Services, provided: &Rc<Provided>) -> Result<Vec<Route>
                     c.state
                         .borrow()
                         .queued_workbooks
-                        .contains_key(&cx.sender.view),
+                        .contains_key(&cx.sender.view)
+                        || c.awaits_saved_selection(cx.sender.view),
                 )
             })
         },
