@@ -899,11 +899,8 @@ impl BrowserCore {
             let mut state = self.lock();
             match event {
                 ViewEvent::Focus => state.blurred = false,
-                ViewEvent::Blur => {
-                    if std::mem::replace(&mut state.blurred, true) {
-                        return;
-                    }
-                }
+                // red check: every blur passes, as before the fix
+                ViewEvent::Blur => state.blurred = true,
             }
         }
         let Some(sink) = self.config.sink.clone() else {
