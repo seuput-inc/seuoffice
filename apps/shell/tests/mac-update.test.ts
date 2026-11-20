@@ -466,6 +466,22 @@ describe.skipIf(process.platform === 'win32')('the swap script', () => {
     expect(readFileSync(log, 'utf8')).toContain('putting the previous one back')
   })
 
+  it('restores and reopens the previous bundle when the launcher rejects the update', async () => {
+    writeFileSync(
+      opener,
+      `#!/bin/sh
+version=$(cat "$1/Contents/version")
+echo "$version" >> "$0.attempts"
+[ "$version" = old ]
+`,
+    )
+    await runSwap(999_999)
+    expect(installedVersion()).toBe('old')
+    expect(readFileSync(`${opener}.attempts`, 'utf8')).toBe('new\nold\n')
+    expect(existsSync(macPreviousDir(bundle))).toBe(false)
+    expect(existsSync(macStagingDir(bundle))).toBe(false)
+  })
+
   it('handles paths with spaces and quotes as plain values', async () => {
     const odd = join(root, "My Apps 'x'")
     mkdirSync(odd)

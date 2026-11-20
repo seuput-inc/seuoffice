@@ -301,8 +301,12 @@ else
   note 'could not move the running version aside; the update was not installed'
 fi
 note 'phase relaunch'
-"$opener" "$app" --args --updated
-# the old bundle goes once the new one is opening, not before
+if ! "$opener" "$app" --args --updated; then
+  [ "$installed" = 1 ] || exit 1
+  note 'could not open the new version; putting the previous one back'
+  /bin/mv "$app" "$staged" && /bin/mv "$previous" "$app" || exit 1
+  "$opener" "$app" --args --updated || exit 1
+fi
 if [ "$installed" = 1 ]; then /bin/rm -rf "$previous" "$staging"; fi
 "#;
 
