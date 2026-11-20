@@ -1112,6 +1112,8 @@ mod posted_call_tests {
                 Ok(())
             });
             outlet.attach(view, stream, created.clone()).unwrap();
+            // the page's first call (`ipc_listen`) is captured before it loads anything
+            native_owner::capture_owner(&views, view, &created).unwrap();
             let core = Arc::new(Waiting::default());
             Self {
                 ipc: Ipc {
@@ -1228,6 +1230,26 @@ mod posted_call_tests {
         page.core_thread_runs();
         assert_eq!(saved.get(), 0, "A's save ran under B's owner");
         assert_eq!(page.refused(), [30]);
+    }
+
+    #[test]
+    fn an_opening_call_made_after_the_page_loaded_a_document_never_runs() {
+        let page = DocsPage::open("posted-call-later-opening");
+        let ran = Rc::new(Cell::new(0));
+        let opening = OPENING.map(|(_, channel)| channel);
+        let _serving = serves(&opening, Rc::new(Counts(ran.clone())));
+        // the page shows document A, then sends the calls of an opening once more
+        let a = page.lease.stage_document().unwrap();
+        page.lease.commit_document(&a).unwrap();
+        for (id, channel) in OPENING {
+            page.invokes_channel(id, channel);
+        }
+        // document B is loaded before the core thread gets to them
+        let b = page.lease.stage_document().unwrap();
+        page.lease.commit_document(&b).unwrap();
+        page.core_thread_runs();
+        assert_eq!(ran.get(), 0, "a call made under A ran under B's owner");
+        assert_eq!(page.refused(), [1, 2, 3, 4]);
     }
 
     #[test]
