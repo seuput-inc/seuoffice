@@ -27,7 +27,6 @@ on:
         'tools/fileparse-diff/**',
         'tools/epub-diff/**',
         'tools/ipc-diff/**',
-        # the channel inventory and the synthetic-only waivers the IPC comparison reads
         'tools/shell-inventory/**',
         'packages/docx-engine/src/**',
         'packages/pptx-engine/src/**',
