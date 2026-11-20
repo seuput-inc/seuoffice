@@ -215,4 +215,114 @@ mod tests {
         let start = second.default_path.clone().unwrap();
         assert!(start.starts_with(&picked), "{start:?} not in {picked:?}");
     }
+
+    /// A saved output opens in a new view of its editor (crates/shell, w_tabs.rs
+    /// `open_in_path_editor`): an editor that tracks its views takes the saved
+    /// token only on a view it has open, and the shell opens the view in it on
+    /// no document, as here, before the token
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_token_needs_the_view_open_in_its_editor() {
+        use shell_contract::editors::DocumentEditors;
+        use shell_contract::ipc::{NativeClosureIssuer, NativeSavedTarget};
+        use shell_contract::runtime::CancelToken;
+        use shell_contract::{Surface, ViewId};
+
+        let mut rt = Rt::new(|hosts| {
+            hosts.insert::<Arc<Mutex<SharedRecoveryState>>>(Arc::new(Mutex::new(
+                SharedRecoveryState::new("0000000000000000"),
+            )));
+            super::fakes(hosts, &serde_json::Value::Null)
+        });
+        for app in super::APPS {
+            rt.register(*app).unwrap();
+        }
+        let provided = rt.provided();
+        let markdown = provided.all::<crate::markdown::MarkdownEditors>()[0].clone();
+        let html = provided.all::<crate::html::HtmlEditors>()[0].clone();
+        let pdf = provided.all::<crate::pdf::editor::editors::PdfEditors>()[0].clone();
+        let epub = provided.all::<crate::epub::EpubEditors>()[0].clone();
+        let hwp = provided.all::<crate::hwp::HwpEditors>()[0].clone();
+        let source = rt.view(1, Surface::Markdown);
+        markdown.track_view(source.view, None);
+        let existing = markdown
+            .capture_document_owner(source.view, rt.native_root(source.view))
+            .unwrap();
+        let saved_target = |view: ViewId, surface: Surface, name: &str| {
+            let path = rt.dir.join(name);
+            std::fs::write(&path, "old").unwrap();
+            let (input, saved_path) =
+                crate::html::ack_evidence::saved_input(&rt, Surface::Markdown, &existing, &path);
+            let generation = rt.services.views.renderer_generation(view).unwrap();
+            let (issuer, reservation, browser) =
+                NativeClosureIssuer::new_with_owner(view, generation.clone());
+            let target = NativeSavedTarget::prepare(
+                input,
+                saved_path,
+                surface,
+                view,
+                generation,
+                reservation,
+                browser,
+                vec![],
+                CancelToken::default(),
+                CancelToken::default(),
+                vec![],
+            )
+            .unwrap();
+            (target, issuer)
+        };
+        let opens: [(Surface, &str, Box<dyn Fn(ViewId)>); 5] = [
+            (
+                Surface::Markdown,
+                "saved.md",
+                Box::new(move |view: ViewId| markdown.track_view(view, None)),
+            ),
+            (
+                Surface::Html,
+                "saved.html",
+                Box::new(move |view: ViewId| html.track_view(view, None)),
+            ),
+            (
+                Surface::Pdf,
+                "saved.pdf",
+                Box::new(move |view: ViewId| pdf.open_view(view, None)),
+            ),
+            (
+                Surface::Epub,
+                "saved.epub",
+                Box::new(move |view: ViewId| epub.open_view(view, None)),
+            ),
+            (
+                Surface::Hwp,
+                "saved.hwp",
+                Box::new(move |view: ViewId| {
+                    hwp.grant_and_track(view, None, crate::hwp::UntitledOption::No)
+                }),
+            ),
+        ];
+        for (id, (surface, name, open)) in (10..).zip(opens.iter()) {
+            let view = rt.view(id, *surface).view;
+            let (target, _issuer) = saved_target(view, *surface, *name);
+            let editor = provided
+                .all::<dyn DocumentEditors>()
+                .into_iter()
+                .find(|editor| editor.saved_surface() == *surface)
+                .unwrap();
+            assert!(
+                editor.prepare_saved_document(target.clone()).is_err(),
+                "{surface:?}: a view its editor never opened takes no saved token"
+            );
+            open(view);
+            let prepared = editor
+                .prepare_saved_document(target)
+                .map(|_| ())
+                .map_err(|error| error.message);
+            assert_eq!(
+                prepared,
+                Ok(()),
+                "{surface:?}: the view opened on no document takes the saved token"
+            );
+        }
+    }
 }

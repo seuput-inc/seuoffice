@@ -324,15 +324,16 @@ impl Hooks {
                         .map_err(TabError)?,
                 );
             }
-            // Here a saved input reserves only the view and native assets of
-            // an editor whose token stages the actor. Any other editor opens
-            // its view below, without the path: its token needs that view.
-            if saved_input.is_some() && saved_token_stages_actor(spec) {
-                if surface == Surface::Slides {
-                    slides_lease =
-                        Some(self.cx.views.prepare_slides_media(view).map_err(TabError)?);
+            match open_in_path_editor(self, spec, view, saved_input.is_some(), recovery)? {
+                EditorStep::Opened => return Ok(()),
+                EditorStep::Reserved => {
+                    if surface == Surface::Slides {
+                        slides_lease =
+                            Some(self.cx.views.prepare_slides_media(view).map_err(TabError)?);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                EditorStep::Stage => {}
             }
             match spec {
                 EditorViewSpec::Docs { .. } => {
@@ -384,42 +385,6 @@ impl Hooks {
                     slides_lease =
                         Some(self.cx.views.prepare_slides_media(view).map_err(TabError)?);
                 }
-                EditorViewSpec::Pdf { path } => {
-                    if !recovery {
-                        self.editor::<shell_ipc_d2::pdf::editor::editors::PdfEditors>("PDF")?
-                            .open_view(view, saved_input.is_none().then_some(*path));
-                    }
-                }
-                EditorViewSpec::Markdown { path } => self
-                    .editor::<shell_ipc_d2::markdown::MarkdownEditors>("Markdown")?
-                    .track_view(
-                        view,
-                        path.filter(|_| saved_input.is_none())
-                            .map(std::path::Path::new),
-                    ),
-                EditorViewSpec::Html { path } => self
-                    .editor::<shell_ipc_d2::html::HtmlEditors>("HTML")?
-                    .track_view(
-                        view,
-                        path.filter(|_| saved_input.is_none())
-                            .map(std::path::Path::new),
-                    ),
-                EditorViewSpec::HtmlPresent { owner, .. } => {
-                    let owner = u32::try_from(*owner)
-                        .map(ViewId)
-                        .map_err(|_| TabError("invalid HTML present owner".into()))?;
-                    self.editor::<shell_ipc_d2::html::HtmlEditors>("HTML")?
-                        .bind_present(view, owner);
-                }
-                EditorViewSpec::Mindmap { path } => shell_ipc_d1::mindmap::handle()
-                    .ok_or_else(|| TabError("Mindmap editor is not registered".into()))?
-                    .create_view(view, path.filter(|_| saved_input.is_none())),
-                EditorViewSpec::Epub { path } => self
-                    .editor::<shell_ipc_d2::epub::EpubEditors>("EPUB")?
-                    .open_view(
-                        view,
-                        saved_input.is_none().then(|| std::path::Path::new(path)),
-                    ),
                 EditorViewSpec::Diagram { path } => {
                     let diagrams = shell_ipc_d1::diagram::views()
                         .ok_or_else(|| TabError("Diagram editor is not registered".into()))?;
@@ -429,22 +394,7 @@ impl Hooks {
                             .map_err(TabError)?,
                     );
                 }
-                EditorViewSpec::Hwp {
-                    path,
-                    untitled_copy,
-                } => {
-                    let untitled = match untitled_copy {
-                        HwpUntitledCopy::Flag(false) => shell_ipc_d2::hwp::UntitledOption::No,
-                        HwpUntitledCopy::Flag(true) => shell_ipc_d2::hwp::UntitledOption::Copy,
-                        HwpUntitledCopy::BaseName(base_name) => {
-                            shell_ipc_d2::hwp::UntitledOption::Pdf {
-                                base_name: base_name.clone(),
-                            }
-                        }
-                    };
-                    self.editor::<shell_ipc_d2::hwp::HwpEditors>("HWP")?
-                        .grant_and_track(view, path.filter(|_| saved_input.is_none()), untitled);
-                }
+                _ => {}
             }
             Ok(())
         })();
@@ -492,24 +442,105 @@ impl Hooks {
     }
 }
 
-/// Whether the token an editor prepares for a saved input stages the view's
-/// actor itself and publishes it in the saved adoption transition. Every other
-/// editor puts that token's barrier on a view it already tracks, and refuses a
-/// view it does not.
-fn saved_token_stages_actor(spec: &EditorViewSpec<'_>) -> bool {
-    match spec {
+/// What a new view still needs once [`open_in_path_editor`] ran.
+#[derive(Debug, PartialEq, Eq)]
+enum EditorStep {
+    /// Its editor tracks it.
+    Opened,
+    /// A saved token stages its actor in the saved adoption transition.
+    Reserved,
+    /// The caller stages its actor.
+    Stage,
+}
+
+/// The editors that track the views they open: PDF, Markdown, HTML, mind map,
+/// EPUB and HWP.
+trait PathEditors {
+    /// Opens `view` in the editor of `spec`, on `path` or on no document.
+    fn open(&self, spec: &EditorViewSpec<'_>, view: ViewId, path: Option<&str>) -> TabResult<()>;
+}
+
+impl PathEditors for Hooks {
+    fn open(&self, spec: &EditorViewSpec<'_>, view: ViewId, path: Option<&str>) -> TabResult<()> {
+        match spec {
+            EditorViewSpec::Pdf { .. } => self
+                .editor::<shell_ipc_d2::pdf::editor::editors::PdfEditors>("PDF")?
+                .open_view(view, path),
+            EditorViewSpec::Markdown { .. } => self
+                .editor::<shell_ipc_d2::markdown::MarkdownEditors>("Markdown")?
+                .track_view(view, path.map(std::path::Path::new)),
+            EditorViewSpec::Html { .. } => self
+                .editor::<shell_ipc_d2::html::HtmlEditors>("HTML")?
+                .track_view(view, path.map(std::path::Path::new)),
+            EditorViewSpec::HtmlPresent { owner, .. } => {
+                let owner = u32::try_from(*owner)
+                    .map(ViewId)
+                    .map_err(|_| TabError("invalid HTML present owner".into()))?;
+                self.editor::<shell_ipc_d2::html::HtmlEditors>("HTML")?
+                    .bind_present(view, owner);
+            }
+            EditorViewSpec::Mindmap { .. } => shell_ipc_d1::mindmap::handle()
+                .ok_or_else(|| TabError("Mindmap editor is not registered".into()))?
+                .create_view(view, path),
+            EditorViewSpec::Epub { .. } => self
+                .editor::<shell_ipc_d2::epub::EpubEditors>("EPUB")?
+                .open_view(view, path.map(std::path::Path::new)),
+            EditorViewSpec::Hwp { untitled_copy, .. } => {
+                let untitled = match untitled_copy {
+                    HwpUntitledCopy::Flag(false) => shell_ipc_d2::hwp::UntitledOption::No,
+                    HwpUntitledCopy::Flag(true) => shell_ipc_d2::hwp::UntitledOption::Copy,
+                    HwpUntitledCopy::BaseName(base_name) => {
+                        shell_ipc_d2::hwp::UntitledOption::Pdf {
+                            base_name: base_name.clone(),
+                        }
+                    }
+                };
+                self.editor::<shell_ipc_d2::hwp::HwpEditors>("HWP")?
+                    .grant_and_track(view, path, untitled);
+            }
+            EditorViewSpec::Docs { .. }
+            | EditorViewSpec::Sheets { .. }
+            | EditorViewSpec::Slides { .. }
+            | EditorViewSpec::Diagram { .. } => {
+                return Err(TabError("This editor stages its own view actor".into()));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Opens a new view in its editor when that editor tracks the views it opens.
+/// Such an editor puts its saved token, which installs a saved input, only on
+/// a view it has open: a saved input opens the view too, on no document. Docs,
+/// Sheets, Slides and Diagram are left to the caller.
+fn open_in_path_editor(
+    editors: &dyn PathEditors,
+    spec: &EditorViewSpec<'_>,
+    view: ViewId,
+    saved_input: bool,
+    recovery: bool,
+) -> TabResult<EditorStep> {
+    let path = match spec {
         EditorViewSpec::Docs { .. }
         | EditorViewSpec::Sheets { .. }
         | EditorViewSpec::Slides { .. }
-        | EditorViewSpec::Diagram { .. } => true,
-        EditorViewSpec::Pdf { .. }
-        | EditorViewSpec::Markdown { .. }
-        | EditorViewSpec::Html { .. }
-        | EditorViewSpec::HtmlPresent { .. }
-        | EditorViewSpec::Mindmap { .. }
-        | EditorViewSpec::Epub { .. }
-        | EditorViewSpec::Hwp { .. } => false,
-    }
+        | EditorViewSpec::Diagram { .. } => {
+            return Ok(if saved_input {
+                EditorStep::Reserved
+            } else {
+                EditorStep::Stage
+            });
+        }
+        EditorViewSpec::Pdf { .. } if recovery => return Ok(EditorStep::Opened),
+        EditorViewSpec::Pdf { path } | EditorViewSpec::Epub { path } => Some(*path),
+        EditorViewSpec::Markdown { path }
+        | EditorViewSpec::Html { path }
+        | EditorViewSpec::Mindmap { path }
+        | EditorViewSpec::Hwp { path, .. } => *path,
+        EditorViewSpec::HtmlPresent { .. } => None,
+    };
+    editors.open(spec, view, path.filter(|_| !saved_input))?;
+    Ok(EditorStep::Opened)
 }
 
 fn fail_editor_view(cx: HostContext, view: ViewId, error: String) {
@@ -2092,42 +2123,139 @@ fn blank_pdf() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::{
-        EditorViewSpec, HwpUntitledCopy, WindowId, blank_pdf, is_activation,
-        saved_token_stages_actor,
+        EditorStep, EditorViewSpec, HwpUntitledCopy, PathEditors, TabResult, ViewId, WindowId,
+        blank_pdf, is_activation, open_in_path_editor,
     };
 
-    #[test]
-    fn a_saved_input_view_is_opened_in_its_editor_unless_the_token_stages_the_actor() {
-        for spec in [
+    /// The views the editors were asked to open, and on what
+    #[derive(Default)]
+    struct Opens(RefCell<Vec<(ViewId, Option<String>)>>);
+
+    impl PathEditors for Opens {
+        fn open(
+            &self,
+            _spec: &EditorViewSpec<'_>,
+            view: ViewId,
+            path: Option<&str>,
+        ) -> TabResult<()> {
+            self.0.borrow_mut().push((view, path.map(str::to_owned)));
+            Ok(())
+        }
+    }
+
+    fn path_editors() -> [(EditorViewSpec<'static>, &'static str); 6] {
+        [
+            (EditorViewSpec::Pdf { path: "/d/a.pdf" }, "/d/a.pdf"),
+            (
+                EditorViewSpec::Markdown {
+                    path: Some("/d/a.md"),
+                },
+                "/d/a.md",
+            ),
+            (
+                EditorViewSpec::Html {
+                    path: Some("/d/a.html"),
+                },
+                "/d/a.html",
+            ),
+            (
+                EditorViewSpec::Mindmap {
+                    path: Some("/d/a.xmind"),
+                },
+                "/d/a.xmind",
+            ),
+            (EditorViewSpec::Epub { path: "/d/a.epub" }, "/d/a.epub"),
+            (
+                EditorViewSpec::Hwp {
+                    path: Some("/d/a.hwp"),
+                    untitled_copy: HwpUntitledCopy::Flag(false),
+                },
+                "/d/a.hwp",
+            ),
+        ]
+    }
+
+    fn staging_editors() -> [EditorViewSpec<'static>; 4] {
+        [
             EditorViewSpec::Docs { path: None },
             EditorViewSpec::Sheets {
                 opening_workbook: None,
             },
             EditorViewSpec::Slides { path: None },
             EditorViewSpec::Diagram { path: None },
-        ] {
-            assert!(
-                saved_token_stages_actor(&spec),
-                "{spec:?}: its token refuses a view that already has an actor"
+        ]
+    }
+
+    #[test]
+    fn a_saved_input_view_is_opened_on_no_document_in_an_editor_that_tracks_its_views() {
+        for (spec, _) in path_editors() {
+            let opens = Opens::default();
+            assert_eq!(
+                open_in_path_editor(&opens, &spec, ViewId(7), true, false).map_err(|e| e.0),
+                Ok(EditorStep::Opened),
+                "{spec:?}"
+            );
+            assert_eq!(
+                *opens.0.borrow(),
+                vec![(ViewId(7), None)],
+                "{spec:?}: its saved token needs the view open, and installs the input itself"
             );
         }
-        for spec in [
-            EditorViewSpec::Pdf { path: "" },
-            EditorViewSpec::Markdown { path: None },
-            EditorViewSpec::Html { path: None },
-            EditorViewSpec::Mindmap { path: None },
-            EditorViewSpec::Epub { path: "" },
-            EditorViewSpec::Hwp {
-                path: None,
-                untitled_copy: HwpUntitledCopy::Flag(false),
-            },
-        ] {
+        for spec in staging_editors() {
+            let opens = Opens::default();
+            assert_eq!(
+                open_in_path_editor(&opens, &spec, ViewId(7), true, false).map_err(|e| e.0),
+                Ok(EditorStep::Reserved),
+                "{spec:?}"
+            );
             assert!(
-                !saved_token_stages_actor(&spec),
-                "{spec:?}: its token refuses a view the editor does not track"
+                opens.0.borrow().is_empty(),
+                "{spec:?}: its saved token stages the actor"
             );
         }
+    }
+
+    #[test]
+    fn an_ordinary_view_is_opened_on_its_document() {
+        for (spec, path) in path_editors() {
+            let opens = Opens::default();
+            assert_eq!(
+                open_in_path_editor(&opens, &spec, ViewId(7), false, false).map_err(|e| e.0),
+                Ok(EditorStep::Opened),
+                "{spec:?}"
+            );
+            assert_eq!(
+                *opens.0.borrow(),
+                vec![(ViewId(7), Some(path.to_owned()))],
+                "{spec:?}"
+            );
+        }
+        for spec in staging_editors() {
+            let opens = Opens::default();
+            assert_eq!(
+                open_in_path_editor(&opens, &spec, ViewId(7), false, false).map_err(|e| e.0),
+                Ok(EditorStep::Stage),
+                "{spec:?}"
+            );
+            assert!(opens.0.borrow().is_empty(), "{spec:?}");
+        }
+        let opens = Opens::default();
+        assert_eq!(
+            open_in_path_editor(
+                &opens,
+                &EditorViewSpec::Pdf { path: "/d/a.pdf" },
+                ViewId(7),
+                false,
+                true
+            )
+            .map_err(|e| e.0),
+            Ok(EditorStep::Opened),
+            "a recovered PDF is opened by its recovery"
+        );
+        assert!(opens.0.borrow().is_empty());
     }
 
     #[test]

@@ -1880,3 +1880,114 @@ fn native_evidence_mindmap_recovery_initialized_is_refused_to_other_surfaces() {
         &json!({"unauthorized-surface": refused}).to_string(),
     );
 }
+
+/// A saved map opens in a new view of the editor (crates/shell, w_tabs.rs
+/// `open_in_path_editor`): the editor takes the saved token only on a view it
+/// created, and the shell creates the view in it on no document, as here,
+/// before the token
+#[cfg(unix)]
+#[test]
+fn a_saved_map_token_needs_the_view_created_in_the_editor() {
+    use shell_contract::hosts::OwnedEffectsHost;
+    use shell_contract::ipc::{
+        NativeClosureIssuer, NativeInvocationIssuer, NativeSaveDestination, NativeSaveSelection,
+        NativeSavedInput, NativeSavedPath, NativeSavedTarget,
+    };
+    use shell_contract::runtime::CancelToken;
+    use std::ffi::CString;
+
+    let h = plain("saved-token-needs-view");
+    h.app.create_view(h.sender.view, None);
+    let editor = h
+        .reg
+        .provided
+        .all::<dyn DocumentEditors>()
+        .into_iter()
+        .find(|editor| editor.saved_surface() == Surface::Mindmap)
+        .unwrap();
+    let effects = h.kit.host::<OwnedEffectsHost>();
+    let generation = h
+        .kit
+        .services
+        .views
+        .renderer_generation(h.sender.view)
+        .unwrap();
+    let existing = editor
+        .capture_document_owner(
+            h.sender.view,
+            effects.capture_owner(h.sender.view, &generation).unwrap(),
+        )
+        .unwrap();
+    let path = h.dir.join("saved.xmind");
+    fs::write(&path, b"old map").unwrap();
+    let issuer = NativeInvocationIssuer::new(CancelToken::default());
+    let binding = issuer
+        .issue_existing_document_save(
+            Surface::Mindmap,
+            existing.view,
+            NativeSaveSelection::ExactPath(path.clone()),
+            existing.clone(),
+            CancelToken::default(),
+        )
+        .unwrap();
+    let selection = NativeSaveDestination::from_exact_selection(binding).unwrap();
+    let parent = fs::File::open(path.parent().unwrap()).unwrap();
+    let directory = file_commit::PrivateDirectory::create(&parent).unwrap();
+    let stage = directory
+        .create_stage(0o600)
+        .unwrap()
+        .quarantine()
+        .ok()
+        .unwrap();
+    let stage = stage.write_owned(b"saved map".to_vec()).ok().unwrap();
+    let name = CString::new(path.file_name().unwrap().to_str().unwrap()).unwrap();
+    let stage = stage
+        .prepare(&parent, &name, &path, file_commit::PublicationMode::Replace)
+        .ok()
+        .unwrap();
+    let (publication, snapshot) = effects
+        .publish_native_staged_write(
+            &selection,
+            &[],
+            &CancelToken::default(),
+            &CancelToken::default(),
+            &[],
+            stage,
+        )
+        .ok()
+        .unwrap();
+    let input = NativeSavedInput::from_written_snapshot(publication.clone(), snapshot).unwrap();
+
+    let view = h.kit.view(2, Surface::Mindmap).view;
+    let generation = h.kit.services.views.renderer_generation(view).unwrap();
+    let (_issuer, reservation, browser) =
+        NativeClosureIssuer::new_with_owner(view, generation.clone());
+    let target = NativeSavedTarget::prepare(
+        input,
+        NativeSavedPath::Selected(publication),
+        Surface::Mindmap,
+        view,
+        generation,
+        reservation,
+        browser,
+        vec![],
+        CancelToken::default(),
+        CancelToken::default(),
+        vec![],
+    )
+    .unwrap();
+    assert!(
+        editor.prepare_saved_document(target.clone()).is_err(),
+        "a view the editor never created takes no saved token"
+    );
+    h.app.create_view(view, None);
+    let prepared = editor
+        .prepare_saved_document(target)
+        .map(|_| ())
+        .map_err(|error| error.message);
+    assert_eq!(
+        prepared,
+        Ok(()),
+        "the view created on no document takes the saved token"
+    );
+}

@@ -466,11 +466,12 @@ impl Saved {
     }
 }
 
-/// The bytes a committed save retained, as the native shell hands them to the load
+/// The bytes a committed save of `existing`, a document of `surface`, retained,
+/// as the native shell hands them to the load
 #[cfg(unix)]
-fn saved_input(
+pub(crate) fn saved_input(
     rt: &Rt,
-    app: &App,
+    surface: Surface,
     existing: &NativeRequestOwner,
     path: &std::path::Path,
 ) -> (
@@ -490,7 +491,7 @@ fn saved_input(
     let issuer = NativeInvocationIssuer::new(CancelToken::default());
     let binding = issuer
         .issue_existing_document_save(
-            app.surface,
+            surface,
             existing.view,
             NativeSaveSelection::ExactPath(path.to_owned()),
             existing.clone(),
@@ -544,7 +545,7 @@ fn saved(rt: &mut Rt, app: &App, id: u32, name: &str) -> Saved {
     let existing = editor
         .capture_document_owner(view.view, rt.native_root(view.view))
         .unwrap();
-    let (input, saved_path) = saved_input(rt, app, &existing, std::path::Path::new(&path));
+    let (input, saved_path) = saved_input(rt, app.surface, &existing, std::path::Path::new(&path));
     let generation = rt.services.views.renderer_generation(view.view).unwrap();
     let (issuer, reservation, browser) =
         NativeClosureIssuer::new_with_owner(view.view, generation.clone());
