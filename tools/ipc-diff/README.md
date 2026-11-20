@@ -153,8 +153,21 @@ A full gate writes `native-contracts.json` separately from the unchanged Electro
 Missing receipts are **pending**, including when regression source exists. Synthetic behavior
 does not prove native ownership, navigation, platform effects or the installed ABI. The full
 gate stays non-green until every declared native contract has separate successful synthetic
-and actual native-host evidence for all required scenarios. `--group` remains a scoped
-Electron comparison, not an overall native-contract verdict.
+evidence for all required scenarios and actual native-host evidence for all of them but the
+waived ones. `--group` remains a scoped Electron comparison, not an overall native-contract
+verdict.
+
+The waiver is `SYNTHETIC_ONLY` of `tools/shell-inventory/native-waivers.mjs`: eleven required
+scenarios the real app cannot reach, each with its reason (hub decision
+hub-g4-contract-decision-20261120). Their synthetic receipts are still required. A native-host
+receipt that names one of them is a problem (`drop its waiver`), and the native-host specs name
+the same object as their `UNDRIVEN`, so a spec that comes to drive one fails the checker's test.
+`native-contracts.test.ts` pins the eleven.
+
+`--native-host-pending warn` reports a pending native-host proof without failing on it; a failed
+one, any synthetic problem and any registration problem still fail. `seuoffice rust` passes it
+only on a push of main, which has no native-host run to take, and says what is pending in a
+warning and in the job summary. A run by hand keeps `fail`.
 
 `--native-evidence <file>` accepts a JSON array of current executed-evidence receipts:
 

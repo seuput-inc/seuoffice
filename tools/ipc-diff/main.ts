@@ -14,7 +14,11 @@
  * prints `group<TAB>channel` for every channel a case calls. `--require <batch>`
  * checks the original Electron-derived channels of that batch. Native-only
  * contracts remain in the runtime registry but require separate synthetic and
- * actual native-host receipts. A full run stays non-green while either is pending.
+ * actual native-host receipts (the native-host ones less the waived scenarios of
+ * tools/shell-inventory/native-waivers.mjs). A full run stays non-green while
+ * either is pending, except that `--native-host-pending warn` (a push of main,
+ * which has no native-host run to take) reports a pending native-host proof
+ * without failing on it.
  *
  * Fails on a difference that divergences.json does not list, on a listed one
  * that no longer reproduces, on a case either side could not run, and on the
@@ -40,7 +44,7 @@ import './vite-imports.ts'
 import { Encoder, WireError, decode } from '../../crates/shell/bridge/wire.ts'
 import { CHANNELS, ELECTRON_CHANNELS, SPECS } from './channels.ts'
 import { NATIVE_CHANNEL_CONTRACTS } from '../shell-inventory/native-channels.ts'
-import { nativeContractCoverage, nativeEvidence } from './native-contracts.ts'
+import { blockingProblems, nativeContractCoverage, nativeEvidence } from './native-contracts.ts'
 import { Hang, withDeadline } from './deadline.ts'
 import { caseElectron } from './fakes.ts'
 import { EventReferences, outcomeFailure } from './event-refs.ts'
@@ -462,6 +466,9 @@ function runEveryGroup(): void {
     if (!existsSync(resolve(root, receipt.artifact)))
       throw new Error(`native evidence artifact is missing: ${receipt.artifact}`)
   }
+  const nativeHostPending = arg('--native-host-pending') ?? 'fail'
+  if (nativeHostPending !== 'fail' && nativeHostPending !== 'warn')
+    throw new Error(`--native-host-pending is fail or warn, not ${nativeHostPending}`)
   const nativeBatches = new Set([
     ...CHANNELS.filter((spec) => spec.namespace === 'native').map((spec) => spec.batch),
     ...NATIVE_CHANNEL_CONTRACTS.map((contract) => contract.batch),
@@ -476,8 +483,13 @@ function runEveryGroup(): void {
     )
     for (const problem of report.problems)
       console.log(`NATIVE COVERAGE ${report.channel}: ${problem}`)
-    if (report.problems.length > 0) failed = true
+    if (blockingProblems(report, nativeHostPending).length > 0) failed = true
   }
+  const pending = nativeReports.filter((report) => report.nativeHost.status === 'pending')
+  if (nativeHostPending === 'warn' && pending.length > 0)
+    console.log(
+      `NATIVE-HOST PENDING ${pending.length} channels: not failing (--native-host-pending warn)`,
+    )
   process.exitCode = failed ? 1 : 0
 }
 

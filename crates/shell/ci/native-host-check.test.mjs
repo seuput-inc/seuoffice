@@ -7,6 +7,7 @@ import path from 'node:path'
 import JSZip from 'jszip'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { NATIVE_CHANNEL_CONTRACTS } from '../../../tools/shell-inventory/native-channels.ts'
+import { SYNTHETIC_ONLY } from '../../../tools/shell-inventory/native-waivers.mjs'
 import {
   compileRun,
   damage,
@@ -287,6 +288,11 @@ describe('the specs against the contracts', () => {
     expect([...driven.keys(), ...Object.keys(UNDRIVEN)].filter((n) => !names.includes(n))).toEqual(
       [],
     )
+  })
+
+  it('leaves undriven exactly what the IPC comparison waives from the native-host proof', () => {
+    // one list: a spec that comes to drive a waived scenario fails the test above
+    expect(UNDRIVEN).toBe(SYNTHETIC_ONLY)
   })
 
   it('names the surface of each channel as its contract does', () => {

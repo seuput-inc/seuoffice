@@ -326,7 +326,9 @@ jobs:
       # Their real-app evidence is the native-host receipts of a `seuoffice shell` gate=e2e
       # run (crates/shell/ci/native-host-check.mjs), one set per OS. Only a run of this same
       # commit is taken. Without the input, or when the run is refused here, nothing is
-      # merged: the IPC comparison below then reports native-host as pending and fails.
+      # merged: the IPC comparison below then reports native-host as pending. By hand that
+      # fails it. A push of main has no such run to give: there a pending native-host proof is
+      # a warning and a line of the summary, and everything else still fails.
       - name: Native-host run not given
         if: ${{ !cancelled() && inputs.native_host_run == '' }}
         run: echo "::notice::native_host_run is not set; the native-host evidence of the native-only channels stays pending"
@@ -387,6 +389,8 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 30
         shell: bash
+        env:
+          NATIVE_HOST_PENDING: ${{ github.event_name == 'push' && 'warn' || 'fail' }}
         run: |
           npm --prefix tools/ipc-diff run typecheck
           npm --prefix tools/ipc-diff run test
@@ -395,7 +399,31 @@ jobs:
           if [ -f tools/ipc-diff/out/native-evidence.json ]; then
             evidence=(--native-evidence "$PWD/tools/ipc-diff/out/native-evidence.json")
           fi
-          npm --prefix tools/ipc-diff run gate -- --show 40 --require W --require U --require A --require M --require D1 --require D2 "${evidence[@]}" 2>&1 | tee tools/ipc-diff/out/gate.txt
+          npm --prefix tools/ipc-diff run gate -- --show 40 --require W --require U --require A --require M --require D1 --require D2 "${evidence[@]}" --native-host-pending "$NATIVE_HOST_PENDING" 2>&1 | tee tools/ipc-diff/out/gate.txt
+
+      # What a push left pending, said where it is seen (the IPC comparison did not fail on it)
+      - name: Native-host evidence of a push
+        if: ${{ !cancelled() && github.event_name == 'push' }}
+        shell: bash
+        run: |
+          report=tools/ipc-diff/out/native-contracts.json
+          if [ ! -f "$report" ]; then
+            echo "::warning::this commit has no native-host evidence (the IPC comparison wrote no $report)"
+            echo "Native-host evidence: none, the IPC comparison wrote no report." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          pending=$(jq '[.[] | select(.nativeHost.status == "pending")] | length' "$report")
+          scenarios=$(jq '[.[] | select(.nativeHost.status == "pending") | .nativeHost.missingScenarios[]] | length' "$report")
+          if [ "$pending" -gt 0 ]; then
+            echo "::warning::this commit has no native-host evidence (pending $pending channels, $scenarios scenarios)"
+            {
+              echo "Native-host evidence: pending for $pending native-only channels ($scenarios scenarios). A push takes no native-host run; run this workflow by hand with native_host_run set to a seuoffice shell gate=e2e run of this commit."
+              echo
+              jq -r '.[] | select(.nativeHost.status == "pending") | "- \(.channel): \(.nativeHost.missingScenarios | join(", "))"' "$report"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Native-host evidence: nothing pending." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Keep the IPC comparison
         if: ${{ always() }}

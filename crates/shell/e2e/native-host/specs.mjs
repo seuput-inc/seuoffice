@@ -21,6 +21,7 @@
 // variant types what the saved-file scenario types, then crashes instead of saving.
 
 import { readFileSync } from 'node:fs'
+import { SYNTHETIC_ONLY } from '../../../../tools/shell-inventory/native-waivers.mjs'
 
 /** The request ids of `invoke` steps start here, far above the bridge's own counter. */
 export const PROBE_BASE = 4_000_000_000
@@ -823,37 +824,10 @@ export function selected(only, names = Object.keys(SPECS)) {
   return every ? names : names.filter((name) => wanted.includes(name))
 }
 
-const SAVED_INPUT = { 'failed-apply': 'no text makes the editor fail to apply a file' }
-
 /**
- * Required scenarios no spec drives yet, with the reason. The checker writes no receipt for
- * them, so the IPC comparison keeps them pending; its test fails when this list and `expect`
- * together stop matching the contracts.
+ * Required scenarios no spec drives, with the reason: the waiver of the native-host proof
+ * (tools/shell-inventory/native-waivers.mjs), which is where they are listed. The checker writes
+ * no receipt for them and the IPC comparison asks only their synthetic proof; the checker's test
+ * fails when this list and `expect` together stop matching the contracts.
  */
-export const UNDRIVEN = {
-  'docs:owned-print-pdf-buffer': {
-    'owner-loss': 'needs the tab closed while the copy is being printed',
-    'effect-failure': 'needs the print of the page itself to fail',
-  },
-  'slides:recovery-initialized': {
-    'failed-apply':
-      'the shell parses the presentation itself: a copy that does not parse fails the open ' +
-      'before any page is handed a receipt',
-  },
-  'pdf:consume-recovery-pending': {
-    'preparation-loss': 'needs the restored tab revoked while its document is being prepared',
-  },
-  'pdf:recovery-initialized': {
-    'revision-loss':
-      'needs the document revision replaced between the hand-over and the acknowledgement',
-  },
-  'workbook:saved-open-result': {
-    'missing-native-authority':
-      'a page of the real app cannot send a call without its native context',
-    'closed-tab': 'a closed tab has no page left to send the report from',
-  },
-  'html:recovery-applied': { 'failed-apply': 'no text makes the editor fail to apply a copy' },
-  'html:saved-input-applied': SAVED_INPUT,
-  'markdown:recovery-applied': { 'failed-apply': 'no text makes the editor fail to apply a copy' },
-  'markdown:saved-input-applied': SAVED_INPUT,
-}
+export const UNDRIVEN = SYNTHETIC_ONLY

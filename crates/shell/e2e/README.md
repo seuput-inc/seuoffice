@@ -77,8 +77,11 @@ app. The same `gate=e2e` job produces it after the scenarios:
   test records, and `seuoffice rust` takes them through its `native_host_run` input.
 
 The workflow's `scenarios` input picks specs too: by name, or `native-host` for all of them. A
-required scenario no spec drives is listed with its reason in `UNDRIVEN` of `specs.mjs`; the checker
-test fails when the specs and that list stop matching the contracts.
+required scenario no spec drives is listed with its reason in `UNDRIVEN` of `specs.mjs`, which is
+the native-host waiver of the IPC comparison (`SYNTHETIC_ONLY` of
+`tools/shell-inventory/native-waivers.mjs`): only its synthetic proof is asked. The checker test
+fails when the specs and that list stop matching the contracts, and a spec that drives a waived
+scenario breaks it.
 
 Four specs drive a save the shell owns, where no person's step starts one:
 
