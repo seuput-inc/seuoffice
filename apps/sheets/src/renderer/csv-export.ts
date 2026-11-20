@@ -28,7 +28,7 @@ export interface CsvExportContext {
   setMessage: (message: string) => void
   /// Routes into the regular Save As flow when the user picks "Save as .xlsx"
   /// in the formula-loss warning.
-  requestSaveAs: () => void
+  requestSaveAs: () => void | Promise<unknown>
   /// The cells the reader withheld from the AI: a CSV copy cannot keep that.
   redactions: () => RedactionIndex
 }
@@ -249,7 +249,11 @@ export function csvWouldExposeWithheld(
   return redactGuardForSheetExport('csv', index, sheetId, sheetName) !== null
 }
 
-export async function handleExportCsv(ctx: CsvExportContext, targetPath?: string): Promise<void> {
+export async function handleExportCsv(
+  ctx: CsvExportContext,
+  targetPath?: string,
+  ownedSaveRequestId?: string,
+): Promise<void> {
   const runtime = ctx.univerRef.current
   if (!runtime || !activeCsvSheet(runtime)) return
   const state = ctx.lazyWorkbookRef.current
@@ -266,9 +270,9 @@ export async function handleExportCsv(ctx: CsvExportContext, targetPath?: string
     // Before anything is serialized or asked: a CSV records no mark, so the
     // person chooses. Only an explicit "without the marks" writes the values.
     if (csvWouldExposeWithheld(ctx.redactions(), sheet.getSheetId(), sheet.getSheetName())) {
-      const choice = await window.desktopApi.askWithheldExport('CSV')
+      const choice = await window.desktopApi.askWithheldExport('CSV', ownedSaveRequestId)
       if (choice === 'xlsx') {
-        ctx.requestSaveAs()
+        await ctx.requestSaveAs()
         return
       }
       if (choice === 'cancel') {
@@ -292,9 +296,10 @@ export async function handleExportCsv(ctx: CsvExportContext, targetPath?: string
       hasFormulas: sheetHasFormulas(sheet),
       ...(sheetCount > 1 ? { activeSheetName: sheet.getSheetName() } : {}),
       ...(targetPath === undefined ? {} : { targetPath }),
+      ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
     })
     if (result.canceled) {
-      if (result.saveAsXlsxInstead) ctx.requestSaveAs()
+      if (result.saveAsXlsxInstead) await ctx.requestSaveAs()
       else ctx.setMessage(t('appCsvExportCanceled'))
       return
     }

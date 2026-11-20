@@ -1,0 +1,1145 @@
+//! Request-scoped retention of verified native origin and loss subscriptions.
+
+mod effects;
+mod saved_target;
+pub(crate) use effects::register_startup_command_target;
+pub(crate) use effects::with_command_preparation_service_effect;
+pub(crate) use effects::with_command_recovery_preparation_effect;
+pub(crate) use effects::with_command_recovery_target_effect;
+pub(crate) use effects::with_existing_document_print_effect;
+pub(crate) use effects::with_existing_document_save_many_effect;
+pub(crate) use effects::with_existing_document_service_effect;
+pub(crate) use effects::with_many_owner_effect_extra;
+pub(crate) use effects::with_native_invocation_operation_effect;
+pub(crate) use effects::with_native_save_revision_snapshot;
+pub(crate) use effects::with_service_many_effect;
+pub(crate) use effects::with_service_recovery_open_effect;
+pub(crate) use effects::with_startup_command_recovery_preparation_effect;
+pub(crate) use effects::with_startup_operation_effect;
+pub(crate) use effects::with_startup_recovery_preparation_effect;
+pub(crate) use effects::{
+    capture_owner, host as effects_host, run_accepted_created_ui_many, run_accepted_ui_many,
+    run_accepted_ui_pair, with_created_many_effect, with_many_owner_transition,
+    with_native_invocation_effect, with_native_invocation_many_effect,
+    with_native_invocation_print_many_effect, with_paired_effect, with_print_pair_effect,
+    with_recovery_open_effect, with_recovery_seed_effect, with_service_native_invocation_effect,
+    with_service_pair_effect,
+};
+pub(crate) use effects::{
+    with_native_command_creation_effect, with_native_command_preparation_effect,
+    with_native_command_target_effect,
+};
+pub(crate) use effects::{
+    with_native_invocation_print_many_extra_effect, with_owned_print_many_extra_effect,
+};
+pub(crate) use effects::{
+    with_recovery_open_service_snapshot, with_recovery_pre_navigation_snapshot,
+    with_recovery_seed_snapshot,
+};
+pub(crate) use effects::{
+    with_startup_command_creation_effect, with_startup_command_preparation_effect,
+    with_startup_command_target_effect,
+};
+pub(crate) use saved_target::with_native_saved_document_same_origin;
+pub(crate) use saved_target::{
+    prepare_saved_spare_replacement, read_saved_input, with_saved_document_dialog_effect,
+    with_saved_document_effect, with_saved_document_input_effect,
+    with_saved_spare_replacement_effect, with_saved_target_creation_effect,
+    with_saved_target_registration_effect, with_saved_target_seed_effect,
+};
+
+use crate::native::{DocumentContext, DocumentRevocation};
+use shell_contract::{
+    ViewId,
+    ipc::{NativeContext, NativeRequestOwner},
+    runtime::{CancelSubscription, CancelToken, RendererGeneration, Thread},
+};
+
+use crate::views::{DocsMediaAuthorization, NativeAssetAuthorization, SlidesViewLease};
+use main_core::docs::byte_handoff::{MediaLossSubscription, MediaPermit, MediaViewLease};
+
+struct SuccessorMediaPermit(MediaPermit);
+
+/// The captured native origin and subscriptions live as long as the owner.
+pub(crate) struct NativeOwnerAuthority {
+    pub(crate) origin: DocumentContext,
+    view: ViewId,
+    browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
+    _origin_loss: DocumentRevocation,
+    _renderer_loss: CancelSubscription,
+    _asset_loss: Option<CancelSubscription>,
+    docs_bound: bool,
+    docs_permit: Option<MediaPermit>,
+    _docs_loss: Option<MediaLossSubscription>,
+    _slides_loss: Option<CancelSubscription>,
+}
+
+pub(crate) fn run_native_invocation_ui<R>(
+    ui: &dyn Thread,
+    operation: &shell_contract::ipc::NativeInvocationOperation,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(operation.with_active(|| action))
+}
+
+/// Native-startup constructor admission, without inventing a renderer owner.
+pub(crate) fn run_native_invocation_created_ui<R>(
+    ui: &dyn Thread,
+    target: &shell_contract::ipc::NativeInvocationTarget,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(target.with_active(|| action))
+}
+
+pub(crate) fn run_accepted_native_invocation_ui_many<R>(
+    ui: &dyn Thread,
+    document: &shell_contract::ipc::NativeInvocationDocument,
+    owner: &NativeRequestOwner,
+    participants: &[NativeRequestOwner],
+    cancel: &CancelToken,
+    pending: &CancelToken,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(with_native_invocation_many_effect(
+        document.target(),
+        owner,
+        participants,
+        cancel,
+        pending,
+        || action,
+    ))
+}
+
+pub(crate) fn run_accepted_native_operation_ui_many<R>(
+    ui: &dyn Thread,
+    operation: &shell_contract::ipc::NativeInvocationOperation,
+    owner: &NativeRequestOwner,
+    participants: &[NativeRequestOwner],
+    cancel: &CancelToken,
+    pending: &CancelToken,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(effects::with_startup_operation_effect(
+        operation,
+        owner,
+        participants,
+        cancel,
+        pending,
+        || action,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_accepted_startup_recovery_ui_many<R>(
+    ui: &dyn Thread,
+    startup: &shell_contract::ipc::NativeInvocationOperation,
+    shell: &NativeRequestOwner,
+    child: &shell_contract::ipc::NativeInvocationDocument,
+    owner: &NativeRequestOwner,
+    participants: &[NativeRequestOwner],
+    cancel: &CancelToken,
+    pending: &CancelToken,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(effects::with_startup_recovery_effect(
+        startup,
+        shell,
+        child,
+        owner,
+        participants,
+        cancel,
+        pending,
+        || action,
+    ))
+}
+
+pub(crate) fn run_recovery_snapshot_ui<R>(
+    ui: &dyn Thread,
+    target: &shell_contract::ipc::RecoveryOpenTarget,
+    snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot,
+    created: Option<&RendererGeneration>,
+    dialog: Option<&NativeRequestOwner>,
+    controls: Option<(&CancelToken, &CancelToken)>,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    if let (Some(dialog), Some(created)) = (dialog, created)
+        && !dialog
+            .context
+            .renderer()
+            .is_some_and(|generation| generation.same_generation(created))
+    {
+        return Err("The recovery dialog generation changed.".into());
+    }
+    execute_accepted(with_recovery_pre_navigation_snapshot(
+        target,
+        snapshot,
+        created,
+        dialog,
+        controls,
+        || action,
+    ))
+}
+
+pub(crate) fn run_recovery_prepare_action_snapshot<R>(
+    target: &shell_contract::ipc::RecoveryOpenTarget,
+    snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    execute_accepted(with_recovery_seed_snapshot(target, snapshot, || action))
+}
+
+pub(crate) fn run_recovery_seeded_ui<R>(
+    ui: &dyn Thread,
+    receipt: &shell_contract::ipc::RecoverySeedReceipt,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(effects::with_recovery_seeded_effect(receipt, || action))
+}
+
+/// Actual first-Registered producer only. The owner must have this shell's
+/// private attested native proof and match the constructor's captured epoch.
+pub(crate) fn register_native_invocation_target(
+    target: &shell_contract::ipc::NativeInvocationTarget,
+    owner: NativeRequestOwner,
+) -> Result<(), String> {
+    effects::register_native_invocation_target(target, owner)
+}
+
+pub(crate) fn register_recovery_open_target(
+    target: &shell_contract::ipc::RecoveryOpenTarget,
+    owner: NativeRequestOwner,
+) -> Result<(), String> {
+    use shell_contract::ipc::RecoveryOpenContext;
+    if !target.is_seed_committed() {
+        return Err("The recovery seed has not been committed.".into());
+    }
+    if owner.view != target.view()
+        || !owner
+            .context
+            .renderer()
+            .is_some_and(|renderer| renderer.same_generation(target.created()))
+    {
+        return Err("The recovery target does not match its constructor reservation.".into());
+    }
+    let snapshot = target.authority_snapshot()?;
+    match &snapshot.context {
+        RecoveryOpenContext::NativeStartup(_) => {
+            effects::register_native_recovery_target(target, owner)
+        }
+        RecoveryOpenContext::Renderer { .. } => {
+            let loss = owner
+                .loss_token()
+                .ok_or("The recovery target has no native loss signal.")?;
+            with_created_many_effect(&owner, &[], target.created(), &loss, &loss, || {
+                snapshot.register_native_from_admitted(owner.clone())
+            })
+            .ok_or_else(|| "The recovery constructor is no longer available.".to_owned())?
+        }
+    }
+}
+
+/// The owner the document of a recovery opening has now, to finish the opening with. The
+/// target keeps the owner of the page's first registration. A Docs owner carries the media
+/// permit of the document its page shows, and loading the recovered document replaces that
+/// permit: the registered owner is then lost though the native document and the renderer are
+/// the same (run 44487876611). The current owner of that same native document stands for it,
+/// as it does in the page's own calls, and the admission still compares it with the
+/// registered one. A registered owner that still lives is itself the answer. Nothing is
+/// revived: a revoked document, a retired renderer or a view without a current permit has no
+/// owner to capture, and the owner of another native document is refused, whether or not that
+/// document shows the same address.
+pub(crate) fn current_recovery_owner(
+    views: &crate::views::ViewTable,
+    target: &shell_contract::ipc::RecoveryOpenTarget,
+    origin: Option<&DocumentContext>,
+    registered: &NativeRequestOwner,
+) -> Result<NativeRequestOwner, String> {
+    if registered
+        .loss_token()
+        .is_some_and(|loss| !loss.is_cancelled())
+    {
+        return Ok(registered.clone());
+    }
+    let current = capture_owner(views, target.view(), target.created())?;
+    let same_document = origin.is_some_and(|origin| {
+        current
+            .context
+            .authority_ref::<NativeOwnerAuthority>()
+            .is_some_and(|authority| &authority.origin == origin)
+    });
+    if same_document {
+        Ok(current)
+    } else {
+        Err("The recovery document was replaced before it became ready".into())
+    }
+}
+
+/// The owner the native document of `lost` has now, for a call of its page that arrived under
+/// `lost` and has not been dispatched yet. A Docs owner carries the media permit of the
+/// document its page shows, so a page that loads a document takes the owner from every other
+/// call it has on its way, though the native document and the renderer are the same and the
+/// page waits for each answer (S121, macOS `docs-edit`: the open ahead of
+/// `docs:consume-new-blank` answered first, that call was never dispatched, and the page
+/// stayed at "Opening…"). Nothing is revived, as in [`current_recovery_owner`].
+pub(crate) fn succeeding_owner(
+    views: &crate::views::ViewTable,
+    lost: &NativeRequestOwner,
+) -> Option<NativeRequestOwner> {
+    let origin = &lost.context.authority_ref::<NativeOwnerAuthority>()?.origin;
+    let current = capture_owner(views, lost.view, lost.context.renderer()?).ok()?;
+    let same_document = current
+        .context
+        .authority_ref::<NativeOwnerAuthority>()
+        .is_some_and(|authority| &authority.origin == origin);
+    same_document.then_some(current)
+}
+
+/// Admit `owner` once more as the owner a recovery opening delivers, and let `swap` put it in
+/// place of the one delivered before. `swap` runs inside the admission and answers the owner
+/// it took out, or `None` when there is nothing to deliver to. That owner is released only
+/// after the admission has let go of its gates: the last reference of a Docs owner leaves
+/// the listeners of its media permit when it drops, which takes the very gate the admission
+/// holds (run 44507447462 stopped there, once the opening could capture a second owner).
+pub(crate) fn redeliver_recovery_owner(
+    receipt: &shell_contract::ipc::RecoverySeedReceipt,
+    snapshot: &shell_contract::ipc::RecoveryAuthoritySnapshot,
+    owner: &NativeRequestOwner,
+    swap: impl FnOnce(NativeRequestOwner) -> Option<NativeRequestOwner>,
+) -> bool {
+    let cancel = receipt.target().created().loss_token();
+    let replaced = with_recovery_open_service_snapshot(
+        receipt,
+        snapshot,
+        owner,
+        &[],
+        None,
+        None,
+        &cancel,
+        None,
+        &[],
+        || swap(owner.clone()),
+    )
+    .flatten();
+    replaced.is_some()
+}
+
+pub(crate) fn authenticated_owner(context: &NativeContext) -> Option<NativeRequestOwner> {
+    let authority = context.authority_ref::<NativeOwnerAuthority>()?;
+    Some(NativeRequestOwner {
+        view: authority.view,
+        context: context.clone(),
+    })
+}
+
+/// The exact browser owner captured alongside authenticated ingress, if adopted.
+pub(crate) fn authenticated_browser_owner(
+    context: &NativeContext,
+) -> Option<&shell_contract::ipc::NativeBrowserOwner> {
+    context
+        .authority_ref::<NativeOwnerAuthority>()?
+        .browser_owner
+        .as_ref()
+}
+
+/// The revocation subscription of an owner under construction, which cancels `loss`.
+/// [`DocumentContext::on_revoke`] does not wait for the document's lock: while another thread
+/// holds it for a moment (each request of the bridge has its nonce checked under it), a live
+/// document answers as a revoked one does, and the caller is told its document is gone for
+/// good (run 44526047099, Windows: ten calls of live documents were refused so, none on macOS).
+/// A live document is asked again for as long as `again` allows. A revoked one is not, and
+/// neither is one asked from inside a state gate, whose lock this thread may hold itself.
+fn subscribe_origin_loss(
+    origin: &DocumentContext,
+    loss: &CancelToken,
+    mut again: impl FnMut() -> bool,
+) -> Option<DocumentRevocation> {
+    let mut waited = 0_u32;
+    loop {
+        let cancelled = loss.clone();
+        if let Some(subscription) = origin.on_revoke(move || cancelled.cancel()) {
+            if waited > 0 {
+                // how often a live document was busy, and for how many questions
+                crate::trace::trace!("owner", "a busy document answered after {waited} more");
+            }
+            return Some(subscription);
+        }
+        if origin.is_revoked() || crate::native::defer::holding() || !again() {
+            return None;
+        }
+        waited += 1;
+    }
+}
+
+/// How long a held document lock is waited out: the thread gives way a number of times, then
+/// sleeps a millisecond sixteen times (a coarse system timer makes that a quarter of a second
+/// at most). What holds the lock holds it for one short effect.
+fn briefly() -> impl FnMut() -> bool {
+    let mut asked = 0_u32;
+    move || {
+        asked += 1;
+        match asked {
+            1..=64 => std::thread::yield_now(),
+            65..=80 => std::thread::sleep(std::time::Duration::from_millis(1)),
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// Assemble only after ingress has authenticated and bound all three identities.
+pub(crate) fn asset_owner_with_browser(
+    view: ViewId,
+    origin: DocumentContext,
+    asset: NativeAssetAuthorization,
+    renderer: RendererGeneration,
+    browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
+) -> Option<NativeRequestOwner> {
+    if asset.view != view || !asset.matches_native_context(&origin) {
+        return None;
+    }
+    let loss = CancelToken::default();
+    let origin_loss = subscribe_origin_loss(&origin, &loss, briefly())?;
+    let cancelled = loss.clone();
+    let renderer_loss = renderer.loss_token().on_cancel(move || cancelled.cancel());
+    let cancelled = loss.clone();
+    let independent_loss = asset.loss_token();
+    let asset_loss = independent_loss.on_cancel(move || cancelled.cancel());
+    if loss.is_cancelled() || !origin.is_live() || !renderer.is_active() || !asset.is_current() {
+        return None;
+    }
+    let authority = NativeOwnerAuthority {
+        view,
+        origin,
+        browser_owner,
+        _origin_loss: origin_loss,
+        _renderer_loss: renderer_loss,
+        _asset_loss: Some(asset_loss),
+        docs_bound: false,
+        docs_permit: None,
+        _docs_loss: None,
+        _slides_loss: None,
+    };
+    let context = NativeContext::with_owner_loss(asset, renderer, loss)
+        .with_independent_native_loss(independent_loss)
+        .with_authority(authority);
+    Some(NativeRequestOwner { view, context })
+}
+
+/// The caller must bind the exact origin, view and renderer before construction.
+pub(crate) fn owner<T: std::any::Any + Send + Sync>(
+    view: ViewId,
+    origin: DocumentContext,
+    renderer: RendererGeneration,
+    payload: T,
+) -> Option<NativeRequestOwner> {
+    owner_with_browser(view, origin, renderer, payload, None)
+}
+
+pub(crate) fn owner_with_browser<T: std::any::Any + Send + Sync>(
+    view: ViewId,
+    origin: DocumentContext,
+    renderer: RendererGeneration,
+    payload: T,
+    browser_owner: Option<shell_contract::ipc::NativeBrowserOwner>,
+) -> Option<NativeRequestOwner> {
+    let loss = CancelToken::default();
+    let origin_loss = subscribe_origin_loss(&origin, &loss, briefly())?;
+    let cancelled = loss.clone();
+    let renderer_loss = renderer.loss_token().on_cancel(move || cancelled.cancel());
+    let value = &payload as &dyn std::any::Any;
+    let docs = value.downcast_ref::<MediaViewLease>();
+    let docs_authorization = value.downcast_ref::<DocsMediaAuthorization>();
+    let explicit_permit = value
+        .downcast_ref::<SuccessorMediaPermit>()
+        .map(|permit| &permit.0);
+    let docs_permit = match docs_authorization {
+        Some(authorization) if authorization.view == view => Some(authorization.permit.clone()),
+        Some(_) => return None,
+        None => match explicit_permit {
+            Some(permit) if permit.owner().view == view.0 => Some(permit.clone()),
+            Some(_) => return None,
+            None => docs.and_then(MediaViewLease::current),
+        },
+    };
+    let docs_loss = docs_permit.as_ref().map(|permit| {
+        let cancelled = loss.clone();
+        permit.on_revoke(move || cancelled.cancel())
+    });
+    let slides_loss = value.downcast_ref::<SlidesViewLease>().map(|lease| {
+        let cancelled = loss.clone();
+        lease.loss_token().on_cancel(move || cancelled.cancel())
+    });
+    if loss.is_cancelled() || !origin.is_live() || !renderer.is_active() {
+        return None;
+    }
+    let authority = NativeOwnerAuthority {
+        view,
+        origin,
+        browser_owner,
+        _origin_loss: origin_loss,
+        _renderer_loss: renderer_loss,
+        _asset_loss: None,
+        docs_bound: docs.is_some() || docs_authorization.is_some() || explicit_permit.is_some(),
+        docs_permit,
+        _docs_loss: docs_loss,
+        _slides_loss: slides_loss,
+    };
+    let context = NativeContext::with_owner_loss(payload, renderer, loss).with_authority(authority);
+    Some(NativeRequestOwner { view, context })
+}
+
+/// Called at the beginning of the actual UI task with an immutable captured action.
+/// Once accepted, construction completes normally even if the old owner is revoked.
+/// Unlike a final file commit, the constructor runs after every authority gate drops.
+pub(crate) fn run_accepted_ui<R, F: FnOnce() -> R>(
+    ui: &dyn Thread,
+    owner: &NativeRequestOwner,
+    cancel: &CancelToken,
+    action: F,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(with_owner_effect(owner, cancel, || action))
+}
+
+/// A short non-reentrant final effect. Never call UI/core constructors or wait here.
+pub(crate) fn with_owner_effect<R>(
+    owner: &NativeRequestOwner,
+    cancel: &CancelToken,
+    action: impl FnOnce() -> R,
+) -> Option<R> {
+    with_source_effect(owner, None, cancel, cancel, action)
+}
+
+pub(crate) fn with_created_effect<R>(
+    source: &NativeRequestOwner,
+    created: &RendererGeneration,
+    cancel: &CancelToken,
+    pending: &CancelToken,
+    action: impl FnOnce() -> R,
+) -> Option<R> {
+    with_source_effect(source, Some(created), cancel, pending, action)
+}
+
+pub(crate) fn run_accepted_created_ui<R>(
+    ui: &dyn Thread,
+    source: &NativeRequestOwner,
+    created: &RendererGeneration,
+    cancel: &CancelToken,
+    pending: &CancelToken,
+    action: impl FnOnce() -> R,
+) -> Result<R, String> {
+    if !ui.is_current() {
+        return Err("Native UI admission requires the UI thread.".into());
+    }
+    execute_accepted(with_created_effect(
+        source,
+        created,
+        cancel,
+        pending,
+        || action,
+    ))
+}
+
+fn with_source_effect<R>(
+    owner: &NativeRequestOwner,
+    created: Option<&RendererGeneration>,
+    cancel: &CancelToken,
+    pending: &CancelToken,
+    action: impl FnOnce() -> R,
+) -> Option<R> {
+    let authority = owner
+        .context
+        .authority_ref::<NativeOwnerAuthority>()
+        .filter(|authority| authority.view == owner.view)?;
+    let renderer = owner.context.renderer()?;
+    let loss = owner.loss_token()?;
+    if authority.docs_bound && authority.docs_permit.is_none() {
+        return None;
+    }
+    let effect = || {
+        RendererGeneration::with_active_all(
+            [Some(renderer), owner.context.document_lease(), created],
+            || {
+                SlidesViewLease::with_lease_active_pair(
+                    [owner.context.downcast_ref::<SlidesViewLease>(), None],
+                    || {
+                        MediaPermit::with_active_all([authority.docs_permit.as_ref()], || {
+                            with_pdf_lifetimes(owner, || {
+                                CancelToken::with_active_all(
+                                    [Some(cancel), Some(pending), Some(&loss)],
+                                    action,
+                                )
+                            })
+                            .flatten()
+                        })
+                        .flatten()
+                    },
+                )
+                .flatten()
+            },
+        )
+        .flatten()
+    };
+    let asset = owner.context.downcast_ref::<NativeAssetAuthorization>();
+    if asset.is_some_and(|asset| {
+        asset.view != owner.view || !asset.matches_native_context(&authority.origin)
+    }) {
+        return None;
+    }
+    let apply = || match asset {
+        Some(asset) => asset.with_lease_live_fenced(effect),
+        None => Some(effect()),
+    };
+    authority.origin.with_live(apply).flatten().flatten()
+}
+
+fn with_pdf_lifetimes<T>(owner: &NativeRequestOwner, action: impl FnOnce() -> T) -> Option<T> {
+    shell_contract::ipc::PdfDocumentLease::with_live_all(
+        [owner.pdf_document(), owner.pdf_revision()],
+        action,
+    )
+}
+
+fn execute_accepted<R>(action: Option<impl FnOnce() -> R>) -> Result<R, String> {
+    match action {
+        Some(action) => Ok(action()),
+        None => Err("Renderer document is no longer available.".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effects::commit_recovery_seed;
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn revocation_before_admission_prevents_ui_effect() {
+        let generation = RendererGeneration::new();
+        generation.revoke();
+        let effects = Cell::new(0);
+        let action = || effects.set(effects.get() + 1);
+        assert!(execute_accepted(generation.with_active(|| action)).is_err());
+        assert_eq!(effects.get(), 0);
+    }
+
+    #[test]
+    fn revocation_after_admission_does_not_abandon_accepted_action() {
+        let generation = RendererGeneration::new();
+        let effects = Cell::new(0);
+        let action = || effects.set(effects.get() + 1);
+        let accepted = generation.with_active(|| action);
+        generation.revoke();
+        assert_eq!(execute_accepted(accepted), Ok(()));
+        assert_eq!(effects.get(), 1);
+    }
+
+    #[test]
+    fn accepted_constructor_can_reenter_and_finish_after_revocation() {
+        let generation = RendererGeneration::new();
+        let effects = Cell::new(0);
+        let action = || {
+            generation.revoke();
+            effects.set(effects.get() + 1);
+            Err::<(), _>("native construction failed")
+        };
+        let accepted = generation.with_active(|| action);
+        assert_eq!(
+            execute_accepted(accepted),
+            Ok(Err("native construction failed"))
+        );
+        assert_eq!(effects.get(), 1);
+        assert!(!generation.is_active());
+    }
+
+    fn invocation() -> shell_contract::ipc::NativeInvocationOperation {
+        use shell_contract::ipc::{NativeInvocationIssuer, NativeInvocationSelection};
+        NativeInvocationIssuer::new(CancelToken::default()).issue(
+            NativeInvocationSelection::HeadlessExport {
+                surface: shell_contract::Surface::Docs,
+                input: "selected.docx".into(),
+                output: "selected.pdf".into(),
+                format: "pdf".into(),
+                page: None,
+                ops: None,
+                batch: None,
+            },
+            CancelToken::default(),
+        )
+    }
+
+    #[test]
+    fn native_registration_rejects_a_context_without_attested_proof() {
+        let operation = invocation();
+        let created = RendererGeneration::new();
+        let target = operation
+            .reserve_target(ViewId(19), created.clone())
+            .unwrap();
+        let owner = NativeRequestOwner {
+            view: ViewId(19),
+            context: NativeContext::with_owner_loss((), created, CancelToken::default()),
+        };
+        assert!(register_native_invocation_target(&target, owner).is_err());
+        assert!(target.registered_document().is_err());
+    }
+
+    #[test]
+    fn a_registered_contract_snapshot_does_not_fabricate_native_authority() {
+        let operation = invocation();
+        let created = RendererGeneration::new();
+        let target = operation
+            .reserve_target(ViewId(20), created.clone())
+            .unwrap();
+        let owner = NativeRequestOwner {
+            view: ViewId(20),
+            context: NativeContext::with_owner_loss((), created, CancelToken::default()),
+        };
+        // Bypass only the Rust contract in this fixture. The real native adapter
+        // must still refuse it even though a registered snapshot exists.
+        target
+            .with_active(|| target.register_from_native_admitted(owner.clone()))
+            .unwrap()
+            .unwrap();
+        assert!(target.registered_document().is_ok());
+        let effects = Cell::new(0);
+        assert!(
+            with_native_invocation_effect(
+                &target,
+                &owner,
+                operation.cancel(),
+                operation.shutdown(),
+                || effects.set(effects.get() + 1)
+            )
+            .is_none()
+        );
+        assert_eq!(effects.get(), 0);
+    }
+
+    #[test]
+    fn native_constructor_action_can_finish_the_operation_after_admission() {
+        let operation = invocation();
+        let effects = Cell::new(0);
+        let accepted = operation.with_active(|| {
+            || {
+                operation.finish();
+                effects.set(effects.get() + 1);
+            }
+        });
+        assert_eq!(execute_accepted(accepted), Ok(()));
+        assert_eq!(effects.get(), 1);
+        assert!(operation.with_active(|| ()).is_none());
+    }
+
+    #[test]
+    fn recovery_commit_notifies_preparation_loss_after_all_gates_release() {
+        use shell_contract::ipc::{
+            NativeInvocationIssuer, NativeInvocationSelection, RecoveryOpenContext,
+            RecoveryOpenTarget,
+        };
+        let operation = NativeInvocationIssuer::new(CancelToken::default()).issue(
+            NativeInvocationSelection::RecoveryBlank {
+                surface: shell_contract::Surface::Docs,
+                title: "Untitled".into(),
+            },
+            CancelToken::default(),
+        );
+        let created = RendererGeneration::new();
+        let (_issuer, closure, owner) =
+            shell_contract::ipc::NativeClosureIssuer::new_with_owner(ViewId(21), created.clone());
+        let target = RecoveryOpenTarget::bind(
+            RecoveryOpenContext::NativeStartup(operation.clone()),
+            ViewId(21),
+            created,
+            closure,
+            owner,
+        )
+        .unwrap();
+        let to_finish = operation.clone();
+        let _subscription = target
+            .preparation_loss_token()
+            .on_cancel(move || to_finish.finish());
+        let receipt = commit_recovery_seed(&target, || Ok(())).unwrap();
+        assert!(receipt.matches(&target));
+        assert!(operation.loss_token().is_cancelled());
+    }
+
+    struct Inline;
+
+    impl Thread for Inline {
+        fn post(&self, job: Box<dyn FnOnce() + Send>) {
+            job();
+        }
+        fn is_current(&self) -> bool {
+            true
+        }
+    }
+
+    /// A Docs view of a real view table, bound to a real registered native document, and a
+    /// recovery opening of it under a native tab load. The seed is committed and the owner of
+    /// the page's first registration is retained, as when the page has loaded and has not yet
+    /// loaded the recovered document.
+    struct DocsOpening {
+        views: crate::views::ViewTable,
+        browser: crate::native::browser::BrowserIdentity,
+        origin: DocumentContext,
+        lease: MediaViewLease,
+        command: shell_contract::ipc::NativeInvocationOperation,
+        target: shell_contract::ipc::RecoveryOpenTarget,
+        receipt: shell_contract::ipc::RecoverySeedReceipt,
+        registered: NativeRequestOwner,
+        _closure: shell_contract::ipc::NativeClosureIssuer,
+    }
+
+    impl DocsOpening {
+        fn new(label: &str) -> Self {
+            use shell_contract::ipc::{
+                CommandRecoveryConstraint, NativeClosureIssuer, NativeEditorCommand,
+                NativeInvocationIssuer, NativeInvocationSelection, RecoveryOpenContext,
+                RecoveryOpenTarget,
+            };
+            let views = crate::views::ViewTable::new(
+                std::sync::Arc::new(crate::ipc::outlet::TauriOutlet::default()),
+                std::sync::Arc::new(Inline),
+            );
+            let window = shell_contract::ids::WindowId(1);
+            let _lifecycle = views.add_window(window, label.into());
+            let (view, created) = views
+                .register_view(
+                    views.allocate_view().unwrap(),
+                    window,
+                    shell_contract::Surface::Docs,
+                )
+                .unwrap();
+            let lease = MediaViewLease::new(view.0).unwrap();
+            views.set_docs_media_lease(view, lease.clone()).unwrap();
+            let (browser, origin) = crate::native::browser::testing::registered_context(label);
+            assert!(views.bind_verified_native_origin(view, &created, &origin));
+            let registered = capture_owner(&views, view, &created).unwrap();
+
+            let issuer = NativeInvocationIssuer::new(CancelToken::default());
+            let command = issuer.issue_command(
+                NativeEditorCommand::HydrateTab {
+                    tab_id: "tab-1".into(),
+                },
+                CancelToken::default(),
+            );
+            let child = issuer
+                .issue_tab_recovery_child(
+                    &command,
+                    "tab-1",
+                    NativeInvocationSelection::RecoveryBlank {
+                        surface: shell_contract::Surface::Docs,
+                        title: "Recovered".into(),
+                    },
+                    CancelToken::default(),
+                )
+                .unwrap();
+            let (closure_issuer, closure, browser_owner) =
+                NativeClosureIssuer::new_with_owner(view, created.clone());
+            let target = RecoveryOpenTarget::bind_command(
+                RecoveryOpenContext::NativeStartup(child),
+                view,
+                created,
+                closure,
+                browser_owner,
+                CommandRecoveryConstraint {
+                    command: command.clone(),
+                    participants: Vec::new(),
+                    cancel: CancelToken::default(),
+                    pending: CancelToken::default(),
+                },
+            )
+            .unwrap();
+            let receipt = commit_recovery_seed(&target, || Ok(())).unwrap();
+            register_recovery_open_target(&target, registered.clone()).unwrap();
+            Self {
+                views,
+                browser,
+                origin,
+                lease,
+                command,
+                target,
+                receipt,
+                registered,
+                _closure: closure_issuer,
+            }
+        }
+
+        /// What the opening asks for when its document is ready.
+        fn current_owner(&self) -> Result<NativeRequestOwner, String> {
+            current_recovery_owner(
+                &self.views,
+                &self.target,
+                Some(&self.origin),
+                &self.registered,
+            )
+        }
+
+        /// The last admission of the opening, the one that hands the ready tab over.
+        fn hands_over(&self, receiver: &NativeRequestOwner) -> bool {
+            let Ok(snapshot) = self.target.authority_snapshot() else {
+                return false;
+            };
+            let cancel = self.target.created().loss_token();
+            with_recovery_open_service_snapshot(
+                &self.receipt,
+                &snapshot,
+                receiver,
+                &[],
+                None,
+                None,
+                &cancel,
+                None,
+                &[],
+                || (),
+            )
+            .is_some()
+        }
+
+        /// The admission the native tab load adopts the opened tab under, with the owner
+        /// the opening delivered.
+        fn adopts(&self, owner: &NativeRequestOwner) -> bool {
+            let Some(Ok(document)) = self
+                .target
+                .invocation_target()
+                .map(|target| target.registered_document())
+            else {
+                return false;
+            };
+            let cancel = CancelToken::default();
+            let pending = CancelToken::default();
+            with_command_recovery_target_effect(
+                &self.command,
+                &document,
+                owner,
+                &[],
+                &cancel,
+                &pending,
+                || (),
+            )
+            .is_some()
+        }
+    }
+
+    fn lost(owner: &NativeRequestOwner) -> bool {
+        owner.loss_token().is_none_or(|loss| loss.is_cancelled())
+    }
+
+    #[test]
+    fn a_docs_opening_finishes_under_the_owner_its_loaded_document_has() {
+        let opening = DocsOpening::new("docs-permit");
+        let before = opening.current_owner().unwrap();
+        assert!(
+            before
+                .loss_token()
+                .zip(opening.registered.loss_token())
+                .is_some_and(|(before, registered)| before.same_token(&registered)),
+            "a registered owner that still lives is the one to finish with",
+        );
+        assert!(opening.hands_over(&before));
+        assert!(opening.adopts(&before));
+
+        // The page loads the recovered document: its media permit is replaced, while the
+        // native document and the renderer stay.
+        let next = opening.lease.stage_document().unwrap();
+        opening.lease.commit_document(&next).unwrap();
+        assert!(lost(&opening.registered));
+        assert!(opening.origin.is_live());
+        assert!(opening.target.created().is_active());
+        assert!(!opening.hands_over(&opening.registered));
+        assert!(!opening.adopts(&opening.registered));
+
+        let current = opening.current_owner().unwrap();
+        assert!(!lost(&current));
+        assert!(opening.hands_over(&current));
+        assert!(opening.adopts(&current));
+    }
+
+    #[test]
+    fn a_docs_opening_is_not_handed_to_a_document_that_replaced_its_page() {
+        use crate::native::browser::testing::{TEST_NONCE, url};
+        use shell_contract::runtime::Views;
+        let opening = DocsOpening::new("docs-navigation");
+        let view = opening.target.view();
+
+        // The page leaves its document, here for the very address it already shows.
+        let address = url("https://example.test/a");
+        assert!(opening.browser.core.admit_navigation(&address));
+        assert!(opening.origin.is_revoked());
+        assert!(lost(&opening.registered));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&opening.registered));
+        assert!(!opening.adopts(&opening.registered));
+
+        // Its successor commits and registers at that address and takes the view.
+        opening.browser.core.commit(&address);
+        let successor = opening.browser.core.register_document(TEST_NONCE).unwrap();
+        assert!(successor != opening.origin);
+        assert!(opening.views.bind_verified_native_origin(
+            view,
+            opening.target.created(),
+            &successor
+        ));
+        let renderer = opening.views.renderer_generation(view).unwrap();
+        let successor_owner = capture_owner(&opening.views, view, &renderer).unwrap();
+        assert!(!lost(&successor_owner));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&successor_owner));
+        assert!(!opening.adopts(&successor_owner));
+    }
+
+    #[test]
+    fn a_docs_opening_stays_lost_without_a_current_permit_or_renderer() {
+        let opening = DocsOpening::new("docs-revoked-permit");
+        opening.lease.revoke();
+        assert!(lost(&opening.registered));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&opening.registered));
+
+        let opening = DocsOpening::new("docs-revoked-renderer");
+        opening.target.created().revoke();
+        assert!(lost(&opening.registered));
+        assert!(opening.current_owner().is_err());
+        assert!(!opening.hands_over(&opening.registered));
+    }
+
+    #[test]
+    fn a_docs_opening_delivers_its_owner_again_and_releases_the_one_it_replaces() {
+        let (sent, done) = std::sync::mpsc::channel();
+        // on its own thread: an owner released under the gate of its permit never returns
+        std::thread::spawn(move || {
+            let opening = DocsOpening::new("docs-redelivery");
+            let next = opening.lease.stage_document().unwrap();
+            opening.lease.commit_document(&next).unwrap();
+            let snapshot = opening.target.authority_snapshot().unwrap();
+
+            // The owner delivered when the document became ready, held by nothing else.
+            let delivered = std::sync::Mutex::new(Some(opening.current_owner().unwrap()));
+            let swap = |owner: NativeRequestOwner| {
+                delivered
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .replace(owner)
+            };
+            let refused =
+                redeliver_recovery_owner(&opening.receipt, &snapshot, &opening.registered, swap);
+            let again = opening.current_owner().unwrap();
+            let admitted = redeliver_recovery_owner(&opening.receipt, &snapshot, &again, swap);
+            let holds_the_new_owner = delivered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .and_then(NativeRequestOwner::loss_token)
+                .zip(again.loss_token())
+                .is_some_and(|(held, again)| held.same_token(&again));
+            let _ = sent.send((refused, admitted, holds_the_new_owner, lost(&again)));
+        });
+        assert_eq!(
+            done.recv_timeout(std::time::Duration::from_secs(60)),
+            Ok((false, true, true, false)),
+        );
+    }
+
+    #[test]
+    fn an_owner_of_a_live_document_waits_out_a_lock_another_thread_holds() {
+        use crate::native::browser::testing::registered_context;
+        let (_browser, origin) = registered_context("owner-contended");
+        let (held, holding) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let gate = origin.clone();
+        let holder = std::thread::spawn(move || {
+            gate.with_live(|| {
+                held.send(()).unwrap();
+                let _ = released.recv();
+            })
+        });
+        holding.recv().unwrap();
+
+        // the lock is held elsewhere: asked once, the document answers as a lost one does
+        let loss = CancelToken::default();
+        assert!(subscribe_origin_loss(&origin, &loss, || false).is_none());
+
+        // asked again after the other thread has let go, the live document subscribes
+        let mut holder = Some(holder);
+        let mut asked = 0;
+        let subscription = subscribe_origin_loss(&origin, &loss, || {
+            asked += 1;
+            if let Some(holder) = holder.take() {
+                release.send(()).unwrap();
+                assert_eq!(holder.join().unwrap(), Some(()));
+            }
+            true
+        });
+        assert!(subscription.is_some());
+        assert_eq!(asked, 1);
+        assert!(!loss.is_cancelled());
+
+        // and the subscription is still that document's loss
+        origin
+            .0
+            .revoke(crate::native::events::RevokeReason::Close)
+            .unwrap()
+            .deliver();
+        assert!(loss.is_cancelled());
+    }
+
+    #[test]
+    fn an_owner_is_not_waited_for_where_no_wait_can_help() {
+        use crate::native::browser::testing::registered_context;
+        let renderer = RendererGeneration::new();
+
+        // inside the document's own gate this thread holds the lock: nothing is asked again
+        let (_browser, origin) = registered_context("owner-own-gate");
+        let mut asked = 0;
+        let inside = origin.with_live(|| {
+            subscribe_origin_loss(&origin, &CancelToken::default(), || {
+                asked += 1;
+                true
+            })
+            .is_some()
+        });
+        assert_eq!((inside, asked), (Some(false), 0));
+        assert!(owner(ViewId(31), origin.clone(), renderer.clone(), ()).is_some());
+
+        // a revoked document is lost, not busy
+        origin
+            .0
+            .revoke(crate::native::events::RevokeReason::Close)
+            .unwrap()
+            .deliver();
+        let gone = subscribe_origin_loss(&origin, &CancelToken::default(), || {
+            asked += 1;
+            true
+        });
+        assert!(gone.is_none());
+        assert_eq!(asked, 0);
+        assert!(owner(ViewId(31), origin, renderer, ()).is_none());
+
+        // the wait the owners use ends
+        let mut again = briefly();
+        assert_eq!((0..200).take_while(|_| again()).count(), 80);
+    }
+}

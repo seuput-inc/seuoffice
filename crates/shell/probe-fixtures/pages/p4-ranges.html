@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ko">
+  <meta charset="utf-8" />
+  <title>쪽 범위 견본</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+    }
+    .page {
+      height: 5.5in;
+      break-after: page;
+      overflow: hidden;
+    }
+    .page:last-child {
+      break-after: auto;
+    }
+    .swatch {
+      width: 36pt;
+      height: 36pt;
+    }
+  </style>
+  <body>
+    <div class="page" data-n="1">
+      <div class="swatch" style="background: rgb(40, 0, 0)"></div>
+      <p>Page 1</p>
+    </div>
+    <div class="page" data-n="2">
+      <div class="swatch" style="background: rgb(80, 0, 0)"></div>
+      <p>Page 2</p>
+    </div>
+    <div class="page" data-n="3">
+      <div class="swatch" style="background: rgb(120, 0, 0)"></div>
+      <p>Page 3</p>
+    </div>
+    <div class="page" data-n="4">
+      <div class="swatch" style="background: rgb(160, 0, 0)"></div>
+      <p>Page 4</p>
+    </div>
+    <div class="page" data-n="5">
+      <div class="swatch" style="background: rgb(200, 0, 0)"></div>
+      <p>Page 5</p>
+    </div>
+  </body>
+  <script src="probe.js"></script>
+  <script>
+    P.log('p4.page', { page: 'ranges', pages: document.querySelectorAll('.page').length })
+    P.done({ pages: 5 })
+  </script>
+</html>

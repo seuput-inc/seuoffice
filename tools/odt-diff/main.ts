@@ -166,7 +166,11 @@ for (const odt of [...seedOdts, ...exportedOdts]) {
   )
 }
 {
-  const modelSeeds = docxes.filter((d) => d.bytes.length < 600_000).slice(0, 80)
+  // The first 80 documents by path. A fixture of a vendored crate sorts among
+  // them and would push a document out of the window, so those are left out.
+  const modelSeeds = docxes
+    .filter((d) => d.bytes.length < 600_000 && !d.name.startsWith('crates/'))
+    .slice(0, 80)
   for (const docx of modelSeeds) {
     await callsOnDocument(docx.name, await partsOf(docx.bytes))
     const doc = await withClock(() => parseDocx(docx.bytes)).catch(() => null)

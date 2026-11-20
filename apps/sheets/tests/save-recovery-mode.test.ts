@@ -99,12 +99,12 @@ describe('handleSave recovery mode', () => {
     expect(messages).toEqual([])
   })
 
-  it('a failed copy is swallowed (best-effort, never surfaces; resolves not-ok)', async () => {
+  it('a failed copy stays off the status line and resolves not-ok with the reason', async () => {
     writeWorkbookRecovery.mockRejectedValue(new Error('disk full'))
     const { ctx, messages } = ctxWith({ dirty: true })
-    // handleSave now reports an outcome (the MCP bridge reads it); recovery
-    // mode still stays silent on failure
-    await expect(handleSave(ctx, 'recovery')).resolves.toEqual({ ok: false })
+    // the outcome carries the reason for the copy the OS asks for as the session ends,
+    // which must report a failure; the 30-second copy ignores it
+    await expect(handleSave(ctx, 'recovery')).resolves.toEqual({ ok: false, error: 'disk full' })
     expect(messages).toEqual([])
   })
 })

@@ -224,13 +224,26 @@ function dialogsPatch(file, head, edits) {
 const PATCHES = {
   'sdk-scheme': {
     file: /[\\/]@rhwp[\\/]editor[\\/]transport\.js$/,
-    find: "if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {",
-    replace: `if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:' && targetUrl.protocol !== '${APP_SCHEME}:') {`,
+    // The shell serves each module from its own scheme (`genoffice-app-hwp`, on macOS), and
+    // WebKit gives a URL of such a scheme the opaque origin "null", which postMessage refuses as
+    // a target: the origin is built from the scheme and host instead.
+    find: [
+      "    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {",
+      "      throw new Error('studioUrl must use HTTP(S)');",
+      '    }',
+      '    this._targetOrigin = targetUrl.origin;',
+    ].join('\n'),
+    replace: [
+      `    if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:' && targetUrl.protocol !== '${APP_SCHEME}:' && !targetUrl.protocol.startsWith('${APP_SCHEME}-')) {`,
+      "      throw new Error('studioUrl must use HTTP(S)');",
+      '    }',
+      "    this._targetOrigin = targetUrl.origin !== 'null' ? targetUrl.origin : targetUrl.protocol + '//' + targetUrl.host;",
+    ].join('\n'),
   },
   'studio-scheme': {
     file: /[\\/]rhwp-studio[\\/]src[\\/]embed[\\/]protocol\.ts$/,
     find: "return protocol === 'http:' || protocol === 'https:';",
-    replace: `return protocol === 'http:' || protocol === 'https:' || protocol === '${APP_SCHEME}:';`,
+    replace: `return protocol === 'http:' || protocol === 'https:' || protocol === '${APP_SCHEME}:' || protocol.startsWith('${APP_SCHEME}-');`,
   },
   'studio-password-flag': {
     file: /[\\/]rhwp-studio[\\/]src[\\/]main\.ts$/,

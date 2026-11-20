@@ -140,7 +140,12 @@ pub(crate) fn write_package_with(
     add(
         &mut writer,
         "xl/workbook.xml",
-        &workbook_xml(sheets, defined_names, &extras.book_views, &extras.pivot_caches),
+        &workbook_xml(
+            sheets,
+            defined_names,
+            &extras.book_views,
+            &extras.pivot_caches,
+        ),
         options,
     )?;
     add(

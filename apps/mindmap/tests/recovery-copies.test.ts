@@ -142,6 +142,15 @@ describe('recovery copies', () => {
     warn.mockRestore()
   })
 
+  it('reports the real error when an immediate recovery copy fails', async () => {
+    const r = rig()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    r.copier.noteChange()
+    r.map.failNext = true
+    await expect(r.copier.writeNow()).rejects.toThrow('disk full')
+    warn.mockRestore()
+  })
+
   it('drop a copy a save overtook', async () => {
     const r = rig()
     r.copier.noteChange()

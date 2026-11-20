@@ -128,7 +128,8 @@ describe('exporting a sheet that holds a cell hidden from the AI as PDF', () => 
     const { ctx, requestSaveAs } = context(HIDDEN_A1)
     expect(await handleExportPdf(ctx)).toBe(true)
     expect(askWithheldExport).toHaveBeenCalledTimes(1)
-    expect(askWithheldExport).toHaveBeenCalledWith('PDF')
+    // an export a person started belongs to no save request of the shell
+    expect(askWithheldExport).toHaveBeenCalledWith('PDF', undefined)
     expect(exportPdf).toHaveBeenCalledTimes(1)
     expect(askWithheldExport.mock.invocationCallOrder[0]).toBeLessThan(
       exportPdf.mock.invocationCallOrder[0]!,

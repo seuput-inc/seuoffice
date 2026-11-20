@@ -220,6 +220,21 @@ const desktopApi: DesktopApi = {
     const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.selectWorkbook)
     return result === null ? null : parseWorkbookFile(result)
   },
+  async savedOpenResult(id, ok, error) {
+    if (
+      typeof id !== 'string' ||
+      id.length === 0 ||
+      typeof ok !== 'boolean' ||
+      (error !== undefined && typeof error !== 'string')
+    ) {
+      throw new Error('Invalid saved workbook open result.')
+    }
+    await ipcRenderer.invoke(IPC_CHANNELS.savedOpenResult, {
+      id,
+      ok,
+      ...(error === undefined ? {} : { error }),
+    })
+  },
   async updateWorkbookPassword(sessionId, newPassword) {
     if (
       !isUuid(sessionId) ||
@@ -680,16 +695,23 @@ const desktopApi: DesktopApi = {
     }
     return result as { canceled: true }
   },
-  async confirmCsvSave() {
-    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.csvSaveConfirm)
+  async confirmCsvSave(ownedSaveRequestId) {
+    const result: unknown = await ipcRenderer.invoke(
+      IPC_CHANNELS.csvSaveConfirm,
+      ownedSaveRequestId,
+    )
     if (result !== 'csv' && result !== 'xlsx' && result !== 'cancel') {
       throw new Error('Invalid CSV save confirmation response.')
     }
     return result
   },
-  async askWithheldExport(format) {
+  async askWithheldExport(format, ownedSaveRequestId) {
     if (format !== 'CSV' && format !== 'PDF') throw new Error('Invalid export format.')
-    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.withheldExportChoice, format)
+    const result: unknown = await ipcRenderer.invoke(
+      IPC_CHANNELS.withheldExportChoice,
+      format,
+      ownedSaveRequestId,
+    )
     if (result !== 'xlsx' && result !== 'export' && result !== 'cancel') {
       throw new Error('Invalid export choice response.')
     }
@@ -770,12 +792,27 @@ const desktopApi: DesktopApi = {
     ipcRenderer.send(IPC_CHANNELS.pendingEditsChanged, Math.floor(count))
   },
   onCloseSaveRequest(callback) {
-    const listener = (): void => callback()
+    const listener = (_event: unknown, request: unknown): void => {
+      if (request === undefined) return callback()
+      if (typeof request !== 'object' || request === null) return
+      const value = request as Record<string, unknown>
+      if (
+        typeof value.requestId !== 'string' ||
+        (value.mode !== 'save' && value.mode !== 'save-as') ||
+        (value.targetPath !== undefined && typeof value.targetPath !== 'string')
+      )
+        return
+      callback({
+        requestId: value.requestId,
+        mode: value.mode,
+        ...(typeof value.targetPath === 'string' ? { targetPath: value.targetPath } : {}),
+      })
+    }
     ipcRenderer.on(IPC_CHANNELS.closeSaveRequest, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.closeSaveRequest, listener)
   },
-  reportCloseSaveResult(ok) {
-    ipcRenderer.send(IPC_CHANNELS.closeSaveResult, ok === true)
+  reportCloseSaveResult(ok, requestId, error) {
+    ipcRenderer.send(IPC_CHANNELS.closeSaveResult, ok === true, requestId, error)
   },
   onRecoveryNotice(callback) {
     const listener = (_event: unknown, text: unknown): void => {
@@ -787,8 +824,15 @@ const desktopApi: DesktopApi = {
   onRecoveryWriteNow(callback) {
     const listener = (_event: unknown, nonce: unknown): void => {
       if (typeof nonce !== 'string') return
-      const done = (): void => ipcRenderer.send(IPC_CHANNELS.recoveryWriteNowDone, nonce)
-      void callback().then(done, done)
+      void callback().then(
+        () => ipcRenderer.send(IPC_CHANNELS.recoveryWriteNowDone, nonce, null),
+        (error: unknown) =>
+          ipcRenderer.send(
+            IPC_CHANNELS.recoveryWriteNowDone,
+            nonce,
+            error instanceof Error ? error.message : String(error),
+          ),
+      )
     }
     ipcRenderer.on(IPC_CHANNELS.recoveryWriteNow, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.recoveryWriteNow, listener)
@@ -1119,6 +1163,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
   if (!isRecord(input)) throw new Error('Invalid workbook response.')
   const {
     sessionId,
+    savedLoadId,
     name,
     path,
     sha256,
@@ -1139,6 +1184,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
   } = input
   if (
     !isUuid(sessionId) ||
+    (savedLoadId !== undefined && (typeof savedLoadId !== 'string' || savedLoadId.length === 0)) ||
     typeof name !== 'string' ||
     (path !== undefined && (typeof path !== 'string' || path.length === 0)) ||
     typeof sha256 !== 'string' ||
@@ -1451,6 +1497,7 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
     typeof input.shortDateFormat === 'string' ? input.shortDateFormat : undefined
   return {
     sessionId,
+    ...(savedLoadId === undefined ? {} : { savedLoadId }),
     name,
     ...(path === undefined ? {} : { path }),
     sha256,

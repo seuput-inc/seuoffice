@@ -392,12 +392,12 @@ impl Pivots {
     /// Reads what the pivot tables need from one sheet while its cells are
     /// at hand: the header row of every source range on it, and what the
     /// columns whose members the document names hold.
-    pub(crate) fn observe<'a>(
-        &mut self,
-        sheet: usize,
-        cell: impl Fn(u32, u32) -> SourceCell<'a>,
-    ) {
-        for plan in self.plans.iter_mut().filter(|plan| plan.source_sheet == sheet) {
+    pub(crate) fn observe<'a>(&mut self, sheet: usize, cell: impl Fn(u32, u32) -> SourceCell<'a>) {
+        for plan in self
+            .plans
+            .iter_mut()
+            .filter(|plan| plan.source_sheet == sheet)
+        {
             let ((top, left), (bottom, right)) = plan.source;
             let mut columns = Vec::new();
             for column in left..=right {
@@ -406,9 +406,7 @@ impl Pivots {
                     // A number in the header row is named the way it is
                     // written when it is a whole one; a date or a fraction
                     // is shown through a format this cannot repeat.
-                    SourceCell::Number(number)
-                        if number.fract() == 0.0 && number.abs() < 1e15 =>
-                    {
+                    SourceCell::Number(number) if number.fract() == 0.0 && number.abs() < 1e15 => {
                         Some(format!("{number:.0}"))
                     }
                     _ => None,
@@ -742,7 +740,8 @@ fn parts(
         .min()
         .unwrap_or(default_data_column)
         .clamp(1, (right - left).max(1));
-    let first_header_row = u32::from(first_data_row >= 2 || !(column_fields == 0 && cols.len() == 1));
+    let first_header_row =
+        u32::from(first_data_row >= 2 || !(column_fields == 0 && cols.len() == 1));
 
     // ---- the cache: the fields, and the members the document names
     let mut carried_members = vec![false; headers.len()];
@@ -846,10 +845,7 @@ fn parts(
         let mut items = String::new();
         if let Some(field) = field {
             if let Some(caption) = field.display_name.as_deref() {
-                attributes.push_str(&format!(
-                    r#" name="{}""#,
-                    escape_xml(&printable(caption))
-                ));
+                attributes.push_str(&format!(r#" name="{}""#, escape_xml(&printable(caption))));
             }
             attributes.push_str(match field.orientation {
                 Orientation::Row => r#" axis="axisRow""#,
@@ -957,7 +953,10 @@ fn parts(
             .iter()
             .map(|index| format!(r#"<field x="{index}"/>"#))
             .collect();
-        format!(r#"<{element} count="{}">{entries}</{element}>"#, fields.len())
+        format!(
+            r#"<{element} count="{}">{entries}</{element}>"#,
+            fields.len()
+        )
     };
     // The rows and columns the table had when it was last laid out. Excel
     // lays it out again from the rebuilt cache; these stand in until then.
@@ -983,7 +982,10 @@ fn parts(
                 .unwrap_or_default();
             entries.push_str(&format!(r#"<pageField fld="{index}"{item} hier="-1"/>"#));
         }
-        format!(r#"<pageFields count="{}">{entries}</pageFields>"#, pages.len())
+        format!(
+            r#"<pageFields count="{}">{entries}</pageFields>"#,
+            pages.len()
+        )
     };
     let mut data_fields = String::new();
     let mut captions: Vec<String> = Vec::new();
@@ -1024,7 +1026,10 @@ fn parts(
     let data_fields = if data.is_empty() {
         String::new()
     } else {
-        format!(r#"<dataFields count="{}">{data_fields}</dataFields>"#, data.len())
+        format!(
+            r#"<dataFields count="{}">{data_fields}</dataFields>"#,
+            data.len()
+        )
     };
 
     // ODF names the grand totals by what they total, as `ods_pivot` writes
@@ -1048,7 +1053,9 @@ fn parts(
     match layout {
         Layout::Compact => {}
         Layout::Outline { .. } => attributes.push_str(r#" compact="0" compactData="0""#),
-        Layout::Tabular => attributes.push_str(r#" compact="0" compactData="0" outline="0" outlineData="0""#),
+        Layout::Tabular => {
+            attributes.push_str(r#" compact="0" compactData="0" outline="0" outlineData="0""#)
+        }
     }
     let page_counts = if pages.is_empty() {
         String::new()
@@ -1213,7 +1220,11 @@ mod tests {
             ("data-pilot-subtotal", &[("function", "auto")], true),
             (
                 "data-pilot-member",
-                &[("name", "West"), ("display", "false"), ("show-details", "true")],
+                &[
+                    ("name", "West"),
+                    ("display", "false"),
+                    ("show-details", "true"),
+                ],
                 true,
             ),
             (
@@ -1303,7 +1314,11 @@ mod tests {
         // A source narrowed by a filter.
         assert!(
             table(&[
-                ("source-cell-range", &[("cell-range-address", "D.A1:D.B9")], false),
+                (
+                    "source-cell-range",
+                    &[("cell-range-address", "D.A1:D.B9")],
+                    false
+                ),
                 ("filter", &[], false),
                 ("/filter", &[], false),
                 ("/source-cell-range", &[], false),
@@ -1329,7 +1344,14 @@ mod tests {
             ])
             .unsupported
         );
-        assert!(!table(&[("source-cell-range", &[("cell-range-address", "D.A1:D.B9")], true)]).unsupported);
+        assert!(
+            !table(&[(
+                "source-cell-range",
+                &[("cell-range-address", "D.A1:D.B9")],
+                true
+            )])
+            .unsupported
+        );
     }
 
     #[test]
@@ -1364,7 +1386,10 @@ mod tests {
             "{cache}"
         );
         let table = part(&extras, "xl/pivotTables/pivotTable1.xml");
-        assert!(table.contains(r#" name="Sales &amp; plan" cacheId="1" "#), "{table}");
+        assert!(
+            table.contains(r#" name="Sales &amp; plan" cacheId="1" "#),
+            "{table}"
+        );
         // The page field and the blank row under it are above the table; the
         // buttons say the values start in the second row and second column.
         assert!(
@@ -1417,7 +1442,9 @@ mod tests {
         let table = part(&extras, "xl/pivotTables/pivotTable1.xml");
         // The filter button and the blank row under it are above the table.
         assert!(
-            table.contains(r#"<location ref="A23:C30" firstHeaderRow="1" firstDataRow="1" firstDataCol="2"/>"#),
+            table.contains(
+                r#"<location ref="A23:C30" firstHeaderRow="1" firstDataRow="1" firstDataCol="2"/>"#
+            ),
             "{table}"
         );
         assert!(
@@ -1585,7 +1612,12 @@ mod tests {
         pivot.fields[1].orientation = Orientation::Row;
         let extras = written(vec![pivot]);
         let table = part(&extras, "xl/pivotTables/pivotTable1.xml");
-        assert!(table.contains(r#" indent="0" compact="0" compactData="0" outline="0" outlineData="0">"#), "{table}");
+        assert!(
+            table.contains(
+                r#" indent="0" compact="0" compactData="0" outline="0" outlineData="0">"#
+            ),
+            "{table}"
+        );
         // Two row fields: the values start in the third column.
         assert!(
             table.contains(r#"<location ref="A6:D11" firstHeaderRow="1" firstDataRow="1" firstDataCol="2" rowPageCount="1" colPageCount="1"/>"#),
@@ -1595,7 +1627,10 @@ mod tests {
             table.contains(r#"<pivotField axis="axisRow" compact="0" outline="0" showAll="0" defaultSubtotal="0"><items count="1"><item t="default"/></items></pivotField>"#),
             "{table}"
         );
-        assert!(table.contains(r#"<pivotField dataField="1" compact="0" outline="0" showAll="0"/>"#), "{table}");
+        assert!(
+            table.contains(r#"<pivotField dataField="1" compact="0" outline="0" showAll="0"/>"#),
+            "{table}"
+        );
     }
 
     #[test]
@@ -1606,7 +1641,10 @@ mod tests {
         let extras = written(vec![sales(), second]);
         assert_eq!(extras.pivot_caches.len(), 2);
         let table = part(&extras, "xl/pivotTables/pivotTable2.xml");
-        assert!(table.contains(r#" name="Sales &amp; plan 2" cacheId="2" "#), "{table}");
+        assert!(
+            table.contains(r#" name="Sales &amp; plan 2" cacheId="2" "#),
+            "{table}"
+        );
         // Without buttons the headers are counted: one column field, and one
         // row label column in the compact layout.
         assert!(

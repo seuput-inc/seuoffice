@@ -810,7 +810,7 @@ pub fn patch_slide_xml(slide: &mut Slide) -> String {
 }
 
 /// `patchSlideXml`, with the error of a patch that cannot run.
-pub(crate) fn try_patch_slide_xml(slide: &mut Slide) -> Result<String, String> {
+pub fn try_patch_slide_xml(slide: &mut Slide) -> Result<String, String> {
     let mut out = String::new();
     out.push_str((*slide.body_prefix).as_deref().unwrap_or(""));
     if let Some(elements) = slide.elements.as_mut() {

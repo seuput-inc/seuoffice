@@ -1186,7 +1186,7 @@ fn run_of(
         run.color_follows_theme.set(true);
     }
     if value_truthy(fill)
-        && !(defined(srgb).is_some() && !srgb_has_mods)
+        && (defined(srgb).is_none() || srgb_has_mods)
         && let Some(raw) = color_node_xml(fill).filter(|raw| !raw.is_empty())
     {
         run.color_node_xml.set(raw);

@@ -55,6 +55,8 @@ function listen<Args extends unknown[]>(
 
 const core: EpubCoreApi = {
   consumePending: () => ipcRenderer.invoke(EPUB_CHANNELS.consumePending),
+  recoveryInitialized: (receipt, ok, error) =>
+    ipcRenderer.invoke(EPUB_CHANNELS.recoveryInitialized, receipt, ok, error),
   openFile: (path) => ipcRenderer.invoke(EPUB_CHANNELS.openFile, path),
   readChapter: (spineIndex) => ipcRenderer.invoke(EPUB_CHANNELS.readChapter, spineIndex),
   onFlushRequest: (handler) => listen<[string]>(EPUB_CHANNELS.flushRequest, handler),
@@ -64,8 +66,9 @@ const core: EpubCoreApi = {
   setTranslationLock: (locked) => ipcRenderer.invoke(EPUB_CHANNELS.setTranslationLock, locked),
   save: (request) => ipcRenderer.invoke(EPUB_CHANNELS.save, request),
   setDirty: (dirty) => ipcRenderer.send(EPUB_CHANNELS.dirtyChanged, dirty),
-  onSaveRequest: (handler) => listen<[SaveMode]>(EPUB_CHANNELS.saveRequest, handler),
-  sendSaveRequestAck: (ok) => ipcRenderer.send(EPUB_CHANNELS.saveRequestAck, ok),
+  onSaveRequest: (handler) => listen<[SaveMode, string?]>(EPUB_CHANNELS.saveRequest, handler),
+  sendSaveRequestAck: (ok, requestId) =>
+    ipcRenderer.send(EPUB_CHANNELS.saveRequestAck, ok, requestId),
   onCloseSaveRequest: (handler) => listen<[]>(EPUB_CHANNELS.closeSaveRequest, handler),
   sendCloseSaveResult: (ok) => ipcRenderer.send(EPUB_CHANNELS.closeSaveResult, ok),
   onFileRenamed: (handler) => listen<[string]>(EPUB_CHANNELS.fileRenamed, handler),

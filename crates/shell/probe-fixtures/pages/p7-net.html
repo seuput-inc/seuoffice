@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p7 net</title>
+<script src="probe.js"></script>
+<script>
+  // A sub-resource over http to a loopback server the probe runs. Whether it comes back
+  // depends on the window's request policy.
+  ;(async () => {
+    const query = new URLSearchParams(location.search)
+    const url = 'http://127.0.0.1:' + query.get('port') + '/ping?tag=' + query.get('tag')
+    let result
+    try {
+      const response = await fetch(url, { mode: 'cors', cache: 'no-store' })
+      result = { ok: true, status: response.status, body: await response.text() }
+    } catch (error) {
+      result = { ok: false, error: String(error) }
+    }
+    P.log('p7.net', { tag: query.get('tag'), url, ...result })
+    P.done({})
+  })()
+</script>

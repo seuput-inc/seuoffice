@@ -15,7 +15,7 @@ use crate::core::open::OdtDocument;
 use crate::core::styles::OdtStylePart;
 use crate::core::xml::{
     CloseVerdict, ElementFrame, ElementVisitor, OpenVerdict, PrefixMap, XmlTokenKind,
-    attribute_map, decode_xml_entities, walk_elements,
+    attribute_map, decode_xml_entities, slice, walk_elements,
 };
 
 use super::geometry::{AnchorAxis, AnchorWrap, DrawingAnchor, EMU_PER_CM, length_to_emu};
@@ -126,7 +126,7 @@ pub fn plain_text_of(xml: &str, prefixes: &PrefixMap, from: usize, to: usize) ->
         ) {
             if kind == XmlTokenKind::Text {
                 self.out
-                    .push_str(&decode_xml_entities(&self.xml[start..end]));
+                    .push_str(&decode_xml_entities(slice(self.xml, start, end)));
             }
         }
     }

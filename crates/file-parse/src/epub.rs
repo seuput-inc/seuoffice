@@ -4,8 +4,8 @@
 //! here both are synchronous. An `Err` holds the message of the `Error` the
 //! TypeScript throws (or of the error an engine step throws).
 
-use epub_engine::open::{EPUB_ZIP_LIMITS, EpubOpenResult, open_epub};
-use epub_engine::text::extract_chapter_text;
+use epub_engine::open::{EPUB_ZIP_LIMITS, EpubOpenResult, open_epub_with_host};
+use epub_engine::text::extract_chapter_text_with_host;
 use epub_engine::types::EpubRefusalReason;
 
 /// What each refusal tells the reader (spec 3), in the order the engine checks.
@@ -30,7 +30,14 @@ fn refusal_message(reason: EpubRefusalReason) -> &'static str {
 /// than handed on as replacement characters, and a book with no chapter that
 /// decodes is refused: garbled text never reaches the index or a model.
 pub fn epub_to_text(bytes: &[u8]) -> Result<String, String> {
-    let book = match open_epub(bytes, &EPUB_ZIP_LIMITS) {
+    epub_to_text_with_host(bytes, &seu_host::call)
+}
+
+pub fn epub_to_text_with_host(
+    bytes: &[u8],
+    host: &crate::parse::HostCall<'_>,
+) -> Result<String, String> {
+    let book = match open_epub_with_host(bytes, &EPUB_ZIP_LIMITS, host) {
         EpubOpenResult::Opened(book) => book,
         EpubOpenResult::Refused { reason, detail } => {
             return Err(format!("{} ({detail})", refusal_message(reason)));
@@ -52,7 +59,8 @@ pub fn epub_to_text(bytes: &[u8]) -> Result<String, String> {
             continue;
         }
         decoded += 1;
-        let text = extract_chapter_text(&source.text).map_err(|error| error.message)?;
+        let text =
+            extract_chapter_text_with_host(&source.text, host).map_err(|error| error.message)?;
         if !text.is_empty() {
             parts.push(text);
         }

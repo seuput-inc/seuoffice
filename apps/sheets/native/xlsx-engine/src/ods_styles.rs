@@ -190,10 +190,7 @@ impl StyleRegistry {
 
         if let Some(color) = &style.fill_color {
             if self.base.fill_color.as_ref() != Some(color) {
-                cell.push_str(&format!(
-                    r#" fo:background-color="{}""#,
-                    escape_xml(color)
-                ));
+                cell.push_str(&format!(r#" fo:background-color="{}""#, escape_xml(color)));
             }
         }
         // Borders are always written: the ODF default is "no border", so a
@@ -365,13 +362,19 @@ impl StyleRegistry {
 
     /// A `table-column` style for a width in points and a page break ahead of
     /// the column; `None` when the column needs neither.
-    pub(crate) fn column(&mut self, width_points: Option<f64>, break_before: bool) -> Option<String> {
+    pub(crate) fn column(
+        &mut self,
+        width_points: Option<f64>,
+        break_before: bool,
+    ) -> Option<String> {
         if width_points.is_none() && !break_before {
             return None;
         }
         let key = format!(
             "{}|{break_before}",
-            width_points.map(|width| format!("{width:.2}")).unwrap_or_default()
+            width_points
+                .map(|width| format!("{width:.2}"))
+                .unwrap_or_default()
         );
         if let Some(name) = self.column_styles.get(&key) {
             return Some(name.clone());
@@ -403,7 +406,9 @@ impl StyleRegistry {
         }
         let key = format!(
             "{}|{fixed}|{break_before}",
-            height_points.map(|height| format!("{height:.2}")).unwrap_or_default()
+            height_points
+                .map(|height| format!("{height:.2}"))
+                .unwrap_or_default()
         );
         if let Some(name) = self.row_styles.get(&key) {
             return Some(name.clone());
@@ -592,10 +597,7 @@ impl StyleRegistry {
         }
         let mut cell = String::from(r#" fo:padding="0.02in""#);
         if let Some(fill) = &self.base.fill_color {
-            cell.push_str(&format!(
-                r#" fo:background-color="{}""#,
-                escape_xml(fill)
-            ));
+            cell.push_str(&format!(r#" fo:background-color="{}""#, escape_xml(fill)));
         }
         let mut out = String::from(r#"<style:default-style style:family="table-cell">"#);
         out.push_str(&format!("<style:table-cell-properties{cell}/>"));
@@ -767,7 +769,11 @@ enum Part {
 /// What one `;`-separated section formats.
 #[derive(Debug)]
 enum Body {
-    Number { parts: Vec<Part>, spec: NumberSpec, percent: bool },
+    Number {
+        parts: Vec<Part>,
+        spec: NumberSpec,
+        percent: bool,
+    },
     Scientific {
         parts: Vec<Part>,
         decimals: u32,
@@ -786,8 +792,14 @@ enum Body {
         fixed_denominator: Option<u32>,
     },
     /// `@`: the cell's text, with literal text around it.
-    Text { parts: Vec<Part> },
-    Calendar { fields: Vec<Field>, time_only: bool, elapsed: bool },
+    Text {
+        parts: Vec<Part>,
+    },
+    Calendar {
+        fields: Vec<Field>,
+        time_only: bool,
+        elapsed: bool,
+    },
     /// Literal text only, or nothing: `"-"` for a zero, an empty section to
     /// hide a value.
     Literal(String),
@@ -884,7 +896,11 @@ fn data_style_plan(code: &str) -> Option<DataStylePlan> {
     if let Body::Calendar { time_only, .. } = &sections[0].body {
         // A date code's later sections (negative dates, text) have no ODF
         // counterpart worth the conditions; the first is the one Excel shows.
-        let kind = if *time_only { ValueKind::Time } else { ValueKind::Date };
+        let kind = if *time_only {
+            ValueKind::Time
+        } else {
+            ValueKind::Date
+        };
         return Some(DataStylePlan {
             kind,
             mapped: Vec::new(),
@@ -901,13 +917,20 @@ fn data_style_plan(code: &str) -> Option<DataStylePlan> {
                 color: fourth.color,
                 condition: None,
                 body: Body::Text {
-                    parts: if text.is_empty() { Vec::new() } else { vec![Part::Text(text)] },
+                    parts: if text.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![Part::Text(text)]
+                    },
                 },
             },
             _ => fourth,
         })
     } else if sections.len() > 1
-        && matches!(sections.last().map(|section| &section.body), Some(Body::Text { .. }))
+        && matches!(
+            sections.last().map(|section| &section.body),
+            Some(Body::Text { .. })
+        )
     {
         sections.pop()
     } else {
@@ -968,7 +991,12 @@ fn data_style_plan(code: &str) -> Option<DataStylePlan> {
     }
     if sections.len() == 1 {
         let only = sections.remove(0);
-        if let Body::Number { parts, spec, percent } = &only.body {
+        if let Body::Number {
+            parts,
+            spec,
+            percent,
+        } = &only.body
+        {
             let plain = parts.len() == 1 && spec.general && !percent && only.color.is_none();
             if plain {
                 return None;
@@ -981,7 +1009,11 @@ fn data_style_plan(code: &str) -> Option<DataStylePlan> {
         });
     }
     let main = sections.pop()?;
-    let defaults: &[&str] = if sections.len() == 1 { &[">=0"] } else { &[">0", "<0"] };
+    let defaults: &[&str] = if sections.len() == 1 {
+        &[">=0"]
+    } else {
+        &[">0", "<0"]
+    };
     let mapped = sections
         .into_iter()
         .zip(defaults)
@@ -1285,7 +1317,9 @@ fn merge_text(parts: Vec<Part>) -> Vec<Part> {
 
 fn numeric_body(tokens: &[Raw]) -> Body {
     let has_digits = tokens.iter().any(Raw::is_digit);
-    let general = tokens.iter().position(|token| matches!(token, Raw::General));
+    let general = tokens
+        .iter()
+        .position(|token| matches!(token, Raw::General));
     let at = tokens.iter().position(|token| matches!(token, Raw::At));
     if !has_digits && general.is_none() {
         if let Some(at) = at {
@@ -1517,7 +1551,9 @@ fn fraction_body(tokens: &[Raw], first: usize, last: usize) -> Body {
 /// `# ?/8`: a fraction whose denominator is written out. The scanner hands the
 /// digits over as text, so the shape is recognised before the general rules.
 fn fixed_fraction_body(tokens: &[Raw]) -> Option<Body> {
-    let slash = tokens.iter().position(|token| matches!(token, Raw::Slash))?;
+    let slash = tokens
+        .iter()
+        .position(|token| matches!(token, Raw::Slash))?;
     let mut end = slash + 1;
     let mut digits = String::new();
     while let Some(Raw::Text(text)) = tokens.get(end) {
@@ -1724,7 +1760,11 @@ fn section_xml(name: &str, section: &Section, maps: &str, volatile: bool) -> Str
             r#"<number:number-style style:name="{name}"{volatile}>{color}<number:text>{}</number:text>{maps}</number:number-style>"#,
             escape_xml(text),
         ),
-        Body::Number { parts, spec, percent } => {
+        Body::Number {
+            parts,
+            spec,
+            percent,
+        } => {
             let element = element_name(parts, *percent);
             format!(
                 r#"<{element} style:name="{name}"{volatile}>{color}{}{maps}</{element}>"#,
@@ -1804,10 +1844,9 @@ fn parts_xml(parts: &[Part], value: &str) -> String {
     let mut out = String::new();
     for part in parts {
         match part {
-            Part::Text(text) => out.push_str(&format!(
-                "<number:text>{}</number:text>",
-                escape_xml(text)
-            )),
+            Part::Text(text) => {
+                out.push_str(&format!("<number:text>{}</number:text>", escape_xml(text)))
+            }
             Part::Currency(symbol) => out.push_str(&format!(
                 "<number:currency-symbol>{}</number:currency-symbol>",
                 escape_xml(symbol)
@@ -1916,10 +1955,9 @@ fn calendar_style_xml(name: &str, fields: &[Field], time_only: bool, elapsed: bo
                 body.push_str(&empty_element("number:seconds", &attributes));
             }
             Field::AmPm => body.push_str("<number:am-pm/>"),
-            Field::Text(text) => body.push_str(&format!(
-                "<number:text>{}</number:text>",
-                escape_xml(text)
-            )),
+            Field::Text(text) => {
+                body.push_str(&format!("<number:text>{}</number:text>", escape_xml(text)))
+            }
         }
     }
     if body.is_empty() {
@@ -1998,8 +2036,14 @@ mod tests {
             "{embedded}"
         );
         let thousands = rendered(r##"#,##0,"천""##);
-        assert!(thousands.contains(r#"number:display-factor="1000""#), "{thousands}");
-        assert!(thousands.contains("<number:text>천</number:text>"), "{thousands}");
+        assert!(
+            thousands.contains(r#"number:display-factor="1000""#),
+            "{thousands}"
+        );
+        assert!(
+            thousands.contains("<number:text>천</number:text>"),
+            "{thousands}"
+        );
         let optional = rendered("0.0#");
         assert!(
             optional.contains(r#"number:decimal-places="2" number:min-decimal-places="1""#),
@@ -2030,18 +2074,24 @@ mod tests {
             "{red}"
         );
         assert!(
-            red.contains(r#"<style:map style:condition="value()&gt;=0" style:apply-style-name="N1P0"/>"#),
+            red.contains(
+                r#"<style:map style:condition="value()&gt;=0" style:apply-style-name="N1P0"/>"#
+            ),
             "{red}"
         );
         // Three sections plus a text one: positive, negative, zero. The zero
         // section of an accounting format is a literal dash.
         let accounting = rendered(r##"_-* #,##0_-;-* #,##0_-;_-* "-"_-;_-@_-"##);
         assert!(
-            accounting.contains(r#"<style:map style:condition="value()&gt;0" style:apply-style-name="N1P0"/>"#),
+            accounting.contains(
+                r#"<style:map style:condition="value()&gt;0" style:apply-style-name="N1P0"/>"#
+            ),
             "{accounting}"
         );
         assert!(
-            accounting.contains(r#"<style:map style:condition="value()&lt;0" style:apply-style-name="N1P1"/>"#),
+            accounting.contains(
+                r#"<style:map style:condition="value()&lt;0" style:apply-style-name="N1P1"/>"#
+            ),
             "{accounting}"
         );
         assert!(
@@ -2050,8 +2100,11 @@ mod tests {
         );
         // The text section is the style a text cell falls through to.
         assert!(
-            accounting.contains(r#"<number:text-style style:name="N1"><number:text-content/><style:map"#)
-                && accounting.contains(r#"<style:map style:condition="value()=0" style:apply-style-name="N1P2"/>"#),
+            accounting
+                .contains(r#"<number:text-style style:name="N1"><number:text-content/><style:map"#)
+                && accounting.contains(
+                    r#"<style:map style:condition="value()=0" style:apply-style-name="N1P2"/>"#
+                ),
             "{accounting}"
         );
         // Parentheses for negatives.
@@ -2085,7 +2138,10 @@ mod tests {
             "{fraction}"
         );
         let eighths = rendered("# ?/8");
-        assert!(eighths.contains(r#"number:denominator-value="8""#), "{eighths}");
+        assert!(
+            eighths.contains(r#"number:denominator-value="8""#),
+            "{eighths}"
+        );
         let improper = rendered("??/??");
         assert!(!improper.contains("min-integer-digits"), "{improper}");
     }
@@ -2103,7 +2159,9 @@ mod tests {
             ("d-mmm-yy", false),
         ] {
             match section(code).body {
-                Body::Calendar { time_only: actual, .. } => {
+                Body::Calendar {
+                    time_only: actual, ..
+                } => {
                     assert_eq!(actual, time_only, "{code}")
                 }
                 other => panic!("{code} is not a calendar format: {other:?}"),
@@ -2139,12 +2197,17 @@ mod tests {
     #[test]
     fn localised_date_formats_keep_their_literals() {
         let korean = rendered(r#"yyyy"년" mm"월" dd"일""#);
-        assert!(korean.contains("<number:text>년 </number:text>"), "{korean}");
+        assert!(
+            korean.contains("<number:text>년 </number:text>"),
+            "{korean}"
+        );
         assert!(korean.contains("<number:month"), "{korean}");
         // `aaa` is the short weekday name, not three letters of text.
         let weekday = rendered("yyyy-mm-dd(aaa)");
         assert!(
-            weekday.contains("<number:text>(</number:text><number:day-of-week/><number:text>)</number:text>"),
+            weekday.contains(
+                "<number:text>(</number:text><number:day-of-week/><number:text>)</number:text>"
+            ),
             "{weekday}"
         );
         let seconds = rendered("mm:ss.000");
@@ -2163,11 +2226,16 @@ mod tests {
             color: Some("#FF0000".into()),
             ..RichRun::default()
         };
-        let name = registry.text_run(&bold).expect("a bold red run needs a style");
+        let name = registry
+            .text_run(&bold)
+            .expect("a bold red run needs a style");
         assert_eq!(registry.text_run(&bold).as_deref(), Some(name.as_str()));
         let styles = registry.automatic_styles();
         assert!(styles.contains(r#"style:family="text""#), "{styles}");
-        assert!(styles.contains(r#"style:font-weight-asian="bold""#), "{styles}");
+        assert!(
+            styles.contains(r#"style:font-weight-asian="bold""#),
+            "{styles}"
+        );
         assert!(!styles.contains("font-style"), "{styles}");
     }
 
@@ -2186,12 +2254,18 @@ mod tests {
         registry.resolve_cell(&style).name.expect("a styled cell");
         let styles = registry.automatic_styles();
         assert!(styles.contains(r#"fo:wrap-option="wrap""#), "{styles}");
-        assert!(styles.contains(r#"style:text-align-source="fix""#), "{styles}");
+        assert!(
+            styles.contains(r#"style:text-align-source="fix""#),
+            "{styles}"
+        );
         assert!(styles.contains(r#"style:rotation-angle="315""#), "{styles}");
         assert!(styles.contains(r#"fo:margin-left="15pt""#), "{styles}");
         assert!(styles.contains(r#"style:cell-protect="none""#), "{styles}");
         // East Asian text reads its own weight property.
-        assert!(styles.contains(r#"style:font-weight-asian="bold""#), "{styles}");
+        assert!(
+            styles.contains(r#"style:font-weight-asian="bold""#),
+            "{styles}"
+        );
     }
     #[test]
     fn a_text_section_is_what_a_text_cell_falls_through_to() {
@@ -2250,7 +2324,11 @@ mod tests {
             default.contains(r#" style:font-name="맑은 고딕" style:font-name-asian="맑은 고딕" style:font-name-complex="맑은 고딕""#),
             "{default}"
         );
-        assert!(registry.font_face_decls().contains(r#"style:name="맑은 고딕""#));
+        assert!(
+            registry
+                .font_face_decls()
+                .contains(r#"style:name="맑은 고딕""#)
+        );
         // A font the cell names outright keeps that name for every script.
         let named = registry.resolve_cell(&CellStyle {
             font_family: Some("Arial".into()),

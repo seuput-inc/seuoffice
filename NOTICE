@@ -35,6 +35,193 @@ distributed in the python-docx repository (ref/xsd), with one marked local
 amendment (see tools/ooxml-validate/README.md). They are used only by tests
 and development tooling and are not shipped in the application.
 
+Node.js path module
+
+crates/jscompat/src/node_path.rs is a Rust port of lib/path.js of Node.js
+v22.22.0 (https://github.com/nodejs/node/blob/v22.22.0/lib/path.js), which
+carries this notice:
+
+  Copyright Joyent, Inc. and other Node contributors.
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the
+  following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+  NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+  USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+libuv
+
+crates/main-core/src/node_fs.rs ports the Windows error table
+`uv_translate_sys_error` (src/win/error.c) and the error texts `uv_strerror`
+(UV_ERRNO_MAP of include/uv.h) of libuv v1.51.0, as bundled by Node.js v22.22.0
+(https://github.com/nodejs/node/tree/v22.22.0/deps/uv). Its test checks the
+table against an unchanged copy of src/win/error.c of libuv v1.51.0
+(crates/main-core/tests/fixtures/libuv-1.51.0-win-error.c). libuv carries this
+notice:
+
+  Copyright Joyent, Inc. and other Node contributors. All rights reserved.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to
+  deal in the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+  sell copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+  IN THE SOFTWARE.
+
+SheetJS cfb
+
+crates/main-core/src/hwp/cfb.rs is a Rust port of the reading and writing
+parts of cfb 1.2.2 (https://github.com/SheetJS/js-cfb), Copyright (C) 2013-present
+SheetJS LLC,
+distributed under the Apache License, Version 2.0 (the license of this
+repository, in LICENSE).
+
+MCP TypeScript SDK
+
+crates/main-core/src/packages/mcp_sdk is a Rust port of parts of
+@modelcontextprotocol/sdk 1.32.1 (https://github.com/modelcontextprotocol/typescript-sdk):
+the JSON-RPC protocol layer, the client and server, the stdio, Streamable HTTP
+and SSE transports, and the OAuth client helpers. It carries this notice:
+
+  MIT License
+
+  Copyright (c) 2024 Anthropic, PBC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+zod
+
+crates/main-core/src/packages/zod.rs is a Rust port of the parts of zod 4.6.7
+(https://github.com/colinhacks/zod) that the MCP tools use: the schema
+builders, parsing with its issue messages and the JSON Schema conversion. It
+carries this notice:
+
+  MIT License
+
+  Copyright (c) 2025 Colin McDonnell
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+pkce-challenge, eventsource, eventsource-parser, content-type
+
+crates/main-core/src/packages/mcp_sdk ports, with the MCP SDK, the parts of
+four packages it stands on: pkce-challenge 5.0.1
+(https://github.com/crouchcd/pkce-challenge) in mcp_sdk/auth.rs, eventsource
+3.0.7 (https://github.com/EventSource/eventsource) in mcp_sdk/sse_client.rs,
+eventsource-parser 3.1.1 (https://github.com/rexxars/eventsource-parser) in
+mcp_sdk/streamable_http_client.rs, and content-type 1.0.5
+(https://github.com/jshttp/content-type) in mcp_sdk/client.rs and
+mcp_sdk/streamable_http_server.rs. Each is under the MIT License, with these
+copyright lines:
+
+  pkce-challenge: Copyright (c) 2019
+  eventsource: Copyright (c) EventSource GitHub organisation
+  eventsource-parser: Copyright (c) 2026 Espen Hovlandsdal <espen@hovlandsdal.com>
+  content-type: Copyright (c) 2015 Douglas Christopher Wilson
+
+and this permission notice:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+Ajv, jsonschema
+
+The desktop shell checks an MCP tool's output against its outputSchema
+(crates/shell/src/host/net/tools/schema.rs) with the jsonschema crate
+(https://github.com/Stranger6667/jsonschema), and words what fails the way
+Ajv 8.20.0 (https://github.com/ajv-validator/ajv), which the MCP SDK used,
+words it: the message texts of its errorsText are restated there. Both are
+under the MIT License (the permission notice above), with these copyright
+lines:
+
+  Ajv: Copyright (c) 2015-2021 Evgeny Poberezkin
+  jsonschema: Copyright (c) 2020-2026 Dmitry Dygalo
+
+Chromium print header and footer
+
+On macOS the desktop shell draws a PDF's header and footer itself
+(crates/shell/src/native/platform/macos/header_footer.rs): the wrapper page's
+CSS, its built-in default header and footer, and the rules for filling the
+date, title, url, pageNumber and totalPages classes are restated from
+Chromium's components/printing/resources/print_header_footer_template_page.html
+and components/printing/renderer/print_render_frame_helper.cc
+(https://chromium.googlesource.com/chromium/src). Chromium is Copyright The
+Chromium Authors and distributed under the BSD 3-Clause License
+(https://chromium.googlesource.com/chromium/src/+/main/LICENSE), which permits
+redistribution and use with or without modification provided its copyright
+notice, conditions and disclaimer are kept.
+
 SeuOffice brand artwork
 
 The SeuOffice app icon and logo lockup are original compositions for this
@@ -234,6 +421,16 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 
+Public Suffix List
+
+The Rust shell checks the polling address of a queued FLUX image job with the
+psl crate (https://github.com/addr-rs/psl) and its psl-types crate, both
+dual-licensed under the MIT License and the Apache License, Version 2.0.
+psl compiles in the Public Suffix List (https://publicsuffix.org/list/),
+ICANN and private sections, which is distributed under the Mozilla Public
+License, Version 2.0 (https://mozilla.org/MPL/2.0/). The list is used
+unmodified; its source is https://publicsuffix.org/list/public_suffix_list.dat.
+
 Trademarks
 
 IeumOffice is not affiliated with, sponsored by or endorsed by Microsoft
@@ -276,6 +473,38 @@ or a translation of it, remains.
 The HWP/HWPX engine in vendor/rhwp-core is rhwp, Copyright (c) 2025-2026
 Edward Kim, MIT License (vendor/rhwp-core/LICENSE), with the IeumOffice
 patches in vendor/rhwp-core/patches.
+
+The installer of the Rust shell carries Node.js (https://nodejs.org),
+Copyright Node.js contributors, MIT License with the licenses of the
+components Node.js bundles (its LICENSE, shipped as
+resources/cli/node/LICENSE and in THIRD-PARTY-NOTICES.txt), as the runtime of
+the seuoffice command line.
+
+The Rust shell's update download (crates/shell/src/host/update/
+differential.rs and feed.rs) translates the block-map differential download
+of electron-updater 6.8.11 (https://github.com/electron-userland/
+electron-builder, packages/electron-updater, downloadPlanBuilder and
+DifferentialDownloader), Copyright (c) 2015 Loopline Systems, under the MIT
+License:
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit
+  persons to whom the Software is furnished to do so, subject to the
+  following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+  THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+  DEALINGS IN THE SOFTWARE.
 
 seuoffice does not include GenOffice's ee/ directory or anything under the
 GenOffice Enterprise License.

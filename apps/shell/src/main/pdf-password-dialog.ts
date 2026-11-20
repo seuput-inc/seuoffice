@@ -17,6 +17,7 @@ let pwWin: BrowserWindow | null = null
 let currentState: PdfPasswordUiState | null = null
 let pendingResolve: ((password: string | null) => void) | null = null
 let ipcRegistered = false
+let generation = 0
 
 function settle(password: string | null): void {
   const resolve = pendingResolve
@@ -27,13 +28,29 @@ function settle(password: string | null): void {
 function registerIpc(): void {
   if (ipcRegistered) return
   ipcRegistered = true
-  ipcMain.handle(PDF_PASSWORD_CHANNELS.getState, () => currentState)
-  ipcMain.handle(PDF_PASSWORD_CHANNELS.submit, (_event, password: unknown) => {
+  ipcMain.handle(PDF_PASSWORD_CHANNELS.getState, (event) =>
+    pwWin && !pwWin.isDestroyed() && event.sender === pwWin.webContents ? currentState : null,
+  )
+  ipcMain.handle(PDF_PASSWORD_CHANNELS.submit, (event, password: unknown, token: unknown) => {
+    if (
+      !pwWin ||
+      pwWin.isDestroyed() ||
+      event.sender !== pwWin.webContents ||
+      token !== String(generation)
+    )
+      return
     if (typeof password !== 'string') return
     pushState({ busy: true })
     settle(password)
   })
-  ipcMain.handle(PDF_PASSWORD_CHANNELS.cancel, () => {
+  ipcMain.handle(PDF_PASSWORD_CHANNELS.cancel, (event, token: unknown) => {
+    if (
+      !pwWin ||
+      pwWin.isDestroyed() ||
+      event.sender !== pwWin.webContents ||
+      token !== String(generation)
+    )
+      return
     settle(null)
     closePdfPasswordDialog()
   })
@@ -50,13 +67,14 @@ function pushState(patch: Partial<PdfPasswordUiState>): void {
 /** Ask the user for the PDF password; one call = one attempt. */
 export function promptPdfPassword(
   parent: BrowserWindow | null,
-  state: PdfPasswordUiState,
+  state: Omit<PdfPasswordUiState, 'generation'>,
 ): Promise<string | null> {
   // a second prompt while one is pending would orphan the first caller —
   // resolve it as cancelled first (cannot happen in the single-flight export
   // path, but keeps the module safe on its own)
   settle(null)
-  currentState = { ...state, busy: false }
+  generation++
+  currentState = { ...state, busy: false, generation: String(generation) }
   registerIpc()
 
   const promise = new Promise<string | null>((resolve) => {

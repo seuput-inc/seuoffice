@@ -9,9 +9,9 @@
  * with `wasm-pack build --target web --release` and copies the package files
  * into vendor/rhwp-core, recording the WASM hash in its package.json.
  *
- * `--source-only` stops after the patches are applied and leaves the tree in
- * crates/.rhwp-source/<tag>: CI checks the licences of the crates it compiles
- * (deny.toml), and the Rust crates in crates/ depend on it by path.
+ * Prepares upstream's generated Rust test suites after applying the patches.
+ * `--source-only` then leaves the tree in crates/.rhwp-source/<tag>: CI checks
+ * the licences of the crates it compiles, and crates/ depends on it by path.
  *
  * Needs git, rustup (the tag's rust-toolchain.toml selects the toolchain and
  * the wasm32 target) and wasm-pack. The app build itself never runs this.
@@ -83,6 +83,7 @@ if (head !== commit) {
 for (const patch of patches) {
   run('git', ['apply', '--whitespace=nowarn', join(VENDOR, 'patches', patch)], work)
 }
+run(process.execPath, ['scripts/rust-test-suite-manifest.mjs', '--prepare'], work)
 
 if (process.argv.includes('--source-only')) {
   console.log(`vendor/rhwp-core: ${tag} + ${patches.length} patches applied in ${work}`)

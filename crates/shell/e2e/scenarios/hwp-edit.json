@@ -1,0 +1,98 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/hwp.hwp"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 1500
+    },
+    {
+      "op": "query",
+      "as": "prep-caret",
+      "js": "(() => { const w = document.querySelector('.hwp-editor-host iframe')?.contentWindow; const s = w?.rhwpStudio; if (!s) return false; if (!w.__e2eCaretHome) { s.automation.registerCommand({ id: 'ext:e2e-caret-home', label: 'E2E caret home', execute(services) { services.getInputHandler().moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }) } }); w.__e2eCaretHome = true; } s.automation.execute('ext:e2e-caret-home'); w.focus(); w.document.querySelector('textarea')?.focus(); return 'ok' })()"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "query",
+      "as": "diag-hwp-dom",
+      "js": "(() => { const f = document.querySelector('.hwp-editor-host iframe'); let inner = null; try { const w = f && f.contentWindow; inner = f && { href: String(w.location.href), state: w.document.readyState, studio: typeof w.rhwpStudio, secure: w.isSecureContext, isolated: w.crossOriginIsolated, errors: w.__e2eErrors || [], text: w.document.body.innerText.slice(0, 200) } } catch (e) { inner = String(e) } return { host: !!document.querySelector('.hwp-editor-host'), iframes: document.querySelectorAll('iframe').length, secure: isSecureContext, errors: window.__e2eErrors || [], inner, html: document.body.innerHTML.slice(0, 400) } })()"
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-hwp"
+    },
+    {
+      "op": "wait",
+      "ms": 500
+    },
+    {
+      "op": "query",
+      "as": "hwp-before",
+      "js": "(async () => { const s = document.querySelector('.hwp-editor-host iframe')?.contentWindow?.rhwpStudio; if (!s) return null; await s.plugins.load('ieum-agent'); const r = await s.plugins.invoke('ieum-agent', 'findText', ['SEU-E2E-hwp']); return { count: r.count } })()"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/hwp.hwp"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 1500
+    },
+    {
+      "op": "query",
+      "as": "hwp-after",
+      "js": "(async () => { const s = document.querySelector('.hwp-editor-host iframe')?.contentWindow?.rhwpStudio; if (!s) return null; await s.plugins.load('ieum-agent'); const r = await s.plugins.invoke('ieum-agent', 'findText', ['SEU-E2E-hwp']); return { count: r.count } })()"
+    },
+    {
+      "op": "screenshot",
+      "name": "hwp-after"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/hwp-export.pdf"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "query",
+      "as": "export-status",
+      "js": "document.body.innerText.split('\\n').filter((line) => /export.*fail|fail.*export/i.test(line)).slice(0, 3).join(' | ')"
+    },
+    {
+      "op": "query",
+      "as": "export-tab",
+      "js": "location.href"
+    }
+  ]
+}

@@ -198,7 +198,13 @@ pub fn save_archive(
         .iter()
         .map(|entry| entry.name.as_str())
         .collect();
-    validate_edit_sets(&source_names, replacements, removals, additions, stream_patches)?;
+    validate_edit_sets(
+        &source_names,
+        replacements,
+        removals,
+        additions,
+        stream_patches,
+    )?;
 
     let replacement_by_name: std::collections::HashMap<&str, &EntryContent> = replacements
         .iter()
@@ -218,7 +224,10 @@ pub fn save_archive(
         if removal_set.contains(name.as_str()) {
             continue;
         }
-        match (replacement_by_name.get(name.as_str()), stream_patch_by_name.get(name.as_str())) {
+        match (
+            replacement_by_name.get(name.as_str()),
+            stream_patch_by_name.get(name.as_str()),
+        ) {
             (Some(replacement), _) => write_entry(&mut writer, &name, &replacement.content_path)?,
             (None, Some(patched)) => {
                 let program = read_patch_program(&patched.patch_path)?;

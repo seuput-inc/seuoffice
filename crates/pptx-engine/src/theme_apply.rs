@@ -218,7 +218,7 @@ fn hue_dist(a: f64, b: f64) -> f64 {
 
 /// Low saturation / near black-white counts as neutral (mapped along the dk1/lt1 axis)
 fn is_neutral(Hsl { s, l, .. }: Hsl) -> bool {
-    s < 0.15 || l > 0.95 || l < 0.07
+    s < 0.15 || l > 0.95 || (..0.07).contains(&l)
 }
 
 fn srgb_re() -> &'static JsRegex {

@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "jscompat",
+  "file-commit",
   "ooxml-xml",
   "ooxml-pkg",
   "docx-engine",
@@ -14,9 +15,19 @@ members = [
   "saxes",
   "seu-host",
   "spike-one-run-save",
+  "main-core",
+  "main-node",
+  "shell-contract",
+  # one crate per stage 3 area batch: shell-ipc/u, a, m, w, d1, d2
+  "shell-ipc/*",
+  # the shell's IPC core without Tauri (wire form, channel table, dispatch)
+  # and the Rust side of tools/ipc-diff (stage 3, batch W)
+  "shell-core",
+  "ipc-probe",
 ]
-# third-party source carried with patches, outside fmt, clippy and the workspace tests
-exclude = ["vendor", ".rhwp-source"]
+# vendor and .rhwp-source are third-party trees outside workspace checks;
+# spike-main-bridge and the CEF shell have their own workspaces and locks.
+exclude = ["vendor", ".rhwp-source", "spike-main-bridge", "shell"]
 resolver = "3"
 
 [workspace.package]
@@ -27,6 +38,7 @@ publish = false
 
 [workspace.dependencies]
 jscompat = { path = "jscompat" }
+file-commit = { path = "file-commit" }
 ooxml-xml = { path = "ooxml-xml" }
 ooxml-pkg = { path = "ooxml-pkg" }
 # without icu-collation: each member names it, so the wasm build can leave it out
@@ -53,12 +65,21 @@ libm = "0.2"
 regress = { version = "0.12", features = ["utf16"] }
 # shortest float digits with the tie rule of JavaScript
 ryu = "1"
+# errno numbers of the platform, read as Node names them (main-core node_fs)
+libc = "0.2"
+# Node-API: the central process calls main-core in the Electron main process (decision 0030)
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+napi-build = "2"
+main-core = { path = "main-core" }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: a value keeps its keys in the order they were written, as a
 # JavaScript object does; without it serde_json::Value sorts them
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "unbounded_depth"] }
 # SHA-512 of the document protection hash
 sha2 = "0.10"
+# SHA-1 of crypto.createHash('sha1') in the central process (jscompat::sha1_hex)
+sha1 = "0.10"
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # regress 0.12.0 with a bounded backtrack stack and lazy loops that do not walk
@@ -73,6 +94,18 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# the Node-API addon of the central process (main-node): as release, but a
+# panic unwinds, so napi turns it into a JavaScript error instead of ending
+# the Electron main process (decision 0030)
+[profile.node]
+inherits = "release"
+panic = "unwind"
+
+# the addon as fault injection builds it, once per fault: unoptimized and
+# incremental, so a fault rebuilds main-core alone in seconds
+[profile.node-faults]
+inherits = "dev"
+panic = "unwind"
 # The fault probes of tools/pptx-diff: the release semantics (no overflow
 # checks, panic = abort) with builds that take seconds after one edit
 [profile.probe]

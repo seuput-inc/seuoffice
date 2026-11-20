@@ -376,7 +376,8 @@ fn read_settings(root: Node<'_, '_>) -> ViewSettings {
                             values.insert(key, value);
                         }
                     }
-                    let number = |key: &str| values.get(key).and_then(|value| value.parse::<u32>().ok());
+                    let number =
+                        |key: &str| values.get(key).and_then(|value| value.parse::<u32>().ok());
                     let mut view = SheetView::default();
                     // Mode 2 is a frozen split; 1 is a movable one in pixels,
                     // which has no cell position to carry.
@@ -392,7 +393,9 @@ fn read_settings(root: Node<'_, '_>) -> ViewSettings {
                     view.top = number("PositionTop").unwrap_or(0);
                     view.zoom = number("ZoomValue").filter(|zoom| (10..=400).contains(zoom));
                     view.grid = values.get("ShowGrid").map(|value| value == "true");
-                    if let (Some(column), Some(row)) = (number("CursorPositionX"), number("CursorPositionY")) {
+                    if let (Some(column), Some(row)) =
+                        (number("CursorPositionX"), number("CursorPositionY"))
+                    {
                         view.cursor = Some((row, column));
                     }
                     views.sheets.insert(name.to_owned(), view);
@@ -595,11 +598,7 @@ impl ContentParser {
     }
 
     fn wants_text(&self) -> bool {
-        self.in_paragraph
-            || self
-                .note
-                .as_ref()
-                .is_some_and(|note| note.in_creator)
+        self.in_paragraph || self.note.as_ref().is_some_and(|note| note.in_creator)
     }
 
     fn start<R: BufRead>(
@@ -612,8 +611,11 @@ impl ContentParser {
         // the filters of a database range; their reader takes them whole.
         if self.pivots.active() || element.local_name().as_ref() == b"data-pilot-tables" {
             let mut list: Vec<(Vec<u8>, String)> = Vec::new();
-            attributes(reader, element, |key, value| list.push((key.to_vec(), value)))?;
-            self.pivots.start(element.local_name().as_ref(), &list, empty);
+            attributes(reader, element, |key, value| {
+                list.push((key.to_vec(), value))
+            })?;
+            self.pivots
+                .start(element.local_name().as_ref(), &list, empty);
             return Ok(());
         }
         match element.local_name().as_ref() {
@@ -858,7 +860,9 @@ impl ContentParser {
                         b"data-range" => range = value,
                         _ => {}
                     })?;
-                    if !cell.is_empty() && !range.is_empty() && group.cells.len() < MAX_SPARKLINE_CELLS
+                    if !cell.is_empty()
+                        && !range.is_empty()
+                        && group.cells.len() < MAX_SPARKLINE_CELLS
                     {
                         group.cells.push((cell, range));
                     }
@@ -949,7 +953,8 @@ impl ContentParser {
                 }
             }
             b"table-header-rows" => {
-                if let (Some(first), Some(sheet)) = (self.header_rows_from.take(), &mut self.sheet) {
+                if let (Some(first), Some(sheet)) = (self.header_rows_from.take(), &mut self.sheet)
+                {
                     if self.next_row > first {
                         sheet.header_rows = Some((first, self.next_row - 1));
                     }
@@ -1368,7 +1373,9 @@ impl OdsSheetFormat {
 
 /// `Sheet1.A1:Sheet1.D10` (or `$Sheet1.$A$1:.$D$10`, `'My sheet'.B2`) as the
 /// sheet name and the 0-based corners.
-pub(crate) fn parse_range_address(address: &str) -> Option<(Option<String>, (u32, u32), (u32, u32))> {
+pub(crate) fn parse_range_address(
+    address: &str,
+) -> Option<(Option<String>, (u32, u32), (u32, u32))> {
     let address = address.trim();
     let (first, second) = match split_outside_quotes(address, ':') {
         Some((first, second)) => (first, Some(second)),
@@ -1494,7 +1501,10 @@ mod tests {
         assert_eq!(sheet.print_ranges.as_deref(), Some("S.A1:S.C9"));
         assert_eq!(sheet.columns.len(), 3);
         assert_eq!(sheet.columns[0].default_cell.map(name), Some("ce9"));
-        assert_eq!(sheet.columns[0].style, None, "a style that breaks no page is not kept");
+        assert_eq!(
+            sheet.columns[0].style, None,
+            "a style that breaks no page is not kept"
+        );
         assert!(sheet.columns[1].hidden);
         assert_eq!(sheet.columns[1].level, 1);
         assert_eq!(sheet.columns[2].last, MAX_COLUMN - 1);
@@ -1506,8 +1516,16 @@ mod tests {
         assert_eq!(
             sheet.rows[0].cells,
             vec![
-                CellRun { first: 0, last: 1, style: parser.names.index["ce1"] },
-                CellRun { first: 3, last: 5, style: parser.names.index["ce2"] },
+                CellRun {
+                    first: 0,
+                    last: 1,
+                    style: parser.names.index["ce1"]
+                },
+                CellRun {
+                    first: 3,
+                    last: 5,
+                    style: parser.names.index["ce2"]
+                },
             ]
         );
         assert_eq!((sheet.rows[1].first, sheet.rows[1].last), (2, 4));
@@ -1515,9 +1533,21 @@ mod tests {
         assert_eq!(sheet.rows[1].level, 1);
         assert_eq!((sheet.rows[2].first, sheet.rows[2].last), (5, MAX_ROW - 1));
         assert_eq!(sheet.cell_style(0, 4).map(name), Some("ce2"));
-        assert_eq!(sheet.cell_style(0, 2), None, "the third column has no default");
-        assert_eq!(sheet.cell_style(3, 0).map(name), Some("Default"), "said out loud");
-        assert_eq!(sheet.cell_style(1, 0).map(name), Some("ce9"), "the column default");
+        assert_eq!(
+            sheet.cell_style(0, 2),
+            None,
+            "the third column has no default"
+        );
+        assert_eq!(
+            sheet.cell_style(3, 0).map(name),
+            Some("Default"),
+            "said out loud"
+        );
+        assert_eq!(
+            sheet.cell_style(1, 0).map(name),
+            Some("ce9"),
+            "the column default"
+        );
         assert_eq!(sheet.cell_style(900_000, 2).map(name), Some("ce3"));
     }
 
@@ -1531,7 +1561,10 @@ mod tests {
             r#"</table:table-row></table:table>"#,
         ));
         let sheet = &parser.sheets[0];
-        assert_eq!(sheet.links, vec![((0, 0), "https://example.com/".to_owned())]);
+        assert_eq!(
+            sheet.links,
+            vec![((0, 0), "https://example.com/".to_owned())]
+        );
         assert_eq!(sheet.notes.len(), 1);
         assert_eq!(sheet.notes[0].author, "Kim");
         assert_eq!(sheet.notes[0].text, "first\nsecond & third");
@@ -1563,7 +1596,13 @@ mod tests {
         assert_eq!(validation.error_kind, "warning");
         let sheet = &parser.sheets[0];
         assert_eq!(sheet.validations.len(), 1, "three rows, one rectangle");
-        assert_eq!((sheet.validations[0].first_row, sheet.validations[0].last_row), (0, 2));
+        assert_eq!(
+            (
+                sheet.validations[0].first_row,
+                sheet.validations[0].last_row
+            ),
+            (0, 2)
+        );
         assert_eq!(sheet.conditional.len(), 1);
         assert_eq!(sheet.conditional[0].entries.len(), 2);
         let range = &parser.ranges[0];

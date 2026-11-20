@@ -4,6 +4,7 @@
  * Data only; the bridge applies it inside the frame and the tests read it.
  */
 import type { Lang } from '@seuoffice/i18n'
+import { toPlatformSchemeUrl } from '@seuoffice/electron-utils/custom-scheme-url'
 import { DRAWIO_ORIGIN } from './bridge-protocol'
 
 /**
@@ -27,7 +28,8 @@ export function drawioStartUrl(options: { lang: Lang; dark: boolean }): string {
     ['spin', '1'],
   ]
   if (options.dark) params.push(['dark', '1'])
-  return `${DRAWIO_ORIGIN}/index.html?${params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')}`
+  const query = params.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
+  return toPlatformSchemeUrl(`${DRAWIO_ORIGIN}/index.html?${query}`)
 }
 
 /**

@@ -558,7 +558,7 @@ fn decode_entity(reference: &str) -> Option<Vec<u16>> {
         Some(hex) => parse_int(hex, Radix::Sixteen),
         None => parse_int(rest, Radix::Ten),
     };
-    if !code.is_finite() || code < 1.0 || code > 1_114_111.0 {
+    if !(1.0..=1_114_111.0).contains(&code) {
         return None;
     }
     // a surrogate is a code point: `String.fromCodePoint` writes it as one unit

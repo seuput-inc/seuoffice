@@ -1,0 +1,99 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>p1 sync xhr</title>
+<script src="probe.js"></script>
+<script>
+  // P1: a synchronous XHR from the page to the shell's `seuoffice-ipc` scheme (design W6).
+  // Loaded in a real shell view with the measurement bridge, which exposes the real
+  // `ipcRenderer.sendSync` (its nonce, its frames) as `measureIpc.sendSync`: the preload keeps
+  // its native synchronous closure private, so a page cannot call that one. The raw requests
+  // use a made-up nonce: Rust refuses them with 403, which still proves that the request, its
+  // custom header and its body reached the handler and that the page can read the answer.
+  ;(async () => {
+    const internals = window.__TAURI_INTERNALS__
+    P.log('p1.env', {
+      userAgent: navigator.userAgent,
+      origin: location.origin,
+      secure: isSecureContext,
+      ipcUrl: internals
+        ? internals.convertFileSrc('webframe:get-zoom-factor', 'seuoffice-ipc')
+        : null,
+      syncFn: typeof (window.measureIpc && window.measureIpc.sendSync),
+    })
+    await P.loaded()
+    await P.until(() => window.measureIpc && typeof window.measureIpc.sendSync === 'function', 8000)
+    P.log('p1.bridge', { syncFn: typeof (window.measureIpc && window.measureIpc.sendSync) })
+
+    // the real bridge call: registers synchronously when the asynchronous registration is
+    // still in flight, then asks the reserved zoom channel
+    const times = []
+    for (let index = 0; index < 20; index += 1) {
+      const start = performance.now()
+      try {
+        const answer = window.measureIpc.sendSync('webframe:get-zoom-factor')
+        times.push(performance.now() - start)
+        if (index === 0 || index === 19)
+          P.log('p1.real', { ok: true, index, answer, ms: times[times.length - 1] })
+      } catch (error) {
+        P.log('p1.real', { ok: false, index, error: String(error), name: error && error.name })
+        break
+      }
+    }
+    P.log('p1.real.timing', { n: times.length, min: Math.min(...times), max: Math.max(...times) })
+
+    // raw sync XHR, made-up nonce, a body of each size
+    const raw = (method, path, body) => {
+      const url = P.base('seuoffice-ipc') + path
+      const xhr = new XMLHttpRequest()
+      const start = performance.now()
+      try {
+        xhr.open(method, url, false)
+        xhr.overrideMimeType('text/plain; charset=x-user-defined')
+        xhr.setRequestHeader('x-seuoffice-doc', '0'.repeat(32))
+        xhr.send(body)
+        return {
+          ok: true,
+          url,
+          status: xhr.status,
+          length: xhr.responseText.length,
+          ms: performance.now() - start,
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          url,
+          error: String(error),
+          name: error && error.name,
+          ms: performance.now() - start,
+        }
+      }
+    }
+    const pattern = (size) => {
+      const bytes = new Uint8Array(size)
+      for (let index = 0; index < size; index += 1) bytes[index] = index & 255
+      return bytes
+    }
+    for (const size of [0, 4096, 1048576]) {
+      P.log('p1.raw', {
+        name: 'post-' + size,
+        size,
+        ...raw('POST', 'webframe:get-zoom-factor', size ? pattern(size) : null),
+      })
+    }
+    P.log('p1.raw', { name: 'get-outbox', size: 0, ...raw('GET', 'outbox/0', null) })
+
+    // the fallback the design names: a JavaScript prompt panel. Windows shows a dialog
+    // there, so only the WKWebView shape is asked.
+    if (!P.windowsShape) {
+      const start = performance.now()
+      let value
+      try {
+        value = prompt('probe prompt', 'default')
+      } catch (error) {
+        value = 'throws:' + error
+      }
+      P.log('p1.prompt', { value, type: typeof value, ms: performance.now() - start })
+    }
+    P.done({})
+  })()
+</script>

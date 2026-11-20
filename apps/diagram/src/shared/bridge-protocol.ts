@@ -16,6 +16,7 @@
  * Everything here is free of Electron and of the DOM types beyond
  * `MessageEvent`, so both sides and the tests share it.
  */
+import { currentSchemeForm, type SchemeForm } from '@seuoffice/electron-utils/custom-scheme-url'
 import type { DiagramPrimitive } from '@seuoffice/drawio-model'
 
 /** The custom scheme the draw.io files are served from (never `file://`). */
@@ -23,6 +24,15 @@ export const DRAWIO_SCHEME = 'drawio-app'
 /** The host name of that scheme; the frame's origin is `drawio-app://editor`. */
 export const DRAWIO_HOST = 'editor'
 export const DRAWIO_ORIGIN = `${DRAWIO_SCHEME}://${DRAWIO_HOST}`
+
+/**
+ * The origin the draw.io frame has in this page: {@link DRAWIO_ORIGIN} where the scheme is
+ * served as named, `http://drawio-app.localhost` where WebView2 serves it (the host `editor`
+ * is the first path segment of the page's address there, not part of its origin).
+ */
+export function drawioFrameOrigin(form: SchemeForm = currentSchemeForm()): string {
+  return form === 'localhost-http' ? `http://${DRAWIO_SCHEME}.localhost` : DRAWIO_ORIGIN
+}
 
 /** Where our own files sit under the draw.io origin; no draw.io file has this name. */
 export const BRIDGE_PREFIX = '/__ieum/'
@@ -36,8 +46,12 @@ export interface MessageLike {
 }
 
 /** Host side: only the draw.io frame's own window, from the draw.io origin. */
-export function isFromDrawioFrame(event: MessageLike, frameWindow: unknown): boolean {
-  return frameWindow != null && event.source === frameWindow && event.origin === DRAWIO_ORIGIN
+export function isFromDrawioFrame(
+  event: MessageLike,
+  frameWindow: unknown,
+  frameOrigin: string = drawioFrameOrigin(),
+): boolean {
+  return frameWindow != null && event.source === frameWindow && event.origin === frameOrigin
 }
 
 /** Bridge side: only the parent window, from the parent's origin. */

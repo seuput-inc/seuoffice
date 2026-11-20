@@ -1,0 +1,76 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/docs-paste.docx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "clipboard",
+      "text": "SEU-E2E-PASTE-TEXT"
+    },
+    {
+      "op": "shortcut",
+      "name": "paste"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "paste-text",
+      "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
+    },
+    {
+      "op": "clipboard",
+      "text": "SEU-E2E-PASTE-HTML",
+      "html": "<p><b>SEU-E2E-PASTE-HTML</b></p>"
+    },
+    {
+      "op": "shortcut",
+      "name": "paste"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "paste-html",
+      "js": "(() => { const pm = document.querySelector('.editor-scroll .ProseMirror'); return { text: pm?.textContent ?? null, bold: [...(pm?.querySelectorAll('strong, b') ?? [])].map((e) => e.textContent) } })()"
+    },
+    {
+      "op": "shortcut",
+      "name": "selectAll"
+    },
+    {
+      "op": "shortcut",
+      "name": "copy"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "shortcut",
+      "name": "paste"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "paste-roundtrip",
+      "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
+    }
+  ]
+}

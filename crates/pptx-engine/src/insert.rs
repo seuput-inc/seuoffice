@@ -923,6 +923,15 @@ pub fn add_image_media_and_rel(
         };
         slide.path.as_deref().unwrap_or("").to_owned()
     };
+    add_image_media_and_rel_for_part(opened, &slide_path, bytes, ext_raw)
+}
+
+pub fn add_image_media_and_rel_for_part(
+    opened: &mut OpenedPptx,
+    slide_path: &str,
+    bytes: &[u8],
+    ext_raw: &str,
+) -> Result<Option<ImageMediaRel>, String> {
     let archive = &mut opened.archive;
     let ext = ext_raw.to_lowercase();
     let Some(mime) = image_mime(&ext) else {
@@ -968,7 +977,7 @@ pub fn add_image_media_and_rel(
     }
 
     // 3) slide rels: new rId (the rels file may not exist)
-    let rels_path = rels_path_for(&slide_path);
+    let rels_path = rels_path_for(slide_path);
     let rels = match archive.read_text(&rels_path) {
         Some(text) => text.into_owned(),
         None => "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"></Relationships>".to_owned(),

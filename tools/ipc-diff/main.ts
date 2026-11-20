@@ -1,0 +1,515 @@
+/**
+ * The IPC comparison of stage 3 (the stage 3 shell contract, section 8):
+ * every case of every group through the TypeScript handlers (registered on
+ * main-diff's fake Electron) and through the Rust handlers (crates/ipc-probe,
+ * the shell's own dispatch), each in a fresh folder. A case is equal when
+ * each call's answer and events, the host log and the folder after the case
+ * are equal, with each side's folder written as `$DIR`. README.md has the
+ * shapes.
+ *
+ *   npm --prefix tools/ipc-diff run gate [-- --group w/quick-look] [--channel name] [--require W] [--show 20] [--list]
+ *
+ * Without `--group`, each group runs in a process of its own, announced by a
+ * `GROUP <name> start` line (its own output follows when it ends). `--list`
+ * prints `group<TAB>channel` for every channel a case calls. `--require <batch>`
+ * checks the original Electron-derived channels of that batch. Native-only
+ * contracts remain in the runtime registry but require separate synthetic and
+ * actual native-host receipts (the native-host ones less the waived scenarios of
+ * tools/shell-inventory/native-waivers.mjs). A full run stays non-green while
+ * either is pending, except that `--native-host-pending warn` (a push of main,
+ * which has no native-host run to take) reports a pending native-host proof
+ * without failing on it.
+ *
+ * Fails on a difference that divergences.json does not list, on a listed one
+ * that no longer reproduces, on a case either side could not run, and on the
+ * coverage of a required batch. A side that has not finished a case in
+ * CASE_TIMEOUT_MS is a hang: a `HANG` line names its batch, group and case, and
+ * the group ends there.
+ */
+import '@seuoffice/engine-wasm/node'
+import { spawnSync } from 'node:child_process'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { useElectron } from '../main-diff/electron-fake.ts'
+import './vite-imports.ts'
+import { Encoder, WireError, decode } from '../../crates/shell/bridge/wire.ts'
+import { CHANNELS, ELECTRON_CHANNELS, SPECS } from './channels.ts'
+import { NATIVE_CHANNEL_CONTRACTS } from '../shell-inventory/native-channels.ts'
+import { blockingProblems, nativeContractCoverage, nativeEvidence } from './native-contracts.ts'
+import { Hang, withDeadline } from './deadline.ts'
+import { caseElectron } from './fakes.ts'
+import { EventReferences, outcomeFailure } from './event-refs.ts'
+import { type GroupReport, channelAnswers, coverage } from './coverage.ts'
+import { cleanUp, setUp, snapshot, substitute, unsubstitute } from './folder.ts'
+import { Probe } from './probe.ts'
+import type { Call, Case, Group, LoadContext } from './types.ts'
+
+const tool = dirname(fileURLToPath(import.meta.url))
+const root = resolve(tool, '../..')
+const out = process.env.IPC_DIFF_OUT ?? join(tool, 'out')
+mkdirSync(out, { recursive: true })
+
+interface Divergence {
+  id: string
+  group: string
+  /** the case's index in the group */
+  case: number
+  typescript: unknown
+  rust: unknown
+  reason: string
+}
+
+const arg = (flag: string): string | undefined => {
+  const i = process.argv.indexOf(flag)
+  return i >= 0 ? process.argv[i + 1] : undefined
+}
+const args = (flag: string): string[] =>
+  process.argv.flatMap((a, i) => (a === flag ? [process.argv[i + 1]] : []))
+const show = Number(arg('--show') ?? 10)
+/** how long an awaited deferred invoke may take, as ipc-probe's CALL_TIMEOUT */
+const CALL_TIMEOUT_MS = 20_000
+/**
+ * How long one side of a case may take. A handler that waits for an event that
+ * never comes (a promise nobody settles, a worker nobody stops) holds the
+ * process open on its own, so without a bound the whole step waits for it:
+ * a side still running after this fails its case, and the group ends there.
+ */
+const CASE_TIMEOUT_MS = 60_000
+/** how long one group's process may run; the last bound, for a hang outside any case */
+const GROUP_TIMEOUT_MS = 10 * 60_000
+
+/**
+ * `<batch>/<file>` for every groups/<batch>/<file>.ts that exports a group;
+ * a file without `export const group` is a helper the groups share (a loader)
+ */
+function groupNames(): string[] {
+  const root = join(tool, 'groups')
+  if (!existsSync(root)) return []
+  return readdirSync(root, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .flatMap((d) =>
+      readdirSync(join(root, d.name))
+        .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+        .filter((f) => /^export const group\b/m.test(readFileSync(join(root, d.name, f), 'utf8')))
+        .map((f) => `${d.name}/${f.slice(0, -3)}`),
+    )
+    .sort()
+}
+
+async function loadGroup(name: string): Promise<Group> {
+  const mod = (await import(pathToFileURL(join(tool, 'groups', `${name}.ts`)).href)) as {
+    group: Group
+  }
+  for (const entry of mod.group.cases) {
+    for (const call of entry.calls) {
+      if (
+        call.kind !== 'trigger' &&
+        call.await === undefined &&
+        SPECS.get(call.channel)?.namespace === 'native'
+      ) {
+        throw new Error(
+          `${call.channel}: native-only contracts have no Electron oracle; use actual-handler/native-host evidence`,
+        )
+      }
+    }
+  }
+  return mod.group
+}
+
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r))
+}
+
+const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex')
+const noHandler = (channel: string): string => `Error: No handler registered for '${channel}'`
+const remote = (channel: string, text: string): string =>
+  `Error invoking remote method '${channel}': ${text}`
+
+/** what the shell's dispatch refuses before any handler runs (crates/shell-core/src/dispatch.rs) */
+function refusal(call: Call, surface: string): string | undefined {
+  const spec = SPECS.get(call.channel)
+  if (!spec) return noHandler(call.channel)
+  if (!spec.surfaces.includes(surface)) return `Error: '${call.channel}' is not open to ${surface}`
+  return undefined
+}
+
+let freshCount = 0
+
+/** The TypeScript side of one case: `{calls: [{answer, events}], log}` */
+async function typescriptSide(group: Group, c: Case, dir: string): Promise<unknown> {
+  const electron = caseElectron(dir, c)
+  useElectron(electron)
+  const cx: LoadContext = {
+    dir,
+    case: c,
+    electron,
+    install(names) {
+      Object.assign(electron, names)
+      useElectron(electron)
+    },
+    // a query makes a module instance of its own: the module is chosen per case
+    fresh: (path) => import(`${pathToFileURL(resolve(root, path)).href}?case=${freshCount++}`),
+  }
+  await group.load(cx)
+  electron.replayWebContentsCreated()
+  const views = c.views ?? [{ view: 1, window: 1, surface: 'Shell' }]
+  const calls = []
+  /** deferred invokes by the index of their call, until an `await` step takes them */
+  const references = new EventReferences(c.calls)
+  const deferred = new Map<number, Promise<Record<string, unknown>>>()
+  for (const [index, call] of c.calls.entries()) {
+    if (call.await !== undefined) {
+      const pending = deferred.get(call.await)
+      deferred.delete(call.await)
+      const answer = pending
+        ? await Promise.race([
+            pending,
+            new Promise<Record<string, unknown>>((r) =>
+              setTimeout(() => r({ timeout: true }), CALL_TIMEOUT_MS).unref(),
+            ),
+          ])
+        : { thrown: `no deferred call ${call.await}` }
+      await settle()
+      calls.push({ answer, events: references.capture(index, electron.takeEvents()) })
+      continue
+    }
+    const kind = call.kind ?? 'invoke'
+    const view = views.find((v) => v.view === (call.view ?? views[0].view))
+    if (!view) throw new Error(`no view ${call.view}`)
+    const values = decode(
+      references.resolve(call.args),
+      (call.buffers ?? []).map((b) => Buffer.from(b, 'hex')),
+    ) as unknown[]
+    const sender = electron.contents(view.view)
+    const event: Record<string, unknown> = {
+      sender,
+      senderFrame: { url: 'app://seuoffice/' },
+      processId: 1,
+      frameId: 1,
+      reply: (ch: string, ...a: unknown[]) => sender.send(ch, ...a),
+    }
+    const refused = kind === 'trigger' ? undefined : refusal(call, view.surface ?? 'Shell')
+    let answer: Record<string, unknown>
+    if (kind === 'trigger') {
+      const run = group.triggers?.[call.name ?? '']
+      if (!run) answer = { thrown: `unknown trigger ${call.name}` }
+      else {
+        const outcome = async (): Promise<Record<string, unknown>> => {
+          try {
+            const e = new Encoder()
+            const value = e.value(
+              await run(
+                { ...cx, contents: electron.contents },
+                view.view,
+                references.resolve(call.args) as unknown[],
+              ),
+            )
+            return { value, buffers: e.buffers.map(hex) }
+          } catch (err) {
+            return { error: String(err) }
+          }
+        }
+        if (call.defer) {
+          deferred.set(index, outcome())
+          answer = { deferred: true }
+        } else answer = await outcome()
+      }
+    } else if (kind === 'send') {
+      const listeners = electron.handlers.on.get(call.channel) ?? []
+      answer = {}
+      if (refused !== undefined) answer = { thrown: refused }
+      else if (listeners.length === 0) answer = { thrown: noHandler(call.channel) }
+      for (const fn of refused === undefined ? listeners : []) {
+        try {
+          await fn(event, ...values)
+        } catch (err) {
+          answer = { thrown: String(err) }
+        }
+      }
+    } else {
+      const reply = async (): Promise<Record<string, unknown>> => {
+        try {
+          if (refused !== undefined) throw { shell: refused }
+          let value: unknown
+          if (kind === 'invoke') {
+            const fn = electron.handlers.invoke.get(call.channel)
+            if (!fn) throw { shell: noHandler(call.channel) }
+            value = await fn(event, ...values)
+          } else {
+            const fn = electron.handlers.on.get(call.channel)?.[0]
+            if (!fn) throw { shell: noHandler(call.channel) }
+            await fn(event, ...values)
+            value = event.returnValue
+          }
+          const e = new Encoder()
+          try {
+            return { value: e.value(value), buffers: e.buffers.map(hex) }
+          } catch (err) {
+            if (!(err instanceof WireError)) throw err
+            throw new Error('An object could not be cloned.', { cause: err })
+          }
+        } catch (err) {
+          const text = (err as { shell?: string } | null)?.shell ?? String(err)
+          return { error: remote(call.channel, text) }
+        }
+      }
+      if (call.defer) {
+        deferred.set(index, reply())
+        answer = { deferred: true }
+      } else answer = await reply()
+    }
+    await settle()
+    calls.push({ answer, events: references.capture(index, electron.takeEvents()) })
+  }
+  return { calls, log: electron.log }
+}
+
+/** One side of one case in a fresh folder: the record and the folder after, as JSON with `$DIR` */
+async function side(c: Case, run: (c: Case, dir: string) => Promise<unknown>): Promise<string> {
+  const dir = mkdtempSync(join(tmpdir(), 'ipc-diff-'))
+  try {
+    setUp(dir, substitute(c.files, dir))
+    const record = await run(substitute(c, dir), dir)
+    const text = unsubstitute(JSON.stringify({ record, files: snapshot(dir) }), dir)
+    // the temporary file of an atomic write is named after the process and a
+    // random UUID (app-settings.ts, main-core's app_settings): never the same twice
+    return text.replace(
+      /\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp/g,
+      '.$PID.$UUID.tmp',
+    )
+  } finally {
+    cleanUp(dir)
+  }
+}
+
+async function runGroup(name: string): Promise<void> {
+  const group = await loadGroup(name)
+  const only = args('--channel')
+  const ledger: Divergence[] = JSON.parse(readFileSync(join(tool, 'divergences.json'), 'utf8'))
+  const probe = new Probe()
+  const report: GroupReport = {
+    batch: group.batch,
+    channels: {},
+    events: [],
+    single: group.single ?? {},
+  }
+  const events = new Set<string>()
+  const differences: { case: number; note?: string; typescript: string; rust: string }[] = []
+  const reproduced = new Set<string>()
+  let bad = 0
+  let equal = 0
+  let checked = 0
+
+  for (const [i, c] of group.cases.entries()) {
+    if (only.length > 0 && !c.calls.some((call) => only.includes(call.channel))) continue
+    checked++
+    /** the side of this case as a hang names it: batch, group, index, note */
+    const where = (side: string): string =>
+      `the ${side} side of ${name} (batch ${group.batch}) case ${i}${c.note ? ` (${c.note})` : ''}`
+    let hung = false
+    const ts = await side(c, async (cc, dir) => {
+      try {
+        return await withDeadline(
+          where('typescript'),
+          CASE_TIMEOUT_MS,
+          typescriptSide(group, cc, dir),
+        )
+      } catch (err) {
+        if (!(err instanceof Hang)) return { bad: String((err as Error)?.stack ?? err) }
+        console.log(`HANG ${err.message}`)
+        hung = true
+        return { bad: err.message }
+      }
+    })
+    const rust = await side(c, async (cc, dir) => {
+      let answer: string
+      try {
+        answer = await withDeadline(where('rust'), CASE_TIMEOUT_MS, probe.run(dir, cc, group.batch))
+      } catch (err) {
+        if (!(err instanceof Hang)) throw err
+        console.log(`HANG ${err.message}`)
+        hung = true
+        // the probe is stuck inside the case: nothing more can run on it
+        probe.kill()
+        return { bad: `${err.message}; ipc-probe stderr: ${probe.stderrTail()}` }
+      }
+      const line = JSON.parse(answer) as Record<string, unknown>
+      // the TypeScript's JSON.stringify writes numbers as JavaScript does
+      return 'calls' in line ? { calls: line.calls, log: line.log } : line
+    })
+    const tsRecord = JSON.parse(ts).record as {
+      calls?: { answer: unknown; events: { channel: string }[] }[]
+    }
+    if (!tsRecord.calls || !('calls' in JSON.parse(rust).record)) {
+      bad++
+      differences.push({
+        case: i,
+        note: `${hung ? 'HANG' : 'BAD'} ${c.note ?? ''}`,
+        typescript: ts,
+        rust,
+      })
+      // a hang ends the group: it is named, and each further hang would cost its bound again
+      if (hung) break
+      continue
+    }
+    // a deferred invoke's answer is the one its await step settles (coverage.ts)
+    const stepAnswers = c.calls.map((_, k) => tsRecord.calls?.[k]?.answer)
+    for (const a of channelAnswers(c.calls, stepAnswers)) {
+      const r = (report.channels[a.channel] ??= { calls: 0, answers: [], withArgs: false })
+      r.calls++
+      r.withArgs ||= a.withArgs
+      if (a.answer !== undefined && !r.answers.includes(a.answer)) r.answers.push(a.answer)
+    }
+    for (const step of tsRecord.calls) for (const e of step.events ?? []) events.add(e.channel)
+    const rustRecord = JSON.parse(rust).record as { calls: { answer: unknown }[] }
+    const expectation =
+      outcomeFailure(c.calls, tsRecord.calls) ?? outcomeFailure(c.calls, rustRecord.calls)
+    if (expectation) {
+      differences.push({
+        case: i,
+        note: `EXPECT ${c.note ?? ''}: ${expectation}`,
+        typescript: ts,
+        rust,
+      })
+      continue
+    }
+    if (ts === rust) {
+      equal++
+      continue
+    }
+    const entry = ledger.find((d) => d.group === name && d.case === i)
+    if (entry && JSON.stringify(entry.typescript) === ts && JSON.stringify(entry.rust) === rust) {
+      reproduced.add(entry.id)
+      continue
+    }
+    differences.push({ case: i, note: c.note, typescript: ts, rust })
+  }
+  probe.close()
+  report.events = [...events].sort()
+  writeFileSync(join(out, 'report.json'), JSON.stringify({ report, differences }, null, 2))
+
+  const cut = (text: string): string =>
+    text.length <= 4000 ? text : `${text.slice(0, 4000)}... (${text.length} characters)`
+  for (const d of differences.slice(0, show)) {
+    console.log(`\nDIFF ${name} case ${d.case}${d.note ? ` (${d.note})` : ''}`)
+    console.log(`  typescript: ${cut(d.typescript)}`)
+    console.log(`  rust:       ${cut(d.rust)}`)
+  }
+  const stale =
+    only.length > 0 ? [] : ledger.filter((d) => d.group === name && !reproduced.has(d.id))
+  for (const d of stale) console.log(`STALE ledger entry ${d.id}: it no longer reproduces`)
+  console.log(
+    `${name}: ${checked} cases, ${equal} equal, ${differences.length - bad} differences, ${reproduced.size} listed, ${bad} bad`,
+  )
+  process.exitCode = differences.length > 0 || stale.length > 0 ? 1 : 0
+}
+
+function runEveryGroup(): void {
+  let failed = false
+  const listing = process.argv.includes('--list')
+  const reports: Record<string, GroupReport> = {}
+  for (const name of groupNames()) {
+    const groupOut = join(out, ...name.split('/'))
+    // a group's output reaches the log when it ends: this says which one is running
+    if (!listing) console.log(`GROUP ${name} start`)
+    const run = spawnSync(
+      process.execPath,
+      [
+        ...process.execArgv,
+        fileURLToPath(import.meta.url),
+        ...process.argv.slice(2),
+        '--group',
+        name,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, IPC_DIFF_OUT: groupOut },
+        maxBuffer: 1 << 30,
+        stdio: ['ignore', 'pipe', 'inherit'],
+        timeout: GROUP_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+      },
+    )
+    process.stdout.write(run.stdout)
+    if (run.status !== 0) failed = true
+    if ((run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+      console.log(`GROUP ${name} was killed: it ran for more than ${GROUP_TIMEOUT_MS / 1000} s`)
+    }
+    if (existsSync(join(groupOut, 'report.json'))) {
+      reports[name] = JSON.parse(readFileSync(join(groupOut, 'report.json'), 'utf8')).report
+    } else if (!listing) {
+      console.log(`GROUP ${name} did not finish (${run.status ?? run.signal})`)
+    }
+  }
+  if (listing) return
+  writeFileSync(join(out, 'report.json'), JSON.stringify(reports, null, 2))
+  for (const batch of args('--require')) {
+    const problems = coverage(batch, Object.values(reports), ELECTRON_CHANNELS)
+    for (const p of problems) console.log(`COVERAGE ${batch} ${p}`)
+    console.log(`Electron coverage of ${batch}: ${problems.length} problems`)
+    if (problems.length > 0) failed = true
+  }
+  const evidencePath = arg('--native-evidence')
+  const receipts = nativeEvidence(
+    evidencePath === undefined ? [] : JSON.parse(readFileSync(resolve(evidencePath), 'utf8')),
+  )
+  for (const receipt of receipts) {
+    if (!existsSync(resolve(root, receipt.artifact)))
+      throw new Error(`native evidence artifact is missing: ${receipt.artifact}`)
+  }
+  const nativeHostPending = arg('--native-host-pending') ?? 'fail'
+  if (nativeHostPending !== 'fail' && nativeHostPending !== 'warn')
+    throw new Error(`--native-host-pending is fail or warn, not ${nativeHostPending}`)
+  const nativeBatches = new Set([
+    ...CHANNELS.filter((spec) => spec.namespace === 'native').map((spec) => spec.batch),
+    ...NATIVE_CHANNEL_CONTRACTS.map((contract) => contract.batch),
+  ])
+  const nativeReports = [...nativeBatches].flatMap((batch) =>
+    nativeContractCoverage(batch, CHANNELS, receipts),
+  )
+  writeFileSync(join(out, 'native-contracts.json'), JSON.stringify(nativeReports, null, 2))
+  for (const report of nativeReports) {
+    console.log(
+      `NATIVE ${report.batch} ${report.channel}: synthetic ${report.synthetic.status}; native-host ${report.nativeHost.status}`,
+    )
+    for (const problem of report.problems)
+      console.log(`NATIVE COVERAGE ${report.channel}: ${problem}`)
+    if (blockingProblems(report, nativeHostPending).length > 0) failed = true
+  }
+  const pending = nativeReports.filter((report) => report.nativeHost.status === 'pending')
+  if (nativeHostPending === 'warn' && pending.length > 0)
+    console.log(
+      `NATIVE-HOST PENDING ${pending.length} channels: not failing (--native-host-pending warn)`,
+    )
+  process.exitCode = failed ? 1 : 0
+}
+
+const only = arg('--group')
+if (only === undefined) runEveryGroup()
+else if (!groupNames().includes(only)) {
+  console.log(`no such group: ${only}`)
+  process.exitCode = 1
+} else if (process.argv.includes('--list')) {
+  const group = await loadGroup(only)
+  const seen = new Set(
+    group.cases.flatMap((c) =>
+      c.calls
+        .filter((call) => call.kind !== 'trigger' && call.await === undefined)
+        .map((call) => call.channel),
+    ),
+  )
+  for (const channel of [...seen].sort()) console.log(`${only}\t${channel}`)
+} else {
+  await runGroup(only)
+  // a loaded app module may keep timers and watchers that hold the process open
+  process.exit()
+}

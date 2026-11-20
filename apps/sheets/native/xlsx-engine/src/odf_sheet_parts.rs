@@ -232,7 +232,10 @@ fn sparklines_xml(groups: &[SparklineGroup]) -> String {
         ]
         .iter()
         .map(|(element, name, default)| {
-            format!(r#"<x14:{element} rgb="{}"/>"#, sparkline_color(get(name), default))
+            format!(
+                r#"<x14:{element} rgb="{}"/>"#,
+                sparkline_color(get(name), default)
+            )
         })
         .collect();
         out.push_str(&format!(
@@ -376,7 +379,12 @@ pub(crate) fn build(
                 if (row, column) == *start || sheet.own_cell_style(row, column).is_some() {
                     continue;
                 }
-                let keep = [row == start.0, row == end.0, column == start.1, column == end.1];
+                let keep = [
+                    row == start.0,
+                    row == end.0,
+                    column == start.1,
+                    column == end.1,
+                ];
                 match xlsx.covered_cell(book, name, keep) {
                     Some(xf) if out.cell_styles.len() < MAX_STYLE_ONLY_CELLS => {
                         out.cell_styles.insert((row, column), xf);
@@ -424,7 +432,10 @@ pub(crate) fn build(
         out.sheet_format.push_str(r#" zeroHeight="1""#);
     }
 
-    let table_style = sheet.style.as_deref().and_then(|name| book.tables.get(name));
+    let table_style = sheet
+        .style
+        .as_deref()
+        .and_then(|name| book.tables.get(name));
     let page = formats
         .pages
         .page_xml(table_style.and_then(|style| style.master_page.as_deref()));
@@ -463,7 +474,8 @@ pub(crate) fn build(
         // as well; a worksheet holds one.
         .min_by_key(|(range, _, _)| !range.name.starts_with("__Anonymous_Sheet_DB__"));
     if let Some((range, start, end)) = filter {
-        out.before_merges.push_str(&auto_filter_xml(range, start, end));
+        out.before_merges
+            .push_str(&auto_filter_xml(range, start, end));
         out.defined_names.push_str(&format!(
             r#"<definedName name="_xlnm._FilterDatabase" localSheetId="{index}" hidden="1">{}!{}</definedName>"#,
             escape_xml(&quoted_sheet(&sheet.name)),
@@ -473,7 +485,9 @@ pub(crate) fn build(
 
     out.extensions = sparklines_xml(&sheet.sparklines);
     out.after_merges
-        .push_str(&odf_rules::conditional_formatting_xml(sheet, formats, xlsx, names));
+        .push_str(&odf_rules::conditional_formatting_xml(
+            sheet, formats, xlsx, names,
+        ));
     out.after_merges
         .push_str(&odf_rules::data_validations_xml(sheet, formats, names));
 
@@ -483,7 +497,9 @@ pub(crate) fn build(
     let mut targets: HashMap<&str, String> = HashMap::new();
     for ((row, column), href) in sheet.links.iter().take(MAX_LINKS) {
         let reference = cell_reference(*row, *column);
-        let style = sheet.cell_style(*row, *column).and_then(|id| formats.name(id));
+        let style = sheet
+            .cell_style(*row, *column)
+            .and_then(|id| formats.name(id));
         if let Some(xf) = xlsx.linked_cell(book, style) {
             out.link_styles.insert((*row, *column), xf);
         }
@@ -688,10 +704,9 @@ fn cols_xml(
             Some(width) => attributes.push_str(&format!(r#" width="{width:.2}" customWidth="1""#)),
             // The element needs a width: the sheet's default one, or the
             // one Excel gives a column nobody has sized.
-            None => attributes.push_str(&format!(
-                r#" width="{:.2}""#,
-                default_width.unwrap_or(8.43)
-            )),
+            None => {
+                attributes.push_str(&format!(r#" width="{:.2}""#, default_width.unwrap_or(8.43)))
+            }
         }
         if xf != 0 {
             attributes.push_str(&format!(r#" style="{xf}""#));
@@ -718,7 +733,11 @@ fn cols_xml(
     let body: String = entries
         .iter()
         .map(|(first, last, attributes)| {
-            format!(r#"<col min="{}" max="{}"{attributes}/>"#, first + 1, last + 1)
+            format!(
+                r#"<col min="{}" max="{}"{attributes}/>"#,
+                first + 1,
+                last + 1
+            )
         })
         .collect();
     format!("<cols>{body}</cols>")
@@ -748,7 +767,10 @@ fn sheet_views_xml(sheet: &OdsSheetFormat, formats: &OdsFormats, right_to_left: 
     }
     let mut pane = String::new();
     if let Some(view) = view {
-        let columns = view.frozen_columns.saturating_sub(view.left).min(MAX_COLUMN - 1);
+        let columns = view
+            .frozen_columns
+            .saturating_sub(view.left)
+            .min(MAX_COLUMN - 1);
         let rows = view.frozen_rows.saturating_sub(view.top).min(MAX_ROW - 1);
         if columns > 0 || rows > 0 {
             if view.left > 0 || view.top > 0 {
@@ -795,7 +817,9 @@ fn sheet_views_xml(sheet: &OdsSheetFormat, formats: &OdsFormats, right_to_left: 
     if attributes.is_empty() && pane.is_empty() {
         return String::new();
     }
-    format!(r#"<sheetViews><sheetView{attributes} workbookViewId="0">{pane}</sheetView></sheetViews>"#)
+    format!(
+        r#"<sheetViews><sheetView{attributes} workbookViewId="0">{pane}</sheetView></sheetViews>"#
+    )
 }
 
 /// The filter of a sheet with the criteria Excel has a spelling for. A
@@ -803,7 +827,11 @@ fn sheet_views_xml(sheet: &OdsSheetFormat, formats: &OdsFormats, right_to_left: 
 /// the rows the filter hid stay hidden either way.
 fn auto_filter_xml(range: &DatabaseRange, start: (u32, u32), end: (u32, u32)) -> String {
     let reference = range_reference(start, end);
-    let mut fields: Vec<u32> = range.conditions.iter().map(|condition| condition.field).collect();
+    let mut fields: Vec<u32> = range
+        .conditions
+        .iter()
+        .map(|condition| condition.field)
+        .collect();
     fields.sort_unstable();
     fields.dedup();
     let mut columns = String::new();
@@ -814,7 +842,9 @@ fn auto_filter_xml(range: &DatabaseRange, start: (u32, u32), end: (u32, u32)) ->
             .filter(|condition| condition.field == field)
             .collect();
         if let Some(criteria) = filter_column_xml(&conditions) {
-            columns.push_str(&format!(r#"<filterColumn colId="{field}">{criteria}</filterColumn>"#));
+            columns.push_str(&format!(
+                r#"<filterColumn colId="{field}">{criteria}</filterColumn>"#
+            ));
         }
     }
     if columns.is_empty() {
@@ -859,7 +889,12 @@ fn filter_column_xml(conditions: &[&FilterCondition]) -> Option<String> {
     }
     let mut customs = String::new();
     for condition in conditions {
-        let escaped = |value: &str| value.replace('~', "~~").replace('*', "~*").replace('?', "~?");
+        let escaped = |value: &str| {
+            value
+                .replace('~', "~~")
+                .replace('*', "~*")
+                .replace('?', "~?")
+        };
         let (operator, value) = match condition.operator.as_str() {
             "=" => (None, condition.value.clone()),
             "!=" => (Some("notEqual"), condition.value.clone()),
@@ -1018,7 +1053,13 @@ mod tests {
         let mut low = condition(2, ">=", "5");
         let mut high = condition(2, "<", "9");
         let range = DatabaseRange {
-            conditions: vec![list, low.clone(), high.clone(), condition(3, "contains", "a*b"), condition(4, "match", "x")],
+            conditions: vec![
+                list,
+                low.clone(),
+                high.clone(),
+                condition(3, "contains", "a*b"),
+                condition(4, "match", "x"),
+            ],
             ..DatabaseRange::default()
         };
         let xml = auto_filter_xml(&range, (0, 0), (9, 4));
@@ -1041,9 +1082,15 @@ mod tests {
     #[test]
     fn in_document_links_become_excel_locations() {
         assert_eq!(internal_location("Sheet1.B3"), "'Sheet1'!B3");
-        assert_eq!(internal_location("'My sheet'.A1:'My sheet'.C2"), "'My sheet'!A1:C2");
+        assert_eq!(
+            internal_location("'My sheet'.A1:'My sheet'.C2"),
+            "'My sheet'!A1:C2"
+        );
         assert_eq!(internal_location("Name"), "Name");
-        assert_eq!(split_addresses("S.A1:S.B2 'a b'.C1:'a b'.D2"), vec!["S.A1:S.B2", "'a b'.C1:'a b'.D2"]);
+        assert_eq!(
+            split_addresses("S.A1:S.B2 'a b'.C1:'a b'.D2"),
+            vec!["S.A1:S.B2", "'a b'.C1:'a b'.D2"]
+        );
     }
 
     #[test]
@@ -1068,7 +1115,10 @@ mod tests {
                     ("color-series", "#c00000"),
                     ("color-negative", "#00b050"),
                 ],
-                &[("Data.E1", "Data.B1:Data.D1"), ("nowhere", "Data.B2:Data.D2")],
+                &[
+                    ("Data.E1", "Data.B1:Data.D1"),
+                    ("nowhere", "Data.B2:Data.D2"),
+                ],
             ),
             // A group none of whose sparklines can be placed is left out.
             group(&[("type", "line")], &[("Data.E9", "")]),

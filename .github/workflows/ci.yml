@@ -234,6 +234,11 @@ jobs:
         if: ${{ !cancelled() && hashFiles('crates/Cargo.toml') != '' }}
         run: cargo deny --config crates/deny.toml --manifest-path crates/Cargo.toml --all-features check licenses bans
 
+      # the desktop shell is a workspace of its own, with its own lock, under the same policy
+      - name: crates/shell (the Tauri 2 desktop shell)
+        if: ${{ !cancelled() }}
+        run: cargo deny --config crates/deny.toml --manifest-path crates/shell/Cargo.toml check licenses bans
+
   # seuoffice: the apps are built once here and the six e2e shards unpack the
   # result. Each shard used to build them itself: 4.6 to 6.2 minutes, six times
   # (run 43461768892), on runners the organisation has few of. A build that
