@@ -12,10 +12,10 @@
 //! part. What the model does not keep (3-D depth, trend lines, error bars,
 //! manual layout) does not travel.
 
+use crate::CellStyle;
 use crate::odf_formula;
 use crate::ods_styles::StyleRegistry;
 use crate::visuals::{AxisInfo, ChartMetadata, ChartSeries};
-use crate::CellStyle;
 use crate::xlsx_package::escape_xml;
 
 const NAMESPACES: &str = concat!(
@@ -47,7 +47,14 @@ const PALETTE: [&str; 6] = [
 /// after its two light and two dark colours.
 pub(crate) fn accent_palette(theme_colors: Option<&[String]>) -> Vec<String> {
     let accents: Vec<String> = theme_colors
-        .map(|colors| colors.iter().skip(4).take(6).map(|color| hex_color(color)).collect())
+        .map(|colors| {
+            colors
+                .iter()
+                .skip(4)
+                .take(6)
+                .map(|color| hex_color(color))
+                .collect()
+        })
         .unwrap_or_default();
     if accents.len() == 6 {
         accents
@@ -103,9 +110,9 @@ fn range_size(range: &str) -> Option<usize> {
     let cell = |end: &str| -> Option<(usize, usize)> {
         let (_, cell) = split_sheet(end)?;
         let letters = cell.chars().take_while(char::is_ascii_alphabetic).count();
-        let column = cell[..letters]
-            .bytes()
-            .fold(0usize, |total, byte| total * 26 + usize::from(byte.to_ascii_uppercase() - b'A') + 1);
+        let column = cell[..letters].bytes().fold(0usize, |total, byte| {
+            total * 26 + usize::from(byte.to_ascii_uppercase() - b'A') + 1
+        });
         let row: usize = cell[letters..].parse().ok()?;
         (column > 0 && row > 0).then_some((column, row))
     };
@@ -173,7 +180,13 @@ fn number(value: f64) -> String {
 /// XML cannot carry control characters.
 fn printable(text: &str) -> String {
     text.chars()
-        .map(|character| if character == '\n' || character == '\r' { ' ' } else { character })
+        .map(|character| {
+            if character == '\n' || character == '\r' {
+                ' '
+            } else {
+                character
+            }
+        })
         .filter(|character| *character == '\t' || (*character as u32) >= 0x20)
         .collect()
 }
@@ -269,8 +282,11 @@ fn luminance(color: &str) -> Option<f64> {
     if hex.len() != 6 {
         return None;
     }
-    let channel =
-        |index: usize| u8::from_str_radix(&hex[index..index + 2], 16).ok().map(f64::from);
+    let channel = |index: usize| {
+        u8::from_str_radix(&hex[index..index + 2], 16)
+            .ok()
+            .map(f64::from)
+    };
     Some((0.2126 * channel(0)? + 0.7152 * channel(2)? + 0.0722 * channel(4)?) / 255.0)
 }
 
@@ -365,7 +381,11 @@ fn axis_xml(
         ));
     }
     if grid {
-        let grid_style = styles.add("", r##" draw:stroke="solid" svg:stroke-color="#d9d9d9""##, "");
+        let grid_style = styles.add(
+            "",
+            r##" draw:stroke="solid" svg:stroke-color="#d9d9d9""##,
+            "",
+        );
         body.push_str(&format!(
             r#"<chart:grid chart:style-name="{grid_style}" chart:class="major"/>"#
         ));
@@ -402,19 +422,19 @@ pub(crate) fn chart_document(
     if chart.series.is_empty() {
         return None;
     }
-    let series_class = |series: &ChartSeries| {
-        series
-            .plot
-            .as_deref()
-            .and_then(class_of)
-            .unwrap_or(class)
-    };
+    let series_class =
+        |series: &ChartSeries| series.plot.as_deref().and_then(class_of).unwrap_or(class);
     // One plot area holds one family of plots: a ring or a pie cannot share
     // it with bars.
     let round = matches!(class, "chart:circle" | "chart:ring");
     if chart.series.iter().any(|series| {
         let other = series_class(series);
-        other != class && (round || matches!(other, "chart:circle" | "chart:ring" | "chart:scatter" | "chart:radar"))
+        other != class
+            && (round
+                || matches!(
+                    other,
+                    "chart:circle" | "chart:ring" | "chart:scatter" | "chart:radar"
+                ))
     }) {
         return None;
     }
@@ -465,7 +485,10 @@ pub(crate) fn chart_document(
                 .as_ref()
                 .and_then(|style| style.bold)
                 .unwrap_or(false),
-            chart.title_style.as_ref().and_then(|style| style.color.as_deref()),
+            chart
+                .title_style
+                .as_ref()
+                .and_then(|style| style.color.as_deref()),
         );
         let title_style = styles.add(r#" chart:auto-position="true""#, "", &title_text);
         body.push_str(&title_xml("chart:title", &chart.title, &title_style));
@@ -504,7 +527,9 @@ pub(crate) fn chart_document(
         Some("span") => r#" chart:treat-empty-cells="ignore""#,
         _ => r#" chart:treat-empty-cells="use-zero""#,
     });
-    plot.push_str(r#" chart:include-hidden-cells="false" chart:auto-position="true" chart:auto-size="true""#);
+    plot.push_str(
+        r#" chart:include-hidden-cells="false" chart:auto-position="true" chart:auto-size="true""#,
+    );
     let plot_style = styles.add(&plot, "", "");
 
     // The model names the axes by the side they sit on. Horizontal bars put
@@ -530,7 +555,10 @@ pub(crate) fn chart_document(
         titles.and_then(|titles| titles.category.as_deref()),
         category_axis,
     );
-    let value_title = by_kind(titles.and_then(|titles| titles.value.as_deref()), value_axis);
+    let value_title = by_kind(
+        titles.and_then(|titles| titles.value.as_deref()),
+        value_axis,
+    );
     let categories_range = sheet_range(
         chart
             .series
@@ -547,7 +575,10 @@ pub(crate) fn chart_document(
     if !scatter {
         note(&categories_range);
     }
-    let stacked = matches!(chart.grouping.as_deref(), Some("stacked") | Some("percentStacked"));
+    let stacked = matches!(
+        chart.grouping.as_deref(),
+        Some("stacked") | Some("percentStacked")
+    );
     let mut value_extra = String::new();
     if class == "chart:bar" {
         if let Some(gap) = chart.gap_width_pct {
@@ -601,7 +632,11 @@ pub(crate) fn chart_document(
     // A category axis holds text; said outright, a reader does not guess
     // dates from the labels. A line chart's points sit between the ticks, as
     // Excel draws them unless told otherwise.
-    let category_element = if scatter { "" } else { r#" chartooo:axis-type="text""# };
+    let category_element = if scatter {
+        ""
+    } else {
+        r#" chartooo:axis-type="text""#
+    };
     let category_extra = match class {
         "chart:line" => r#" loext:major-origin="0.5""#,
         // Excel walks a radar's categories clockwise.
@@ -682,7 +717,10 @@ pub(crate) fn chart_document(
             }
         }
         properties.push_str(label_properties(
-            series.data_labels.as_deref().or(chart.data_labels.as_deref()),
+            series
+                .data_labels
+                .as_deref()
+                .or(chart.data_labels.as_deref()),
         ));
         let graphic = if stroked {
             let line = series
@@ -757,7 +795,10 @@ pub(crate) fn chart_document(
             // A name typed into the chart rather than read from a cell.
             None if bound => attributes.push_str(&format!(
                 r#" loext:label-string="{}""#,
-                escape_xml(&format!("\"{}\"", printable(&series.name).replace('"', "\"\"")))
+                escape_xml(&format!(
+                    "\"{}\"",
+                    printable(&series.name).replace('"', "\"\"")
+                ))
             )),
             None => attributes.push_str(&format!(
                 r#" chart:label-cell-address="local-table.${column}$1""#
@@ -766,7 +807,11 @@ pub(crate) fn chart_document(
         // The series of a ring are circles; the ring is the chart's class.
         attributes.push_str(&format!(
             r#" chart:class="{}""#,
-            if kind == "chart:ring" { "chart:circle" } else { kind }
+            if kind == "chart:ring" {
+                "chart:circle"
+            } else {
+                kind
+            }
         ));
         if secondary.is_some() && kind != class {
             attributes.push_str(r#" chart:attached-axis="secondary-y""#);
@@ -827,10 +872,15 @@ pub(crate) fn chart_document(
                 };
                 let point_style = styles.add(
                     "",
-                    &format!(r#" draw:fill="solid" draw:fill-color="{}""#, escape_xml(&fill)),
+                    &format!(
+                        r#" draw:fill="solid" draw:fill-color="{}""#,
+                        escape_xml(&fill)
+                    ),
                     "",
                 );
-                inner.push_str(&format!(r#"<chart:data-point chart:style-name="{point_style}"/>"#));
+                inner.push_str(&format!(
+                    r#"<chart:data-point chart:style-name="{point_style}"/>"#
+                ));
             }
         } else {
             inner.push_str(&format!(r#"<chart:data-point chart:repeated="{count}"/>"#));

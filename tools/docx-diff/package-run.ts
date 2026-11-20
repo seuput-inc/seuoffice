@@ -24,7 +24,7 @@ import {
   strictified,
 } from './package-zips'
 
-const CONTAINER_FUZZ_CASES = option('--container-fuzz', 3_000)
+const CONTAINER_FUZZ_CASES = option('--container-fuzz', 3_600)
 const PART_FUZZ_CASES = option('--part-fuzz', 1_500)
 /** What the zip gate says of an archive JSZip would read as ZIP64. */
 const ZIP64_REFUSAL = { refused: 'zip: zip64 archives are not supported' }

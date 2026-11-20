@@ -1,0 +1,102 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/diagram.drawio"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 2000
+    },
+    {
+      "op": "query",
+      "as": "prep-loaded",
+      "timeoutMs": 90000,
+      "js": "(() => { const s = document.querySelector('.dg-spinner'); return document.querySelector('iframe') !== null && (!s || s.offsetParent === null || getComputedStyle(s).visibility === 'hidden') })()"
+    },
+    {
+      "op": "click",
+      "selector": "iframe"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\t"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "\n"
+    },
+    {
+      "op": "wait",
+      "ms": 600
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-diagram"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "screenshot",
+      "name": "diagram-editing"
+    },
+    {
+      "op": "type",
+      "text": "\u001b"
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "screenshot",
+      "name": "diagram-typed"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/diagram.drawio"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 120000
+    },
+    {
+      "op": "wait",
+      "ms": 2000
+    },
+    {
+      "op": "screenshot",
+      "name": "diagram-after"
+    }
+  ]
+}

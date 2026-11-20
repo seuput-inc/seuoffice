@@ -74,7 +74,7 @@ export interface PageLayoutContext {
   /// The cells the reader hid from the AI: a PDF cannot carry that mark.
   redactions: () => RedactionIndex
   /// Opens Save As, where .xlsx keeps the marks the PDF cannot.
-  requestSaveAs: () => void
+  requestSaveAs: () => void | Promise<unknown>
   /// Page-setup edits run as set_page_setup ops through the shared executor.
   runOps: (
     ops: readonly WorkbookOperation[],
@@ -612,11 +612,12 @@ function exportedSheets(sheets: readonly FWorksheet[]): ExportedSheet[] {
 async function confirmPdfWithoutMarks(
   ctx: PageLayoutContext,
   sheets: readonly ExportedSheet[],
+  ownedSaveRequestId?: string,
 ): Promise<boolean> {
   if (!sheetsExposeWithheld(ctx.redactions(), sheets)) return true
-  const choice = await window.desktopApi.askWithheldExport('PDF')
+  const choice = await window.desktopApi.askWithheldExport('PDF', ownedSaveRequestId)
   if (choice === 'export') return true
-  if (choice === 'xlsx') ctx.requestSaveAs()
+  if (choice === 'xlsx') await ctx.requestSaveAs()
   return false
 }
 
@@ -784,6 +785,7 @@ export async function handleExportPdf(
   ctx: PageLayoutContext,
   outPath?: string,
   saveAsPath?: string,
+  ownedSaveRequestId?: string,
 ): Promise<boolean> {
   try {
     const messages = {
@@ -800,7 +802,7 @@ export async function handleExportPdf(
     if (outPath && sheetsExposeWithheld(ctx.redactions(), payload.sheets)) {
       throw new HiddenExportRefused(t('appPdfRefusedHidden'))
     }
-    if (!(await confirmPdfWithoutMarks(ctx, payload.sheets))) {
+    if (!(await confirmPdfWithoutMarks(ctx, payload.sheets, ownedSaveRequestId))) {
       ctx.setMessage(t('appPdfCanceled'))
       return false
     }
@@ -808,6 +810,7 @@ export async function handleExportPdf(
       ...payload.request,
       ...(outPath ? { outPath } : {}),
       ...(saveAsPath ? { saveAsPath } : {}),
+      ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
     })
     ctx.setMessage(
       result.canceled ? t('appPdfCanceled') : t('appPdfExported', { path: result.path }),

@@ -1,0 +1,621 @@
+//! Native key input on Windows: `SendInput` to the foreground app window.
+//!
+//! The events enter the system input queue, so the window that is foreground gets them as it
+//! gets the keyboard's: the WebView2 child with focus sees trusted `keydown`/`keypress`/`keyup`,
+//! the Korean IME composes, and accelerators reach the window's menu. The window is brought to
+//! the foreground first; Windows may refuse that to a process that did not just receive input,
+//! which is reported as an error rather than typed into whatever is in front.
+//!
+//! Characters with a key on the current layout are sent as virtual keys; the others (Hangul in
+//! `type`, say) as Unicode packets, which carry the text but no key code. The `ime` op always
+//! sends virtual keys, from the letter's own VK, never through the layout tables.
+//!
+//! The Korean IME must be installed in the Windows image (the Korean language pack with its
+//! keyboard); without it `ime` cannot run and says so.
+
+use std::ffi::c_void;
+use std::mem::size_of;
+use std::sync::Arc;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use shell_contract::runtime::Thread;
+use tauri::Window;
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::ClientToScreen;
+use windows::Win32::UI::Input::Ime::{
+    IME_CMODE_HANGUL, IME_CONVERSION_MODE, IME_SENTENCE_MODE, ImmGetContext,
+    ImmGetConversionStatus, ImmReleaseContext,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyboardLayout, HKL, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS,
+    KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, KLF_NOTELLSHELL, LoadKeyboardLayoutW,
+    MAPVK_VK_TO_VSC, MOUSE_EVENT_FLAGS, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
+    MapVirtualKeyW, SendInput, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_ESCAPE, VK_F4, VK_HANGUL,
+    VK_MENU, VK_RETURN, VK_SHIFT, VK_TAB, VkKeyScanW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GUITHREADINFO, GetClassNameW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, SW_RESTORE, SetCursorPos,
+    SetForegroundWindow, ShowWindow, WM_INPUTLANGCHANGEREQUEST,
+};
+use windows::core::w;
+
+use super::scenario::{Shortcut, TypedKey};
+
+/// between two typed characters
+const KEY_GAP: Duration = Duration::from_millis(40);
+/// between two raw keys of an input method, which composes each against the one before
+const IME_KEY_GAP: Duration = Duration::from_millis(120);
+/// after a layout or IME mode change: the system answers asynchronously
+const SETTLE: Duration = Duration::from_millis(300);
+/// after the Korean layout is active and after Hangul mode is toggled: the IME of a freshly
+/// switched window took longer than `SETTLE` to start composing (the first keys came out raw)
+const IME_SETTLE: Duration = Duration::from_millis(1000);
+/// how long the window may be refused the foreground before the step fails
+const FOREGROUND_TIMEOUT: Duration = Duration::from_secs(20);
+const FOREGROUND_WAIT: Duration = Duration::from_millis(100);
+/// how long a shortcut's keys are held down
+const SHORTCUT_HOLD: Duration = Duration::from_millis(120);
+const FOREGROUND_WAIT_MAX: Duration = Duration::from_millis(1000);
+const LAYOUT_TIMEOUT: Duration = Duration::from_secs(5);
+/// the language id of Korean, the low word of its keyboard layout handle
+const KOREAN_LANGID: usize = 0x0412;
+
+fn hwnd_of(window: &Window) -> Result<HWND, String> {
+    let raw = window.hwnd().map_err(|error| error.to_string())?;
+    // Tauri's `HWND` may come from another `windows` version; only the value crosses over.
+    Ok(HWND(raw.0 as usize as *mut c_void))
+}
+
+/// The OS window handle, which `xcap` lists the window under
+pub(super) fn window_id(_ui: &Arc<dyn Thread>, window: &Window) -> Result<u32, String> {
+    Ok(hwnd_of(window)?.0 as usize as u32)
+}
+
+/// What holds the foreground when the app window is refused it: that window, its class and the
+/// process it belongs to, next to this process and whether the app window is visible. A
+/// refusal alone does not say whether another program took the desktop or the app's own
+/// window (a dialog, a second window) is in front.
+fn foreground_holder(hwnd: HWND) -> String {
+    let own = std::process::id();
+    // SAFETY: the calls read system state; `process` and `class` outlive them.
+    unsafe {
+        let visible = IsWindowVisible(hwnd).as_bool();
+        let holder = GetForegroundWindow();
+        if holder.is_invalid() {
+            return format!(
+                "no window is in the foreground (this is process {own}, the app window \
+                 {:#x} is visible: {visible})",
+                hwnd.0 as usize
+            );
+        }
+        let mut process = 0u32;
+        let _ = GetWindowThreadProcessId(holder, Some(&mut process));
+        let mut class = [0u16; 256];
+        let length = usize::try_from(GetClassNameW(holder, &mut class)).unwrap_or(0);
+        let class = String::from_utf16_lossy(&class[..length.min(class.len())]);
+        format!(
+            "the foreground window is {:#x} of class '{class}' in process {process} (this is \
+             process {own}, the app window {:#x} is visible: {visible})",
+            holder.0 as usize, hwnd.0 as usize
+        )
+    }
+}
+
+/// Makes the window the foreground window, or says it could not
+fn foreground(hwnd: HWND) -> Result<(), String> {
+    // SAFETY: both calls take a window handle of this process and change its state only.
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+    }
+    // Right after launch Windows refuses the change for a while (the foreground lock of a
+    // process that has not yet received input); keep asking with a growing wait, bounded.
+    let end = Instant::now() + FOREGROUND_TIMEOUT;
+    let mut wait = FOREGROUND_WAIT;
+    loop {
+        // SAFETY: reads the foreground window and asks for it to change.
+        let done = unsafe {
+            if GetForegroundWindow() == hwnd {
+                true
+            } else {
+                let _ = SetForegroundWindow(hwnd);
+                false
+            }
+        };
+        if done {
+            return Ok(());
+        }
+        if Instant::now() >= end {
+            return Err(format!(
+                "Windows did not let the app window become the foreground window: {}.",
+                foreground_holder(hwnd)
+            ));
+        }
+        sleep(wait);
+        wait = (wait * 2).min(FOREGROUND_WAIT_MAX);
+    }
+}
+
+fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
+    // SAFETY: a plain lookup of the scan code of a virtual key.
+    let scan = unsafe { MapVirtualKeyW(u32::from(vk.0), MAPVK_VK_TO_VSC) } as u16;
+    keyboard(
+        vk,
+        scan,
+        if up {
+            KEYEVENTF_KEYUP
+        } else {
+            KEYBD_EVENT_FLAGS(0)
+        },
+    )
+}
+
+fn unicode_input(unit: u16, up: bool) -> INPUT {
+    let mut flags = KEYEVENTF_UNICODE;
+    if up {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    keyboard(VIRTUAL_KEY(0), unit, flags)
+}
+
+fn keyboard(vk: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+fn send(inputs: &[INPUT]) -> Result<(), String> {
+    // SAFETY: `inputs` is a valid slice of INPUT structures and the size is theirs.
+    let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
+    if sent as usize == inputs.len() {
+        Ok(())
+    } else {
+        Err(format!(
+            "SendInput accepted {sent} of {} events (another process holds the input desktop, or UIPI blocks it)",
+            inputs.len()
+        ))
+    }
+}
+
+/// One key down and up, with Shift held around it when asked
+fn press(vk: VIRTUAL_KEY, shift: bool) -> Vec<INPUT> {
+    let mut inputs = Vec::with_capacity(4);
+    if shift {
+        inputs.push(key_input(VK_SHIFT, false));
+    }
+    inputs.push(key_input(vk, false));
+    inputs.push(key_input(vk, true));
+    if shift {
+        inputs.push(key_input(VK_SHIFT, true));
+    }
+    inputs
+}
+
+/// The events that type `c`: its virtual key on the current layout, else Unicode packets
+fn char_inputs(c: char) -> Vec<INPUT> {
+    if c.is_ascii() {
+        // SAFETY: a lookup in the calling thread's keyboard layout.
+        let scan = unsafe { VkKeyScanW(u16::from(c as u8)) };
+        let (vk, state) = ((scan & 0xff) as u16, ((scan >> 8) & 0xff) as u8);
+        // no key, or one that needs Ctrl or Alt (AltGr) to type the character
+        if scan != -1 && state & 0b110 == 0 {
+            return press(VIRTUAL_KEY(vk), state & 1 != 0);
+        }
+    }
+    let mut units = [0u16; 2];
+    c.encode_utf16(&mut units)
+        .iter()
+        .flat_map(|unit| [unicode_input(*unit, false), unicode_input(*unit, true)])
+        .collect()
+}
+
+fn typed_inputs(key: &TypedKey) -> Vec<INPUT> {
+    match key {
+        TypedKey::Return => press(VK_RETURN, false),
+        TypedKey::Tab => press(VK_TAB, false),
+        TypedKey::Escape => press(VK_ESCAPE, false),
+        TypedKey::Backspace => press(VK_BACK, false),
+        TypedKey::Char(c) => char_inputs(*c),
+    }
+}
+
+/// Ctrl and the letter, or Alt+F4 for the quit that closes the window
+fn shortcut_inputs(shortcut: Shortcut) -> Vec<INPUT> {
+    if shortcut == Shortcut::Quit {
+        return vec![
+            key_input(VK_MENU, false),
+            key_input(VK_F4, false),
+            key_input(VK_F4, true),
+            key_input(VK_MENU, true),
+        ];
+    }
+    // the virtual key of a letter is its upper case ASCII code
+    let letter = VIRTUAL_KEY(u16::from(shortcut.letter().to_ascii_uppercase() as u8));
+    let mut inputs = vec![key_input(VK_CONTROL, false)];
+    if shortcut.shift() {
+        inputs.push(key_input(VK_SHIFT, false));
+    }
+    inputs.push(key_input(letter, false));
+    inputs.push(key_input(letter, true));
+    if shortcut.shift() {
+        inputs.push(key_input(VK_SHIFT, true));
+    }
+    inputs.push(key_input(VK_CONTROL, true));
+    inputs
+}
+
+pub(super) fn type_text(
+    _ui: &Arc<dyn Thread>,
+    window: &Window,
+    keys: &[TypedKey],
+    after_key: &dyn Fn(),
+) -> Result<(), String> {
+    foreground(hwnd_of(window)?)?;
+    for key in keys {
+        send(&typed_inputs(key))?;
+        sleep(KEY_GAP);
+        after_key();
+    }
+    Ok(())
+}
+
+fn mouse_input(flags: MOUSE_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// A native left click at `x`, `y`, pixels from the top left of the window's client area: the
+/// cursor is moved there, then the button is pressed and released through `SendInput`
+pub(super) fn click(_ui: &Arc<dyn Thread>, window: &Window, x: f64, y: f64) -> Result<(), String> {
+    let hwnd = hwnd_of(window)?;
+    foreground(hwnd)?;
+    let mut point = POINT {
+        x: x.round() as i32,
+        y: y.round() as i32,
+    };
+    // SAFETY: converts a point of this process's own window; the cursor is moved to the result.
+    let spot = unsafe {
+        let _ = ClientToScreen(hwnd, &mut point);
+        let _ = SetCursorPos(point.x, point.y);
+        let mut now = POINT::default();
+        let _ = GetCursorPos(&mut now);
+        now
+    };
+    if (spot.x - point.x).abs() > 2 || (spot.y - point.y).abs() > 2 {
+        return Err(format!(
+            "The cursor stayed at {},{} instead of {},{}.",
+            spot.x, spot.y, point.x, point.y
+        ));
+    }
+    sleep(Duration::from_millis(50));
+    send(&[mouse_input(MOUSEEVENTF_LEFTDOWN)])?;
+    sleep(Duration::from_millis(50));
+    send(&[mouse_input(MOUSEEVENTF_LEFTUP)])
+}
+
+pub(super) fn shortcut(
+    _ui: &Arc<dyn Thread>,
+    window: &Window,
+    shortcut: Shortcut,
+) -> Result<(), String> {
+    foreground(hwnd_of(window)?)?;
+    // The presses, then the releases a moment later, as a hand holds the modifiers. Sent in one
+    // batch the modifiers are up again before the app reads them for the letter: the shell's
+    // accelerator handler saw Ctrl+Shift+S as Ctrl+S.
+    let inputs = shortcut_inputs(shortcut);
+    let (presses, releases) = inputs.split_at(inputs.len() / 2);
+    send(presses)?;
+    sleep(SHORTCUT_HOLD);
+    send(releases)
+}
+
+/// The events of a raw key for the IME: the letter's own virtual key, Shift for a capital
+fn ime_inputs(c: char) -> Result<Vec<INPUT>, String> {
+    if !c.is_ascii_alphabetic() {
+        return Err(format!("{c:?} is not a letter key"));
+    }
+    let vk = VIRTUAL_KEY(u16::from(c.to_ascii_uppercase() as u8));
+    Ok(press(vk, c.is_ascii_uppercase()))
+}
+
+fn layout_language(layout: HKL) -> usize {
+    layout.0 as usize & 0xffff
+}
+
+/// The window that has the keyboard focus in the app window's input queue, and its thread.
+/// Keys go to that thread, and its keyboard layout is the one the IME there works with. The
+/// app window and its own thread are the answer only when the queue has no focus window.
+fn focus_owner(hwnd: HWND) -> (HWND, u32) {
+    // SAFETY: reads the thread of a window and that thread's GUI state into a local structure.
+    unsafe {
+        let thread = GetWindowThreadProcessId(hwnd, None);
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(thread, &mut info).is_err() || info.hwndFocus.0.is_null() {
+            return (hwnd, thread);
+        }
+        (
+            info.hwndFocus,
+            GetWindowThreadProcessId(info.hwndFocus, None),
+        )
+    }
+}
+
+/// Who has the keyboard focus and which layouts are active, for the record of an `ime` step
+/// and for the error of a layout that did not switch: the focus window, its class, thread and
+/// process next to this process, and the layouts of that thread and of the app window's own.
+fn focus_holder(hwnd: HWND) -> String {
+    let own = std::process::id();
+    let (focus, thread) = focus_owner(hwnd);
+    // SAFETY: the calls read system state; `process` and `class` outlive them.
+    unsafe {
+        let mut process = 0u32;
+        let _ = GetWindowThreadProcessId(focus, Some(&mut process));
+        let mut class = [0u16; 256];
+        let length = usize::try_from(GetClassNameW(focus, &mut class)).unwrap_or(0);
+        let class = String::from_utf16_lossy(&class[..length.min(class.len())]);
+        let app_thread = GetWindowThreadProcessId(hwnd, None);
+        format!(
+            "the focus is in window {:#x} of class '{class}', thread {thread} of process \
+             {process} with layout {:08x} (this is process {own}; the app window {:#x} is of \
+             thread {app_thread} with layout {:08x})",
+            focus.0 as usize,
+            GetKeyboardLayout(thread).0 as usize,
+            hwnd.0 as usize,
+            GetKeyboardLayout(app_thread).0 as usize
+        )
+    }
+}
+
+/// Asks the window that has the keyboard focus to switch to `layout` and waits until its
+/// thread did. Windows posts this request to the focus window, and the keys go to that
+/// window's thread, so that is the window asked and the thread judged. The app window's own
+/// thread is no measure: in the S121 run it stayed at 04090409 on a docs page through five
+/// requests, where a sheets page of the same run composed Hangul. The request is posted again
+/// every second: a window that was busy with its first paint after a new tab may drop it.
+fn request_layout(hwnd: HWND, layout: HKL) -> Result<(), String> {
+    let deadline = Instant::now() + LAYOUT_TIMEOUT;
+    let mut asked = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    loop {
+        let (focus, thread) = focus_owner(hwnd);
+        // SAFETY: reads the keyboard layout of a thread id.
+        let current = unsafe { GetKeyboardLayout(thread) };
+        if layout_language(current) == layout_language(layout) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "the thread with the keyboard focus did not switch the keyboard layout to \
+                 {:08x}: {}",
+                layout.0 as usize,
+                focus_holder(hwnd)
+            ));
+        }
+        if asked.elapsed() >= Duration::from_secs(1) {
+            asked = Instant::now();
+            // SAFETY: posts the documented input language change request to the window that
+            // has the keyboard focus.
+            unsafe {
+                PostMessageW(
+                    Some(focus),
+                    WM_INPUTLANGCHANGEREQUEST,
+                    WPARAM(0),
+                    LPARAM(layout.0 as isize),
+                )
+            }
+            .map_err(|error| format!("cannot request the keyboard layout: {error}"))?;
+        }
+        sleep(Duration::from_millis(50));
+    }
+}
+
+/// Whether the IME of the focused window is in Hangul mode; `None` when it cannot tell
+fn hangul_mode() -> Option<bool> {
+    // SAFETY: reads the foreground window and its thread's GUI state into a local structure.
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let thread = GetWindowThreadProcessId(foreground, None);
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        GetGUIThreadInfo(thread, &mut info).ok()?;
+        let focus = if info.hwndFocus.0.is_null() {
+            foreground
+        } else {
+            info.hwndFocus
+        };
+        let context = ImmGetContext(focus);
+        if context.0.is_null() {
+            return None;
+        }
+        let mut conversion = IME_CONVERSION_MODE(0);
+        let mut sentence = IME_SENTENCE_MODE(0);
+        let known =
+            ImmGetConversionStatus(context, Some(&mut conversion), Some(&mut sentence)).as_bool();
+        let _ = ImmReleaseContext(focus, context);
+        known.then_some(conversion.0 & IME_CMODE_HANGUL.0 != 0)
+    }
+}
+
+/// One press of the Hangul key, which toggles the Korean IME between Hangul and alphanumeric
+fn toggle_hangul() -> Result<(), String> {
+    send(&press(VK_HANGUL, false))
+}
+
+/// Switches the window to the Korean keyboard layout, puts its IME in Hangul mode, types the
+/// raw keys so the IME composes, then commits by toggling Hangul mode off and restores the
+/// layout that was active
+pub(super) fn ime_ko_2set(
+    _ui: &Arc<dyn Thread>,
+    window: &Window,
+    keys: &str,
+    _prime: bool,
+    composing: &dyn Fn(bool) -> Option<bool>,
+) -> Result<Value, String> {
+    let hwnd = hwnd_of(window)?;
+    foreground(hwnd)?;
+    let (_, thread) = focus_owner(hwnd);
+    // SAFETY: reads the keyboard layout of a thread id.
+    let previous = unsafe { GetKeyboardLayout(thread) };
+    // SAFETY: loads the Korean keyboard layout into this process without activating it here.
+    let korean =
+        unsafe { LoadKeyboardLayoutW(w!("00000412"), KLF_NOTELLSHELL) }.map_err(|error| {
+            format!("the Korean keyboard layout is not installed (Korean language pack): {error}")
+        })?;
+    if layout_language(korean) != KOREAN_LANGID {
+        return Err("Windows did not load the Korean keyboard layout".into());
+    }
+    request_layout(hwnd, korean)?;
+    let focus_switched = focus_holder(hwnd);
+    sleep(IME_SETTLE);
+    // a freshly activated Korean IME may start in alphanumeric mode: toggle unless Hangul mode
+    // is confirmed
+    let started_in_hangul = hangul_mode();
+    if started_in_hangul != Some(true) {
+        toggle_hangul()?;
+        sleep(IME_SETTLE);
+    }
+    // The conversion mode of a WebView2 window cannot be read from here, so the first key says
+    // it: a composing IME hands the page `Process` for it, plain alphanumeric mode the letter
+    // itself (S82 runs: `gksrmf` came out as Latin). A letter that came through is erased and the
+    // mode toggled once more.
+    let mut corrected = false;
+    let mut rest = keys.chars();
+    let typed = (|| -> Result<(), String> {
+        if let Some(first) = rest.next() {
+            composing(true);
+            send(&ime_inputs(first)?)?;
+            sleep(IME_KEY_GAP);
+            if composing(false) == Some(false) {
+                send(&press(VK_BACK, false))?;
+                sleep(SETTLE);
+                toggle_hangul()?;
+                sleep(IME_SETTLE);
+                send(&ime_inputs(first)?)?;
+                sleep(IME_KEY_GAP);
+                corrected = true;
+            }
+        }
+        rest.try_for_each(|c| {
+            let result = send(&ime_inputs(c)?);
+            sleep(IME_KEY_GAP);
+            result
+        })
+    })();
+    sleep(SETTLE);
+    // leaving Hangul mode commits the composition
+    let committed = toggle_hangul();
+    sleep(SETTLE);
+    let focus_typed = focus_holder(hwnd);
+    let restored = request_layout(hwnd, previous);
+    typed?;
+    committed?;
+    restored?;
+    Ok(json!({
+        "source": "ko-2set",
+        "hangulModeBefore": started_in_hangul,
+        "toggledAgain": corrected,
+        "layout": format!("{:08x}", korean.0 as usize),
+        "focusSwitched": focus_switched,
+        "focusTyped": focus_typed,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(inputs: &[INPUT]) -> Vec<(u16, bool)> {
+        inputs
+            .iter()
+            .map(|input| {
+                // SAFETY: every INPUT built here is a keyboard event.
+                let ki = unsafe { input.Anonymous.ki };
+                (ki.wVk.0, ki.dwFlags.0 & KEYEVENTF_KEYUP.0 != 0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn control_s_is_ctrl_down_s_down_s_up_ctrl_up() {
+        assert_eq!(
+            keys(&shortcut_inputs(Shortcut::Save)),
+            [
+                (VK_CONTROL.0, false),
+                (u16::from(b'S'), false),
+                (u16::from(b'S'), true),
+                (VK_CONTROL.0, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn save_as_holds_shift_inside_ctrl() {
+        let pressed = keys(&shortcut_inputs(Shortcut::SaveAs));
+        assert_eq!(pressed.len(), 6);
+        assert_eq!(pressed[1], (VK_SHIFT.0, false));
+        assert_eq!(pressed[4], (VK_SHIFT.0, true));
+    }
+
+    #[test]
+    fn quit_is_alt_f4() {
+        assert_eq!(
+            keys(&shortcut_inputs(Shortcut::Quit)),
+            [
+                (VK_MENU.0, false),
+                (VK_F4.0, false),
+                (VK_F4.0, true),
+                (VK_MENU.0, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn ime_keys_are_letters_only() {
+        assert_eq!(
+            keys(&ime_inputs('g').unwrap()),
+            [(u16::from(b'G'), false), (u16::from(b'G'), true)]
+        );
+        assert_eq!(ime_inputs('R').unwrap().len(), 4);
+        assert!(ime_inputs('1').is_err());
+    }
+
+    #[test]
+    fn hangul_text_falls_back_to_unicode_packets() {
+        let inputs = char_inputs('\u{d55c}');
+        assert_eq!(inputs.len(), 2);
+        // SAFETY: built by `unicode_input`.
+        let first = unsafe { inputs[0].Anonymous.ki };
+        assert_eq!(first.wScan, 0xd55c);
+        assert_eq!(first.wVk.0, 0);
+    }
+}

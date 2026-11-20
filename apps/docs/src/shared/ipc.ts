@@ -1,5 +1,14 @@
+export interface OwnedSaveRequest {
+  requestId: string
+  mode: 'save' | 'save-as'
+  targetPath?: string
+  overwrite?: boolean
+}
+
 export interface OpenFileResult {
   path: string
+  recoveryReceipt?: string
+  recoveryError?: string
   name: string
   /** one-shot URL serving the docx bytes (fetch it exactly once) */
   dataUrl: string
@@ -27,6 +36,7 @@ export interface OpenFileNeedsPassword {
   needsPassword: true
   path: string
   name: string
+  recoveryReceipt?: string
 }
 
 export type OpenDocxResult = OpenFileResult | OpenFileNeedsPassword | null
@@ -484,8 +494,9 @@ export interface DesktopApi {
   discardDocPasswordIntents(throughRevision: number): Promise<{ ok: boolean }>
   /** mark the renderer ready and consume a file passed by Finder/Explorer at launch */
   consumePendingOpenDocx(): Promise<OpenDocxResult>
+  recoveryInitialized?(receipt: string, ok: boolean, error?: string): Promise<void>
   /** returns true when this tab was created via "New Document" and should start blank */
-  consumeNewBlankDoc(): Promise<boolean>
+  consumeNewBlankDoc(): Promise<boolean | { blank: true; recoveryReceipt: string }>
   /** AI-authored content queued for this tab by create_document; one-shot, null when none */
   consumeAiDocContent(): Promise<AiDocContent | null>
   /** an untitled copy queued for this tab (a skill template's); one-shot, null when none */
@@ -507,8 +518,11 @@ export interface DesktopApi {
     path: string,
     data: ArrayBuffer,
     auto?: boolean,
-    /** the embed host's `doc.save()` request this save belongs to (web only) */
-    hostSaveId?: string,
+    /**
+     * the request this save belongs to: the shell's owned save on the desktop, the embed
+     * host's `doc.save()` on the web
+     */
+    ownedSaveRequestId?: string,
   ): Promise<{
     ok: boolean
     error?: string
@@ -534,7 +548,7 @@ export interface DesktopApi {
     meta?: { title: string; format: 'docx' | 'odt'; originalPath?: string },
   ): Promise<{ ok: boolean; failed?: boolean }>
   /** the OS is ending the session: write the recovery copy now, then call `done` */
-  onWriteRecoveryNow?(handler: (done: () => void) => void): () => void
+  onWriteRecoveryNow?(handler: (done: (error?: string) => void) => void): () => void
   /** the main process dropped this tab's recovery copy ("Don't Save", a discarding close) */
   onRecoveryCopyDropped?(handler: () => void): () => void
   /** tab closed but webContents kept alive (shell freeze workaround) — stop background timers */
@@ -573,13 +587,17 @@ export interface DesktopApi {
     sourcePath: string | null,
     format: DocFormat,
     offerExports?: boolean,
+    ownedSaveRequestId?: string,
   ): Promise<{ path: string; kind?: SaveAsKind; dir?: string; pdfPath?: string } | null>
   /** Content hidden from AI cannot be written into `format` (an ODT, PDF, page
    *  images, HTML, Markdown or Hangul file): asks the person (one message box)
    *  to save as Word instead, or to write the file without the marks ('clear';
    *  for an ODT the marks are cleared in the written copy). The document keeps
    *  its marks either way. Closing the box is 'cancel'. */
-  confirmMarkedExport(format: MarkedExportFormat): Promise<'docx' | 'clear' | 'cancel'>
+  confirmMarkedExport(
+    format: MarkedExportFormat,
+    ownedSaveRequestId?: string,
+  ): Promise<'docx' | 'clear' | 'cancel'>
   /** Save As, step two: write to the path step one returned (nothing else is
    *  accepted), docx or ODT bytes as its extension says. sourcePath: the
    *  document's current path — a docx write uses its desired next-save password
@@ -588,6 +606,7 @@ export interface DesktopApi {
     path: string,
     data: ArrayBuffer,
     sourcePath?: string | null,
+    ownedSaveRequestId?: string,
   ): Promise<{
     ok: boolean
     path?: string
@@ -599,6 +618,7 @@ export interface DesktopApi {
   saveDocxNew(
     defaultName: string,
     data: ArrayBuffer,
+    ownedSaveRequestId?: string,
   ): Promise<{
     ok: boolean
     path?: string
@@ -617,6 +637,7 @@ export interface DesktopApi {
     defaultName: string,
     format: DocFormat,
     data: ArrayBuffer,
+    ownedSaveRequestId?: string,
   ): Promise<{
     ok: boolean
     path?: string
@@ -627,7 +648,12 @@ export interface DesktopApi {
   }>
   /** MCP-driven output: write the current document to an explicit absolute path
    *  with no dialog; refuses to replace an existing file unless overwrite is true */
-  saveDocxTo(path: string, data: ArrayBuffer, overwrite: boolean): Promise<McpSaveResult>
+  saveDocxTo(
+    path: string,
+    data: ArrayBuffer,
+    overwrite: boolean,
+    ownedSaveRequestId?: string,
+  ): Promise<McpSaveResult>
   /** a docx with lazily served pictures, whole again (one-shot URL); null on failure */
   materializeDocx(data: ArrayBuffer): Promise<{ dataUrl: string } | null>
   /** PNG of a viewport rectangle (CSS px of this page) as it is on screen; null on failure */
@@ -686,11 +712,13 @@ export interface DesktopApi {
     outPath?: string,
     scale?: number,
     links?: PdfInternalLink[],
+    ownedSaveRequestId?: string,
   ): Promise<{ ok: boolean; path?: string; error?: string }>
   exportHtml(
     defaultName: string,
     html: string,
     outPath?: string,
+    ownedSaveRequestId?: string,
   ): Promise<{ ok: boolean; path?: string; error?: string }>
   /** the document's docx as a .hwp or .hwpx copy; main asks before writing a copy that loses
    *  something. outPath is only honored when the Save As dialog chose that exact path */
@@ -699,18 +727,21 @@ export interface DesktopApi {
     docx: ArrayBuffer,
     outPath?: string,
     passwordSet?: boolean,
+    ownedSaveRequestId?: string,
   ): Promise<HwpExportResult>
   exportMarkdown(
     defaultName: string,
     markdown: string,
     images: MarkdownImage[],
     outPath?: string,
+    ownedSaveRequestId?: string,
   ): Promise<{ ok: boolean; path?: string; error?: string; imagesDropped?: number }>
   /** Mixed paper-size export: produce a set of PDF bytes (base64) at given sizes per the current print layout */
   printPdfBuffer(
     pageWidthTwips: number,
     pageHeightTwips: number,
     scale?: number,
+    ownedSaveRequestId?: string,
   ): Promise<{ ok: boolean; base64?: string; error?: string }>
   /** Merge grouped PDF fragments in order and write to disk (missing outPath opens
    *  the save dialog; a given outPath must come from a previous export dialog) */
@@ -719,17 +750,24 @@ export interface DesktopApi {
     base64Parts: string[],
     outPath?: string,
     links?: PdfInternalLink[],
+    ownedSaveRequestId?: string,
   ): Promise<{ ok: boolean; path?: string; error?: string }>
   /** Export as images: the folder picker plus a pre-authorized temp PDF path the
    *  regular PDF export writes to silently (no reveal, no open) */
-  pickExportImagesTarget(): Promise<{ dir: string; pdfPath: string } | null>
+  pickExportImagesTarget(
+    ownedSaveRequestId?: string,
+  ): Promise<{ dir: string; pdfPath: string } | null>
   /** Read back and delete the temp PDF written for an image export */
-  takeExportPdf(pdfPath: string): Promise<{ ok: boolean; base64?: string; error?: string }>
+  takeExportPdf(
+    pdfPath: string,
+    ownedSaveRequestId?: string,
+  ): Promise<{ ok: boolean; base64?: string; error?: string }>
   /** Write one page PNG into the folder chosen by pickExportImagesTarget */
   writeExportImage(
     dir: string,
     fileName: string,
     pngBase64: string,
+    ownedSaveRequestId?: string,
   ): Promise<{ ok: boolean; path?: string; error?: string }>
   /** Save a picture the renderer displays (data URL) through a Save dialog */
   saveImageAs(src: string): Promise<{ ok: boolean; path?: string; error?: string }>
@@ -832,11 +870,16 @@ export interface DesktopApi {
   /** subscribe to native menu commands; returns unsubscribe */
   onMenuCommand(handler: (command: MenuCommand, payload?: string) => void): () => void
   /** Close guard: main process queries pre-close state (dirty flag + autosave switch; if autosave is on, save silently without a dialog) */
-  onCloseCheck(handler: () => void): () => void
-  reportCloseCheck(state: { dirty: boolean; autoSave: boolean; filePath?: string | null }): void
+  onCloseCheck(handler: (token?: string) => void): () => void
+  reportCloseCheck(
+    state: { dirty: boolean; autoSave: boolean; filePath?: string | null },
+    token?: string,
+  ): void
   /** Close guard chose "Save": main process asks the renderer to run the full save flow */
-  onCloseSaveRequest(handler: (request?: { requestId: string }) => void): () => void
-  reportCloseSaveResult(ok: boolean): void
+  onCloseSaveRequest(
+    handler: (request?: OwnedSaveRequest | { requestId: string }) => void,
+  ): () => void
+  reportCloseSaveResult(ok: boolean, requestId?: string, error?: string): void
   /** Web embed only: the host asks for a picture of the first page, which `source` draws */
   onThumbnailRequest?(source: WebThumbnailSource): () => void
   /** hosts that track unsaved changes (the web embed) hear each change of the flag; absent on the desktop */

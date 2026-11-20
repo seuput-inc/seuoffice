@@ -304,8 +304,8 @@ pub fn dispatch(function: &str, text: &str, args: &Value) -> Returned {
             value(plain_text_of(
                 &xml.text,
                 &prefixes_of(text),
-                xml.to_byte(from),
-                xml.to_byte(to),
+                byte_past_end(&xml, f64::from(from.0)),
+                byte_past_end(&xml, f64::from(to.0)),
             ))
         }
         "hrefPath" => value(href_path(text)),

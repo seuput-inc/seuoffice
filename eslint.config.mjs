@@ -88,4 +88,17 @@ export default tseslint.config(
       '@typescript-eslint/no-require-imports': 'off',
     },
   },
+  {
+    files: ['crates/shell/bridge/invoke-system.js'],
+    languageOptions: {
+      globals: { ...globals.browser, __INVOKE_KEY__: 'readonly' },
+    },
+  },
+  {
+    // pages the shell's probe harness loads in a webview; probe.js puts `P` on the window
+    files: ['crates/shell/probe-fixtures/pages/*.js'],
+    languageOptions: {
+      globals: { ...globals.browser, P: 'readonly' },
+    },
+  },
 )

@@ -1,0 +1,15 @@
+{
+  "checker": { "kind": "tlc", "config": "MC.cfg", "timeoutSec": 300, "deadlock": false },
+  "properties": ["TypeOK", "AtomicReplace", "NoStaleEffects", "ObserverOutsideGates", "NoAliasDoubleAcquire", "NotificationConservation", "EventuallyTerminal"],
+  "waive": { "TypeOK": "Shape/bounds hygiene, not a behavioral promise; no useful well-typed protocol mutation isolates it." },
+  "mutations": [
+    { "name": "notify-under-held-gates", "why": "Notify the reentrant observer synchronously before releasing the retiring operation's gates.", "search": "EarlyNotify == NotifyBeforeUnlock", "replace": "EarlyNotify == TRUE", "breaks": "ObserverOutsideGates", "isolate": true },
+    { "name": "notify-under-held-gates-deadlock", "why": "A synchronous observer waits for the emitter's native gate while the emitter waits for the observer.", "search": "EarlyNotify == NotifyBeforeUnlock", "replace": "EarlyNotify == TRUE", "breaks": "EventuallyTerminal", "isolate": true, "deadlock": false },
+    { "name": "invalidate-after-unlock-stale-worker", "why": "Release the old document gate before logical retirement, allowing an old-document-only worker effect after the swap.", "search": "LateRetire == InvalidateAfterUnlock", "replace": "LateRetire == TRUE", "breaks": "NoStaleEffects", "isolate": true },
+    { "name": "invalidate-after-unlock-nonatomic-publication", "why": "Publish the new attachment while the old document is still logically live.", "search": "LateRetire == InvalidateAfterUnlock", "replace": "LateRetire == TRUE", "breaks": "AtomicReplace", "isolate": true },
+    { "name": "alias-reacquire", "why": "Acquire the same source/destination native gate twice instead of deduplicating aliases.", "search": "DuplicateAlias == AliasDoubleLock", "replace": "DuplicateAlias == TRUE", "breaks": "NoAliasDoubleAcquire", "isolate": true },
+    { "name": "alias-reacquire-deadlock", "why": "The second acquisition waits on the non-reentrant gate held by the same retiring operation.", "search": "DuplicateAlias == AliasDoubleLock", "replace": "DuplicateAlias == TRUE", "breaks": "EventuallyTerminal", "isolate": true, "deadlock": false },
+    { "name": "drop-deferred-notification", "why": "Consume each deferred per-document notification without delivering any callback wakeup after unlocking.", "search": "DeliverNotification(document) == ~(DropSecond /\\ document = 2)", "replace": "DeliverNotification(document) == FALSE", "breaks": "NotificationConservation", "isolate": true },
+    { "name": "drop-only-second-document-notification", "why": "Deliver document one's callback but silently discard only document two's notification; aggregate wakeup checks would miss this.", "search": "DeliverNotification(document) == ~(DropSecond /\\ document = 2)", "replace": "DeliverNotification(document) == (document # 2)", "breaks": "NotificationConservation", "isolate": true }
+  ]
+}

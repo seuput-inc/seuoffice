@@ -1449,7 +1449,10 @@ export default function App() {
   const [printInvalid, setPrintInvalid] = useState(false)
   const [printAnnots, setPrintAnnots] = useState(true)
   /** Save As flow: the shell picked the target, the reader still chooses what happens to annotations */
-  const [saveCopyDlg, setSaveCopyDlg] = useState<{ targetPath: string } | null>(null)
+  const [saveCopyDlg, setSaveCopyDlg] = useState<{
+    targetPath: string
+    ownedSaveId?: string
+  } | null>(null)
   const [saveCopyMode, setSaveCopyMode] = useState<'keep' | 'flatten' | 'strip'>('keep')
   /** Bumped by "accept all and save": the effect waits for the render that has the new markups. */
   const [acceptSaveRequest, setAcceptSaveRequest] = useState(0)
@@ -1649,6 +1652,7 @@ export default function App() {
       previous: PDFDocumentProxy | null,
       saved?: SavedSnapshot,
       waitForPageNos: number[] = [],
+      onLoaded?: (loaded: PDFDocumentProxy) => void,
     ) => {
       // Whether the document is unsaved with nothing pending here is the main process's to
       // say, each time the file is read: opened from a recovery copy and not saved since, or
@@ -2116,19 +2120,45 @@ export default function App() {
       // a page operation rewrote the file in place: the reading results are read again for
       // its new pages (a save reads them itself, once the store moved to the saved hash)
       if (previous && !saved) setDocReloadRev((v) => v + 1)
+      onLoaded?.(loaded)
       return loaded.numPages
     },
     [],
   )
 
+  const recoveryOpenRef = useRef<{
+    path: string
+    token: string
+    applied: PDFDocumentProxy | null
+  } | null>(null)
+
+  useEffect(() => {
+    const recovery = recoveryOpenRef.current
+    if (!recovery || !recovery.applied || recovery.applied !== doc || status !== 'ready') return
+    recoveryOpenRef.current = null
+    void window.pdfApi.recoveryInitialized(recovery.token, true).catch((error) => {
+      console.error('[pdf] recovery acknowledgement failed:', error)
+    })
+  }, [doc, status])
+
   const openPath = useCallback(
     async (path: string) => {
+      const recovery = recoveryOpenRef.current?.path === path ? recoveryOpenRef.current : null
+      const failRecovery = (error: string) => {
+        if (!recovery || recoveryOpenRef.current !== recovery) return
+        recoveryOpenRef.current = null
+        void window.pdfApi.recoveryInitialized(recovery.token, false, error).catch((failure) => {
+          console.error('[pdf] recovery acknowledgement failed:', failure)
+        })
+      }
       try {
         noUndoConsentRef.current = { given: false }
         noRedoConsentRef.current = { given: false }
         setFilePath(path)
         setOpenError(null)
-        await loadDoc(path, null)
+        await loadDoc(path, null, undefined, [], (loaded) => {
+          if (recovery && recoveryOpenRef.current === recovery) recovery.applied = loaded
+        })
         // Silently restore the last reading position (WPS-style). A saved custom
         // zoom (fitMode null) must be applied before 'ready', or the initial
         // fit recompute would take over; fit modes are recomputed anyway.
@@ -2149,6 +2179,7 @@ export default function App() {
             const probe = await window.pdfApi.decryptPdf(raw, '')
             if (!probe.ok && probe.reason === 'certificate-encryption') {
               showNotice(t('pwCertEncrypted'))
+              failRecovery('Certificate-encrypted PDF cannot be opened')
               setStatus('error')
               return
             }
@@ -2162,6 +2193,7 @@ export default function App() {
           return
         }
         console.error('[pdf] open failed:', err)
+        failRecovery(err instanceof Error ? err.message : String(err))
         setOpenError(err instanceof Error ? err.message : String(err))
         setStatus('error')
       }
@@ -2171,7 +2203,9 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      const path = await window.pdfApi.consumePending()
+      const recovery = await window.pdfApi.consumeRecoveryPending()
+      if (recovery) recoveryOpenRef.current = { ...recovery, applied: null }
+      const path = recovery?.path ?? (await window.pdfApi.consumePending())
       if (!path) {
         setStatus('empty')
         return
@@ -5862,7 +5896,13 @@ export default function App() {
       promise would reuse the pre-reload render's closure — dirty still true, the saved
       edits still listed — and write them onto the file a second time. */
   const queuedSavesRef = useRef<
-    { autosave: boolean; flushAll: boolean; hostSaveId?: string; resolve: (ok: boolean) => void }[]
+    {
+      autosave: boolean
+      flushAll: boolean
+      ownedSaveId?: string
+      hostSaveId?: string
+      resolve: (ok: boolean) => void
+    }[]
   >([])
 
   // flushAll also writes the field whose card is open: callers that treat success as
@@ -5870,6 +5910,7 @@ export default function App() {
   const saveInPlace = (
     autosave = false,
     flushAll = false,
+    ownedSaveId?: string,
     hostSaveId?: string,
   ): Promise<boolean> => {
     if (redactionRequestInFlightRef.current) return Promise.resolve(false)
@@ -5880,7 +5921,7 @@ export default function App() {
     // still reads 'idle' for both.
     if (saveInFlightRef.current !== null) {
       return new Promise<boolean>((resolve) =>
-        queuedSavesRef.current.push({ autosave, flushAll, hostSaveId, resolve }),
+        queuedSavesRef.current.push({ autosave, flushAll, ownedSaveId, hostSaveId, resolve }),
       )
     }
     // Fold an open floating-editor draft in first: keyboard save and autosave can land
@@ -5943,6 +5984,7 @@ export default function App() {
       setSaveState('saving')
       const result = await window.pdfApi.save({
         path: filePath,
+        ...(ownedSaveId === undefined ? {} : { ownedSaveId }),
         ...editsPayload(edits, noteFlush, fields),
         auto: autosave,
         ...(hostSaveId === undefined ? {} : { hostSaveId }),
@@ -6046,10 +6088,10 @@ export default function App() {
   /** the first save of an untitled copy: one at a time, asked where once */
   const [untitledSaver] = useState(() =>
     createUntitledSaver({
-      pickUntitledCopyTarget: async (path, name) =>
-        (await window.pdfApi.pickUntitledCopyTarget?.(path, name)) === true,
-      adoptUntitledCopy: async (path) =>
-        (await window.pdfApi.adoptUntitledCopy?.(path)) ?? {
+      pickUntitledCopyTarget: async (path, name, ownedSaveId) =>
+        (await window.pdfApi.pickUntitledCopyTarget?.(path, name, ownedSaveId)) === true,
+      adoptUntitledCopy: async (path, ownedSaveId) =>
+        (await window.pdfApi.adoptUntitledCopy?.(path, ownedSaveId)) ?? {
           ok: false,
           error: 'pdf: untitled documents cannot be saved here',
         },
@@ -6067,13 +6109,17 @@ export default function App() {
   const save = async (
     autosave = false,
     flushAll = false,
+    ownedSaveId?: string,
     hostSaveId?: string,
   ): Promise<boolean> => {
     if (autosave || !untitledCopyRef.current || !filePath || untitledSaver.writing) {
-      return saveInPlace(autosave, flushAll, hostSaveId)
+      return saveInPlace(autosave, flushAll, ownedSaveId, hostSaveId)
     }
-    const out = await untitledSaver.save(filePath, fileName || 'document.pdf', () =>
-      saveInPlace(false, flushAll, hostSaveId),
+    const out = await untitledSaver.save(
+      filePath,
+      fileName || 'document.pdf',
+      () => saveInPlace(false, flushAll, ownedSaveId, hostSaveId),
+      ownedSaveId,
     )
     if (!out.saved) {
       // the edits are in the working file, the document is not where the person chose
@@ -6092,14 +6138,15 @@ export default function App() {
   // re-applying the previous payload.
   useEffect(() => {
     if (queuedSavesRef.current.length === 0 || saveInFlightRef.current !== null) return
-    const queued = queuedSavesRef.current
-    queuedSavesRef.current = []
+    const ownedSaveId = queuedSavesRef.current[0].ownedSaveId
+    const queued = queuedSavesRef.current.filter((q) => q.ownedSaveId === ownedSaveId)
+    queuedSavesRef.current = queuedSavesRef.current.filter((q) => q.ownedSaveId !== ownedSaveId)
     // One explicit request makes the whole drained batch explicit (autosave opt-in)
     const autosaveOnly = queued.every((q) => q.autosave)
     const flushAll = queued.some((q) => q.flushAll)
     // a batch that holds a host request is stored as the host's save
     const hostSaveId = queued.find((q) => q.hostSaveId !== undefined)?.hostSaveId
-    void save(autosaveOnly, flushAll, hostSaveId).then((ok) => {
+    void save(autosaveOnly, flushAll, ownedSaveId, hostSaveId).then((ok) => {
       for (const q of queued) q.resolve(ok)
     })
   })
@@ -6111,6 +6158,7 @@ export default function App() {
   const saveAsTo = async (
     targetPath: string,
     annotations: 'keep' | 'flatten' | 'strip' = 'keep',
+    ownedSaveId?: string,
   ): Promise<boolean> => {
     if (!filePath) return false
     // The copy must contain what the user sees, including an open floating-editor
@@ -6168,6 +6216,7 @@ export default function App() {
       setSaveState('saving')
       const copied = await window.pdfApi.save({
         path: filePath,
+        ...(ownedSaveId === undefined ? {} : { ownedSaveId }),
         targetPath,
         markups: [],
         drawings: [],
@@ -6223,6 +6272,7 @@ export default function App() {
     }
     const result = await window.pdfApi.save({
       path: filePath,
+      ...(ownedSaveId === undefined ? {} : { ownedSaveId }),
       targetPath,
       ...edits,
       ...annotationChoice,
@@ -6284,18 +6334,19 @@ export default function App() {
     if (!dlg) return
     const mode = saveCopyMode
     setSaveCopyDlg(null)
-    void saveAsTo(dlg.targetPath, mode)
+    void saveAsTo(dlg.targetPath, mode, dlg.ownedSaveId)
       .catch((err: unknown) => {
         opFailed(err instanceof Error ? err.message : String(err))
         return false
       })
-      .then((ok) => window.pdfApi.sendSaveAsResult(ok))
+      .then((ok) => window.pdfApi.sendSaveAsResult(ok, dlg.ownedSaveId))
   }
 
   /** The Save As modal's Cancel button: tell the shell the flow ended without a copy. */
   const cancelSaveCopy = () => {
+    const id = saveCopyDlg?.ownedSaveId
     setSaveCopyDlg(null)
-    window.pdfApi.sendSaveAsResult('cancelled')
+    window.pdfApi.sendSaveAsResult('cancelled', id)
   }
 
   const requestRedactionSaveAs = async () => {
@@ -6342,7 +6393,20 @@ export default function App() {
   // Autosave pauses while the shell's Save As flow is open: the save dialog blurs the
   // window, and the blur-triggered autosave would write the pending edits into the original
   const saveAsFlowRef = useRef(false)
-  useEffect(() => window.pdfApi.onSaveAsFlow((inFlight) => (saveAsFlowRef.current = inFlight)), [])
+  const saveAsFlowOwnerRef = useRef<string | undefined>(undefined)
+  useEffect(
+    () =>
+      window.pdfApi.onSaveAsFlow((inFlight, id) => {
+        if (inFlight) {
+          saveAsFlowOwnerRef.current = id
+          saveAsFlowRef.current = true
+        } else if (saveAsFlowOwnerRef.current === id) {
+          saveAsFlowRef.current = false
+          saveAsFlowOwnerRef.current = undefined
+        }
+      }),
+    [],
+  )
 
   // Autosave (same strategy as Docs): every 30s and on window blur, silently persist pending
   // edits via the regular save() path while the ribbon toggle (or the shell-wide default) is
@@ -9108,44 +9172,46 @@ export default function App() {
 
   // Main process asked for a save (close prompt, menu Save, export) → save and report the result
   useEffect(() => {
-    return window.pdfApi.onCloseSaveRequest(({ flushAll, hostSaveId }) => {
+    return window.pdfApi.onCloseSaveRequest(({ flushAll, ownedSaveId, hostSaveId }) => {
       if (redactions.length > 0) {
         showNotice(t('redactSaveAsHint'))
-        window.pdfApi.sendCloseSaveResult(false)
+        window.pdfApi.sendCloseSaveResult(false, ownedSaveId)
         return
       }
-      void save(false, flushAll, hostSaveId).then((ok) => window.pdfApi.sendCloseSaveResult(ok))
+      void save(false, flushAll, ownedSaveId, hostSaveId).then((ok) =>
+        window.pdfApi.sendCloseSaveResult(ok, ownedSaveId),
+      )
     })
   })
 
   // Shell menu Save As → ask what the copy does with annotations, then write only
   // to the picked path. The original file is never mutated.
   useEffect(() => {
-    return window.pdfApi.onSaveAsRequest((targetPath) => {
+    return window.pdfApi.onSaveAsRequest((targetPath, ownedSaveId) => {
       // A permanent redaction copy has its own confirmation and must not wait
       // behind a second dialog; it keeps annotations as they are.
       if (redactionApplyConfirmedRef.current) {
-        void saveAsTo(targetPath, 'keep')
+        void saveAsTo(targetPath, 'keep', ownedSaveId)
           .catch((err: unknown) => {
             opFailed(err instanceof Error ? err.message : String(err))
             return false
           })
-          .then((ok) => window.pdfApi.sendSaveAsResult(ok))
+          .then((ok) => window.pdfApi.sendSaveAsResult(ok, ownedSaveId))
         return
       }
       // Flattening or stripping annotations reworks the saved output, which a
       // protected document has encrypted again: its copy keeps them as they are.
       if (encryption !== null || diskPasswordRef.current !== null) {
-        void saveAsTo(targetPath, 'keep')
+        void saveAsTo(targetPath, 'keep', ownedSaveId)
           .catch((err: unknown) => {
             opFailed(err instanceof Error ? err.message : String(err))
             return false
           })
-          .then((ok) => window.pdfApi.sendSaveAsResult(ok))
+          .then((ok) => window.pdfApi.sendSaveAsResult(ok, ownedSaveId))
         return
       }
       setSaveCopyMode('keep')
-      setSaveCopyDlg({ targetPath })
+      setSaveCopyDlg({ targetPath, ownedSaveId })
     })
   })
 
@@ -9529,6 +9595,15 @@ export default function App() {
             void openPath(filePath)
           }}
           onCancel={() => {
+            const recovery = recoveryOpenRef.current
+            if (recovery) {
+              recoveryOpenRef.current = null
+              void window.pdfApi
+                .recoveryInitialized(recovery.token, false, 'Password entry cancelled')
+                .catch((error) => {
+                  console.error('[pdf] recovery acknowledgement failed:', error)
+                })
+            }
             // like docs: cancelling the prompt leaves no document
             setPwInput('')
             setPwWrong(false)

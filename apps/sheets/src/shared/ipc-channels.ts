@@ -54,6 +54,7 @@ export const HEADER_FOOTER_PICTURE_POSITION = /^[LCR][HF](EVEN|FIRST)?$/
 
 export const IPC_CHANNELS = {
   selectWorkbook: 'workbook:select',
+  savedOpenResult: 'workbook:saved-open-result',
   updateWorkbookPassword: 'workbook:update-password',
   /** Multi-file picker + sidecar sessions for merging into the current workbook */
   selectWorkbooksForMerge: 'workbook:select-for-merge',

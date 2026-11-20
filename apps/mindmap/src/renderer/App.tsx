@@ -89,6 +89,19 @@ export default function App() {
   const [status, setStatus] = useState<LoadStatus>('loading')
   const [failure, setFailure] = useState<OpenFailure | null>(null)
   const [session, setSession] = useState<DocumentSession | null>(null)
+  const [recoveryApplied, setRecoveryApplied] = useState<string | null>(null)
+  const recoveryAcknowledged = useRef<string | null>(null)
+  useEffect(() => {
+    if (
+      status !== 'ready' ||
+      !session ||
+      !recoveryApplied ||
+      recoveryAcknowledged.current === recoveryApplied
+    )
+      return
+    recoveryAcknowledged.current = recoveryApplied
+    void window.mindmapApi.recoveryInitialized(recoveryApplied, true)
+  }, [status, session, recoveryApplied])
   const [path, setPath] = useState<string | null>(null)
   const [tabs, setTabs] = useState<SheetTab[]>([])
   const [activeKey, setActiveKey] = useState<string | null>(null)
@@ -207,6 +220,7 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false
+    let recoveryToken: string | undefined
     void (async () => {
       try {
         const pending = await window.mindmapApi.consumePending()
@@ -215,6 +229,7 @@ export default function App() {
         let openedPath = pending
         if (pending) {
           const file = await window.mindmapApi.openFile(pending)
+          recoveryToken = file.recoveryToken
           const started = performance.now()
           // a restored recovery copy opens with unsaved changes; without its file it is
           // untitled, and so is a map imported from a .mm, which is never written
@@ -233,6 +248,8 @@ export default function App() {
           performance.measure('mindmap:open', { start: started, end: performance.now() })
           if (cancelled) return
           if (result.status !== 'ok') {
+            if (recoveryToken)
+              void window.mindmapApi.recoveryInitialized(recoveryToken, false, result.status)
             setFailure(result.status)
             setStatus('failed')
             return
@@ -244,9 +261,12 @@ export default function App() {
           // or a skill template's copy, spec 5.7), taken once
           const seed = (await window.mindmapApi.takeSeed?.()) ?? null
           if (seed && 'bytes' in seed) {
+            recoveryToken = seed.recoveryToken
             const result = await openCopiedMap(seed)
             if (cancelled) return
             if (result.status !== 'ok') {
+              if (recoveryToken)
+                void window.mindmapApi.recoveryInitialized(recoveryToken, false, result.status)
               setFailure(result.status)
               setStatus('failed')
               return
@@ -269,8 +289,15 @@ export default function App() {
         setTabs(opened.tabs())
         setActiveKey(opened.tabs()[0]?.key ?? null)
         setNotices(found)
+        if (recoveryToken) setRecoveryApplied(recoveryToken)
         setStatus('ready')
       } catch (err) {
+        if (recoveryToken)
+          void window.mindmapApi.recoveryInitialized(
+            recoveryToken,
+            false,
+            err instanceof Error ? err.message : String(err),
+          )
         console.error('[mindmap] open failed:', err)
         if (!cancelled) setStatus('error')
       }
@@ -286,6 +313,7 @@ export default function App() {
     const sync = (): void => {
       setTabs(session.tabs())
       setDirty(session.dirty)
+      if (statusRef.current === 'ready') window.mindmapApi.setDirty(session.dirty)
     }
     sync()
     return session.subscribe(sync)
@@ -426,7 +454,7 @@ export default function App() {
   // ---- saving ----
 
   const doSave = useCallback(
-    async (mode: SaveMode, auto = false): Promise<boolean> => {
+    async (mode: SaveMode, auto = false, ownedSaveRequestId?: string): Promise<boolean> => {
       const current = sessionRef.current
       if (statusRef.current !== 'ready' || !current) return false
       // a menu save during an autosave queues behind it instead of being dropped
@@ -442,6 +470,7 @@ export default function App() {
         const result = await window.mindmapApi.save({
           bytes,
           mode,
+          ...(ownedSaveRequestId === undefined ? {} : { ownedSaveRequestId }),
           // an automatic save defers to the next manual one while a copy pair holds the map
           auto,
           // an untitled map is offered its central topic as a name, unless that is still the default one
@@ -458,7 +487,13 @@ export default function App() {
           // Save As picked an export type: that copy is written by the export,
           // to the path picked. The map keeps its file and stays unsaved.
           setSaveState('idle')
-          exportAs(result.export.format, result.export.path)
+          const copyRequestId = result.export.ownedSaveRequestId ?? ownedSaveRequestId
+          try {
+            await exportAs(result.export.format, result.export.path, copyRequestId)
+          } finally {
+            if (ownedSaveRequestId === undefined && copyRequestId !== undefined)
+              window.mindmapApi.sendSaveRequestAck(false, copyRequestId)
+          }
           return false
         }
         // a sibling copy holding the disk version is not a failure: an
@@ -647,15 +682,22 @@ export default function App() {
 
   useEffect(() => {
     const api = window.mindmapApi
-    const offSave = api.onSaveRequest((mode) => {
+    const offSave = api.onSaveRequest((mode, requestId) => {
       if (statusRef.current !== 'ready') {
-        api.sendSaveRequestAck(false)
+        api.sendSaveRequestAck(false, requestId, 'The map is not ready')
         return
       }
-      void doSave(mode).then((saved) => {
-        // a save that failed before it reached the main process still has someone waiting
-        if (!saved) api.sendSaveRequestAck(false)
-      })
+      void doSave(mode, false, requestId).then(
+        (saved) => {
+          if (requestId !== undefined || !saved) api.sendSaveRequestAck(saved, requestId)
+        },
+        (error: unknown) =>
+          api.sendSaveRequestAck(
+            false,
+            requestId,
+            error instanceof Error ? error.message : String(error),
+          ),
+      )
     })
     const offClose = api.onCloseSaveRequest(() => {
       void (async () => {

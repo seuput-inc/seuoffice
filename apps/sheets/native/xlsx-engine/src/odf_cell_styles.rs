@@ -423,7 +423,11 @@ fn parse_border(value: &str) -> Option<Border> {
         "dotted" => Some("dotted"),
         "dashed" => Some(if heavy { "mediumDashed" } else { "dashed" }),
         "dash-dot" => Some(if heavy { "mediumDashDot" } else { "dashDot" }),
-        "dash-dot-dot" => Some(if heavy { "mediumDashDotDot" } else { "dashDotDot" }),
+        "dash-dot-dot" => Some(if heavy {
+            "mediumDashDotDot"
+        } else {
+            "dashDotDot"
+        }),
         _ if width <= 0.0 => None,
         _ if width < 0.6 => Some("hair"),
         _ if width < 1.2 => Some("thin"),
@@ -436,7 +440,10 @@ fn parse_border(value: &str) -> Option<Border> {
 /// `#rgb` or `#rrggbb` as upper-case `RRGGBB`.
 pub(crate) fn hex_color(value: &str) -> Option<String> {
     let digits = value.trim().strip_prefix('#')?;
-    if !digits.chars().all(|character| character.is_ascii_hexdigit()) {
+    if !digits
+        .chars()
+        .all(|character| character.is_ascii_hexdigit())
+    {
         return None;
     }
     match digits.len() {
@@ -765,11 +772,8 @@ impl XlsxStyles {
             return *index;
         }
         let anchor = book.resolve(Some(name));
-        let drawn = |border: &Option<Border>| {
-            border
-                .as_ref()
-                .is_some_and(|border| border.style.is_some())
-        };
+        let drawn =
+            |border: &Option<Border>| border.as_ref().is_some_and(|border| border.style.is_some());
         let framed = drawn(&anchor.top)
             || drawn(&anchor.bottom)
             || drawn(&anchor.left)
@@ -890,11 +894,8 @@ impl XlsxStyles {
             ),
             _ => format!("<{tag}/>"),
         };
-        let drawn = |border: &Option<Border>| {
-            border
-                .as_ref()
-                .is_some_and(|border| border.style.is_some())
-        };
+        let drawn =
+            |border: &Option<Border>| border.as_ref().is_some_and(|border| border.style.is_some());
         let up = drawn(&props.diagonal_up);
         let down = drawn(&props.diagonal_down);
         let diagonal = if up {
@@ -1195,7 +1196,11 @@ mod tests {
         assert_eq!(props.font.bold, Some(true));
         assert_eq!(props.font.color, Some(Some("FF0000".to_owned())));
         assert_eq!(props.fill, Some(Some("DDEBF7".to_owned())));
-        assert_eq!(props.top.as_ref().unwrap().style, None, "the child removes the edge");
+        assert_eq!(
+            props.top.as_ref().unwrap().style,
+            None,
+            "the child removes the edge"
+        );
         assert_eq!(props.left.as_ref().unwrap().style, Some("thin"));
         assert_eq!(props.rotation, Some(135));
         assert_eq!(props.indent, Some(2));
@@ -1221,17 +1226,27 @@ mod tests {
         assert_eq!(styles.cell(&book, None, ValueKind::Time), XF_TIME);
         let bold = styles.cell(&book, Some("ce1"), ValueKind::Plain);
         assert_eq!(bold, 4);
-        assert_eq!(styles.cell(&book, Some("ce1"), ValueKind::Plain), 4, "one look, one index");
+        assert_eq!(
+            styles.cell(&book, Some("ce1"), ValueKind::Plain),
+            4,
+            "one look, one index"
+        );
         // a number format on a date value gives way to a date format
         let bold_date = styles.cell(&book, Some("ce1"), ValueKind::Date);
         assert_ne!(bold_date, bold);
         let month = styles.cell(&book, Some("ce2"), ValueKind::Date);
         let xml = styles.xml();
-        assert!(xml.contains(r#"<numFmt numFmtId="165" formatCode="yyyy-mm"/>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<numFmt numFmtId="165" formatCode="yyyy-mm"/>"#),
+            "{xml}"
+        );
         assert!(xml.contains(r#"<xf numFmtId="4" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>"#), "{xml}");
         assert!(xml.contains(r#"<xf numFmtId="14" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>"#), "{xml}");
         assert!(month > bold_date);
         assert!(xml.contains(r#"<cellXfs count="7">"#), "{xml}");
-        assert!(xml.contains(r#"<font><sz val="11"/><name val="Calibri"/></font>"#), "{xml}");
+        assert!(
+            xml.contains(r#"<font><sz val="11"/><name val="Calibri"/></font>"#),
+            "{xml}"
+        );
     }
 }

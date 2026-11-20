@@ -16,6 +16,9 @@ pub use crate::package::{
 };
 use crate::xml_positions_types::Thrown;
 
+/// An explicit parser dependency, borrowed for one native request.
+pub type HostCall<'a> = dyn Fn(&str, &Value) -> Result<Value, seu_host::HostError> + 'a;
+
 const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
 
 /// HTML named entities often found in navigation documents and titles, which
@@ -283,7 +286,12 @@ fn tree_from_flat(value: &Value) -> Result<XmlElement, String> {
 /// parse5 is the host's: the step `epub.parseHtml` answers the tree
 /// `parseHtml` of `xml.ts` builds, or throws what it throws.
 pub fn parse_html(text: &str) -> Result<XmlElement, Thrown> {
-    let answer = seu_host::call("epub.parseHtml", &json!({ "text": text })).map_err(host_thrown)?;
+    parse_html_with_host(text, &seu_host::call)
+}
+
+/// The same tree conversion with a request-owned HTML parser.
+pub fn parse_html_with_host(text: &str, host: &HostCall<'_>) -> Result<XmlElement, Thrown> {
+    let answer = host("epub.parseHtml", &json!({ "text": text })).map_err(host_thrown)?;
     tree_from_flat(&answer).map_err(|message| Thrown::new("HostProtocolError", message))
 }
 

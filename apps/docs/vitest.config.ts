@@ -55,6 +55,9 @@ export default defineConfig({
       '@seuoffice/electron-utils/renderer-scheme': local(
         '../../packages/electron-utils/src/renderer-scheme.ts',
       ),
+      '@seuoffice/electron-utils/custom-scheme-url': local(
+        '../../packages/electron-utils/src/custom-scheme-url.ts',
+      ),
       '@seuoffice/electron-utils/template-font-response': local(
         '../../packages/electron-utils/src/template-font-response.ts',
       ),

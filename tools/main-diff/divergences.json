@@ -1,0 +1,406 @@
+[
+  {
+    "id": "relative-cuts-a-surrogate-pair-posix-6",
+    "fn": "path.posix.relative",
+    "case": 6,
+    "typescript": {
+      "answer": "{\"value\":\"\\ude00/😀.x\"}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":\"�/😀.x\"}",
+      "files": {}
+    },
+    "reason": "path.posix.relative uses JavaScript slices of UTF-16 units, so a cut between the two halves of a pair returns a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is also what Node writes when it hands that string to the file system (UTF-8 with replacement). The input is case 6 of the seeded generator, astral characters among separators. Final."
+  },
+  {
+    "id": "format-field-not-a-string-posix-92",
+    "fn": "path.posix.format",
+    "case": 92,
+    "typescript": {
+      "answer": "{\"value\":true}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":\"true\"}",
+      "files": {}
+    },
+    "reason": "path.format given a field that is not a string (true, 1.5): Node returns the field itself when it is the whole answer (format reads `pathObject.base || ...` and returns base when there is no dir). The Rust API takes a typed ParsedPath whose fields are strings, so the dispatcher prints the value as text. Outside the TypeScript type of the argument (ParsedPath of @types/node); no caller passes one. Final."
+  },
+  {
+    "id": "format-field-not-a-string-posix-304",
+    "fn": "path.posix.format",
+    "case": 304,
+    "typescript": {
+      "answer": "{\"value\":true}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":\"true\"}",
+      "files": {}
+    },
+    "reason": "path.format given a field that is not a string (true, 1.5): Node returns the field itself when it is the whole answer (format reads `pathObject.base || ...` and returns base when there is no dir). The Rust API takes a typed ParsedPath whose fields are strings, so the dispatcher prints the value as text. Outside the TypeScript type of the argument (ParsedPath of @types/node); no caller passes one. Final."
+  },
+  {
+    "id": "format-field-not-a-string-posix-389",
+    "fn": "path.posix.format",
+    "case": 389,
+    "typescript": {
+      "answer": "{\"value\":1.5}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":\"1.5\"}",
+      "files": {}
+    },
+    "reason": "path.format given a field that is not a string (true, 1.5): Node returns the field itself when it is the whole answer (format reads `pathObject.base || ...` and returns base when there is no dir). The Rust API takes a typed ParsedPath whose fields are strings, so the dispatcher prints the value as text. Outside the TypeScript type of the argument (ParsedPath of @types/node); no caller passes one. Final."
+  },
+  {
+    "id": "format-field-not-a-string-win32-136",
+    "fn": "path.win32.format",
+    "case": 136,
+    "typescript": {
+      "answer": "{\"value\":1.5}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":\"1.5\"}",
+      "files": {}
+    },
+    "reason": "path.format given a field that is not a string (true, 1.5): Node returns the field itself when it is the whole answer (format reads `pathObject.base || ...` and returns base when there is no dir). The Rust API takes a typed ParsedPath whose fields are strings, so the dispatcher prints the value as text. Outside the TypeScript type of the argument (ParsedPath of @types/node); no caller passes one. Final."
+  },
+  {
+    "id": "format-field-not-a-string-win32-221",
+    "fn": "path.win32.format",
+    "case": 221,
+    "typescript": {
+      "answer": "{\"value\":1.5}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":\"1.5\"}",
+      "files": {}
+    },
+    "reason": "path.format given a field that is not a string (true, 1.5): Node returns the field itself when it is the whole answer (format reads `pathObject.base || ...` and returns base when there is no dir). The Rust API takes a typed ParsedPath whose fields are strings, so the dispatcher prints the value as text. Outside the TypeScript type of the argument (ParsedPath of @types/node); no caller passes one. Final."
+  },
+  {
+    "id": "table-inside-select-parser-revision",
+    "fn": "remote-table.parseHtmlTable",
+    "case": 52,
+    "typescript": {
+      "answer": "{\"value\":null}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":{\"headers\":[\"in select\"],\"rows\":[],\"source\":\"html\",\"url\":\"\"}}",
+      "files": {}
+    },
+    "reason": "parse5 8 follows the HTML standard after the 2025 change to select parsing: a <table>, <tr> or <td> start tag inside <select> is ignored, so `<select><table><tr><td>in select</td></tr></table></select>` holds no table and parseHtmlTable answers null. html5ever 0.40 still follows the earlier rule (a table start tag in select closes the select and is reprocessed), so the Rust finds a table. The difference is between the two revisions of the parsing algorithm, not in either port; html5ever cannot be configured for it. A table inside a select does not occur in a table a user fetches. Goes when html5ever implements the newer rule."
+  },
+  {
+    "id": "excerpt-cuts-a-surrogate-pair-13",
+    "fn": "ai-naming.excerptForNaming",
+    "case": 13,
+    "typescript": {
+      "answer": "{\"value\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\ud83d\\n…\"}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":\"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy�\\n…\"}",
+      "files": {}
+    },
+    "reason": "excerptForNaming cuts at 4,000 UTF-16 units with String.slice, so 3,999 units of y and an emoji leave the first half of the pair at the end. A Rust String cannot hold a lone surrogate; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the model request). The input is valid Unicode; only the slice makes it lone. Final."
+  },
+  {
+    "id": "labels-of-a-prototype-member-language",
+    "fn": "context-menu.contextMenuLabels",
+    "case": 10,
+    "typescript": {
+      "answer": "{}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":{\"cut\":\"Cut\",\"copy\":\"Copy\",\"paste\":\"Paste\",\"selectAll\":\"Select All\",\"viewImage\":\"View Image\",\"copyImage\":\"Copy Image\",\"saveImageAs\":\"Save Image As…\"}}",
+      "files": {}
+    },
+    "reason": "The label tables are plain objects, so LABELS[\"constructor\"] finds Object.prototype.constructor, a function, and contextMenuLabels answers it (JSON writes nothing). The Rust table holds only its languages and falls back to English. No caller passes such a language: the language comes from normalizeLang, which answers one of LANGS. Final."
+  },
+  {
+    "id": "app-menu-labels-of-a-prototype-member-language",
+    "fn": "app-menu.appMenuLabels",
+    "case": 5,
+    "typescript": {
+      "answer": "{\"value\":{}}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":{\"cut\":\"Cut\",\"copy\":\"Copy\",\"paste\":\"Paste\",\"selectAll\":\"Select All\",\"viewImage\":\"View Image\",\"copyImage\":\"Copy Image\",\"saveImageAs\":\"Save Image As…\",\"window\":\"Window\",\"minimize\":\"Minimize\",\"closeWindow\":\"Close Window\",\"edit\":\"Edit\",\"undo\":\"Undo\",\"redo\":\"Redo\",\"delete\":\"Delete\",\"view\":\"View\",\"reload\":\"Reload\",\"forceReload\":\"Force Reload\",\"toggleDevTools\":\"Developer Tools\",\"actualSize\":\"Actual Size\",\"zoomIn\":\"Zoom In\",\"zoomOut\":\"Zoom Out\",\"fullscreen\":\"Full Screen\",\"help\":\"Help\",\"about\":\"About SeuOffice\",\"checkUpdates\":\"Check for Updates…\",\"version\":\"Version\",\"settings\":\"Settings…\",\"nameWithAi\":\"Name with AI…\"}}",
+      "files": {}
+    },
+    "reason": "As labels-of-a-prototype-member-language: both tables answer Object.prototype.constructor for the language \"constructor\", a function whose spread copies no key, so appMenuLabels answers an object without labels. The Rust falls back to English. Languages come from normalizeLang. Final."
+  },
+  {
+    "id": "diagram-attachment-page-cuts-a-surrogate-pair-3",
+    "fn": "diagram/ai-attachments.readAttachmentPage",
+    "case": 3,
+    "typescript": {
+      "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
+      "files": {
+        "a.txt": "file 644 \"hello world\"",
+        "archive.zip": "file 644 \"zip\"",
+        "book.epub": "file 644 \"PK\\u0003\\u0004\"",
+        "cached.txt": "file 644 \"cached\"",
+        "chart.DRAWIO.PNG": "file 644 hex:89504e47",
+        "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
+        "emoji.txt": "file 644 \"😀a😀b\"",
+        "flow.drawio": "file 644 \"<mxfile/>\"",
+        "folder.txt": "dir 755",
+        "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
+        "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
+        "map.drawio.svg": "file 644 \"<svg/>\"",
+        "noext": "file 644 \"no extension\"",
+        "notes.MD": "file 644 \"# notes\"",
+        "old.dio": "file 644 \"<mxfile/>\"",
+        "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
+        "pic.JPG": "file 644 hex:ffd8ffe0",
+        "pic.png": "file 644 hex:89504e470d0a1a0a",
+        "pic.webp": "file 644 \"RIFF\"",
+        "plain.drawio.png": "file 644 hex:89504e47",
+        "script.ts": "file 644 \"export {}\"",
+        "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
+        "trailing.": "file 644 \"trailing dot\"",
+        "weird.__proto__": "file 644 \"x\"",
+        "weird.constructor": "file 644 \"x\""
+      }
+    },
+    "rust": {
+      "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
+      "files": {
+        "a.txt": "file 644 \"hello world\"",
+        "archive.zip": "file 644 \"zip\"",
+        "book.epub": "file 644 \"PK\\u0003\\u0004\"",
+        "cached.txt": "file 644 \"cached\"",
+        "chart.DRAWIO.PNG": "file 644 hex:89504e47",
+        "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
+        "emoji.txt": "file 644 \"😀a😀b\"",
+        "flow.drawio": "file 644 \"<mxfile/>\"",
+        "folder.txt": "dir 755",
+        "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
+        "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
+        "map.drawio.svg": "file 644 \"<svg/>\"",
+        "noext": "file 644 \"no extension\"",
+        "notes.MD": "file 644 \"# notes\"",
+        "old.dio": "file 644 \"<mxfile/>\"",
+        "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
+        "pic.JPG": "file 644 hex:ffd8ffe0",
+        "pic.png": "file 644 hex:89504e470d0a1a0a",
+        "pic.webp": "file 644 \"RIFF\"",
+        "plain.drawio.png": "file 644 hex:89504e47",
+        "script.ts": "file 644 \"export {}\"",
+        "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
+        "trailing.": "file 644 \"trailing dot\"",
+        "weird.__proto__": "file 644 \"x\"",
+        "weird.constructor": "file 644 \"x\""
+      }
+    },
+    "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
+  },
+  {
+    "id": "epub-attachment-page-cuts-a-surrogate-pair-3",
+    "fn": "epub/ai-attachments.readAttachmentPage",
+    "case": 3,
+    "typescript": {
+      "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
+      "files": {
+        "a.txt": "file 644 \"hello world\"",
+        "archive.zip": "file 644 \"zip\"",
+        "book.epub": "file 644 \"PK\\u0003\\u0004\"",
+        "cached.txt": "file 644 \"cached\"",
+        "chart.DRAWIO.PNG": "file 644 hex:89504e47",
+        "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
+        "emoji.txt": "file 644 \"😀a😀b\"",
+        "flow.drawio": "file 644 \"<mxfile/>\"",
+        "folder.txt": "dir 755",
+        "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
+        "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
+        "map.drawio.svg": "file 644 \"<svg/>\"",
+        "noext": "file 644 \"no extension\"",
+        "notes.MD": "file 644 \"# notes\"",
+        "old.dio": "file 644 \"<mxfile/>\"",
+        "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
+        "pic.JPG": "file 644 hex:ffd8ffe0",
+        "pic.png": "file 644 hex:89504e470d0a1a0a",
+        "pic.webp": "file 644 \"RIFF\"",
+        "plain.drawio.png": "file 644 hex:89504e47",
+        "script.ts": "file 644 \"export {}\"",
+        "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
+        "trailing.": "file 644 \"trailing dot\"",
+        "weird.__proto__": "file 644 \"x\"",
+        "weird.constructor": "file 644 \"x\""
+      }
+    },
+    "rust": {
+      "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
+      "files": {
+        "a.txt": "file 644 \"hello world\"",
+        "archive.zip": "file 644 \"zip\"",
+        "book.epub": "file 644 \"PK\\u0003\\u0004\"",
+        "cached.txt": "file 644 \"cached\"",
+        "chart.DRAWIO.PNG": "file 644 hex:89504e47",
+        "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
+        "emoji.txt": "file 644 \"😀a😀b\"",
+        "flow.drawio": "file 644 \"<mxfile/>\"",
+        "folder.txt": "dir 755",
+        "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
+        "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
+        "map.drawio.svg": "file 644 \"<svg/>\"",
+        "noext": "file 644 \"no extension\"",
+        "notes.MD": "file 644 \"# notes\"",
+        "old.dio": "file 644 \"<mxfile/>\"",
+        "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
+        "pic.JPG": "file 644 hex:ffd8ffe0",
+        "pic.png": "file 644 hex:89504e470d0a1a0a",
+        "pic.webp": "file 644 \"RIFF\"",
+        "plain.drawio.png": "file 644 hex:89504e47",
+        "script.ts": "file 644 \"export {}\"",
+        "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
+        "trailing.": "file 644 \"trailing dot\"",
+        "weird.__proto__": "file 644 \"x\"",
+        "weird.constructor": "file 644 \"x\""
+      }
+    },
+    "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
+  },
+  {
+    "id": "mindmap-attachment-page-cuts-a-surrogate-pair-3",
+    "fn": "mindmap/ai-attachments.readAttachmentPage",
+    "case": 3,
+    "typescript": {
+      "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"\\ude00a\\ud83d\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
+      "files": {
+        "a.txt": "file 644 \"hello world\"",
+        "archive.zip": "file 644 \"zip\"",
+        "book.epub": "file 644 \"PK\\u0003\\u0004\"",
+        "cached.txt": "file 644 \"cached\"",
+        "chart.DRAWIO.PNG": "file 644 hex:89504e47",
+        "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
+        "emoji.txt": "file 644 \"😀a😀b\"",
+        "flow.drawio": "file 644 \"<mxfile/>\"",
+        "folder.txt": "dir 755",
+        "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
+        "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
+        "map.drawio.svg": "file 644 \"<svg/>\"",
+        "noext": "file 644 \"no extension\"",
+        "notes.MD": "file 644 \"# notes\"",
+        "old.dio": "file 644 \"<mxfile/>\"",
+        "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
+        "pic.JPG": "file 644 hex:ffd8ffe0",
+        "pic.png": "file 644 hex:89504e470d0a1a0a",
+        "pic.webp": "file 644 \"RIFF\"",
+        "plain.drawio.png": "file 644 hex:89504e47",
+        "script.ts": "file 644 \"export {}\"",
+        "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
+        "trailing.": "file 644 \"trailing dot\"",
+        "weird.__proto__": "file 644 \"x\"",
+        "weird.constructor": "file 644 \"x\""
+      }
+    },
+    "rust": {
+      "answer": "{\"value\":[{\"ok\":true,\"name\":\"emoji.txt\",\"totalChars\":6,\"offset\":1,\"text\":\"�a�\"}],\"logs\":[[\"diagramPictureExtOf\",\"$DIR/emoji.txt\"],[\"assertFileSaved\",\"$DIR/emoji.txt\"],[\"parseFileToText\",\"$DIR/emoji.txt\"]]}",
+      "files": {
+        "a.txt": "file 644 \"hello world\"",
+        "archive.zip": "file 644 \"zip\"",
+        "book.epub": "file 644 \"PK\\u0003\\u0004\"",
+        "cached.txt": "file 644 \"cached\"",
+        "chart.DRAWIO.PNG": "file 644 hex:89504e47",
+        "doc.docx": "file 644 \"PK\\u0003\\u0004\"",
+        "emoji.txt": "file 644 \"😀a😀b\"",
+        "flow.drawio": "file 644 \"<mxfile/>\"",
+        "folder.txt": "dir 755",
+        "huge.bin.txt": "file 644 \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "huge.md": "file 644 \"yyyyyyyyyyyyyyyyyyyy\"",
+        "long.txt": "file 644 \"abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"",
+        "map.drawio.svg": "file 644 \"<svg/>\"",
+        "noext": "file 644 \"no extension\"",
+        "notes.MD": "file 644 \"# notes\"",
+        "old.dio": "file 644 \"<mxfile/>\"",
+        "outline.xmind": "file 644 \"PK\\u0003\\u0004\"",
+        "pic.JPG": "file 644 hex:ffd8ffe0",
+        "pic.png": "file 644 hex:89504e470d0a1a0a",
+        "pic.webp": "file 644 \"RIFF\"",
+        "plain.drawio.png": "file 644 hex:89504e47",
+        "script.ts": "file 644 \"export {}\"",
+        "sheet.xlsx": "file 644 \"PK\\u0003\\u0004\"",
+        "trailing.": "file 644 \"trailing dot\"",
+        "weird.__proto__": "file 644 \"x\"",
+        "weird.constructor": "file 644 \"x\""
+      }
+    },
+    "reason": "readAttachmentPage cuts the parsed text with String.slice at UTF-16 offsets (offset 1, length 4 of an emoji, `a`, an emoji, `b`), so each cut that falls inside a surrogate pair leaves a lone surrogate. A Rust String cannot hold one; the Rust answer holds U+FFFD there, which is what the TypeScript string becomes once it is sent as UTF-8 (the answer goes to the model as JSON text). The input is valid Unicode; only the slice makes it lone. Final."
+  },
+  {
+    "id": "hwp-recovery-write-store-folder-is-a-file",
+    "fn": "recovery.ipc.recoveryWrite",
+    "case": 32,
+    "typescript": {
+      "answer": "{\"value\":[{\"op\":\"recovery.ipc.recoveryBegin\",\"value\":{\"ok\":true,\"format\":\"hwp\"}},{\"op\":\"recovery.ipc.recoveryWrite\",\"error\":\"EEXIST: file already exists, mkdir '$DIR/userData/hwp-autosave'\"}],\"logs\":[[\"saveBaseOf\",1]]}",
+      "files": {
+        "userData": "dir 755",
+        "userData/hwp-autosave": "file 644 \"in the way\""
+      }
+    },
+    "rust": {
+      "answer": "{\"value\":[{\"op\":\"recovery.ipc.recoveryBegin\",\"value\":{\"ok\":true,\"format\":\"hwp\"}},{\"op\":\"recovery.ipc.recoveryWrite\",\"value\":\"refused\"}],\"logs\":[[\"saveBaseOf\",1],[\"warn\",\"[hwp] could not write the recovery copy: EEXIST: file already exists, mkdir '$DIR/userData/hwp-autosave'\"]]}",
+      "files": {
+        "userData": "dir 755",
+        "userData/hwp-autosave": "file 644 \"in the way\""
+      }
+    },
+    "reason": "hwp:recovery-write on a store that fails (the store folder is a file, or the copy's slot is a folder): the TypeScript handler lets the Node error escape, so the invoke rejects with it. recovery.rs lists this in its `//!`: where the exception escapes into an IPC handler the Rust warns with the same text and answers `refused`, so the view goes on without a copy instead of failing; the folder after is equal. Final."
+  },
+  {
+    "id": "hwp-recovery-write-slot-is-a-folder",
+    "fn": "recovery.ipc.recoveryWrite",
+    "case": 33,
+    "typescript": {
+      "answer": "{\"value\":[{\"op\":\"recovery.ipc.recoveryBegin\",\"value\":{\"ok\":true,\"format\":\"hwp\"}},{\"op\":\"recovery.ipc.recoveryWrite\",\"error\":\"EISDIR: illegal operation on a directory, open '$DIR/userData/hwp-autosave/0e5c0f1d9d885754.hwp'\"}],\"logs\":[[\"saveBaseOf\",1]]}",
+      "files": {
+        "userData": "dir 755",
+        "userData/hwp-autosave": "dir 755",
+        "userData/hwp-autosave/0e5c0f1d9d885754.hwp": "dir 755",
+        "userData/hwp-autosave/0e5c0f1d9d885754.hwp.meta.json": "file 644 \"{\\n  \\\"version\\\": 1,\\n  \\\"kind\\\": \\\"hwp\\\",\\n  \\\"filePath\\\": \\\"/d/a.hwp\\\",\\n  \\\"untitledId\\\": null,\\n  \\\"title\\\": \\\"a.hwp\\\",\\n  \\\"writtenAt\\\": 1794452400000,\\n  \\\"runId\\\": \\\"0123456789abcdef\\\",\\n  \\\"state\\\": \\\"undecided\\\"\\n}\"",
+        "userData/hwp-autosave/0e5c0f1d9d885754.hwp.unsaved.tmp": "file 644 hex:d0cf11e0a1b11ae10a0a"
+      }
+    },
+    "rust": {
+      "answer": "{\"value\":[{\"op\":\"recovery.ipc.recoveryBegin\",\"value\":{\"ok\":true,\"format\":\"hwp\"}},{\"op\":\"recovery.ipc.recoveryWrite\",\"value\":\"refused\"}],\"logs\":[[\"saveBaseOf\",1],[\"warn\",\"[hwp] could not write the recovery copy: EISDIR: illegal operation on a directory, open '$DIR/userData/hwp-autosave/0e5c0f1d9d885754.hwp'\"]]}",
+      "files": {
+        "userData": "dir 755",
+        "userData/hwp-autosave": "dir 755",
+        "userData/hwp-autosave/0e5c0f1d9d885754.hwp": "dir 755",
+        "userData/hwp-autosave/0e5c0f1d9d885754.hwp.meta.json": "file 644 \"{\\n  \\\"version\\\": 1,\\n  \\\"kind\\\": \\\"hwp\\\",\\n  \\\"filePath\\\": \\\"/d/a.hwp\\\",\\n  \\\"untitledId\\\": null,\\n  \\\"title\\\": \\\"a.hwp\\\",\\n  \\\"writtenAt\\\": 1794452400000,\\n  \\\"runId\\\": \\\"0123456789abcdef\\\",\\n  \\\"state\\\": \\\"undecided\\\"\\n}\"",
+        "userData/hwp-autosave/0e5c0f1d9d885754.hwp.unsaved.tmp": "file 644 hex:d0cf11e0a1b11ae10a0a"
+      }
+    },
+    "reason": "hwp:recovery-write on a store that fails (the store folder is a file, or the copy's slot is a folder): the TypeScript handler lets the Node error escape, so the invoke rejects with it. recovery.rs lists this in its `//!`: where the exception escapes into an IPC handler the Rust warns with the same text and answers `refused`, so the view goes on without a copy instead of failing; the folder after is equal. Final."
+  },
+  {
+    "id": "hwp-open-untitled-copy-refused-id",
+    "fn": "recovery.contract.openUntitledCopy",
+    "case": 9,
+    "typescript": {
+      "answer": "{\"value\":[{\"op\":\"recovery.contract.openUntitledCopy\",\"error\":\"invalid untitled recovery id\"}]}",
+      "files": {}
+    },
+    "rust": {
+      "answer": "{\"value\":[{\"op\":\"recovery.contract.openUntitledCopy\"}],\"logs\":[[\"warn\",\"[hwp] could not open the recovery copy: invalid untitled recovery id\"]]}",
+      "files": {}
+    },
+    "reason": "openUntitledCopy of a copy the store refuses (an untitled id with a slash): the TypeScript throws the store's `invalid untitled recovery id` out of the contract method. recovery.rs lists this in its `//!` (`copyPath` in `open_untitled_copy`): the Rust warns with the same text and does nothing, so the tab stays as it was. Nothing was queued or set on either side; the folder after is equal. Final."
+  }
+]

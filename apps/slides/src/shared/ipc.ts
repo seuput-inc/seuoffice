@@ -103,6 +103,7 @@ export interface OpenResult {
   size: { cx: number; cy: number }
   /** Theme body default font (fallback shown in the font box when the selection has no text element) */
   defaultFont?: string
+  recoveryToken?: string
 }
 
 // ---- Chat attachments (local files fed to the agent via tools; structure copied from apps/docs) ----
@@ -1251,6 +1252,8 @@ export interface ExportImagesOp {
    * `deck-01.png`, `deck-02.png`, … beside it; `dir` and `baseName` are unused.
    */
   saveAsTarget?: string
+  /** Native-owned Save As request; correlation only, never renderer authority. */
+  saveRequestId?: string
 }
 
 export interface ExportImagesResult {
@@ -1308,6 +1311,8 @@ export interface ExportPdfOp {
   links?: ExportPdfLink[][]
   /** @font-face rules (data: URLs) for faces the SVG text uses that the print window lacks */
   fontCss?: string
+  /** Native-owned Save As request; correlation only, never renderer authority. */
+  saveRequestId?: string
 }
 
 export interface ExportPdfResult {
@@ -1445,6 +1450,7 @@ export interface SlidesApi {
   /** The user font store changed (local install): re-sync private FontFaces */
   onFontsChanged: (handler: () => void) => () => void
   consumePendingOpen: (fitWidthPx: number) => Promise<OpenResult | null>
+  recoveryInitialized: (token: string, ok: boolean, error?: string) => Promise<void>
   /** Headless export mode: the PDF path this hidden renderer must export to, null in normal use */
   consumeHeadlessExport: () => Promise<string | null>
   /** Headless export mode: report the export outcome so the main process can quit */
@@ -1840,8 +1846,8 @@ export interface SlidesApi {
    *  While an AI run's edits wait for review nothing is written (`reason: 'ai-review'`). */
   save: (
     auto?: boolean,
-    /** the embed host's `doc.save()` request this save belongs to (web only): names it a host save */
-    hostSaveId?: string,
+    /** the request this save belongs to: the shell's on the desktop, the embed host's `doc.save()` on the web */
+    requestId?: string,
   ) => Promise<{
     ok: boolean
     path?: string
@@ -1854,13 +1860,18 @@ export interface SlidesApi {
    * returns `ok: false` with `exportAs` and the picked `path`: the renderer
    * runs that export, and the deck keeps its path and unsaved state.
    */
-  saveAs: (defaultName: string) => Promise<{
+  saveAs: (
+    defaultName: string,
+    requestId?: string,
+  ) => Promise<{
     ok: boolean
     path?: string
     error?: string
     reason?: 'ai-review'
     slides?: RenderSlide[]
     exportAs?: 'pdf' | 'png'
+    /** Native correlation for a direct Save As copy; carries no authority. */
+    saveRequestId?: string
   }>
   /**
    * Project folders (spec 6): an untitled deck whose handed-over run ended well
@@ -1876,14 +1887,16 @@ export interface SlidesApi {
     slides?: RenderSlide[]
   }>
   /** The close guard chose "Save": the main process asks the renderer to run the full save flow */
-  onCloseSaveRequest: (handler: (request?: { hostSaveId: string }) => void) => () => void
+  onCloseSaveRequest: (
+    handler: (request?: { id: string; mode: 'save' | 'saveAs' } | { hostSaveId: string }) => void,
+  ) => () => void
   /** Undo/redo stack occupancy pushed by the main process (drives the QAT button gray states) */
   onHistoryChanged: (handler: (state: HistoryChange) => void) => () => void
   /** Another window attached to the same file changed the deck (shared session): fresh render state to apply */
   onDeckChanged: (handler: (state: DeckChange) => void) => () => void
   /** Web embed only: the host asks for a picture of the first slide, which `source` draws */
   onThumbnailRequest?: (source: WebThumbnailSource) => () => void
-  reportCloseSaveResult: (ok: boolean) => void
+  reportCloseSaveResult: (ok: boolean, requestId?: string) => void
   /** Mirror the autosave toggle state to the main process: files with it on save silently on close, no dialog */
   setAutoSavePref: (on: boolean) => void
   isDirty: () => Promise<boolean>

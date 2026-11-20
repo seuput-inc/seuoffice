@@ -1,0 +1,97 @@
+{
+  "steps": [
+    {
+      "op": "open",
+      "path": "${WORK}/markdown.md"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "prep-focus",
+      "js": "(() => { const e = document.querySelector('.ProseMirror'); if (!e || e.textContent.length === 0) return false; e.focus(); return true })()"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-markdown"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "query",
+      "as": "markdown-before",
+      "js": "document.querySelector('.ProseMirror')?.textContent ?? null"
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/markdown.md"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "markdown-after",
+      "js": "document.querySelector('.ProseMirror')?.textContent ?? null"
+    },
+    {
+      "op": "screenshot",
+      "name": "markdown-after"
+    },
+    {
+      "op": "exportPdf",
+      "path": "${WORK}/markdown-export.pdf"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "query",
+      "as": "export-status",
+      "js": "document.body.innerText.split('\\n').filter((line) => /export.*fail|fail.*export/i.test(line)).slice(0, 3).join(' | ')"
+    },
+    {
+      "op": "query",
+      "as": "export-tab",
+      "js": "location.href"
+    },
+    {
+      "op": "wait",
+      "ms": 4000
+    }
+  ]
+}

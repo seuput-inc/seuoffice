@@ -1,0 +1,57 @@
+[package]
+name = "main-core"
+description = "The central process of SeuOffice (the Electron main process), ported from apps/*/src/main"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+jscompat.workspace = true
+file-commit.workspace = true
+# JSZip: the skill zip of packages/cli_agent_skills, and loadAsync of the MCP
+# runtime archives (shell/mcp_client/runtime_archive)
+ooxml-pkg.workspace = true
+pptx-engine.workspace = true
+ooxml-xml.workspace = true
+file-parse = { path = "../file-parse", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+# TextDecoder('euc-kr') of pdf/font_classes
+encoding_rs.workspace = true
+# crypto.randomBytes of pdf/system_certificates
+getrandom.workspace = true
+# parse5 of the TypeScript: both implement the WHATWG HTML parsing algorithm
+html5ever = "0.40"
+markup5ever_rcdom = "0.40"
+# the WHATWG URL of JavaScript
+url = "2.5"
+# gunzip of the metafile font scan (slides/metafile_fonts), as Node's zlib
+flate2.workspace = true
+# String.prototype.normalize("NFC") of canonical_path_key; already in the lockfile through url (Unicode-3.0)
+icu_normalizer = "2"
+# String.prototype.localeCompare of html/asset_lifecycle (root collation; Unicode-3.0, as docx-engine uses it)
+icu_collator = "2.4"
+# node:sqlite of the file index (shell/file_index/store): SQLite with FTS5, built in (public domain; the crates MIT)
+rusqlite = { version = "0.32", features = ["bundled"] }
+openssl = { version = "=0.10.82", features = ["vendored"] }
+openssl-src = "=300.6.1"
+quick-xml = "=0.41.0"
+base64 = "=0.23.1"
+zeroize = "1"
+msoffice-crypto = { path = "../vendor/msoffice-crypto", features = ["legacy-binary"] }
+# Intl.Segmenter('grapheme') of shell/text_marks; already in the lockfile through convert_case (MIT/Apache-2.0)
+unicode-segmentation = "1"
+
+# errno numbers of the platform, read as Node names them (node_fs)
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+# the file identity of fs.statSync on Windows (rename_validation::is_same_file)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
+
+# the socket errors of libuv's table, for its cross-check in node_fs.rs
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }

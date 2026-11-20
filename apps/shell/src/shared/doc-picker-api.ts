@@ -13,6 +13,7 @@ export const DOC_PICKER_CHANNELS = {
   list: 'doc-picker:list',
   choose: 'doc-picker:choose',
   cancel: 'doc-picker:cancel',
+  ready: 'doc-picker:ready',
 } as const
 
 export const DOC_PICKER_PAGE_KEY = 'aiOfficeDocPicker'
@@ -22,6 +23,7 @@ export type DocPickerTheme = 'light' | 'dark' | 'system'
 export interface DocPickerInit {
   lang: Lang
   theme: DocPickerTheme
+  readyToken: string
 }
 
 /** pane: the document in the other split pane / open: an open tab / recent: the recent list */
@@ -49,6 +51,7 @@ export type DocPickerChooseResult = { ok: true } | { ok: false; kind: 'unavailab
 /** The picker window's window.aiOfficeDocPicker */
 export interface DocPickerApi {
   getInit(): Promise<DocPickerInit>
+  ready(): Promise<void>
   onThemeChanged(handler: (theme: DocPickerTheme) => void): () => void
   list(): Promise<DocListResult>
   choose(ids: string[]): Promise<DocPickerChooseResult>

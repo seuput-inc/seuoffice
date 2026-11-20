@@ -62,6 +62,9 @@ const results: Result[] = []
 const env = {
   ...process.env,
   CARGO_TARGET_DIR: resolve(scratch, 'target'),
+  // docx-diff's harness loads SEUOFFICE_WASM at import; runner.ts reads FILEPARSE_WASM_PATH.
+  // Both must name the scratch build, or the baseline reads the release tree that is not built.
+  SEUOFFICE_WASM: resolve(scratch, 'target/wasm32-wasip1/probe/office_wasm.wasm'),
   FILEPARSE_WASM_PATH: resolve(scratch, 'target/wasm32-wasip1/probe/office_wasm.wasm'),
 }
 function build(): boolean {

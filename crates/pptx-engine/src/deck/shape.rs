@@ -1090,51 +1090,61 @@ pub fn set_element_fill(
     fill: &ElementFill,
     opts: &FillOpts,
 ) -> Result<bool, String> {
-    let previous_xml;
-    {
-        let slide = slide_mut(opened, slide_index)?;
-        let Some(target) = resolve_target(slide, element_id, opts.group_id.as_deref()) else {
-            return Ok(false);
-        };
-        let (model, fill_patch) = match fill {
-            ElementFill::Color(color) => (
-                if color == "none" {
-                    Fill::None
-                } else {
-                    Fill::Solid {
-                        color: color.clone(),
-                    }
-                },
-                FillPatch::Color(color.clone()),
-            ),
-            ElementFill::Gradient(g) => {
-                let path = g.path.or_else(|| {
-                    g.radial
-                        .filter(|r| *r)
-                        .map(|_| crate::types::GradientPath::Circle)
-                });
-                (
-                    Fill::Gradient(GradientFill {
-                        stops: g.stops.clone(),
-                        angle: g.angle,
-                        scaled: None,
-                        path,
-                        fill_to: if path.is_some() { g.fill_to } else { None },
-                        tile_rect: None,
-                    }),
-                    FillPatch::Gradient(g.clone()),
-                )
-            }
-        };
-        previous_xml = patch_slide_xml(slide);
-        if !apply_fill(slide, &target, &fill_patch, model, true)? {
-            return Ok(false);
-        }
-        slide.structure_dirty.set(true);
-    }
-    let current = patch_slide_xml(slide_mut(opened, slide_index)?);
-    cleanup_superseded_slide_resources(opened, slide_index, &previous_xml, &current)?;
+    let Some((previous, current)) =
+        set_element_fill_on_slide(slide_mut(opened, slide_index)?, element_id, fill, opts)?
+    else {
+        return Ok(false);
+    };
+    cleanup_superseded_slide_resources(opened, slide_index, &previous, &current)?;
     Ok(true)
+}
+
+pub fn set_element_fill_on_slide(
+    slide: &mut Slide,
+    element_id: &str,
+    fill: &ElementFill,
+    opts: &FillOpts,
+) -> Result<Option<(String, String)>, String> {
+    let Some(target) = resolve_target(slide, element_id, opts.group_id.as_deref()) else {
+        return Ok(None);
+    };
+    let (model, fill_patch) = match fill {
+        ElementFill::Color(color) => (
+            if color == "none" {
+                Fill::None
+            } else {
+                Fill::Solid {
+                    color: color.clone(),
+                }
+            },
+            FillPatch::Color(color.clone()),
+        ),
+        ElementFill::Gradient(g) => {
+            let path = g.path.or_else(|| {
+                g.radial
+                    .filter(|r| *r)
+                    .map(|_| crate::types::GradientPath::Circle)
+            });
+            (
+                Fill::Gradient(GradientFill {
+                    stops: g.stops.clone(),
+                    angle: g.angle,
+                    scaled: None,
+                    path,
+                    fill_to: if path.is_some() { g.fill_to } else { None },
+                    tile_rect: None,
+                }),
+                FillPatch::Gradient(g.clone()),
+            )
+        }
+    };
+    let previous = patch_slide_xml(slide);
+    if !apply_fill(slide, &target, &fill_patch, model, true)? {
+        return Ok(None);
+    }
+    slide.structure_dirty.set(true);
+    let current = patch_slide_xml(slide);
+    Ok(Some((previous, current)))
 }
 
 /// `{ bytes, ext } | { mediaPath }`

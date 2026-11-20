@@ -149,6 +149,8 @@ export interface ExportHow {
   saveAsWord?: () => Promise<boolean>
   /** the marked-content question was already settled for this export (a PDF parked until the preview mounts) */
   answered?: true
+  /** Native correlation retained across preview deferral and every export stage. */
+  ownedSaveRequestId?: string
 }
 
 /** An export waiting for the pagination preview to mount; resolve settles the caller's exportPdf promise. */
@@ -159,10 +161,12 @@ export type PendingPdfExport = {
   closePreview: boolean
   /** the settled terms of the parked export, handed back when it resumes */
   how: ExportHow
+  awaitingPreviewMount: boolean
 }
 
 /** The App state the file actions need; built fresh per call. */
 export interface FileActionContext {
+  ownedSaveRequestId?: string
   editor: Editor | null
   doc: DocState | null
   dirtyRef: { current: boolean }
@@ -1115,18 +1119,19 @@ export async function writeRecoveryCopy(
   options: { force?: boolean } = {},
 ): Promise<RecoveryCopyOutcome> {
   const { doc, editor } = ctx
-  if (!doc || !editor || ctx.saveInFlightRef.current || !isDocDirty(ctx)) return 'skipped'
+  if (!doc || !editor || ctx.saveInFlightRef.current) return options.force ? 'failed' : 'skipped'
+  if (!isDocDirty(ctx)) return 'skipped'
   // an edit during a phased open marks the document dirty while the tail is
   // still streaming: a snapshot now would persist a truncated document. The
   // next tick covers it.
-  if (isPhasedContentPending()) return 'skipped'
+  if (isPhasedContentPending()) return options.force ? 'failed' : 'skipped'
   // an untouched blank new document holds nothing worth keeping
   if (!doc.filePath && isBlankDocument(editor)) return 'skipped'
   const generation = docGeneration
   const saves = savesLanded
   try {
     const docx = await buildDocBytes(ctx)
-    if (!docx) return 'skipped'
+    if (!docx) return options.force ? 'failed' : 'skipped'
     // an ODT tab's copy is the ODT a save would write now: restoring it opens
     // an ODT document again, and its save writes ODT. An ODT cannot hold the
     // mark that hides content from AI: such a tab's copy is its docx (marks
@@ -1145,7 +1150,7 @@ export async function writeRecoveryCopy(
       last.path === doc.filePath &&
       (await sameRecoveryCopy(last.bytes, bytes))
     if (generation !== docGeneration || saves !== savesLanded || ctx.saveInFlightRef.current) {
-      return 'skipped'
+      return options.force ? 'failed' : 'skipped'
     }
     if (unchanged) return 'skipped'
     const result = await window.desktop.writeRecoveryCopy(
@@ -1165,7 +1170,7 @@ export async function writeRecoveryCopy(
       lastRecoveryCopy = { generation, saves, path: doc.filePath, bytes }
       return 'written'
     }
-    return result.failed ? 'failed' : 'skipped'
+    return result.failed || options.force ? 'failed' : 'skipped'
   } catch {
     return 'failed'
   }
@@ -1249,7 +1254,11 @@ export function save(
   return runSerializedSave(
     async () => {
       const settled = ctx.settleFontSettings
-        ? { ...(await ctx.settleFontSettings()), hostSaveId: ctx.hostSaveId }
+        ? {
+            ...(await ctx.settleFontSettings()),
+            hostSaveId: ctx.hostSaveId,
+            ownedSaveRequestId: ctx.ownedSaveRequestId,
+          }
         : ctx
       if (docGeneration !== generation) return false
       return saveOnce(settled, saveAs, auto, newDocName, explicitTarget, false, pickFormat)
@@ -1388,10 +1397,14 @@ class OdtWriteStopped extends Error {
  * or Word was chosen instead. `silent`: nobody can be asked (an automatic or an
  * MCP-driven save), so marked content is declined.
  */
-async function docxForOdt(docx: Uint8Array, silent: boolean): Promise<Uint8Array> {
+async function docxForOdt(
+  docx: Uint8Array,
+  silent: boolean,
+  ownedSaveRequestId?: string,
+): Promise<Uint8Array> {
   const plan = await planMarkedWrite(
     docx,
-    silent ? null : () => window.desktop.confirmMarkedExport('odt'),
+    silent ? null : () => window.desktop.confirmMarkedExport('odt', ownedSaveRequestId),
   )
   if (plan.kind !== 'write') throw new OdtWriteStopped(plan)
   return plan.docx
@@ -1446,7 +1459,12 @@ async function saveWithFormatChange(
     ctx.setStatus('')
     return false
   }
-  const result = await window.desktop.saveDocxAs(targetPath, toArrayBuffer(data), doc.filePath)
+  const result = await window.desktop.saveDocxAs(
+    targetPath,
+    toArrayBuffer(data),
+    doc.filePath,
+    ctx.ownedSaveRequestId,
+  )
   if (!result.ok) {
     if (result.error) {
       ctx.setStatus(t('appSaveFailed', { error: result.error }))
@@ -1498,7 +1516,8 @@ async function saveOnce(
     // nobody can be asked to clear marks in an automatic, an MCP-driven or a project save
     const silent = auto || !!explicitTarget || intoProject
     const fileBytes = async (): Promise<ArrayBuffer> => {
-      if (isOdtDoc(doc)) bytes = await odtBytesFor(doc.odt, await docxForOdt(docx, silent))
+      if (isOdtDoc(doc))
+        bytes = await odtBytesFor(doc.odt, await docxForOdt(docx, silent, ctx.ownedSaveRequestId))
       return toArrayBuffer(bytes)
     }
     // a pathless snapshot may belong to a document that an earlier queued pass
@@ -1527,6 +1546,7 @@ async function saveOnce(
         explicitTarget.path,
         await fileBytes(),
         explicitTarget.overwrite,
+        ctx.ownedSaveRequestId,
       )
       if (!result.ok) {
         ctx.setStatus(t('appSaveFailed', { error: result.error ?? '' }))
@@ -1544,6 +1564,7 @@ async function saveOnce(
             newDocName ?? doc.fileName,
             format,
             await fileBytes(),
+            ctx.ownedSaveRequestId,
           )
         : { ok: false, skipped: true }
       if (!result.ok) {
@@ -1590,6 +1611,7 @@ async function saveOnce(
           doc.filePath ?? doc.saveAsDefaultPath ?? null,
           pickFormat ?? format,
           saveAs,
+          ctx.ownedSaveRequestId,
         )
         if (!pick) return false
         if (pick.kind && pick.kind !== 'docx' && pick.kind !== 'odt') {
@@ -1597,22 +1619,32 @@ async function saveOnce(
           // the person answered the marked-content box with Word: that is this same
           // Save As again, Word first, and the document is saved by it
           let savedAsWord = false
-          await exportSaveAsCopy(ctx, pick, async () => {
+          const exported = await exportSaveAsCopy(ctx, pick, async () => {
             savedAsWord = await saveOnce(ctx, true, false, newDocName, undefined, false, 'docx')
             return savedAsWord
           })
-          return savedAsWord
+          return savedAsWord || (ctx.ownedSaveRequestId !== undefined && exported)
         }
         const target = docFormatOfPath(pick.path) ?? format
         if (target !== format) {
           // an ODT cannot hold content hidden from AI: Word, cleared marks, or nothing
-          const writable = target === 'odt' ? await docxForOdt(docx, silent) : docx
+          const writable =
+            target === 'odt' ? await docxForOdt(docx, silent, ctx.ownedSaveRequestId) : docx
           return await saveWithFormatChange(ctx, editor, doc, pick.path, writable, target, auto)
         }
-        result = await window.desktop.saveDocxAs(pick.path, await fileBytes(), doc.filePath)
+        result = await window.desktop.saveDocxAs(
+          pick.path,
+          await fileBytes(),
+          doc.filePath,
+          ctx.ownedSaveRequestId,
+        )
       } else {
         // a pathless document is always a new docx
-        result = await window.desktop.saveDocxNew(dialogName, await fileBytes())
+        result = await window.desktop.saveDocxNew(
+          dialogName,
+          await fileBytes(),
+          ctx.ownedSaveRequestId,
+        )
       }
       if (!result.ok) {
         if (result.error) {
@@ -1630,7 +1662,8 @@ async function saveOnce(
         savedPath,
         await fileBytes(),
         auto,
-        ctx.hostSaveId,
+        // the request this save belongs to: the shell's on the desktop, the embed host's on the web
+        ctx.ownedSaveRequestId ?? ctx.hostSaveId,
       )
       if (!result.ok) {
         // external-modified: the main process already prompted (or the autosave
@@ -1843,6 +1876,10 @@ async function odtWriteStopped(
   return false
 }
 
+function exportTokenArgs(token?: string): [] | [string] {
+  return token === undefined ? [] : [token]
+}
+
 /**
  * Save As › PDF, Hangul, HTML, Markdown or page images: the regular export writes a
  * copy to the path the Save As dialog picked (the main process authorized it),
@@ -1855,7 +1892,7 @@ export function exportSaveAsCopy(
   saveAsWord?: () => Promise<boolean>,
 ): Promise<boolean> {
   // the person picked this path in the dialog: marked content is asked about, not refused
-  const how: ExportHow = { by: 'person', saveAsWord }
+  const how: ExportHow = { by: 'person', saveAsWord, ownedSaveRequestId: ctx.ownedSaveRequestId }
   switch (pick.kind) {
     case 'pdf':
       return exportPdf(ctx, pick.path, how)
@@ -1891,11 +1928,28 @@ async function docxForMarkedExport(
 ): Promise<Uint8Array | null> {
   const plan = await planMarkedWrite(
     docx,
-    by === 'silent' ? null : () => window.desktop.confirmMarkedExport(format),
+    by === 'silent'
+      ? null
+      : () =>
+          window.desktop.confirmMarkedExport(
+            format,
+            ...exportTokenArgs(how.ownedSaveRequestId ?? ctx.ownedSaveRequestId),
+          ),
   )
   if (plan.kind === 'write') return plan.docx
   if (plan.kind === 'save-as-docx') {
-    await (how.saveAsWord ?? (() => save(ctx, true, false, undefined, undefined, 'docx')))()
+    await (
+      how.saveAsWord ??
+      (() =>
+        save(
+          { ...ctx, ownedSaveRequestId: how.ownedSaveRequestId ?? ctx.ownedSaveRequestId },
+          true,
+          false,
+          undefined,
+          undefined,
+          'docx',
+        ))
+    )()
     return null
   }
   if (by === 'silent') {
@@ -1965,6 +2019,7 @@ async function printGroupsMerged(
   scale: number,
   outPath?: string,
   links?: PdfInternalLink[],
+  ownedSaveRequestId?: string,
 ): Promise<boolean> {
   const parts: string[] = []
   // every printToPDF flips the whole document between print and screen media;
@@ -1981,7 +2036,12 @@ async function printGroupsMerged(
         page.classList.toggle('pv-print-skip', i < g.from || i > g.to)
         page.classList.toggle('pv-print-tail', i === g.to)
       })
-      const part = await window.desktop.printPdfBuffer(g.w, g.h, scale)
+      const part = await window.desktop.printPdfBuffer(
+        g.w,
+        g.h,
+        scale,
+        ...exportTokenArgs(ownedSaveRequestId),
+      )
       if (part.ok && part.base64) {
         parts.push(part.base64)
         continue
@@ -2000,7 +2060,13 @@ async function printGroupsMerged(
     appRoot?.classList.remove('pv-exporting')
     pvPages.forEach((page) => page.classList.remove('pv-print-skip', 'pv-print-tail'))
   }
-  const result = await window.desktop.saveMergedPdf(fileName, parts, outPath, links)
+  const result = await window.desktop.saveMergedPdf(
+    fileName,
+    parts,
+    outPath,
+    links,
+    ...exportTokenArgs(ownedSaveRequestId),
+  )
   const mixed = groups.some((g) => g.w !== groups[0].w || g.h !== groups[0].h)
   ctx.setStatus(
     result.ok
@@ -2020,12 +2086,18 @@ function deferExportToPreview(
   outPath: string | undefined,
   how: ExportHow,
 ): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const closePreview = !document.querySelector('.pagination-preview')
-    ctx.pendingMixedExportRef.current = { outPath, resolve, closePreview, how }
-    ctx.setShowPagePreview(true)
-    ctx.bumpPendingExportTick()
-  })
+  const { promise, resolve } = Promise.withResolvers<boolean>()
+  const closePreview = !document.querySelector('.pagination-preview')
+  ctx.pendingMixedExportRef.current = {
+    outPath,
+    resolve,
+    closePreview,
+    how,
+    awaitingPreviewMount: true,
+  }
+  ctx.setShowPagePreview(true)
+  ctx.bumpPendingExportTick()
+  return promise
 }
 
 // Concurrent exports would trample each other's pv-print-skip classes and
@@ -2042,6 +2114,7 @@ export async function exportPdf(
   outPath?: string,
   how: ExportHow = {},
 ): Promise<boolean> {
+  how = { ...how, ownedSaveRequestId: how.ownedSaveRequestId ?? ctx.ownedSaveRequestId }
   const { doc } = ctx
   if (!doc) return false
   noticeLabelsBeforeOutput()
@@ -2079,12 +2152,29 @@ export async function exportPdf(
       const PRINT_CHUNK = 10
       if (pvPages.length > PRINT_CHUNK) groups = chunkPrintGroups(groups, PRINT_CHUNK)
       if (groups.length > 1) {
-        return await printGroupsMerged(ctx, doc.fileName, pvPages, groups, scale, outPath, links)
+        return await printGroupsMerged(
+          ctx,
+          doc.fileName,
+          pvPages,
+          groups,
+          scale,
+          outPath,
+          links,
+          how.ownedSaveRequestId,
+        )
       }
       // preview open but uniform paper: single export at the preview size
       const g = groups[0]
       if (g) {
-        const result = await window.desktop.exportPdf(doc.fileName, g.w, g.h, outPath, scale, links)
+        const result = await window.desktop.exportPdf(
+          doc.fileName,
+          g.w,
+          g.h,
+          outPath,
+          scale,
+          links,
+          ...exportTokenArgs(how.ownedSaveRequestId),
+        )
         if (result.ok) {
           ctx.setStatus(t('appExportedPdf', { path: result.path ?? '' }))
           return true
@@ -2106,6 +2196,7 @@ export async function exportPdf(
             scale,
             retryPath,
             links,
+            how.ownedSaveRequestId,
           )
         }
         ctx.setStatus(t('appExportPdfFailed', { error: result.error }))
@@ -2145,13 +2236,16 @@ export async function exportImages(
   saveAsTarget?: { path: string; dir: string; pdfPath: string },
   how: ExportHow = {},
 ): Promise<boolean> {
+  how = { ...how, ownedSaveRequestId: how.ownedSaveRequestId ?? ctx.ownedSaveRequestId }
   const { doc } = ctx
   if (!doc) return false
   // the question comes before the folder dialog and before any page is printed
   await waitForFullContent()
   const by = how.by ?? (saveAsTarget ? 'silent' : 'person')
   if (!(await markedExportAllowed(ctx, 'png', by, how))) return false
-  const target = saveAsTarget ?? (await window.desktop.pickExportImagesTarget())
+  const target =
+    saveAsTarget ??
+    (await window.desktop.pickExportImagesTarget(...exportTokenArgs(how.ownedSaveRequestId)))
   if (!target) return false
   ctx.setStatus(t('appExportingImages'))
   const fail = (error: string) => {
@@ -2174,11 +2268,19 @@ export async function exportImages(
       if (!pdfDone.some((re) => re.test(s))) ctx.setStatus(s)
     },
   }
-  if (!(await exportPdf(staged, target.pdfPath, { answered: true }))) {
-    void window.desktop.takeExportPdf(target.pdfPath)
+  if (
+    !(await exportPdf(staged, target.pdfPath, {
+      answered: true,
+      ownedSaveRequestId: how.ownedSaveRequestId,
+    }))
+  ) {
+    void window.desktop.takeExportPdf(target.pdfPath, ...exportTokenArgs(how.ownedSaveRequestId))
     return false
   }
-  const pdf = await window.desktop.takeExportPdf(target.pdfPath)
+  const pdf = await window.desktop.takeExportPdf(
+    target.pdfPath,
+    ...exportTokenArgs(how.ownedSaveRequestId),
+  )
   if (!pdf.ok || !pdf.base64) return fail(pdf.error ?? '')
   const baseName = doc.fileName.replace(/\.(?:docx|odt)$/i, '')
   try {
@@ -2217,6 +2319,7 @@ export async function exportImages(
           target.dir,
           saveAsNames?.[i - 1] ?? `${baseName}-${String(i).padStart(pad, '0')}.png`,
           btoa(b64),
+          ...exportTokenArgs(how.ownedSaveRequestId),
         )
         if (!r.ok) return fail(r.error ?? '')
       }
@@ -2236,6 +2339,7 @@ export async function exportHtml(
   outPath?: string,
   how: ExportHow = {},
 ): Promise<boolean> {
+  how = { ...how, ownedSaveRequestId: how.ownedSaveRequestId ?? ctx.ownedSaveRequestId }
   const { doc, editor } = ctx
   if (!doc || !editor) return false
   await waitForFullContent()
@@ -2252,7 +2356,12 @@ export async function exportHtml(
     lang: getDocumentLocale(),
     textWidthPx: Number.isFinite(textWidthPx) ? textWidthPx : root.clientWidth,
   })
-  const result = await window.desktop.exportHtml(doc.fileName, html, outPath)
+  const result = await window.desktop.exportHtml(
+    doc.fileName,
+    html,
+    outPath,
+    ...exportTokenArgs(how.ownedSaveRequestId),
+  )
   ctx.setStatus(
     result.ok
       ? t('appExportedHtml', { path: result.path ?? '' })
@@ -2273,6 +2382,7 @@ export async function exportHwp(
   outPath?: string,
   how: ExportHow = {},
 ): Promise<boolean> {
+  how = { ...how, ownedSaveRequestId: how.ownedSaveRequestId ?? ctx.ownedSaveRequestId }
   const { doc } = ctx
   if (!doc || !ctx.editor) return false
   const generation = docGeneration
@@ -2291,6 +2401,7 @@ export async function exportHwp(
     toArrayBuffer(docx),
     outPath,
     doc.encrypted === true,
+    ...exportTokenArgs(how.ownedSaveRequestId),
   )
   if (result.ok) {
     ctx.setStatus(t('appExportedHwp', { path: result.path ?? '' }))
@@ -2315,6 +2426,7 @@ export async function exportMarkdown(
   outPath?: string,
   how: ExportHow = {},
 ): Promise<boolean> {
+  how = { ...how, ownedSaveRequestId: how.ownedSaveRequestId ?? ctx.ownedSaveRequestId }
   const { doc, editor } = ctx
   if (!doc || !editor) return false
   await waitForFullContent()
@@ -2322,7 +2434,13 @@ export async function exportMarkdown(
   if (!(await markedExportAllowed(ctx, 'md', by, how))) return false
   ctx.setStatus(t('appExportingMarkdown'))
   const { markdown, images } = documentToMarkdown(editor)
-  const result = await window.desktop.exportMarkdown(doc.fileName, markdown, images, outPath)
+  const result = await window.desktop.exportMarkdown(
+    doc.fileName,
+    markdown,
+    images,
+    outPath,
+    ...exportTokenArgs(how.ownedSaveRequestId),
+  )
   const dropped = result.imagesDropped ?? 0
   ctx.setStatus(
     result.ok

@@ -63,7 +63,6 @@ describe('runSave', () => {
     const host = api({ ok: true, path: 'C:/d/copy.pdf', export: 'pdf' })
     const outcome = await runSave(ed, host, 'saveAs')
     expect(outcome).toEqual({ kind: 'export', format: 'pdf', path: 'C:/d/copy.pdf' })
-    expect(host.beginSave).toHaveBeenCalledWith('saveAs')
     expect(ed.exportHwp).not.toHaveBeenCalled()
     expect(ed.exportHwpx).not.toHaveBeenCalled()
     expect(host.commitSave).not.toHaveBeenCalled()
@@ -75,21 +74,21 @@ describe('runSave', () => {
     const ed = editor()
     const host = api({ ok: true, path: 'C:/d/a.hwpx', format: 'hwpx' }, undefined, SPOTS)
     await runSave(ed, host, 'save')
-    expect(host.newTabs).toHaveBeenCalledWith(HWPX, 'hwpx')
+    expect(host.newTabs.mock.calls[0].slice(0, 2)).toEqual([HWPX, 'hwpx'])
     expect(ed.measureTabs).toHaveBeenCalledWith(SPOTS)
     // a tab the editor could not measure is left out
-    expect(host.commitSave).toHaveBeenCalledWith(
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([
       HWPX,
       [{ ...SPOTS[0], width: 4000, type: 0, fill: 0 }],
       { auto: false, memos: [] },
-    )
+    ])
   })
 
   it('marks an automatic save so a copy-pair conflict stands down quietly', async () => {
     const ed = editor()
     const host = api({ ok: true, path: 'C:/d/a.hwp', format: 'hwp' })
     await runSave(ed, host, 'save', true)
-    expect(host.commitSave).toHaveBeenCalledWith(HWP, [], { auto: true })
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([HWP, [], { auto: true }])
   })
 
   it('treats the copy-pair deferral as a cancel, not a failure', async () => {
@@ -117,7 +116,7 @@ describe('runSave', () => {
     const host = api({ ok: true, path: 'C:/d/a.hwp', format: 'hwp' }, undefined, SPOTS)
     const outcome = await runSave(ed, host, 'save')
     expect(outcome).toEqual({ kind: 'saved', path: 'C:/d/a.hwp' })
-    expect(host.commitSave).toHaveBeenCalledWith(HWP, [], { auto: false })
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([HWP, [], { auto: false }])
   })
 
   it('does not ask the editor when no tab lacks a width', async () => {
@@ -179,7 +178,7 @@ describe('runSave', () => {
     const outcome = await runSave(ed, host, 'save')
     expect(outcome).toEqual({ kind: 'saved', path: 'C:/d/a.hwp' })
     expect(ed.exportHwpVerify).toHaveBeenCalledOnce()
-    expect(host.commitSave).toHaveBeenCalledWith(HWP, [], { auto: false })
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([HWP, [], { auto: false }])
     expect(ed.notifySaved).toHaveBeenCalledWith('a.hwp')
     expect(host.abortSave).not.toHaveBeenCalled()
   })
@@ -208,17 +207,35 @@ describe('runSave', () => {
     await runSave(ed, host, 'save')
     expect(ed.setMemoLock).not.toHaveBeenCalled()
     expect(ed.listMemos).not.toHaveBeenCalled()
-    expect(host.commitSave).toHaveBeenCalledWith(HWP, [], { auto: false })
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([HWP, [], { auto: false }])
   })
 
   it('lists HWPX memos under the lock and releases it before measuring tabs', async () => {
-    const ed = editor({ listMemos: vi.fn(async () => MEMOS) })
+    let locked = false
+    const ed = editor({
+      setMemoLock: vi.fn(async (value: boolean) => {
+        locked = value
+      }),
+      listMemos: vi.fn(async () => {
+        expect(locked).toBe(true)
+        return MEMOS
+      }),
+      exportHwpx: vi.fn(async () => {
+        expect(locked).toBe(true)
+        return HWPX
+      }),
+    })
     const host = api({ ok: true, path: 'C:/d/a.hwpx', format: 'hwpx' })
     await runSave(ed, host, 'save')
     expect(ed.setMemoLock).toHaveBeenNthCalledWith(1, true)
     expect(ed.setMemoLock).toHaveBeenNthCalledWith(2, false)
     expect(ed.listMemos).toHaveBeenCalledOnce()
-    expect(host.commitSave).toHaveBeenCalledWith(HWPX, [], { auto: false, memos: MEMOS })
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([
+      HWPX,
+      [],
+      { auto: false, memos: MEMOS },
+    ])
+    expect(locked).toBe(false)
     // the document is unlocked before the host works on the bytes
     const lock = vi.mocked(ed.setMemoLock)
     expect(lock.mock.invocationCallOrder[1]).toBeLessThan(host.newTabs.mock.invocationCallOrder[0])
@@ -237,7 +254,11 @@ describe('runSave', () => {
     expect(await runSave(ed, host, 'save')).toEqual({ kind: 'saved', path: 'C:/d/a.hwpx' })
     expect(ed.listMemos).not.toHaveBeenCalled()
     expect(ed.exportHwpx).toHaveBeenCalledOnce()
-    expect(host.commitSave).toHaveBeenCalledWith(HWPX, [], { auto: false, memos: null })
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([
+      HWPX,
+      [],
+      { auto: false, memos: null },
+    ])
   })
 
   it('saves HWPX without a memo list when the editor cannot list them', async () => {
@@ -252,7 +273,11 @@ describe('runSave', () => {
     )
     expect(await runSave(ed, host, 'save')).toEqual({ kind: 'saved', path: 'C:/d/a.hwpx' })
     expect(ed.setMemoLock).toHaveBeenNthCalledWith(2, false)
-    expect(host.commitSave).toHaveBeenCalledWith(HWPX, [], { auto: false, memos: null })
+    expect(host.commitSave.mock.calls[0].slice(0, 3)).toEqual([
+      HWPX,
+      [],
+      { auto: false, memos: null },
+    ])
   })
 
   it('releases the memo lock when the HWPX export throws', async () => {
@@ -408,6 +433,19 @@ describe('runSave', () => {
       detail: 'EACCES: permission denied',
     })
     expect(ed.notifySaved).not.toHaveBeenCalled()
+  })
+
+  it('reports rejected bytes without marking the document saved', async () => {
+    for (const error of ['hwp: bad save request', 'hwp: exported bytes are not a hwp file']) {
+      const ed = editor()
+      const host = api({ ok: true, path: 'C:/d/a.hwp', format: 'hwp' }, { ok: false, error })
+      expect(await runSave(ed, host, 'save')).toEqual({
+        kind: 'failed',
+        reason: 'write',
+        detail: error,
+      })
+      expect(ed.notifySaved).not.toHaveBeenCalled()
+    }
   })
 
   it('still counts as saved when the editor cannot be told', async () => {

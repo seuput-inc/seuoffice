@@ -1,0 +1,61 @@
+{
+  "steps": [
+    {
+      "op": "newDocument",
+      "kind": "docs"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "type",
+      "text": "SEU-E2E-docs-new"
+    },
+    {
+      "op": "wait",
+      "ms": 300
+    },
+    {
+      "op": "shortcut",
+      "name": "save"
+    },
+    {
+      "op": "dialog",
+      "answer": "path:${WORK}/docs-new.docx"
+    },
+    {
+      "op": "wait",
+      "ms": 2500
+    },
+    {
+      "op": "shortcut",
+      "name": "closeTab"
+    },
+    {
+      "op": "wait",
+      "ms": 1000
+    },
+    {
+      "op": "open",
+      "path": "${WORK}/docs-new.docx"
+    },
+    {
+      "op": "waitReady",
+      "timeoutMs": 60000
+    },
+    {
+      "op": "wait",
+      "ms": 800
+    },
+    {
+      "op": "query",
+      "as": "docs-new-after",
+      "js": "document.querySelector('.editor-scroll .ProseMirror')?.textContent ?? null"
+    }
+  ]
+}

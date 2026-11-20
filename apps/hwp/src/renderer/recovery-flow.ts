@@ -126,7 +126,7 @@ export function createRecoveryCopier(options: RecoveryCopierOptions): RecoveryCo
     const bytes = await exportOf(editor, begin.format)
     const tabs = await measuredTabs(editor, api, bytes, begin.format)
     const result = await api.recoveryWrite(bytes, begin.format, tabs)
-    if (result === 'superseded') changed = true
+    if (result !== 'written') changed = true
     if (now() - started > timing.slowMs) skip = Math.max(skip, timing.slowSkips)
     return result
   }

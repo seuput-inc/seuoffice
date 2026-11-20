@@ -1109,11 +1109,19 @@ fn cell_literal(model: &Model, sheet: u32, row: u32, column: u32) -> Option<Stri
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum UsageValue {
-    Number { value: f64 },
-    Text { value: String },
-    Bool { value: bool },
+    Number {
+        value: f64,
+    },
+    Text {
+        value: String,
+    },
+    Bool {
+        value: bool,
+    },
     /// An error result keeps its `t="e"` spelling (`#REF!`, `#NAME?`, …).
-    Error { value: String },
+    Error {
+        value: String,
+    },
     Missing,
 }
 
@@ -1149,7 +1157,9 @@ fn decode_xml_entities(text: &str) -> String {
         let (entity, skip): (Option<char>, usize) = if let Some(digits) = tail.strip_prefix("&#x") {
             match digits.find(';') {
                 Some(end) => (
-                    u32::from_str_radix(&digits[..end], 16).ok().and_then(char::from_u32),
+                    u32::from_str_radix(&digits[..end], 16)
+                        .ok()
+                        .and_then(char::from_u32),
                     end + 4,
                 ),
                 None => (None, 1),
@@ -1228,7 +1238,11 @@ fn link_indexes(body: &str) -> Vec<usize> {
             at += 1;
             continue;
         }
-        let index: usize = chars[at + 1..cursor].iter().collect::<String>().parse().unwrap_or(0);
+        let index: usize = chars[at + 1..cursor]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
         // the bare spelling needs at least one sheet-name character after
         // `]`; the quoted spelling needs the closing quote of `'[n]…'`
         let bare = cursor + 1 < chars.len() && is_sheet_name_char(chars[cursor + 1]);
@@ -1289,7 +1303,7 @@ fn element_start(xml: &str, tag: &str, from: usize) -> Option<usize> {
         let open = found + at;
         match xml.as_bytes().get(open + 1 + tag.len()) {
             Some(b' ') | Some(b'>') | Some(b'/') | Some(b'\t') | Some(b'\n') | Some(b'\r') => {
-                return Some(open)
+                return Some(open);
             }
             _ => at = open + 1,
         }
@@ -1321,7 +1335,8 @@ fn attribute_value(tag: &str, name: &str) -> Option<String> {
 
 /// The cell's cached value, spelled the way a break freezes it.
 fn usage_value(cell_open: &str, body: &str) -> UsageValue {
-    let raw = element_span(body, "v", 0).map(|(_open, inner, close)| body[inner..close].to_string());
+    let raw =
+        element_span(body, "v", 0).map(|(_open, inner, close)| body[inner..close].to_string());
     match attribute_value(cell_open, "t").as_deref() {
         Some("str") => UsageValue::Text {
             value: raw.map(|v| decode_xml_entities(&v)).unwrap_or_default(),
@@ -1402,7 +1417,10 @@ pub(crate) fn read_external_link_usage(
             Ok(xml) => xml,
             Err(_) => continue,
         };
-        let sheet_name = sheet_names.get(&part).cloned().unwrap_or_else(|| part.clone());
+        let sheet_name = sheet_names
+            .get(&part)
+            .cloned()
+            .unwrap_or_else(|| part.clone());
         // shared anchors: si → formula body; instances inherit their anchor's
         let mut shared_bodies: HashMap<String, String> = HashMap::new();
         let mut cursor = 0;
@@ -1465,7 +1483,9 @@ pub(crate) fn read_external_link_usage(
         }
     }
     for usage in &mut usages {
-        usage.cells.sort_by_key(|cell| (cell.sheet.clone(), cell.row, cell.column));
+        usage
+            .cells
+            .sort_by_key(|cell| (cell.sheet.clone(), cell.row, cell.column));
     }
     usages.sort_by_key(|usage| usage.index);
     Ok(usages)
@@ -2003,8 +2023,18 @@ pub(crate) mod tests {
             ("\\\\host\\share\\s.xlsx", false, true, AnotherComputer),
             ("//host/share/s.xlsx", false, true, AnotherComputer),
             ("/\\host\\share\\s.xlsx", false, true, AnotherComputer),
-            ("\\??\\UNC\\host\\share\\s.xlsx", false, true, AnotherComputer),
-            ("\\\\?\\UNC\\host\\share\\s.xlsx", false, true, AnotherComputer),
+            (
+                "\\??\\UNC\\host\\share\\s.xlsx",
+                false,
+                true,
+                AnotherComputer,
+            ),
+            (
+                "\\\\?\\UNC\\host\\share\\s.xlsx",
+                false,
+                true,
+                AnotherComputer,
+            ),
             ("C:\\data\\s.xlsx", false, true, Here),
             ("d:/data/s.xlsx", false, true, Here),
             // a letter that is neither the workbook's nor the system's may be mapped
@@ -2203,7 +2233,12 @@ pub(crate) mod tests {
             vec![
                 ("A1".to_string(), UsageValue::Number { value: 84.0 }),
                 ("B1".to_string(), UsageValue::Number { value: 2.0 }),
-                ("C1".to_string(), UsageValue::Text { value: "Total!".to_string() }),
+                (
+                    "C1".to_string(),
+                    UsageValue::Text {
+                        value: "Total!".to_string()
+                    }
+                ),
                 ("A2".to_string(), UsageValue::Number { value: 60.0 }),
                 ("A3".to_string(), UsageValue::Number { value: 9.0 }),
             ]
@@ -2232,7 +2267,12 @@ pub(crate) mod tests {
             vec![
                 ("A1".to_string(), UsageValue::Number { value: 84.0 }),
                 ("B1".to_string(), UsageValue::Number { value: 84.0 }),
-                ("C1".to_string(), UsageValue::Error { value: "#REF!".to_string() }),
+                (
+                    "C1".to_string(),
+                    UsageValue::Error {
+                        value: "#REF!".to_string()
+                    }
+                ),
             ]
         );
     }
@@ -2261,4 +2301,3 @@ pub(crate) mod tests {
         format!("{letters}{}", row + 1)
     }
 }
-

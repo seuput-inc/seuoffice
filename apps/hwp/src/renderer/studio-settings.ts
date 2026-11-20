@@ -49,3 +49,13 @@ export function studioLocale(lang: Lang): 'ko' | 'en' {
 export function studioUrl(lang: Lang): string {
   return `./studio/index.html?chrome=embed&lang=${studioLocale(lang)}`
 }
+
+/**
+ * How long the editor SDK waits for the studio to answer its connect message. The SDK's own
+ * second is a deadlock when the studio is busy longer than that at start-up (a slow machine,
+ * the 27 MB engine): the SDK closes its port and falls back to the legacy transport, the studio
+ * then binds the closed port and from then on drops every legacy request, so the editor never
+ * becomes ready and the tab shows a studio with no document. The studio served here is this
+ * app's own build and always speaks the port protocol, so the fallback is never wanted.
+ */
+export const STUDIO_HANDSHAKE_MS = 30_000

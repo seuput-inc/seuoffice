@@ -2586,10 +2586,12 @@ fn counts_pivots_whose_output_cannot_be_located() {
             r#"<pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="P" cacheId="1">{body}</pivotTableDefinition>"#
         )
     };
-    let located = pivot(r#"<location ref="A8:B11" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/>"#);
+    let located =
+        pivot(r#"<location ref="A8:B11" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/>"#);
     let no_location = pivot("");
     let no_ref = pivot(r#"<location firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/>"#);
-    let no_range = pivot(r#"<location ref="nowhere" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/>"#);
+    let no_range =
+        pivot(r#"<location ref="nowhere" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/>"#);
     let relationships: String = (1..=5)
         .map(|n| {
             format!(
@@ -2629,11 +2631,19 @@ fn counts_pivots_whose_output_cannot_be_located() {
     let sheet = &metadata.sheets[0];
     assert_eq!(sheet.pivot_ranges.len(), 1);
     assert_eq!(sheet.pivots_unlocated, 4);
-    assert!(serde_json::to_string(sheet).unwrap().contains("\"pivotsUnlocated\":4"));
+    assert!(
+        serde_json::to_string(sheet)
+            .unwrap()
+            .contains("\"pivotsUnlocated\":4")
+    );
     // A sheet with nothing to report serializes as it always did.
     let plain = &metadata.sheets[1];
     assert_eq!(plain.pivots_unlocated, 0);
-    assert!(!serde_json::to_string(plain).unwrap().contains("pivotsUnlocated"));
+    assert!(
+        !serde_json::to_string(plain)
+            .unwrap()
+            .contains("pivotsUnlocated")
+    );
 }
 
 /// Light 1-7 with stripes off resolve no fills but stay styled, so the
@@ -5032,7 +5042,9 @@ fn rejects_xml_entry_that_inflates_past_its_declared_size() {
         let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
-        writer.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+        writer
+            .start_file("xl/worksheets/sheet1.xml", options)
+            .unwrap();
         writer.write_all(&vec![b'A'; 4 * 1024 * 1024]).unwrap();
         writer.finish().unwrap();
     }
@@ -5089,7 +5101,9 @@ fn reads_xml_entry_that_matches_its_declaration() {
         let mut writer = zip::ZipWriter::new(File::create(&path).unwrap());
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
-        writer.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+        writer
+            .start_file("xl/worksheets/sheet1.xml", options)
+            .unwrap();
         writer
             .write_all(br#"<worksheet><sheetData><row r="1"/></sheetData></worksheet>"#)
             .unwrap();

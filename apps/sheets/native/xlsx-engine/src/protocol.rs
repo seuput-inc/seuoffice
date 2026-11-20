@@ -569,7 +569,12 @@ pub fn handle_request(
             // longer can.
             let in_flight_cancelled = in_flight.flag();
             sessions
-                .open_with_locale(&path, &locale, short_date_format.as_deref(), &in_flight_cancelled)
+                .open_with_locale(
+                    &path,
+                    &locale,
+                    short_date_format.as_deref(),
+                    &in_flight_cancelled,
+                )
                 .and_then(to_json_value)
         }
         Command::ReadRange {
@@ -1197,7 +1202,10 @@ mod tests {
         assert_eq!(result["cells"], serde_json::json!(2));
         assert_eq!(result["formulasDropped"], serde_json::json!(0));
         assert_eq!(result["dropped"]["charts"], serde_json::json!(0));
-        assert_eq!(result["dropped"]["conditionalFormats"], serde_json::json!(0));
+        assert_eq!(
+            result["dropped"]["conditionalFormats"],
+            serde_json::json!(0)
+        );
         assert_eq!(result["dropped"]["validations"], serde_json::json!(0));
         assert_eq!(result["dropped"]["pivots"], serde_json::json!(0));
         assert_eq!(result["dropped"]["comments"], serde_json::json!(0));
