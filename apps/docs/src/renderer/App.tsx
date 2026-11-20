@@ -327,6 +327,7 @@ import {
   textHasCjk,
   takeSettledMetricFaces,
 } from './line-metrics'
+import { handleSaveKey } from './save-key'
 import { saveUntilPersisted } from './save-until-persisted'
 import { SPELLCHECK_KEY, spellcheckEnabled } from './spellcheck-pref'
 import { cachedByDoc } from './doc-cache'
@@ -6460,10 +6461,7 @@ export function App() {
     }
     const handler = (e: KeyboardEvent) => {
       const canEdit = !!editor?.isEditable && focusInEditor()
-      if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === 's') {
-        e.preventDefault()
-        void save(e.shiftKey)
-      }
+      handleSaveKey(e, window.desktop, (saveAs) => void save(saveAs))
       if ((e.metaKey || e.ctrlKey) && e.key === 'o') {
         e.preventDefault()
         void openFile()

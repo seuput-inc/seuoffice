@@ -41,6 +41,7 @@ import {
   type RecoveryCopier,
 } from './recovery-flow'
 import { openedUnverifiedKey, runSave, saveFailureKey, type SaveEditorPort } from './save-flow'
+import { watchFileCommandKeys } from './file-command-keys'
 import { AUTOSAVE_IDLE_MS, startAutosave } from './autosave-flow'
 import { PASSWORD_FLAG } from '../../scripts/rhwp-patches.mjs'
 import {
@@ -1074,37 +1075,13 @@ export default function App() {
     }
   }, [phase])
 
-  // The editor's frame swallows Ctrl+S and Ctrl+P (Cmd on a Mac) before the application menu can
-  // see them. The Electron main process takes those keys ahead of the frame; the shell has no
-  // such hook, so the page asks for the same file commands the main process would send.
   useEffect(() => {
     if (phase !== 'ready') return
-    const mac = /Mac/.test(navigator.platform)
-    const onKey = (event: KeyboardEvent): void => {
-      if (previewRef.current || event.isComposing || event.altKey || event.shiftKey) return
-      if (!(mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return
-      const command = event.code === 'KeyS' ? 'save' : event.code === 'KeyP' ? 'print' : null
-      if (!command) return
-      event.preventDefault()
-      event.stopPropagation()
-      window.hwpApi.requestFileCommand(command)
-    }
-    window.addEventListener('keydown', onKey, true)
-    let frameWindow: Window | null = null
-    try {
-      frameWindow = editorRef.current?.element.contentWindow ?? null
-      frameWindow?.addEventListener('keydown', onKey, true)
-    } catch {
-      frameWindow = null
-    }
-    return () => {
-      window.removeEventListener('keydown', onKey, true)
-      try {
-        frameWindow?.removeEventListener('keydown', onKey, true)
-      } catch {
-        /* the frame went away with its document */
-      }
-    }
+    return watchFileCommandKeys(
+      window.hwpApi,
+      [window, editorRef.current?.element.contentWindow ?? null],
+      () => previewRef.current,
+    )
   }, [phase])
 
   // OS-level Esc leaves fullscreen without a keydown: end the show with it.
