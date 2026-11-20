@@ -156,38 +156,42 @@ fn legacy_charset(env: &Env) -> Option<&'static str> {
     legacy_csv_charset(&env.shell.requested_locale())
 }
 
+/// The keys of the page's `workbookFileSchema` (apps/sheets `desktop-api.ts`), in its order.
+/// A key that is not here never reaches the page.
+const WORKBOOK_FILE_KEYS: [&str; 29] = [
+    "sessionId",
+    "savedLoadId",
+    "name",
+    "path",
+    "sha256",
+    "fileBytes",
+    "entryCount",
+    "sheets",
+    "activeTab",
+    "styles",
+    "dxfStyles",
+    "visuals",
+    "definedNames",
+    "readOnly",
+    "needsSaveAs",
+    "odsConverted",
+    "formulasDropped",
+    "unsavedNew",
+    "csvPath",
+    "emptyCsv",
+    "restoredFromRecovery",
+    "automaticRecoveryDisabled",
+    "passwordProtected",
+    "themeColors",
+    "themeFonts",
+    "normalFontName",
+    "workbookProtection",
+    "date1904",
+    "shortDateFormat",
+];
+
 /// The object `workbookFileSchema.parse` returns: its keys in the schema's order
 fn workbook_file_value(opened: &IpcValue, overrides: Vec<(&str, IpcValue)>) -> IpcValue {
-    const KEYS: [&str; 28] = [
-        "sessionId",
-        "name",
-        "path",
-        "sha256",
-        "fileBytes",
-        "entryCount",
-        "sheets",
-        "activeTab",
-        "styles",
-        "dxfStyles",
-        "visuals",
-        "definedNames",
-        "readOnly",
-        "needsSaveAs",
-        "odsConverted",
-        "formulasDropped",
-        "unsavedNew",
-        "csvPath",
-        "emptyCsv",
-        "restoredFromRecovery",
-        "automaticRecoveryDisabled",
-        "passwordProtected",
-        "themeColors",
-        "themeFonts",
-        "normalFontName",
-        "workbookProtection",
-        "date1904",
-        "shortDateFormat",
-    ];
     let mut merged: Vec<(String, IpcValue)> = match opened {
         IpcValue::Object(entries) => entries.clone(),
         _ => Vec::new(),
@@ -199,7 +203,7 @@ fn workbook_file_value(opened: &IpcValue, overrides: Vec<(&str, IpcValue)>) -> I
         }
     }
     let mut out = Vec::new();
-    for key in KEYS {
+    for key in WORKBOOK_FILE_KEYS {
         match merged.iter().find(|(k, _)| k == key) {
             Some((_, value)) if !matches!(value, IpcValue::Undefined) => {
                 out.push((key.to_owned(), value.clone()))
@@ -487,6 +491,12 @@ fn open_workbook_session_captured(
         ));
         if options.password.is_some() && options.restore_target.is_some() {
             overrides.push(("passwordProtected", IpcValue::Bool(true)));
+        }
+        // The page of a saved opening reports its first range with this identity
+        // (`workbook:saved-open-result`), and that report is all that settles the load. Without
+        // it the page had nothing to report with and the saved workbook never finished opening.
+        if let Some(saved) = &saved {
+            overrides.push(("savedLoadId", string(saved.load_id.clone())));
         }
         let value = workbook_file_value(&opened.value, overrides);
         Ok((
@@ -1654,5 +1664,62 @@ pub(super) fn open_merge_sources(
         Ok(IpcValue::Null)
     } else {
         Ok(IpcValue::Array(values))
+    }
+}
+
+#[cfg(test)]
+mod workbook_file_tests {
+    use super::*;
+
+    /// The keys of the object the page's `workbookFileSchema` is made of, in its order: the
+    /// lines of that object that are indented as its own keys are.
+    fn schema_keys() -> Vec<&'static str> {
+        let source = include_str!("../../../../../apps/sheets/src/shared/desktop-api.ts");
+        let (_, after) = source
+            .split_once("export const workbookFileSchema = z\n  .object({\n")
+            .expect("the page declares the workbook file schema");
+        let (object, _) = after
+            .split_once("\n  })\n")
+            .expect("the object of the schema ends");
+        object
+            .lines()
+            .filter_map(|line| line.strip_prefix("    ")?.split_once(':'))
+            .map(|(name, _)| name)
+            .filter(|name| {
+                !name.is_empty() && name.chars().all(|letter| letter.is_ascii_alphanumeric())
+            })
+            .collect()
+    }
+
+    fn keys(value: &IpcValue) -> Vec<&str> {
+        match value {
+            IpcValue::Object(entries) => entries.iter().map(|(key, _)| key.as_str()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_shell_answers_every_key_the_page_reads_from_a_workbook() {
+        // `savedLoadId` was in the schema and not here: the page of a saved opening was never
+        // told the identity it reports with (validation round s139)
+        assert_eq!(schema_keys(), WORKBOOK_FILE_KEYS);
+    }
+
+    #[test]
+    fn the_identity_of_a_saved_load_reaches_the_page_and_no_other_opening_has_one() {
+        let opened = IpcValue::Object(vec![
+            ("name".to_owned(), string("book.xlsx")),
+            ("sessionId".to_owned(), string("session")),
+            ("notOfTheSchema".to_owned(), string("dropped")),
+        ]);
+        let saved = workbook_file_value(&opened, vec![("savedLoadId", string("load"))]);
+        assert_eq!(
+            keys(&saved),
+            ["sessionId", "savedLoadId", "name", "activeTab"]
+        );
+        assert_eq!(crate::value::field(&saved, "savedLoadId"), &string("load"));
+
+        let ordinary = workbook_file_value(&opened, Vec::new());
+        assert_eq!(keys(&ordinary), ["sessionId", "name", "activeTab"]);
     }
 }
