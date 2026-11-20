@@ -290,7 +290,10 @@ const LOADED_TOP: Range = { startRow: 0, endRow: 4, startColumn: 0, endColumn: 4
 it('requests the initial file range of a saved copy even when the view never paints', () => {
   // Hold the file read. This test observes its request, not an acknowledgement.
   const readWorkbookRange = vi.fn(() => new Promise<never>(() => {}))
-  vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+  vi.stubGlobal(
+    'requestAnimationFrame',
+    vi.fn(() => 1),
+  )
   vi.stubGlobal('window', { desktopApi: { readWorkbookRange } })
   try {
     const state = streamedState({})
