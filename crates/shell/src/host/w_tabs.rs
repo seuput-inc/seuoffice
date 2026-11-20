@@ -520,6 +520,10 @@ fn open_in_path_editor(
     saved_input: bool,
     recovery: bool,
 ) -> TabResult<EditorStep> {
+    // red check: the s129 behavior, where a saved input opened no view in any editor
+    if saved_input {
+        return Ok(EditorStep::Reserved);
+    }
     let path = match spec {
         EditorViewSpec::Docs { .. }
         | EditorViewSpec::Sheets { .. }
