@@ -1081,6 +1081,52 @@ releaseDate: '2026-11-14T00:00:00.000Z'
         let _ = fs::remove_dir_all(dir);
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn tauri_checks_current_and_next_releases_on_each_candidate_channel() {
+        let arch = if cfg!(target_arch = "aarch64") {
+            "-arm64"
+        } else {
+            ""
+        };
+        let manifest = |version: &str, suffix: &str| {
+            format!("version: {version}\nfiles:\n  - url: SeuOffice-{version}{arch}-mac{suffix}.zip\n    sha512: hash\n").into_bytes()
+        };
+        let (port, requests) = release_server(
+            Vec::new(),
+            vec![
+                ("candidate/latest-mac.yml", manifest("0.13.2", "")),
+                ("candidate/stable-mac.yml", manifest("0.13.1", "-stable")),
+            ],
+        );
+        let base = format!("http://127.0.0.1:{port}/candidate/");
+        let config = FeedConfig::parse(&format!("provider: generic\nurl: {base}")).unwrap();
+        for (channel, version, suffix) in
+            [("latest", "0.13.2", ""), ("stable", "0.13.1", "-stable")]
+        {
+            let mut feed = Feed::new(config.clone());
+            feed.configure(&UpdaterSetting::Channel(channel));
+            let found = feed.check("0.13.0").found.unwrap();
+            assert_eq!(found.version, version);
+            assert_eq!(found.base, base);
+            assert_eq!(
+                found.file.url,
+                format!("SeuOffice-{version}{arch}-mac{suffix}.zip")
+            );
+            let current = feed.check(version).result.unwrap().unwrap();
+            assert!(!current.is_update_available);
+        }
+        assert_eq!(
+            *requests.lock().unwrap(),
+            [
+                "/candidate/latest-mac.yml",
+                "/candidate/latest-mac.yml",
+                "/candidate/stable-mac.yml",
+                "/candidate/stable-mac.yml",
+            ]
+        );
+    }
+
     /// A release server: the new file (ranges too) and both block maps;
     /// answers the request lines it got
     fn release_server(
