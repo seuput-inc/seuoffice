@@ -353,3 +353,70 @@ impl Native {
         ext::attach(webview, browser)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::browser::testing::FakeControl;
+    use super::*;
+
+    type Seen = Arc<Mutex<Vec<(&'static str, ViewEvent)>>>;
+
+    /// An attached browser under `label` whose focus and blur events are recorded as `name`'s
+    fn attached(
+        native: &Native,
+        label: &str,
+        name: &'static str,
+        seen: &Seen,
+    ) -> Result<(BrowserIdentity, lifecycle::BrowserSubmission), String> {
+        let seen = seen.clone();
+        let sink: EventSink = Arc::new(move |event| {
+            if let NativeEventKind::View(view) = &event.kind {
+                seen.lock().unwrap().push((name, *view));
+            }
+        });
+        let (browser, submission) =
+            native.register(label, NativeSpec::new().native_events(sink))?;
+        browser.core.claim_creation()?;
+        browser.core.mark_attached(FakeControl::new(), label);
+        Ok((browser, submission))
+    }
+
+    /// `NoLateCallback` of the CEF runtime's focus model (`formal/native-focus`), for a
+    /// lifetime that was replaced: "A replacement is a different lifetime even when a label
+    /// or native handle is reused." A view keeps its label for life and a label has one open
+    /// browser, so in this shell a view is replaced only once its browser closed; what the
+    /// replaced lifetime still reports reaches nobody, the replacement included.
+    #[test]
+    fn a_view_is_replaced_only_after_it_closed_and_is_silent_from_then_on() {
+        let native = Native::default();
+        let seen = Seen::default();
+        let (first, _first_submission) = attached(&native, "view-7", "first", &seen).unwrap();
+        first.observe_view(ViewEvent::Focus);
+        assert!(
+            attached(&native, "view-7", "second", &seen).is_err(),
+            "an open view cannot be replaced"
+        );
+        assert!(
+            native
+                .browser("view-7")
+                .is_some_and(|open| open.is_same_browser(&first))
+        );
+
+        first.observe_retired();
+        let (second, _second_submission) = attached(&native, "view-7", "second", &seen).unwrap();
+        assert!(
+            native
+                .browser("view-7")
+                .is_some_and(|open| open.is_same_browser(&second))
+        );
+        // the OS still reports for the view that is gone
+        first.observe_view(ViewEvent::Blur);
+        first.observe_view(ViewEvent::Focus);
+        assert_eq!(*seen.lock().unwrap(), [("first", ViewEvent::Focus)]);
+        second.observe_view(ViewEvent::Focus);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [("first", ViewEvent::Focus), ("second", ViewEvent::Focus)]
+        );
+    }
+}

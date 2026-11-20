@@ -894,6 +894,23 @@ type ViewListener = (
     Option<BrowserState>,
 );
 
+/// Whether the tabs listen for the pane focus of `view` as `browser` reports it. A listener is
+/// bound to the browser it was captured with: a focus reported by another lifetime of the
+/// view (one that was replaced, under the same view and label) is not this view's focus.
+fn listens_for_pane_focus(
+    listeners: &[ViewListener],
+    view: ViewId,
+    browser: &BrowserState,
+) -> bool {
+    listeners.iter().any(|(id, kind, _, captured)| {
+        *id == view
+            && *kind == ViewListen::PaneFocus
+            && captured
+                .as_ref()
+                .is_some_and(|captured| captured.is_same_browser(browser))
+    })
+}
+
 struct NativeWindows {
     cx: HostContext,
     core: OnceLock<Arc<dyn shell_contract::runtime::Thread>>,
@@ -1090,18 +1107,7 @@ impl NativeWindows {
     }
 
     fn focus_event(&self, view: ViewId, browser: &BrowserState) {
-        let subscribed = self
-            .listeners
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(id, kind, _, captured)| {
-                *id == view
-                    && *kind == ViewListen::PaneFocus
-                    && captured
-                        .as_ref()
-                        .is_some_and(|captured| captured.is_same_browser(browser))
-            });
+        let subscribed = listens_for_pane_focus(&self.listeners.lock().unwrap(), view, browser);
         if subscribed {
             self.send(HostEvent::View(view, ViewHappened::Focus));
         }
@@ -2142,6 +2148,61 @@ mod tests {
         // a loss of the focus reported for a window that is not the active one changes nothing
         assert!(!is_activation(&mut active, other, false, false));
         assert!(!is_activation(&mut active, shell, true, true));
+    }
+
+    /// `NoLateCallback` of the CEF runtime's focus model (`formal/native-focus`), for a view
+    /// that was replaced and not closed: "A replacement is a different lifetime even when a
+    /// label or native handle is reused." Both lifetimes are open here and report for the
+    /// same view; the tabs act on the one their listener was captured with. A blur has no
+    /// callback in the tabs at all.
+    #[test]
+    fn a_replaced_view_that_is_still_open_moves_no_pane_focus() {
+        use super::{
+            BrowserState, NativeEventKind, ViewEvent, ViewId, ViewListen, ViewListener,
+            listens_for_pane_focus,
+        };
+        use crate::native::browser::testing::{Events, FakeControl, browser_with_events};
+        use crate::native::navigation::NavigationStart;
+
+        let view = ViewId(7);
+        let open = || browser_with_events("view-7", FakeControl::new(), NavigationStart::Automatic);
+        let (replaced, replaced_events) = open();
+        let (current, current_events) = open();
+        let listeners: Vec<ViewListener> = vec![(
+            view,
+            ViewListen::PaneFocus,
+            shell_contract::runtime::RendererGeneration::new(),
+            Some(current.clone()),
+        )];
+        // what `native_event` does with each event a browser passed on for the view
+        let pane_focuses = |browser: &BrowserState, events: &Events| {
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|kind| {
+                    matches!(kind, NativeEventKind::View(ViewEvent::Focus))
+                        && listens_for_pane_focus(&listeners, view, browser)
+                })
+                .count()
+        };
+
+        replaced.observe_view(ViewEvent::Blur);
+        replaced.observe_view(ViewEvent::Focus);
+        let passed_on = replaced_events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|kind| matches!(kind, NativeEventKind::View(_)))
+            .count();
+        assert_eq!(
+            passed_on, 2,
+            "the replaced lifetime is open: its events are passed on"
+        );
+        assert_eq!(pane_focuses(&replaced, &replaced_events), 0);
+
+        current.observe_view(ViewEvent::Focus);
+        assert_eq!(pane_focuses(&current, &current_events), 1);
     }
 
     #[test]

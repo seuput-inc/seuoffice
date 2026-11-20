@@ -123,6 +123,8 @@ struct BrowserLive {
     held_navigation: Option<Url>,
     /// The held navigation as it was replayed, until a navigation begins.
     replayed: Option<Url>,
+    /// The last focus event passed on was a blur: the view has not reported the focus since.
+    blurred: bool,
     ready: Option<Result<(), String>>,
     ready_waiters: Vec<ReadyWaiter>,
     /// The navigation whose load outcome was already reported.
@@ -384,6 +386,7 @@ impl BrowserCore {
                 policy_ready: config_without_policy,
                 held_navigation: None,
                 replayed: None,
+                blurred: false,
                 ready: None,
                 ready_waiters: Vec::new(),
                 finished: None,
@@ -879,11 +882,43 @@ impl BrowserCore {
         self.ready_check();
     }
 
+    /// A focus or blur of the view, as the OS adapters and the window's own focus report it.
+    /// Two things hold for what reaches the sink:
+    ///
+    /// - One blur for each loss of the focus. More than one source reports a loss: WebView2's
+    ///   `LostFocus` and the window's `Focused(false)` for the view a window is named after
+    ///   (S121 run on Windows: "view 1 lost the focus" twice in a row), on macOS the first
+    ///   responder leaving the view and then the window resigning key. A blur with no focus
+    ///   since the last blur is that same loss again and is dropped. A focus is passed on
+    ///   every time: the menus take the last one for the view in use.
+    /// - Nothing after the browser closed. That is asked where the sink is called, not here:
+    ///   an event seen while the browser was open waits in the completion queue, and the
+    ///   browser may close before its turn.
     pub(crate) fn view_event(self: &Arc<Self>, event: ViewEvent) {
-        if self.lock().closed {
-            return;
+        {
+            let mut state = self.lock();
+            match event {
+                ViewEvent::Focus => state.blurred = false,
+                ViewEvent::Blur => {
+                    if std::mem::replace(&mut state.blurred, true) {
+                        return;
+                    }
+                }
+            }
         }
-        self.emit(NativeEventKind::View(event));
+        let Some(sink) = self.config.sink.clone() else {
+            return;
+        };
+        let core = self.clone();
+        defer(move || {
+            if core.lock().closed {
+                return;
+            }
+            sink(&NativeEvent {
+                browser: core.identity(),
+                kind: NativeEventKind::View(event),
+            });
+        });
     }
 
     // -------------------------------------------------------------------------------
@@ -1440,5 +1475,113 @@ mod tests {
         assert!(!first.is_same_browser(&second));
         assert!(first.is_same_browser(&first.clone()));
         assert_ne!(first.id(), second.id());
+    }
+
+    /// The focus and blur events a recorded browser passed on, in order
+    fn focus_events(events: &Events) -> Vec<ViewEvent> {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|kind| match kind {
+                NativeEventKind::View(event) => Some(*event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // The model of the CEF runtime's focus callbacks (`formal/native-focus`, deleted with that
+    // runtime) froze two properties. They hold for this shell's view events too, and the
+    // tests below state them; the replaced lifetime is in `native::tests` and `w_tabs::tests`.
+
+    /// `NoDuplicate`: "a lifetime receives no more blur callbacks than observed focus-loss
+    /// transitions."
+    #[test]
+    fn a_view_gets_one_blur_for_each_loss_of_the_focus() {
+        let (browser, events) = browser_with_events(
+            "focus-once",
+            FakeControl::new(),
+            NavigationStart::Automatic,
+        );
+        browser.observe_view(ViewEvent::Focus);
+        // one loss, reported by the webview and by its window
+        browser.observe_view(ViewEvent::Blur);
+        browser.observe_view(ViewEvent::Blur);
+        assert_eq!(focus_events(&events), [ViewEvent::Focus, ViewEvent::Blur]);
+        // a focus reported twice is passed on twice; the loss after it is one blur again
+        browser.observe_view(ViewEvent::Focus);
+        browser.observe_view(ViewEvent::Focus);
+        browser.observe_view(ViewEvent::Blur);
+        browser.observe_view(ViewEvent::Blur);
+        browser.observe_view(ViewEvent::Blur);
+        assert_eq!(
+            focus_events(&events),
+            [
+                ViewEvent::Focus,
+                ViewEvent::Blur,
+                ViewEvent::Focus,
+                ViewEvent::Focus,
+                ViewEvent::Blur
+            ]
+        );
+
+        // a view that had the focus before anything was reported loses it once as well
+        let (fresh, events) = browser_with_events(
+            "focus-once-fresh",
+            FakeControl::new(),
+            NavigationStart::Automatic,
+        );
+        fresh.observe_view(ViewEvent::Blur);
+        fresh.observe_view(ViewEvent::Blur);
+        assert_eq!(focus_events(&events), [ViewEvent::Blur]);
+    }
+
+    /// `NoLateCallback`: "a callback is not invoked after its lifetime is revoked or
+    /// replaced." Revoked: the browser closed, and the OS still reports for its view.
+    #[test]
+    fn a_closed_view_gets_no_focus_or_blur() {
+        let (browser, events) = browser_with_events(
+            "focus-closed",
+            FakeControl::new(),
+            NavigationStart::Automatic,
+        );
+        browser.observe_view(ViewEvent::Focus);
+        browser.observe_retired();
+        browser.observe_view(ViewEvent::Blur);
+        browser.observe_view(ViewEvent::Focus);
+        assert_eq!(focus_events(&events), [ViewEvent::Focus]);
+    }
+
+    /// The same property where the model found its violation: the event is seen while the
+    /// browser is open and its callback runs later ("the bug configuration separates the gate
+    /// read and handler invocation"). Under a gate the callback waits in the completion
+    /// queue; the browser closes before the gate ends.
+    #[test]
+    fn a_blur_seen_before_the_close_is_not_delivered_after_it() {
+        let (browser, events) = browser_with_events(
+            "focus-late",
+            FakeControl::new(),
+            NavigationStart::Automatic,
+        );
+        browser.observe_view(ViewEvent::Focus);
+        {
+            let _hold = hold();
+            browser.observe_view(ViewEvent::Blur);
+            assert_eq!(
+                focus_events(&events),
+                [ViewEvent::Focus],
+                "the blur waits for the gate"
+            );
+            browser.observe_retired();
+        }
+        assert!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|kind| matches!(kind, NativeEventKind::Retired { .. })),
+            "the queue ran: the close was reported"
+        );
+        assert_eq!(focus_events(&events), [ViewEvent::Focus]);
     }
 }
