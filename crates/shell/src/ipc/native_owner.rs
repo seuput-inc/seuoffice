@@ -315,6 +315,27 @@ pub(crate) fn succeeding_owner(
     same_document.then_some(current)
 }
 
+/// Whether `owner` carries the media permit its page document started with, the one its first
+/// call was captured with ([`crate::views::ViewTable::docs_boot_permit`]). A call made under
+/// it was made before the page loaded any document of its own: by its opening, not for a
+/// document it showed. A call of an earlier page document of the view is another document's
+/// and never matches.
+pub(crate) fn made_before_any_load(
+    views: &crate::views::ViewTable,
+    owner: &NativeRequestOwner,
+) -> bool {
+    let Some(authority) = owner.context.authority_ref::<NativeOwnerAuthority>() else {
+        return false;
+    };
+    let (Some(permit), Some(boot)) = (
+        authority.docs_permit.as_ref(),
+        views.docs_boot_permit(owner.view, &authority.origin),
+    ) else {
+        return false;
+    };
+    boot.same_session(permit)
+}
+
 /// Admit `owner` once more as the owner a recovery opening delivers, and let `swap` put it in
 /// place of the one delivered before. `swap` runs inside the admission and answers the owner
 /// it took out, or `None` when there is nothing to deliver to. That owner is released only
