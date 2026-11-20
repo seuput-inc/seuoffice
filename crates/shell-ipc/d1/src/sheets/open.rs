@@ -158,9 +158,8 @@ fn legacy_charset(env: &Env) -> Option<&'static str> {
 
 /// The keys of the page's `workbookFileSchema` (apps/sheets `desktop-api.ts`), in its order.
 /// A key that is not here never reaches the page.
-const WORKBOOK_FILE_KEYS: [&str; 29] = [
+const WORKBOOK_FILE_KEYS: [&str; 28] = [
     "sessionId",
-    "savedLoadId",
     "name",
     "path",
     "sha256",
@@ -495,9 +494,8 @@ fn open_workbook_session_captured(
         // The page of a saved opening reports its first range with this identity
         // (`workbook:saved-open-result`), and that report is all that settles the load. Without
         // it the page had nothing to report with and the saved workbook never finished opening.
-        if let Some(saved) = &saved {
-            overrides.push(("savedLoadId", string(saved.load_id.clone())));
-        }
+        // red check: the behavior before the fix, where the saved open's id never reaches the page
+        let _ = &saved;
         let value = workbook_file_value(&opened.value, overrides);
         Ok((
             OpenedSession {
