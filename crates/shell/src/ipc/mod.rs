@@ -951,6 +951,7 @@ mod posted_call_tests {
     use shell_contract::runtime::RendererGeneration;
     use shell_core::table::Table;
     use shell_core::wire::{Encoder, frame};
+    use std::cell::Cell;
     use std::rc::Rc;
 
     struct Inline;
@@ -977,8 +978,40 @@ mod posted_call_tests {
         }
     }
 
+    /// A handler that answers at once and counts its calls.
+    struct Counts(Rc<Cell<u32>>);
+
+    impl Handler for Counts {
+        fn call(&self, _: &CallContext, _: Vec<IpcValue>, reply: Responder) {
+            self.0.set(self.0.get() + 1);
+            reply.reply(Ok(IpcValue::Bool(true)));
+        }
+    }
+
+    /// The core thread's channel table, while this lives: a later test of the thread starts
+    /// without one again.
+    struct Serving;
+
+    impl Drop for Serving {
+        fn drop(&mut self) {
+            DISPATCHER.with(|dispatcher| *dispatcher.borrow_mut() = None);
+        }
+    }
+
+    fn serves(channels: &[&'static str], handler: Rc<dyn Handler>) -> Serving {
+        let mut table = Table::default();
+        for &channel in channels {
+            let batch = shell_core::table::spec_of(channel).unwrap().batch;
+            let handler = handler.clone();
+            table.register(batch, channel, ChannelKind::Invoke, handler).unwrap();
+        }
+        install_dispatcher(Dispatcher::new(table));
+        Serving
+    }
+
     /// A Docs page of a real view table, bound to a real registered native document, with its
-    /// output stream open. `answered` lists the requests the page was answered.
+    /// output stream open. `answered` lists the requests the page was answered, each with
+    /// whether the answer was an error.
     struct DocsPage {
         ipc: Ipc,
         core: Arc<Waiting>,
@@ -986,7 +1019,7 @@ mod posted_call_tests {
         created: RendererGeneration,
         lease: MediaViewLease,
         browser: BrowserIdentity,
-        answered: Arc<Mutex<Vec<u64>>>,
+        answered: Arc<Mutex<Vec<(u64, bool)>>>,
     }
 
     impl DocsPage {
@@ -1010,7 +1043,7 @@ mod posted_call_tests {
                     && let Ok((header, _)) = unframe(&bytes)
                     && let Some(id) = header.get("reply").and_then(Value::as_u64)
                 {
-                    seen.lock().unwrap().push(id);
+                    seen.lock().unwrap().push((id, header.get("error").is_some()));
                 }
                 Ok(())
             });
@@ -1062,17 +1095,10 @@ mod posted_call_tests {
                 }
             }
             let kept = Rc::new(RefCell::new(None));
-            let mut table = Table::default();
-            let batch = shell_core::table::spec_of(SLOW).unwrap().batch;
-            let handler = Rc::new(Keeps(kept.clone()));
-            table
-                .register(batch, SLOW, ChannelKind::Invoke, handler)
-                .unwrap();
-            install_dispatcher(Dispatcher::new(table));
+            let serving = serves(&[SLOW], Rc::new(Keeps(kept.clone())));
             self.invokes_channel(id, SLOW);
             self.core_thread_runs();
-            // a later test of this thread starts without a table again
-            DISPATCHER.with(|dispatcher| *dispatcher.borrow_mut() = None);
+            drop(serving);
             let answer = kept.borrow_mut().take();
             answer.expect("the call was dispatched")
         }
@@ -1085,19 +1111,55 @@ mod posted_call_tests {
         }
 
         fn answered(&self) -> Vec<u64> {
-            self.answered.lock().unwrap().clone()
+            let answered = self.answered.lock().unwrap();
+            answered.iter().map(|(id, _)| *id).collect()
+        }
+
+        /// The requests the page was answered with an error.
+        fn refused(&self) -> Vec<u64> {
+            let answered = self.answered.lock().unwrap();
+            answered.iter().filter(|(_, error)| *error).map(|(id, _)| *id).collect()
         }
     }
 
     #[test]
-    fn a_call_that_waits_while_its_page_loads_a_document_is_still_answered() {
+    fn the_calls_of_an_opening_are_answered_though_its_open_loads_the_document_first() {
         let page = DocsPage::open("posted-call-document-load");
-        page.invokes(7);
-        // the open ahead of it finishes first: the page shows another document now
+        let ran = Rc::new(Cell::new(0));
+        let opening = OPENING.map(|(_, channel)| channel);
+        let _serving = serves(&opening, Rc::new(Counts(ran.clone())));
+        for (id, channel) in OPENING {
+            page.invokes_channel(id, channel);
+        }
+        // the open ahead of them finishes first: the page shows its document now
         let next = page.lease.stage_document().unwrap();
         page.lease.commit_document(&next).unwrap();
         page.core_thread_runs();
-        assert_eq!(page.answered(), [7]);
+        assert_eq!(ran.get(), 4);
+        assert_eq!(page.answered(), [1, 2, 3, 4]);
+        assert!(page.refused().is_empty());
+    }
+
+    /// The calls of the boot `Promise.all` of the Docs page, with request ids.
+    const OPENING: [(u64, &str); 4] = [
+        (1, "docs:consume-pending-open"),
+        (2, "docs:consume-new-blank"),
+        (3, "docs:consume-ai-doc-content"),
+        (4, "docs:consume-copy"),
+    ];
+
+    #[test]
+    fn a_call_made_for_the_document_a_page_showed_before_its_open_never_runs() {
+        let page = DocsPage::open("posted-call-replaced-document");
+        let saved = Rc::new(Cell::new(0));
+        let _serving = serves(&["docs:save-new"], Rc::new(Counts(saved.clone())));
+        // document A asks to be saved; before the core thread gets to it, the page opens B
+        page.invokes_channel(30, "docs:save-new");
+        let next = page.lease.stage_document().unwrap();
+        page.lease.commit_document(&next).unwrap();
+        page.core_thread_runs();
+        assert_eq!(saved.get(), 0, "A's save ran under B's owner");
+        assert_eq!(page.refused(), [30]);
     }
 
     #[test]
