@@ -5,9 +5,11 @@ import {
   ensureLazyRangeLoaded,
   lazyCellEditable,
   lazyRangeEditable,
+  loadVisibleRange,
   loadWorkbookSkeleton,
   nextIndexWaitStall,
   normalizeVisibleRange,
+  startOpeningViewport,
 } from '../src/renderer/univer-sync'
 import type { LazyWorkbookState } from '../src/renderer/univer-state'
 
@@ -284,6 +286,34 @@ function streamedState(options: {
 }
 
 const LOADED_TOP: Range = { startRow: 0, endRow: 4, startColumn: 0, endColumn: 4 }
+
+it('requests the initial file range of a saved copy even when the view never paints', () => {
+  // Hold the file read. This test observes its request, not an acknowledgement.
+  const readWorkbookRange = vi.fn(() => new Promise<never>(() => {}))
+  vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+  vi.stubGlobal('window', { desktopApi: { readWorkbookRange } })
+  try {
+    const state = streamedState({})
+    const start = () => {
+      void loadVisibleRange(
+        { univerAPI: { getActiveWorkbook: () => null } } as never,
+        { current: state },
+        { getSheetId: () => 'sheet-1', getVisibleRange: () => null } as never,
+        () => {},
+      )
+    }
+    startOpeningViewport({}, start)
+    expect(readWorkbookRange).not.toHaveBeenCalled()
+    startOpeningViewport({ savedLoadId: 'copy' }, start)
+    expect(readWorkbookRange).toHaveBeenCalledExactlyOnceWith({
+      sessionId: 'session-1',
+      sheetId: 'sheet-1',
+      range: { startRow: 0, endRow: 9, startColumn: 0, endColumn: 4 },
+    })
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
 
 describe('lazyCellEditable', () => {
   it('allows loaded cells and truly-beyond-data cells, blocks unstreamed ones', () => {

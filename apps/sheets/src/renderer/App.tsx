@@ -13,6 +13,7 @@ import {
   lazyWorkbookCellReader,
   loadSnapshotIntoUniver,
   loadVisibleRange,
+  startOpeningViewport,
   loadWorkbookSkeleton,
   matrixBounds,
   navigateToAnchor,
@@ -5969,7 +5970,7 @@ export function App({
         }
         await page.attach({ runtime, state, redactionStates })
       }
-      requestAnimationFrame(() => {
+      startOpeningViewport(selected, () => {
         if (lazyWorkbookRef.current !== state) {
           opts?.onInitialRangeLoaded?.('The workbook was replaced before its initial range loaded.')
           return
