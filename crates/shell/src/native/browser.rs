@@ -909,11 +909,12 @@ impl BrowserCore {
         let Some(sink) = self.config.sink.clone() else {
             return;
         };
+        // red check: the closed state is read when the event is observed, as before the fix
+        if self.lock().closed {
+            return;
+        }
         let core = self.clone();
         defer(move || {
-            if core.lock().closed {
-                return;
-            }
             sink(&NativeEvent {
                 browser: core.identity(),
                 kind: NativeEventKind::View(event),
