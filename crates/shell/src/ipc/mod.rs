@@ -515,12 +515,7 @@ enum Posted {
 /// owner from every other call the page has on its way, though the page still waits for their
 /// answers. The owner its native document has now ([`native_owner::succeeding_owner`]) then
 /// stands for the lost one, for an [`OpeningCall`] only.
-fn posted_owner(
-    views: &ViewTable,
-    owner: NativeRequestOwner,
-    kind: &str,
-    channel: &str,
-) -> Posted {
+fn posted_owner(views: &ViewTable, owner: NativeRequestOwner, kind: &str, channel: &str) -> Posted {
     if with_verified(&owner, || ()).is_some() {
         return Posted::Dispatch(owner);
     }
@@ -1068,7 +1063,9 @@ mod posted_call_tests {
         for &channel in channels {
             let batch = shell_core::table::spec_of(channel).unwrap().batch;
             let handler = handler.clone();
-            table.register(batch, channel, ChannelKind::Invoke, handler).unwrap();
+            table
+                .register(batch, channel, ChannelKind::Invoke, handler)
+                .unwrap();
         }
         install_dispatcher(Dispatcher::new(table));
         Serving
@@ -1108,7 +1105,9 @@ mod posted_call_tests {
                     && let Ok((header, _)) = unframe(&bytes)
                     && let Some(id) = header.get("reply").and_then(Value::as_u64)
                 {
-                    seen.lock().unwrap().push((id, header.get("error").is_some()));
+                    seen.lock()
+                        .unwrap()
+                        .push((id, header.get("error").is_some()));
                 }
                 Ok(())
             });
@@ -1183,7 +1182,11 @@ mod posted_call_tests {
         /// The requests the page was answered with an error.
         fn refused(&self) -> Vec<u64> {
             let answered = self.answered.lock().unwrap();
-            answered.iter().filter(|(_, error)| *error).map(|(id, _)| *id).collect()
+            answered
+                .iter()
+                .filter(|(_, error)| *error)
+                .map(|(id, _)| *id)
+                .collect()
         }
     }
 
@@ -1232,7 +1235,10 @@ mod posted_call_tests {
         for call in OpeningCall::ALL {
             let spec = shell_core::table::spec_of(call.channel()).expect("a channel of the table");
             assert!(spec.kinds.contains(&ChannelKind::Invoke), "{call:?}");
-            assert!(spec.surfaces.contains(&shell_contract::Surface::Docs), "{call:?}");
+            assert!(
+                spec.surfaces.contains(&shell_contract::Surface::Docs),
+                "{call:?}"
+            );
             assert_eq!(OpeningCall::of(call.channel()), Some(call));
         }
         assert_eq!(OpeningCall::of("docs:save-new"), None);
