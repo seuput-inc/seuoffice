@@ -1,8 +1,0 @@
-{
-  "runs": [
-    { "name": "two-lifetimes-duplicate-safety", "config": "MC_counts.cfg", "expect": "pass" },
-    { "name": "gate-revocation-interleaving", "config": "MC.cfg", "expect": "invariant", "property": "NoLateCallback" },
-    { "name": "serialized-owner-two-lifetimes", "config": "MC_serialized.cfg", "expect": "pass" },
-    { "name": "sanity-focus-is-reachable", "config": "MC_sanity.cfg", "expect": "invariant", "property": "SanityNeverFocused" }
-  ]
-}

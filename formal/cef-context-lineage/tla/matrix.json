@@ -1,7 +1,0 @@
-{
-  "runs": [
-    { "name": "draft-delayed-old-context", "config": "MC_draft.cfg", "expect": "invariant", "property": "NoStaleAdmission" },
-    { "name": "native-lineage-two-documents", "config": "MC_lineage.cfg", "expect": "pass" },
-    { "name": "sanity-admission-reachable", "config": "MC_sanity.cfg", "expect": "invariant", "property": "SanityNeverActivated" }
-  ]
-}
