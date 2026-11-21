@@ -184,7 +184,10 @@ const doc = openDocument(container, {
 
 `collab`을 넘기면 여러 사람이 같은 문서를 동시에 고친다. 보기·고치기 둘 다 된다. 공동 편집 서버와의 WebSocket은 호스트가 연다. 호스트가 자기 인증으로 연결을 만들고, 이 패키지는 페이지와 그 소켓 사이에서 프레임을 그대로 나른다. 페이지는 문서 주소나 토큰을 모른다.
 
+아래 `collabOpen`은 SDK 필드가 아니라 호스트가 이 문서 열기에 발급한 핸들이다. 호스트 서버는 이 핸들을 사용자·문서와 공동 편집 에포크 하나에 묶는다. `connect`와 `onSave`는 재연결하거나 저장을 재시도해도 같은 핸들을 쓴다.
+
 ```ts
+const collabOpen = await host.openCollab(documentId)
 const open = (collab: boolean) =>
   openDocument(container, {
     baseUrl: `${location.origin}/seuoffice/`,
@@ -194,13 +197,10 @@ const open = (collab: boolean) =>
     ...(collab
       ? {
           collab: {
-            connect: () => new WebSocket(`${collabUrl}?doc=${documentId}`),
+            connect: () => host.connect(collabOpen),
             onStatus: (status) => showPeers(status.peers),
           },
-          onSave: async ({ fileName, bytes, version }) => {
-            // 이미 저장된 판보다 낮은 version이면 throw한다
-            await uploadToServer(fileName, bytes, version)
-          },
+          onSave: (file) => host.commitCollabFile(collabOpen, file),
         }
       : { onSave: async ({ fileName, bytes }) => uploadToServer(fileName, bytes) }),
   })
@@ -222,7 +222,8 @@ try {
 - 함께 고칠 때는 편집 잠금을 잡지 않는다. 같은 문서를 연 사람은 모두 같은 서버에 붙는다.
 - `connect()`는 페이지가 연결을 원할 때마다 불린다. 끊긴 뒤 다시 붙을 때도 불리고, 그때 이전 소켓은 닫힌다. 페이지가 아무리 자주 원해도 `connect()`는 250ms에 한 번까지만 불린다.
 - `connect()`는 아직 열리는 중인 소켓도, 이미 열린 소켓도 돌려줄 수 있다. 실패하거나, 소켓에 오류가 나거나, 15초(`connectTimeoutMs`) 안에 열리지 않으면 페이지는 끊긴 것으로 보고 다시 시도한다.
-- `onSave`는 `version`을 함께 받는다. 이미 저장한 판보다 낮은 `version`이 오면 `onSave`는 반드시 reject(throw)해야 한다. 그러지 않으면 늦게 도착한 오래된 저장이 새 저장을 덮어쓰고, 다음 편집은 그 오래된 파일에서 시작한다.
+- `onSave`가 받는 `CollabSavedFile`에는 `version`은 있지만 에포크(`epoch`)는 없다. `version`은 한 에포크 안에서만 비교한다. 에포크가 바뀌면 기존 핸들을 새 에포크에 다시 묶지 않는다. 다시 열어 새 핸들을 받는다.
+- `host.commitCollabFile`은 호스트가 구현한다. 현재 쓰기 권한, 핸들의 에포크와 현재 에포크의 일치, 같은 에포크에서 저장한 판보다 낮지 않은 `version`을 한 트랜잭션에서 확인하고 저장 판과 파일 포인터를 함께 갱신한다. 핸들이 어느 에포크인지 확정할 수 없거나 이 조건부 갱신을 할 수 없으면 `onSave`를 거절한다. 중계하는 소켓 프레임은 공개 API가 아니므로 해석해 에포크를 알아내지 않는다. [호스트의 파일 저장 계약](../collab/README.md#호스트가-꼭-할-일)을 따른다.
 - `doc.collabCapable`은 페이지가 `ready`에서 알린 값이다. 페이지가 답하지 않았거나 문서가 닫혔으면 `false`다.
 - `doc.destroy()`는 소켓도 닫는다. `collab`을 주지 않으면 공동 편집 메시지는 하나도 오가지 않는다.
 

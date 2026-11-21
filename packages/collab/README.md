@@ -51,7 +51,8 @@ httpServer.on('upgrade', async (request, socket, head) => {
 
 ### 호스트가 꼭 할 일
 
-- **`onSave`에서 더 오래된 버전을 거절한다.** 여러 사람이 저장하면 저장이 끝나는 순서가 버전 순서와 다를 수 있다. 버전 7 파일을 저장한 뒤 늦게 도착한 버전 5 파일로 덮어쓰면, 6과 7의 편집이 저장된 파일에서 소리 없이 사라진다. 서버는 이미 7까지 저장됐다고 알고 있으므로, 그 뒤 에포크가 끝나면 이 손실은 되돌릴 수 없다. 그래서 문서마다 저장한 가장 큰 버전을 기억하고, 그보다 작은 버전이 오면 `throw`한다. 선택 사항이 아니다.
+- **파일을 연 핸들을 에포크 하나에 묶는다.** `version`은 그 에포크 안에서만 유효하다. 새 에포크는 0부터 시작하므로 이전 에포크의 버전 7이 새 에포크의 버전 1보다 최신이라는 뜻은 아니다. `@seuoffice/embed`의 `CollabSavedFile`에는 `epoch`가 없다. 호스트는 서버에서 확인한 에포크를 사용자·문서·열기 핸들에 묶고, 저장 시점의 현재 에포크로 대신하지 않는다. 이미 열린 핸들을 새 에포크에 다시 묶지 않는다. 새 에포크에서는 새 핸들로 다시 연다. 중계하는 프레임은 공개 API가 아니므로 에포크를 얻으려고 해석하지 않는다.
+- **파일 저장은 조건부 갱신 한 번으로 끝낸다.** 호스트 저장소는 현재 사용자에게 쓰기 권한이 있고, 핸들의 문서와 에포크가 현재 문서와 에포크에 일치하며, `version`이 그 에포크에서 마지막으로 저장한 버전 이상일 때만 저장한다. 이 검사와 저장 버전·파일 포인터 갱신은 같은 트랜잭션에서 한다. 파일을 별도 저장소에 둔다면 새 바이트를 덮어쓰지 않는 별도 위치에 먼저 쓰고, 조건이 맞을 때만 현재 파일 포인터를 그 위치로 바꾼다. 에포크를 확정할 수 없거나 조건을 원자적으로 지킬 수 없으면 저장을 거절하고 기존 파일을 유지한다. `onSave`는 갱신을 커밋한 뒤에만 성공을 돌려준다.
 - **공동 편집 밖에서 저장된 파일을 바꿨으면 `await collab.reset(documentId)`를 부른다.** 이전 판으로 되돌리기나 다른 파일로 덮어쓰기가 그렇다. 그 문서의 소켓은 모두 `reset` 오류를 받고 닫히며 에포크는 버려진다. 다음에 여는 사람은 새 파일로 새 에포크를 시작한다. 마지막 저장 뒤의 편집은 버려진다.
 - **편집 형식(op 스키마)을 바꿔 배포할 때는 `format.schema`를 올린다.** 다른 스키마의 에포크가 남아 있는 문서를 새 페이지가 열면 `schema_mismatch`를 받는다. 배포 전에 에포크가 끝나기를 기다리거나(모두 저장하고 `idleEpochMs` 동안 아무도 없을 때), 문서마다 `reset`을 부른다. `reset`은 마지막 저장 뒤의 편집을 버리므로, 먼저 저장하게 한 뒤 부른다.
 
@@ -71,7 +72,7 @@ httpServer.on('upgrade', async (request, socket, head) => {
 
 - 모든 메서드는 문서 하나에 대해 원자적이다.
 - `append`는 비교 후 추가 한 번이다. 같은 `(client, seq)`가 이미 있으면 그때의 버전으로 `duplicate`를 돌려준다. 이 검사가 `base` 검사보다 먼저다. `base`가 지금 머리(head)와 같을 때만 `head + 1`로 붙이고, 아니면 `stale`과 지금 머리를 돌려준다. 그 에포크가 없으면 `gone`이다.
-- 버전은 1부터 빈틈없이 늘고 다시 쓰지 않는다.
+- 한 에포크에서 변경 버전은 1부터 빈틈없이 늘고 다시 쓰지 않는다.
 - `markSaved`는 지금까지 받은 가장 큰 버전을 남기고 그 값을 돌려준다. 서버는 머리보다 큰 버전을 보내지 않는다.
 - `drop`은 이름 붙인 에포크만 지운다. 그 문서에 다른 에포크가 있으면 아무것도 하지 않는다. 지운 뒤의 `create`는 버전 0에서 시작하고, 지운 에포크에서 쓰인 `(client, seq)`도 다시 쓸 수 있다.
 - 없거나 지워진 에포크에 대한 `readBase`와 `read`는 reject한다. `append`는 reject하지 않고 `gone`을 돌려준다.
@@ -116,9 +117,11 @@ const session = join.attach(adapter)
 
 session.subscribe((status) => render(status)) // phase, failure, canEdit, version, saved, unconfirmed, peers, self
 const { fileName, bytes: saved, version } = await session.save()
-await host.store(fileName, saved)
+await host.commitCollabFile(openHandle, { fileName, bytes: saved, version })
 session.reportSaved(version)
 ```
+
+`openHandle`은 호스트가 이 문서를 열 때 사용자·문서에 발급하고 해당 에포크에 묶은 핸들이다. `host.commitCollabFile`은 위 [파일 저장 계약](#호스트가-꼭-할-일)을 구현하는 호스트 메서드다. 저장이 거절되면 `reportSaved`를 부르지 않는다.
 
 `status.self`는 이 페이지 자신이다. 서버가 준 클라이언트 id와, 호스트가 이 소켓의 `Principal.name`으로 정한 표시 이름이 들어 있다. `peers` 안의 자기 항목과 같다. 처음 `welcome`을 받기 전에는 `null`이다. 편집기가 변경 추적에 사람 이름을 남길 때 이 이름을 쓴다.
 
