@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it } from 'vitest'
-import { GITHUB_REPO_NAME, GITHUB_REPO_OWNER, GITHUB_REPO_URL } from '@seuoffice/electron-utils'
+import { GITHUB_REPO_URL } from '@seuoffice/electron-utils'
 import {
   createI18n,
   DEV_USER_DATA_DIR_NAME,
@@ -307,9 +307,14 @@ describe('coexistence with the upstream app on one machine', () => {
 })
 
 describe('repository coordinates', () => {
-  it('feeds auto-update from the GitHub releases of the product repository', () => {
+  it('packages the bridge with the dedicated GitHub release repository', () => {
     expect(config.publish).toEqual([
-      { provider: 'github', owner: GITHUB_REPO_OWNER, repo: GITHUB_REPO_NAME, channel: 'latest' },
+      {
+        provider: 'github',
+        owner: 'seuput-inc',
+        repo: 'seuoffice-tauri-releases',
+        channel: 'latest',
+      },
     ])
     // no environment variable switches the feed on or moves it elsewhere
     const withOldEnv = loadBuilderConfig({ SEUOFFICE_UPDATE_URL: 'https://updates.example.test/x' })
@@ -335,7 +340,7 @@ describe('repository coordinates', () => {
     }
   })
 
-  it('names the same repository in the package metadata', () => {
+  it('keeps the product repository in the package metadata', () => {
     expect(GITHUB_REPO_URL).toBe('https://github.com/seuput-inc/seuoffice')
     expect(shellPackage.homepage).toBe(GITHUB_REPO_URL)
     expect((rootPackage.repository as { url: string }).url).toBe(`git+${GITHUB_REPO_URL}.git`)

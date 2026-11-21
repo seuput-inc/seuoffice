@@ -332,7 +332,7 @@ jobs:
             has_line "$dir/$feed" "path: $installer" || { echo "$feed path is not $installer"; exit 1; }
             local update="$dir/win-unpacked/resources/app-update.yml"
             test -f "$update" || { echo "missing: $update"; exit 1; }
-            for line in "channel: $channel" "repo: seuoffice" "owner: seuput-inc"; do
+            for line in "provider: github" "channel: $channel" "repo: seuoffice-tauri-releases" "owner: seuput-inc"; do
               has_line "$update" "$line" || { echo "$update lacks '$line'"; exit 1; }
             done
           }
@@ -586,7 +586,7 @@ jobs:
             [ "$built" = "$version" ] || { echo "$feed says $built, package.json $version"; exit 1; }
             grep -qF "url: $zip" "$dir/$feed" || { echo "$feed does not name $zip"; exit 1; }
             local update="$app/Contents/Resources/app-update.yml"
-            for line in "channel: $channel" "repo: seuoffice" "owner: seuput-inc"; do
+            for line in "provider: github" "channel: $channel" "repo: seuoffice-tauri-releases" "owner: seuput-inc"; do
               grep -Fxq -- "$line" "$update" || { echo "$update lacks '$line'"; exit 1; }
             done
 
@@ -720,8 +720,18 @@ jobs:
     env:
       TAG: v${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
+      # Publish the bridge where existing Electron installs look for it.
       GH_REPO: ${{ github.repository }}
     steps:
+      - name: Check the bridge publication and update repositories
+        run: |
+          set -euo pipefail
+          test "$GH_REPO" = seuput-inc/seuoffice
+          target=seuput-inc/seuoffice-tauri-releases
+          # Installed clients read without a token. Reject missing, private,
+          # archived and renamed repositories before publishing a bridge.
+          curl --fail --silent --show-error "https://api.github.com/repos/$target" |
+            jq -e --arg target "$target" '.full_name == $target and .private == false and .archived == false and .disabled == false'
       # nothing is published for a commit the test workflows reject; a re-run of
       # this job after a CI re-run waits again. A run started by hand counts too:
       # CI skips a Markdown-only push, and `gh workflow run CI --ref main` covers it

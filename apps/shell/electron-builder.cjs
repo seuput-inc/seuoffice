@@ -2,9 +2,8 @@
  * electron-builder configuration (kept out of package.json "build" because it
  * computes values and carries the packaging hooks).
  *
- * Auto-update reads the releases of the product's public GitHub repository
- * (see `publish` below): nothing is injected from the environment and no
- * secret is needed to build an installer that updates itself.
+ * The Electron bridge ships in the source repository but reads its next
+ * update from the Tauri release repository.
  */
 
 // Buffer comes from node:buffer, not the global: this file is evaluated
@@ -23,11 +22,9 @@ const {
 const { join } = require('node:path')
 
 // Product identity of the installed app. PRODUCT_NAME must equal PRODUCT_NAME
-// in packages/i18n/src/product.ts and "productName" in ./package.json, and the
-// repository must equal the coordinates defined there
-// (tests/product-identity.test.ts keeps them in step). Everything registered
-// on the machine derives from these: the installer's product id and install
-// folder, the executable name, the userData folder and the Windows ProgIds.
+// in packages/i18n/src/product.ts and "productName" in ./package.json.
+// These names determine the installer's product id and install folder,
+// the executable name, the userData folder and the Windows ProgIds.
 // None of them may coincide with the upstream GenOffice app, so both can be
 // installed on one machine without touching each other's registration.
 const APP_ID = 'com.seuput.seuoffice'
@@ -37,8 +34,7 @@ const PRODUCT_NAME = 'SeuOffice'
 // folder that caches the installer and downloaded updates after it
 // (<local app data>/<name>-updater), so a shared name is a shared folder.
 const PACKAGED_APP_NAME = 'seuoffice'
-const REPO_OWNER = 'seuput-inc'
-const REPO_NAME = 'seuoffice'
+const updateRepository = require(join(__dirname, 'update-repository.json'))
 const MAINTAINER = 'SeuPut <228744781+SeuPut0705@users.noreply.github.com>'
 
 // SEUOFFICE_UPDATE_CHANNEL — which releases the packaged app updates from,
@@ -1247,20 +1243,9 @@ const stableSuffix = UPDATE_CHANNEL === 'stable' ? '-stable' : ''
 config.dmg.artifactName = `\${productName}-\${version}-\${arch}${stableSuffix}.\${ext}`
 if (stableSuffix) config.mac.artifactName = '${productName}-${version}-${arch}-mac-stable.${ext}'
 
-// Auto-update feed: the releases of the public repository. Always configured,
-// so every installer carries an app-update.yml and can update itself — the
-// repository is public, which is why no token or feed URL has to be injected.
-// This only names the feed. Whether a build also uploads is the --publish
-// flag's business: pass `--publish never` to package without creating a
-// release (electron-builder would otherwise try to on a tagged CI build).
-config.publish = [
-  {
-    provider: 'github',
-    owner: REPO_OWNER,
-    repo: REPO_NAME,
-    channel: UPDATE_CHANNEL,
-  },
-]
+// The release workflow packages with --publish never. It uploads the bridge
+// to the original repository with gh; this setting goes into app-update.yml.
+config.publish = [{ provider: 'github', ...updateRepository, channel: UPDATE_CHANNEL }]
 
 // CI's "-c.extraMetadata.version=..." CLI override deep-merges with this block,
 // so the version and the packaged name survive together.
