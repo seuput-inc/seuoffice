@@ -13,13 +13,17 @@ const { values } = parseArgs({
     source: { type: 'string' },
     definition: { type: 'string' },
     run: { type: 'string' },
+    mode: { type: 'string', default: 'release' },
     signing: { type: 'string' },
   },
 })
 const { root, platform, source, definition, run, signing } = values
 const versions = (values.versions || '').split(' ').filter(Boolean)
+const loopback = values.mode === 'loopback'
 if (
   !root ||
+  !['release', 'loopback'].includes(values.mode) ||
+  (loopback && (source !== definition || versions.length !== 2)) ||
   !['win32', 'darwin'].includes(platform) ||
   !/^[a-f0-9]{40}$/.test(source || '') ||
   !/^[a-f0-9]{40}$/.test(definition || '') ||
@@ -44,7 +48,7 @@ for (const version of versions) {
   const channels = []
   const expected = new Set()
   for (const channel of ['latest', 'stable']) {
-    const suffix = channel === 'stable' ? '-stable' : ''
+    const suffix = `${loopback ? '-qa-loopback' : ''}${channel === 'stable' ? '-stable' : ''}`
     const entries =
       platform === 'win32'
         ? [[`SeuOffice-Setup-${version}${suffix}.exe`, 'installer']]
@@ -107,10 +111,11 @@ for (const version of versions) {
   result.push({ version, channels })
 }
 await writeFile(
-  join(root, 'rust-bundle-manifest.json'),
+  join(root, loopback ? 'rust-qa-loopback-manifest.json' : 'rust-bundle-manifest.json'),
   `${JSON.stringify(
     {
-      schema: 'seuoffice-rust-bundle/v1',
+      schema: loopback ? 'seuoffice-rust-qa-loopback/v1' : 'seuoffice-rust-bundle/v1',
+      ...(loopback && { mode: 'loopback', promotable: false, feedBase: 'http://127.0.0.1:8765/' }),
       sourceSha: source,
       definitionSha: definition,
       workflowRunId: run,

@@ -28,6 +28,14 @@ on:
     branches: ['migration-test/**']
   workflow_dispatch:
     inputs:
+      produce_loopback_bundle:
+        description: Build two nonpromotable Tauri versions from this commit, without installing or publishing
+        type: boolean
+        default: false
+      loopback_bridge:
+        description: 'Test only the two QA updates on hosted runners. Pin the loopback Electron run:version:source-sha; the released Electron hop stays BLOCKED.'
+        type: string
+        required: false
       bridge_provenance_only:
         description: Verify Electron bridge provenance only (no installation, migration or release receipt)
         type: boolean
@@ -82,8 +90,32 @@ env:
   GH_REPO: seuput-inc/seuoffice
 
 jobs:
+  check-loopback-bundle-inputs:
+    if: github.event_name == 'workflow_dispatch' && inputs.produce_loopback_bundle
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          OTHER_MODE: ${{ inputs.bridge_provenance_only || inputs.loopback_bridge != '' || inputs.to_tag != '' || inputs.next_tag != '' || inputs.to_run != '' || inputs.next_run != '' || inputs.to_source_sha != '' || inputs.next_source_sha != '' || inputs.faults != '' || inputs.from != 'oldest,previous' }}
+        run: |
+          test "$GITHUB_REPOSITORY" = seuput-inc/seuoffice
+          test "$GITHUB_REF" = refs/heads/integration/tauri-first-candidate
+          test "$OTHER_MODE" = false
+
+  produce-loopback-bundle:
+    needs: check-loopback-bundle-inputs
+    uses: ./.github/workflows/seuoffice-rust-bundle.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    with:
+      source_sha: ${{ github.sha }}
+      version: ${{ inputs.to_version }}
+      next_version: ${{ inputs.next_version }}
+      mode: loopback
+
   bridge-provenance:
-    if: github.event_name == 'workflow_dispatch' && inputs.bridge_provenance_only
+    if: github.event_name == 'workflow_dispatch' && inputs.bridge_provenance_only && inputs.loopback_bridge == '' && !inputs.produce_loopback_bundle
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -135,8 +167,55 @@ jobs:
           path: ${{ runner.temp }}/bridge-provenance/
           if-no-files-found: error
 
+  loopback-suffix:
+    if: github.event_name == 'workflow_dispatch' && inputs.loopback_bridge != '' && !inputs.produce_loopback_bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+        channel: [latest, stable]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      G6_CHANNEL: ${{ matrix.channel }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify separate loopback builds and pin both targets
+        shell: bash
+        env:
+          G6_BRIDGE: ${{ inputs.loopback_bridge }}
+          TO_RUN: ${{ inputs.to_run }}
+          TO_VERSION: ${{ inputs.to_version }}
+          TO_SOURCE_SHA: ${{ inputs.to_source_sha }}
+          NEXT_RUN: ${{ inputs.next_run }}
+          NEXT_VERSION: ${{ inputs.next_version }}
+          NEXT_SOURCE_SHA: ${{ inputs.next_source_sha }}
+          OTHER_MODE: ${{ inputs.bridge_provenance_only || inputs.to_tag != '' || inputs.next_tag != '' || inputs.faults != '' || inputs.from != 'oldest,previous' }}
+        run: |
+          test "$OTHER_MODE" = false
+          node tools/migration-test/g6-run.mjs prepare
+      - name: Install the QA bridge and observe two in-app updates
+        env:
+          GH_TOKEN: ''
+        run: node tools/migration-test/g6-run.mjs execute
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: g6-loopback-suffix-${{ matrix.os }}-${{ matrix.channel }}
+          path: ${{ runner.temp }}/g6-result.json
+          if-no-files-found: error
+
   resolve:
-    if: ${{ !inputs.bridge_provenance_only }}
+    if: ${{ !inputs.bridge_provenance_only && !inputs.loopback_bridge && !inputs.produce_loopback_bundle }}
     runs-on: ubuntu-latest
     outputs:
       faults: ${{ steps.r.outputs.faults }}
@@ -377,8 +456,8 @@ jobs:
           path: ${{ runner.temp }}/migration
           if-no-files-found: ignore
 
-  receipt:
-    if: ${{ !inputs.bridge_provenance_only && inputs.to_run != '' }}
+  baseline-evidence:
+    if: ${{ !inputs.bridge_provenance_only && !inputs.loopback_bridge && !inputs.produce_loopback_bundle && inputs.to_run != '' }}
     needs: [resolve, windows, mac]
     runs-on: ubuntu-latest
     steps:
@@ -386,7 +465,7 @@ jobs:
         with:
           pattern: migration-*
           path: ${{ runner.temp }}/migration-results
-      - name: Bind successful migration results to candidate bytes
+      - name: Bind the modified-install baseline to its inputs (not a release receipt)
         env:
           RESULTS: ${{ runner.temp }}/migration-results
           FROM: ${{ needs.resolve.outputs.from }}
@@ -456,7 +535,7 @@ jobs:
           const nextMac = references.get('darwin:true').receipt
           if (win.definitionSha !== mac.definitionSha || nextWin.definitionSha !== nextMac.definitionSha) fail('candidate workflow definitions differ')
           const result = {
-            schema: 'seuoffice-rust-migration/v2', sourceSha: env.SOURCE_SHA,
+            schema: 'seuoffice-migration-baseline/v1', g6: 'NOT_TESTED', promotable: false, sourceSha: env.SOURCE_SHA,
             definitionSha: env.GITHUB_SHA, workflowRunId: env.GITHUB_RUN_ID,
             candidateRunId: env.CANDIDATE_RUN, version: env.VERSION,
             next: { runId: env.NEXT_RUN, version: env.NEXT_VERSION, sourceSha: env.NEXT_SOURCE_SHA, definitionSha: nextWin.definitionSha,
@@ -464,10 +543,10 @@ jobs:
             origins: expectedOrigins, results,
             platforms: [win, mac].map(({ platform, arch, channels }) => ({ platform, arch, channels })),
           }
-          fs.writeFileSync(path.join(env.RUNNER_TEMP, 'rust-migration-receipt.json'), JSON.stringify(result, null, 2) + '\n')
+          fs.writeFileSync(path.join(env.RUNNER_TEMP, 'migration-baseline.json'), JSON.stringify(result, null, 2) + '\n')
           NODE
       - uses: actions/upload-artifact@v4
         with:
-          name: rust-migration-receipt
-          path: ${{ runner.temp }}/rust-migration-receipt.json
+          name: migration-baseline
+          path: ${{ runner.temp }}/migration-baseline.json
           if-no-files-found: error

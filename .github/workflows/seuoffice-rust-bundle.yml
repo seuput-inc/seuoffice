@@ -3,6 +3,10 @@ name: seuoffice rust bundle
 on:
   workflow_call:
     inputs:
+      mode:
+        description: release or nonpublishing loopback migration QA
+        type: string
+        default: release
       source_sha:
         required: true
         type: string
@@ -19,6 +23,8 @@ permissions:
 
 env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+  BUNDLE_MODE: ${{ inputs.mode }}
+  SOURCE: ${{ inputs.source_sha }}
 
 jobs:
   bundle:
@@ -44,6 +50,16 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Validate build mode before checkout
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BUNDLE_MODE" == release || "$BUNDLE_MODE" == loopback ]]
+          if [[ "$BUNDLE_MODE" == loopback ]]; then
+            [[ "$SOURCE" == "$GITHUB_SHA" && "$GITHUB_REPOSITORY" == seuput-inc/seuoffice ]]
+            [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/seuoffice-migration.yml@$GITHUB_REF" ]]
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == refs/heads/integration/tauri-first-candidate ]]
+          fi
       - name: Reject unsupported configured signing
         env:
           WIN_LINK: ${{ secrets.WIN_CSC_LINK != '' }}
@@ -63,7 +79,7 @@ jobs:
           test "$RUNNER_ARCH" = '${{ matrix.arch }}'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ env.SOURCE }}
       - name: Checkout workflow helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -71,12 +87,12 @@ jobs:
           path: .bundle-definition
       - name: Validate source and versions
         env:
-          SOURCE: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
           NEXT_VERSION: ${{ inputs.next_version }}
         run: |
           set -euo pipefail
-          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]] && [ "$(git rev-parse HEAD)" = "$SOURCE" ]
+          [[ "$BUNDLE_MODE" == release || -n "$NEXT_VERSION" ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE" ]]
           node -e 'const parse=s=>{if(!/^\d+\.\d+\.\d+$/.test(s)) throw Error("invalid version");return s.split(".").map(BigInt)};const [v,n]=process.argv.slice(1),a=parse(v);if(n){const b=parse(n);if(!b.some((x,i)=>x>a[i]&&b.slice(0,i).every((y,j)=>y===a[j]))) throw Error("next_version must be greater")}' "$VERSION" "$NEXT_VERSION"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
@@ -93,12 +109,15 @@ jobs:
           cache-on-failure: true
       - name: Install dependencies
         run: npm ci
+      - name: Check QA feed packaging and candidate selection
+        if: inputs.mode == 'loopback'
+        run: node --test tools/migration-test/candidate-loopback.test.mjs
       - name: Prepare RHWP source
         run: node tools/build-rhwp-core.mjs --source-only
       - name: Build apps
         env:
-          SEUOFFICE_GOOGLE_CLIENT_ID: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID }}
-          SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET }}
+          SEUOFFICE_GOOGLE_CLIENT_ID: ${{ env.BUNDLE_MODE == 'release' && (secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID) || '' }}
+          SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ env.BUNDLE_MODE == 'release' && (secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET) || '' }}
         run: npm run build:all
       - name: Place xlsx sidecar (Windows)
         if: matrix.platform == 'win'
@@ -137,9 +156,13 @@ jobs:
           feed_owner=$(jq -er .owner "$feed_config")
           feed_repo=$(jq -er .repo "$feed_config")
           verify_update_feed() {
-            grep -Fxq "channel: $channel" "$1" &&
-              grep -Fxq "owner: $feed_owner" "$1" &&
-              grep -Fxq "repo: $feed_repo" "$1"
+            local expected
+            if [[ "$BUNDLE_MODE" == loopback ]]; then
+              expected=$(printf 'provider: generic\nurl: http://127.0.0.1:8765/\n')
+            else
+              expected=$(printf 'owner: %s\nrepo: %s\nprovider: github\n' "$feed_owner" "$feed_repo")
+            fi
+            printf '%s\nchannel: %s\nupdaterCacheDirName: seuoffice-updater\n' "$expected" "$channel" | cmp - "$1"
           }
           preflight_first=true
           profile_preflight() {
@@ -183,10 +206,15 @@ jobs:
             mkdir -p "$out"
             for channel in latest stable; do
               export SEUOFFICE_UPDATE_CHANNEL="$channel"
-              node bundle/release-feed.mjs app-update
+              if [[ "$BUNDLE_MODE" == loopback ]]; then
+                node bundle/release-feed.mjs app-update --mode loopback
+              else
+                node bundle/release-feed.mjs app-update
+              fi
               rm -rf target/release/bundle
               suffix=''
-              [ "$channel" != stable ] || suffix='-stable'
+              [[ "$BUNDLE_MODE" != loopback ]] || suffix='-qa-loopback'
+              [[ "$channel" != stable ]] || suffix+='-stable'
               if [ '${{ matrix.platform }}' = win ]; then
                 npx tauri build --config bundle/windows.conf.json --config "{\"version\":\"$v\"}" --bundles nsis --verbose -- --locked
                 bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent target/release/SeuOffice.exe
@@ -248,29 +276,28 @@ jobs:
           done
       - name: Validate and write manifest
         env:
-          SOURCE: ${{ inputs.source_sha }}
           VERSION: ${{ inputs.version }}
           NEXT_VERSION: ${{ inputs.next_version }}
         run: |
           set -euo pipefail
           signing=unsigned
           [ '${{ matrix.platform }}' != mac ] || signing=ad-hoc
-          node .bundle-definition/crates/shell/bundle/bundle-manifest.mjs --root "$RUNNER_TEMP/release" --platform '${{ matrix.node_platform }}' --versions "$VERSION $NEXT_VERSION" --source "$SOURCE" --definition "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --signing "$signing"
+          node .bundle-definition/crates/shell/bundle/bundle-manifest.mjs --mode "$BUNDLE_MODE" --root "$RUNNER_TEMP/release" --platform '${{ matrix.node_platform }}' --versions "$VERSION $NEXT_VERSION" --source "$SOURCE" --definition "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --signing "$signing"
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: |
             ${{ runner.temp }}/release/*/*
-            ${{ runner.temp }}/release/rust-bundle-manifest.json
+            ${{ runner.temp }}/release/*-manifest.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: rust-bundle-${{ matrix.platform }}
+          name: ${{ inputs.mode == 'loopback' && 'rust-qa-loopback' || 'rust-bundle' }}-${{ matrix.platform }}
           path: ${{ runner.temp }}/release
           if-no-files-found: error
       - name: Upload Windows profile preflight receipt
         if: matrix.platform == 'win'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: rust-bundle-win-profile-preflight
+          name: ${{ inputs.mode == 'loopback' && 'rust-qa-loopback' || 'rust-bundle' }}-win-profile-preflight
           path: ${{ runner.temp }}/profile-preflight.json
           if-no-files-found: error

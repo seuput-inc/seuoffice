@@ -39,10 +39,11 @@ const platforms = {
   },
 }
 
-function fixture(t, platform = 'win32') {
+function fixture(t, platform = 'win32', seam = false) {
   const dir = mkdtempSync(join(tmpdir(), 'bridge-artifact-'))
   t.after(() => rmSync(dir, { recursive: true, force: true }))
   const spec = platforms[platform]
+  const name = spec.artifact + (seam ? '-migration-seam' : '')
   const run = {
     id: 42,
     run_attempt: 2,
@@ -57,14 +58,20 @@ function fixture(t, platform = 'win32') {
   }
   const artifact = {
     id: 73,
-    name: spec.artifact,
+    name,
     expired: false,
     expires_at: '2999-01-01T00:00:00Z',
     digest: `sha256:${'b'.repeat(64)}`,
   }
   const listing = { artifacts: [artifact], total_count: 1 }
   const record = {
-    schema: 'seuoffice-electron-bridge-build/v2',
+    schema: seam ? 'seuoffice-electron-bridge-build/v3' : 'seuoffice-electron-bridge-build/v2',
+    ...(seam && {
+      profile: 'migration-seam',
+      promotable: false,
+      provider: 'generic',
+      feedUrl: 'http://127.0.0.1:8765/',
+    }),
     platform,
     version: '1.2.3',
     signing: platform === 'darwin' ? 'ad-hoc' : 'unsigned',
@@ -72,7 +79,10 @@ function fixture(t, platform = 'win32') {
     runAttempt: '2',
     sourceSha: sha,
   }
-  const subject = spec.files.map((name) => {
+  const names = spec.files.map((file) =>
+    seam ? file.replace(/\.(exe|dmg|zip)\b/, '-migration-seam.$1') : file,
+  )
+  const subject = names.map((name) => {
     writeFileSync(join(dir, name), name)
     return { name, digest: { sha256: sha256(name) } }
   })
@@ -95,7 +105,7 @@ function fixture(t, platform = 'win32') {
       if (path === endpoint) return run
       const url = new URL(path, 'https://api.github.com/')
       assert.equal(url.pathname, `/${endpoint}/artifacts`)
-      assert.equal(url.searchParams.get('name'), spec.artifact)
+      if (url.searchParams.get('name') !== name) return { artifacts: [], total_count: 0 }
       return listing
     }
     assert.equal(command, 'attestation')
@@ -126,6 +136,8 @@ for (const [platform, spec] of Object.entries(platforms)) {
   test(`${platform} receipt covers the attested files in both channels, not installation`, async (t) => {
     const { artifact, record, verify } = fixture(t, platform)
     const receipt = await verify()
+    assert.equal(receipt.schema, 'seuoffice-electron-bridge-provenance/v1')
+    assert.equal(Object.hasOwn(receipt, 'profile'), false)
     assert.equal(receipt.invocation, invocation)
     assert.equal(receipt.artifact.id, artifact.id)
     assert.equal(receipt.artifact.reportedArchiveDigest, artifact.digest)
@@ -251,3 +263,39 @@ test('rejects even attested records with the wrong build, run attempt or schema'
     await assert.rejects(verify, /bridge-build\.json/)
   }
 })
+
+for (const platform of Object.keys(platforms)) {
+  test(`${platform} loopback receipts require a separate artifact, record, and marked payloads`, async (t) => {
+    const normal = fixture(t, platform)
+    await assert.rejects(() => normal.verify('loopback'), /migration-seam artifact/)
+    const qa = fixture(t, platform, true)
+    await assert.rejects(qa.verify, /artifact/)
+    const receipt = await qa.verify('loopback')
+    assert.equal(receipt.schema, 'seuoffice-electron-bridge-provenance/v2')
+    assert.equal(receipt.g6, 'not-tested')
+    assert.equal(receipt.profile, 'migration-seam')
+    assert.equal(receipt.provider, 'generic')
+    assert.equal(receipt.promotable, false)
+    assert.equal(receipt.feedUrl, 'http://127.0.0.1:8765/')
+    assert.equal(receipt.artifact.name, `${platforms[platform].artifact}-migration-seam`)
+    for (const file of receipt.files.filter(({ kind }) => kind !== 'feed')) {
+      assert.match(basename(file.path), /-migration-seam\.(dmg|zip|exe)(\.blockmap)?$/)
+    }
+    for (const mismatch of [
+      normal.record,
+      { ...qa.record, profile: 'release' },
+      { ...qa.record, provider: 'github' },
+      { ...qa.record, promotable: true },
+      { ...qa.record, feedUrl: 'http://127.0.0.1:8766/' },
+    ]) {
+      qa.attestRecord(mismatch)
+      await assert.rejects(() => qa.verify('loopback'), /bridge-build\.json/)
+    }
+    qa.attestRecord(qa.record)
+    const payload = qa.subject.find(({ name }) => name.endsWith('.exe') || name.endsWith('.zip'))
+    payload.name = payload.name.replace('-migration-seam.', '.')
+    await assert.rejects(() => qa.verify('loopback'), /attested subject/)
+    normal.attestRecord(qa.record)
+    await assert.rejects(normal.verify, /bridge-build\.json/)
+  })
+}

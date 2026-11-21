@@ -11,7 +11,7 @@ const branch = 'integration/tauri-first-candidate'
 const sourceRef = `refs/heads/${branch}`
 const workflow = '.github/workflows/seuoffice-desktop.yml'
 const usage =
-  'usage: node bridge-artifact.mjs <win32|darwin> <run-id> <x.y.z> <source-sha> <artifact-dir>'
+  'usage: node bridge-artifact.mjs <win32|darwin> <run-id> <x.y.z> <source-sha> <artifact-dir> [loopback]'
 
 function ghJson(...args) {
   return JSON.parse(
@@ -20,10 +20,11 @@ function ghJson(...args) {
 }
 
 export async function verifyBridge(args, gh = ghJson) {
-  const [platform, runId, version, sourceSha, directory] = args
+  const [platform, runId, version, sourceSha, directory, mode] = args
+  const seam = mode === 'loopback'
   const mac = platform === 'darwin'
   if (
-    args.length !== 5 ||
+    args.length !== (seam ? 6 : 5) ||
     !['win32', 'darwin'].includes(platform) ||
     !/^[1-9]\d*$/.test(runId) ||
     !/^\d+\.\d+\.\d+$/.test(version) ||
@@ -54,7 +55,8 @@ export async function verifyBridge(args, gh = ghJson) {
   }
   const invocation = `https://github.com/${repository}/actions/runs/${runId}/attempts/${run.run_attempt}`
 
-  const name = mac ? 'seuoffice-mac-arm64' : 'seuoffice-windows-x64'
+  const buildSuffix = seam ? '-migration-seam' : ''
+  const name = (mac ? 'seuoffice-mac-arm64' : 'seuoffice-windows-x64') + buildSuffix
   const listing = gh(
     'api',
     '--hostname',
@@ -118,8 +120,17 @@ export async function verifyBridge(args, gh = ghJson) {
   const recordDigest = createHash('sha256').update(recordBytes).digest('hex')
   attest(recordName, recordPath, recordDigest)
   const record = JSON.parse(recordBytes.toString('utf8'))
+  const profile = seam
+    ? {
+        profile: 'migration-seam',
+        promotable: false,
+        provider: 'generic',
+        feedUrl: 'http://127.0.0.1:8765/',
+      }
+    : {}
   const expectedRecord = {
-    schema: 'seuoffice-electron-bridge-build/v2',
+    schema: `seuoffice-electron-bridge-build/${seam ? 'v3' : 'v2'}`,
+    ...profile,
     platform,
     version,
     signing: mac ? 'ad-hoc' : 'unsigned',
@@ -133,7 +144,7 @@ export async function verifyBridge(args, gh = ghJson) {
 
   const files = []
   for (const channel of ['latest', 'stable']) {
-    const suffix = channel === 'stable' ? '-stable' : ''
+    const suffix = (channel === 'stable' ? '-stable' : '') + buildSuffix
     const update = mac
       ? `SeuOffice-${version}-arm64-mac${suffix}.zip`
       : `SeuOffice-Setup-${version}${suffix}.exe`
@@ -159,7 +170,8 @@ export async function verifyBridge(args, gh = ghJson) {
     }
   }
   return {
-    schema: 'seuoffice-electron-bridge-provenance/v1',
+    schema: `seuoffice-electron-bridge-provenance/${seam ? 'v2' : 'v1'}`,
+    ...profile,
     g6: 'not-tested',
     platformSigning: 'not-verified',
     buildRecord: {
