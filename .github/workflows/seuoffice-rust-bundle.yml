@@ -140,6 +140,14 @@ jobs:
           NEXT_VERSION: ${{ inputs.next_version }}
         run: |
           set -euo pipefail
+          feed_config=../../.bundle-definition/apps/shell/update-repository.json
+          feed_owner=$(jq -er .owner "$feed_config")
+          feed_repo=$(jq -er .repo "$feed_config")
+          verify_update_feed() {
+            grep -Fxq "channel: $channel" "$1" &&
+              grep -Fxq "owner: $feed_owner" "$1" &&
+              grep -Fxq "repo: $feed_repo" "$1"
+          }
           preflight_first=true
           profile_preflight() {
             PREFLIGHT_FIRST="$preflight_first" PREFLIGHT_RECEIPT="$(cygpath -w "$RUNNER_TEMP/profile-preflight.json")" powershell -NoProfile -NonInteractive -Command '
@@ -197,9 +205,7 @@ jobs:
                 profile_preflight
                 INSTALLER="$(cygpath -w "$installer")" INSTALL_DIR="$(cygpath -w "$install")" powershell -NoProfile -Command '$p = Start-Process -FilePath $env:INSTALLER -ArgumentList @("/S", "/D=$env:INSTALL_DIR") -Wait -PassThru; if ($p.ExitCode -ne 0) { exit $p.ExitCode }'
                 resources="$install/resources"
-                grep -Fxq "channel: $channel" "$resources/app-update.yml"
-                grep -Fxq 'owner: seuput-inc' "$resources/app-update.yml"
-                grep -Fxq 'repo: seuoffice' "$resources/app-update.yml"
+                verify_update_feed "$resources/app-update.yml"
                 bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent "$install/SeuOffice.exe"
                 for file in "$installer" "$install/SeuOffice.exe" "$resources/native/xlsx-sidecar.exe"; do
                   status=$(FILE_TO_VERIFY="$file" powershell -NoProfile -Command '(Get-AuthenticodeSignature -LiteralPath $env:FILE_TO_VERIFY).Status' | tr -d '\r')
@@ -217,9 +223,7 @@ jobs:
                 [ "$(lipo -archs "$app/Contents/MacOS/SeuOffice")" = arm64 ]
                 bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent "$app/Contents/MacOS/SeuOffice"
                 ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$app"
-                grep -Fxq "channel: $channel" "$app/Contents/Resources/app-update.yml"
-                grep -Fxq 'owner: seuput-inc' "$app/Contents/Resources/app-update.yml"
-                grep -Fxq 'repo: seuoffice' "$app/Contents/Resources/app-update.yml"
+                verify_update_feed "$app/Contents/Resources/app-update.yml"
                 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")" = com.seuput.seuoffice
                 test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$v"
                 for host in docs sheets slides pdf markdown html mindmap hwp epub diagram shell; do
@@ -233,12 +237,12 @@ jobs:
                 mkdir -p "$extracted"
                 ditto -x -k "$zip" "$extracted"
                 ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$extracted/SeuOffice.app"
-                grep -Fxq "channel: $channel" "$extracted/SeuOffice.app/Contents/Resources/app-update.yml"
+                verify_update_feed "$extracted/SeuOffice.app/Contents/Resources/app-update.yml"
                 bash ../../.bundle-definition/crates/shell/ci/replay-guard.sh absent "$extracted/SeuOffice.app/Contents/MacOS/SeuOffice"
                 mount="$RUNNER_TEMP/mount-$v-$channel"
                 mkdir -p "$mount"
                 hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg"
-                if ! ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$mount/SeuOffice.app" || ! grep -Fxq "channel: $channel" "$mount/SeuOffice.app/Contents/Resources/app-update.yml"; then
+                if ! ../../.bundle-definition/crates/shell/ci/mac-check-signature.sh "$mount/SeuOffice.app" || ! verify_update_feed "$mount/SeuOffice.app/Contents/Resources/app-update.yml"; then
                   hdiutil detach "$mount"
                   exit 1
                 fi
