@@ -392,6 +392,7 @@ jobs:
         with:
           subject-path: |
             release-files/SeuOffice-Setup-*.exe
+            release-files/*.blockmap
             release-files/latest.yml
             release-files/stable.yml
 
@@ -635,6 +636,7 @@ jobs:
           subject-path: |
             release-files/*.dmg
             release-files/*.zip
+            release-files/*.blockmap
             release-files/*-mac.yml
 
       - name: Upload the release files

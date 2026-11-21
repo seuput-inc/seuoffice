@@ -93,8 +93,9 @@ jobs:
           node-version: 22
           cache: npm
       # no step here runs Electron: --ignore-scripts skips its download
-      - name: Quit policy tests
+      - name: Check bridge provenance rules and quit policy
         run: |
+          node --test tools/migration-test/bridge-artifact.test.mjs
           npm ci --ignore-scripts
           npx vitest run --root tools/migration-test
       - id: t
