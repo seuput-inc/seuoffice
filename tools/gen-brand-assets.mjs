@@ -4,9 +4,10 @@
  *
  *   app-icon.svg        -> app / installer icons (png, ico, icns, Linux size
  *                          set) and the in-app app-icon.png copies
- *   app-icon-small.svg  -> the same mark with a larger spark for slots of 32 px and
- *                          below (optional: without it app-icon.svg is used)
- *   logo-lockup.svg     -> the shell sidebar logo (copied verbatim)
+ *   app-icon-small.svg  -> slots of 32 px and below, including the web favicon
+ *                          (optional: without it app-icon.svg is used)
+ *   logo-lockup.svg     -> the shell sidebar logo (copied verbatim) and the
+ *                          outlined wordmark in .github/social-preview.png
  *
  * To rebrand, replace those SVGs and run:
  *   node tools/gen-brand-assets.mjs
@@ -206,6 +207,21 @@ function write(relativePath, data) {
   console.log(`wrote ${relativePath}`)
 }
 
+async function writeSocialPreview(page, icon) {
+  // Crop the existing outlined wordmark so the preview needs no installed fonts.
+  await page.setViewportSize({ width: 1280, height: 640 })
+  await page.setContent(`
+    <body style="margin:0;background:#fff">
+      <svg width="1280" height="640" viewBox="0 0 1280 640">
+        <image href="${icon}" x="115" y="112" width="416" height="416"/>
+        <svg x="486" y="242" width="632" height="156" viewBox="292 38 684 169">
+          <image href="${svgDataUrl(LOCKUP_SVG)}" width="976" height="240"/>
+        </svg>
+      </svg>
+    </body>`)
+  write('.github/social-preview.png', await page.screenshot())
+}
+
 /** Contact sheet for eyeballing the result; never written into the repo by default. */
 async function writePreview(page, outFile) {
   const icon = (size) =>
@@ -255,6 +271,7 @@ try {
   for (const size of LINUX_SIZES) {
     write(`${LINUX_ICON_DIR}/${size}x${size}.png`, fullBleed.get(size).png)
   }
+  write('apps/web/public/favicon.png', fullBleed.get(32).png)
   const ico = buildIco(WIN_SIZES.map((size) => ({ size, png: fullBleed.get(size).png })))
   for (const target of ICO_TARGETS) write(target, ico)
 
@@ -269,6 +286,7 @@ try {
 
   copyFileSync(LOCKUP_SVG, join(root, LOCKUP_TARGET))
   console.log(`wrote ${LOCKUP_TARGET}`)
+  await writeSocialPreview(page, icon)
 
   if (previewFile) await writePreview(page, resolve(previewFile))
 } finally {
