@@ -142,7 +142,11 @@ function download(fileName: string, bytes: Uint8Array): void {
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
-async function open(file: File, collab: CollabParams | null): Promise<void> {
+async function open(
+  file: File,
+  collab: CollabParams | null,
+  edit = editToggle.checked && collab?.canEdit !== false,
+): Promise<void> {
   current?.destroy()
   rescue = undefined
   observed.mode = null
@@ -192,7 +196,6 @@ async function open(file: File, collab: CollabParams | null): Promise<void> {
     download(saved.fileName, saved.bytes)
     status.textContent = `${saved.fileName} 저장함`
   }
-  const edit = collab ? collab.canEdit && editToggle.checked : editToggle.checked
   if (collab && edit) {
     current = rescue = openDocument(viewer, {
       ...base,
@@ -223,7 +226,7 @@ async function open(file: File, collab: CollabParams | null): Promise<void> {
     const code = error instanceof SeuofficeEmbedError ? error.code : 'open_failed'
     observed.openError = code
     // the page cannot co-edit this file: open it the way it was opened before co-editing
-    if (collab && code === 'collab_unavailable') return open(file, null)
+    if (collab && code === 'collab_unavailable') return open(file, null, edit)
     status.textContent = `오류: ${code}`
   }
 }
