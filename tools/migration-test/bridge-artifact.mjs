@@ -1,16 +1,17 @@
 // Verify files already present in a desktop workflow artifact. No download or extraction.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createReadStream, lstatSync } from 'node:fs'
+import { createReadStream, lstatSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 
 const repository = 'seuput-inc/seuoffice'
 const branch = 'integration/tauri-first-candidate'
 const sourceRef = `refs/heads/${branch}`
 const workflow = '.github/workflows/seuoffice-desktop.yml'
 const usage =
-  'usage: node bridge-artifact.mjs <win32|darwin> <run-id> <x.y.z> <source-sha> <artifact-dir>'
+  'usage: node bridge-artifact.mjs <win32|darwin> <run-id> <x.y.z> <source-sha> <artifact-dir> [<expected-mac-cert-sha1> (required on darwin only)]'
 
 function ghJson(...args) {
   return JSON.parse(
@@ -19,9 +20,11 @@ function ghJson(...args) {
 }
 
 export async function verifyBridge(args, gh = ghJson) {
-  const [platform, runId, version, sourceSha, directory] = args
+  const [platform, runId, version, sourceSha, directory, expectedMacIdentity] = args
+  const mac = platform === 'darwin'
   if (
-    args.length !== 5 ||
+    args.length !== (mac ? 6 : 5) ||
+    (mac && !/^[0-9A-F]{40}$/.test(expectedMacIdentity)) ||
     !['win32', 'darwin'].includes(platform) ||
     !/^[1-9]\d*$/.test(runId) ||
     !/^\d+\.\d+\.\d+$/.test(version) ||
@@ -52,7 +55,6 @@ export async function verifyBridge(args, gh = ghJson) {
   }
   const invocation = `https://github.com/${repository}/actions/runs/${runId}/attempts/${run.run_attempt}`
 
-  const mac = platform === 'darwin'
   const name = mac ? 'seuoffice-mac-arm64' : 'seuoffice-windows-x64'
   const listing = gh(
     'api',
@@ -74,6 +76,62 @@ export async function verifyBridge(args, gh = ghJson) {
     throw new Error(`missing, expired, ambiguous or incomplete ${name} artifact`)
   }
 
+  function regularFile(filename) {
+    const path = resolve(directory, filename)
+    if (!lstatSync(path).isFile()) throw new Error(`expected a regular file: ${path}`)
+    return path
+  }
+
+  function attest(filename, path, sha256) {
+    const results = gh(
+      'attestation',
+      'verify',
+      path,
+      '--hostname',
+      'github.com',
+      '--repo',
+      repository,
+      '--signer-workflow',
+      `${repository}/${workflow}`,
+      '--signer-digest',
+      sourceSha,
+      '--source-digest',
+      sourceSha,
+      '--source-ref',
+      sourceRef,
+      '--format',
+      'json',
+    )
+    // The certificate binds the run attempt. The signed subject binds the bytes to the filename.
+    const attested = results.some(
+      ({ verificationResult: result }) =>
+        result?.signature?.certificate?.runInvocationURI === invocation &&
+        result.statement?.subject?.some(
+          (subject) => subject.name === filename && subject.digest?.sha256 === sha256,
+        ),
+    )
+    if (!attested) throw new Error(`no attested subject for ${filename} in ${invocation}`)
+  }
+
+  const recordName = 'bridge-build.json'
+  const recordPath = regularFile(recordName)
+  const recordBytes = readFileSync(recordPath)
+  const recordDigest = createHash('sha256').update(recordBytes).digest('hex')
+  attest(recordName, recordPath, recordDigest)
+  const record = JSON.parse(recordBytes.toString('utf8'))
+  const expectedRecord = {
+    schema: 'seuoffice-electron-bridge-build/v1',
+    platform,
+    version,
+    signingIdentity: mac ? expectedMacIdentity : null,
+    runId,
+    runAttempt: String(run.run_attempt),
+    sourceSha,
+  }
+  if (!isDeepStrictEqual(record, expectedRecord)) {
+    throw new Error('bridge-build.json differs from the expected build or signing identity')
+  }
+
   const files = []
   for (const channel of ['latest', 'stable']) {
     const suffix = channel === 'stable' ? '-stable' : ''
@@ -88,8 +146,7 @@ export async function verifyBridge(args, gh = ghJson) {
       feed: `${channel}${mac ? '-mac' : ''}.yml`,
     }
     for (const [kind, filename] of Object.entries(expected)) {
-      const path = resolve(directory, filename)
-      if (!lstatSync(path).isFile()) throw new Error(`expected a regular file: ${path}`)
+      const path = regularFile(filename)
       const hash = createHash('sha256')
       let bytes = 0
       for await (const chunk of createReadStream(path)) {
@@ -98,34 +155,7 @@ export async function verifyBridge(args, gh = ghJson) {
       }
       if (!bytes) throw new Error(`empty file: ${path}`)
       const sha256 = hash.digest('hex')
-      const results = gh(
-        'attestation',
-        'verify',
-        path,
-        '--hostname',
-        'github.com',
-        '--repo',
-        repository,
-        '--signer-workflow',
-        `${repository}/${workflow}`,
-        '--signer-digest',
-        sourceSha,
-        '--source-digest',
-        sourceSha,
-        '--source-ref',
-        sourceRef,
-        '--format',
-        'json',
-      )
-      // The certificate binds the run attempt. The signed subject binds the bytes to the filename.
-      const attested = results.some(
-        ({ verificationResult: result }) =>
-          result?.signature?.certificate?.runInvocationURI === invocation &&
-          result.statement?.subject?.some(
-            (subject) => subject.name === filename && subject.digest?.sha256 === sha256,
-          ),
-      )
-      if (!attested) throw new Error(`no attested subject for ${filename} in ${invocation}`)
+      attest(filename, path, sha256)
       files.push({ channel, kind, path, bytes, sha256 })
     }
   }
@@ -133,6 +163,11 @@ export async function verifyBridge(args, gh = ghJson) {
     schema: 'seuoffice-electron-bridge-provenance/v1',
     g6: 'not-tested',
     platformSigning: 'not-verified',
+    buildRecord: {
+      path: recordPath,
+      sha256: recordDigest,
+      signingIdentity: record.signingIdentity,
+    },
     repository,
     workflow,
     sourceRef,
@@ -143,7 +178,7 @@ export async function verifyBridge(args, gh = ghJson) {
     platform,
     arch: mac ? 'arm64' : 'x64',
     version,
-    // This is the API's digest for the outer Actions archive. Only files[] was verified locally.
+    // The archive digest comes from Actions, not from the extracted files.
     artifact: {
       id: artifact.id,
       name,

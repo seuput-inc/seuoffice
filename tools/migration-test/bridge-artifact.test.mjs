@@ -10,6 +10,7 @@ const repository = 'seuput-inc/seuoffice'
 const branch = 'integration/tauri-first-candidate'
 const workflow = '.github/workflows/seuoffice-desktop.yml'
 const sha = 'a'.repeat(40)
+const macIdentity = 'B'.repeat(40)
 const invocation = `https://github.com/${repository}/actions/runs/42/attempts/2`
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const platforms = {
@@ -63,10 +64,27 @@ function fixture(t, platform = 'win32') {
     digest: `sha256:${'b'.repeat(64)}`,
   }
   const listing = { artifacts: [artifact], total_count: 1 }
+  const record = {
+    schema: 'seuoffice-electron-bridge-build/v1',
+    platform,
+    version: '1.2.3',
+    signingIdentity: platform === 'darwin' ? macIdentity : null,
+    runId: '42',
+    runAttempt: '2',
+    sourceSha: sha,
+  }
   const subject = spec.files.map((name) => {
     writeFileSync(join(dir, name), name)
     return { name, digest: { sha256: sha256(name) } }
   })
+  const recordSubject = { name: 'bridge-build.json', digest: {} }
+  subject.push(recordSubject)
+  function attestRecord(value) {
+    const bytes = JSON.stringify(value)
+    writeFileSync(join(dir, 'bridge-build.json'), bytes)
+    recordSubject.digest.sha256 = sha256(bytes)
+  }
+  attestRecord(record)
   const certificate = { runInvocationURI: invocation }
   const verified = [{ verificationResult: { signature: { certificate }, statement: { subject } } }]
   function gh(command, ...args) {
@@ -91,18 +109,33 @@ function fixture(t, platform = 'win32') {
     assert.equal(flag('--format'), 'json')
     return verified
   }
-  const verify = () => verifyBridge([platform, '42', '1.2.3', sha, dir], gh)
-  return { artifact, certificate, dir, listing, run, subject, verify }
+  const args = [platform, '42', '1.2.3', sha, dir]
+  const verifyWith = (...identity) => verifyBridge([...args, ...identity], gh)
+  return {
+    artifact,
+    certificate,
+    dir,
+    listing,
+    run,
+    subject,
+    record,
+    attestRecord,
+    verifyWith,
+    verify: () => (platform === 'darwin' ? verifyWith(macIdentity) : verifyWith()),
+  }
 }
 
 for (const [platform, spec] of Object.entries(platforms)) {
   test(`${platform} receipt covers the attested files in both channels, not installation`, async (t) => {
-    const { artifact, verify } = fixture(t, platform)
+    const { artifact, record, verify } = fixture(t, platform)
     const receipt = await verify()
     assert.equal(receipt.invocation, invocation)
     assert.equal(receipt.artifact.id, artifact.id)
     assert.equal(receipt.artifact.reportedArchiveDigest, artifact.digest)
     assert.equal(receipt.platformSigning, 'not-verified')
+    assert.equal(receipt.buildRecord.signingIdentity, platform === 'darwin' ? macIdentity : null)
+    assert.equal(receipt.buildRecord.sha256, sha256(JSON.stringify(record)))
+    assert.equal(basename(receipt.buildRecord.path), 'bridge-build.json')
     assert.equal(receipt.g6, 'not-tested')
     assert.deepEqual(
       receipt.files.map((file) => basename(file.path)).sort(),
@@ -173,4 +206,48 @@ test('rejects changed update bytes and old builds that never attested the update
   const index = mac.subject.findIndex(({ name }) => name.endsWith('-stable.zip.blockmap'))
   mac.subject.splice(index, 1)
   await assert.rejects(mac.verify, /stable\.zip\.blockmap/)
+})
+
+test('requires an independent public Mac fingerprint and rejects one on Windows', async (t) => {
+  const mac = fixture(t, 'darwin')
+  await assert.rejects(mac.verifyWith, /usage/)
+  await assert.rejects(() => mac.verifyWith(macIdentity.toLowerCase()), /usage/)
+  await assert.rejects(() => mac.verifyWith('D'.repeat(40)), /signing identity/)
+  const win = fixture(t)
+  await assert.rejects(() => win.verifyWith(macIdentity), /usage/)
+  win.attestRecord({ ...win.record, signingIdentity: macIdentity })
+  await assert.rejects(win.verify, /signing identity/)
+})
+
+test('requires the exact attested build record before interpreting its contents', async (t) => {
+  const { dir, verify } = fixture(t)
+  const path = join(dir, 'bridge-build.json')
+  writeFileSync(path, 'not JSON or the attested bytes')
+  await assert.rejects(verify, /no attested subject for bridge-build\.json/)
+  rmSync(path)
+  await assert.rejects(verify, /bridge-build\.json/)
+  const mac = fixture(t, 'darwin')
+  mac.subject.find(({ name }) => name === 'bridge-build.json').name = 'other.json'
+  await assert.rejects(mac.verify, /no attested subject for bridge-build\.json/)
+})
+
+test('rejects even attested records with the wrong build, run attempt or schema', async (t) => {
+  const { record, attestRecord, verify } = fixture(t, 'darwin')
+  for (const change of [
+    { schema: 'other' },
+    { platform: 'win32' },
+    { version: '1.2.4' },
+    { sourceSha: 'f'.repeat(40) },
+    { runId: '41' },
+    { runId: 42 },
+    { runAttempt: '1' },
+    { runAttempt: 2 },
+    { signingIdentity: null },
+    { signingIdentity: undefined },
+    { signingIdentity: 'SeuOffice Self Sign' },
+    { extra: 'not part of v1' },
+  ]) {
+    attestRecord({ ...record, ...change })
+    await assert.rejects(verify, /bridge-build\.json/)
+  }
 })

@@ -8,10 +8,9 @@
  * app updates itself from) and x64 Windows (NSIS). Linux, Intel Mac and
  * Windows on ARM are neither built nor released.
  *
- * Mac signing: with CSC_LINK (a Developer ID Application certificate) the app
- * is signed with the hardened runtime and notarized (APPLE_ID,
- * APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID, the names build/notarize-dmg.js
- * already reads). Without CSC_LINK it stays signed ad hoc, as upstream.
+ * Mac signing: a bridge candidate uses the fixed self-signed identity from
+ * decision 0035, without notarization. Other builds use Developer ID and
+ * notarization with CSC_LINK, or stay signed ad hoc without it.
  *
  * Size: the editor modules' own main bundles stay out of the package (see
  * withoutModuleMains). Chromium's locales all stay (no electronLanguages):
@@ -39,7 +38,26 @@ const mac = {
   ],
 }
 const macSigned = Boolean(process.env.CSC_LINK)
-if (macSigned) {
+const bridgeMac = process.platform === 'darwin' && process.env.SEUOFFICE_BRIDGE_CANDIDATE === 'true'
+if (bridgeMac) {
+  const identity = process.env.SEUOFFICE_MAC_SIGN_IDENTITY
+  if (!identity || !/^[0-9A-F]{40}$/.test(identity)) {
+    throw new Error('Bridge packaging requires the imported SEUOFFICE_MAC_SIGN_IDENTITY SHA-1')
+  }
+  if (macSigned) throw new Error('Bridge packaging cannot use CSC_LINK')
+  // Builder 26 skips mac.sign if discovery finds no valid identity. Its "-"
+  // sentinel reaches the hook even for an untrusted self-signed certificate.
+  mac.identity = '-'
+  mac.timestamp = 'none'
+  mac.sign = (options) =>
+    require('@electron/osx-sign').signAsync({
+      ...options,
+      identity,
+      identityValidation: false,
+      preAutoEntitlements: false,
+      preEmbedProvisioningProfile: false,
+    })
+} else if (macSigned) {
   const missing = ['APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID'].filter(
     (name) => !process.env[name],
   )
@@ -113,6 +131,7 @@ const config = {
   win: { ...base.win, target: [{ target: 'nsis', arch: [RELEASE_ARCH.win32] }] },
   nsis: { ...base.nsis, useZip: true, differentialPackage: false },
   artifactBuildCompleted: writeInstallerBlockmap,
+  afterAllArtifactBuild: bridgeMac ? null : shared.afterAllArtifactBuild,
   beforePack: async (context) => {
     const arch = Arch[context.arch]
     if (RELEASE_ARCH[context.electronPlatformName] !== arch) {
