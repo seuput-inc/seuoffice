@@ -35,6 +35,10 @@ name: seuoffice desktop release
 #
 # A run started by hand without `release` (on any branch) builds and uploads
 # the artifacts only, at the package.json version.
+# A candidate-branch dispatch with bridge_version, migration_seam=true and
+# release=false instead embeds a fixed generic provider. Those installers and
+# Actions artifacts end in -migration-seam. They cannot feed the release job.
+# Verify their attested files with bridge-artifact.mjs and its loopback argument.
 
 on:
   push:
@@ -49,6 +53,10 @@ on:
         description: Build only the Electron bridge for both platforms (candidate branch only)
         type: string
         required: false
+      migration_seam:
+        description: Build a nonpromotable bridge with a fixed loopback feed (requires bridge_version)
+        type: boolean
+        default: false
       candidate_version:
         description: Version to build for migration testing (build-only)
         type: string
@@ -66,6 +74,11 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  BRIDGE_PROFILE: ${{ inputs.migration_seam && 'migration-seam' || 'release' }}
+  QA_SUFFIX: ${{ inputs.migration_seam && '-migration-seam' || '' }}
+  PACKAGING_CONFIG: ${{ inputs.migration_seam && 'electron-builder.migration-seam.cjs' || 'electron-builder.seuoffice.cjs' }}
 
 jobs:
   version:
@@ -86,16 +99,21 @@ jobs:
           NEXT_VERSION: ${{ inputs.next_version }}
           BRIDGE_VERSION: ${{ inputs.bridge_version }}
           RELEASE: ${{ inputs.release }}
+          MIGRATION_SEAM: ${{ inputs.migration_seam }}
         run: |
           set -euo pipefail
           base=$(node -p "require('./apps/shell/package.json').version")
           publish=false
           bridge=false
+          if [[ "$MIGRATION_SEAM" = true && -z "$BRIDGE_VERSION" ]]; then
+            echo "::error::migration_seam requires a build-only bridge_version dispatch"
+            exit 1
+          fi
           if [ -n "$BRIDGE_VERSION" ]; then
             if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REPOSITORY" != seuput-inc/seuoffice ||
                   "$GITHUB_REF" != refs/heads/integration/tauri-first-candidate || "$RELEASE" != false ||
                   -n "$CANDIDATE_VERSION$NEXT_VERSION" || ! "$BRIDGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::bridge requires a nonpublishing candidate branch dispatch with bridge_version only"
+              echo "::error::bridge requires a nonpublishing candidate branch dispatch without candidate_version or next_version"
               exit 1
             fi
             version=$BRIDGE_VERSION
@@ -268,7 +286,7 @@ jobs:
       # only the notices are made here (dist:win would compile it again)
       - name: Package (latest channel)
         working-directory: apps/shell
-        run: npm run notices && npx electron-builder --win --config electron-builder.seuoffice.cjs --publish never
+        run: npm run notices && npx electron-builder --win --config "$PACKAGING_CONFIG" --publish never
         env:
           SEUOFFICE_GOOGLE_CLIENT_ID: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID }}
           SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET }}
@@ -278,7 +296,7 @@ jobs:
       # pass 2, the stable channel: reuses the JS pass 1 built, only repackages
       - name: Package (stable channel)
         working-directory: apps/shell
-        run: npx electron-builder --win --config electron-builder.seuoffice.cjs --publish never
+        run: npx electron-builder --win --config "$PACKAGING_CONFIG" --publish never
         env:
           SEUOFFICE_UPDATE_CHANNEL: stable
           BUILD_DIR: release-stable
@@ -350,14 +368,10 @@ jobs:
             built=$(sed -n 's/^version: *//p' "$dir/$feed" | tr -d "'\"\r")
             [ "$built" = "$version" ] || { echo "$feed says $built, package.json $version"; exit 1; }
             has_line "$dir/$feed" "path: $installer" || { echo "$feed path is not $installer"; exit 1; }
-            local update="$dir/win-unpacked/resources/app-update.yml"
-            test -f "$update" || { echo "missing: $update"; exit 1; }
-            for line in "provider: github" "channel: $channel" "repo: seuoffice-tauri-releases" "owner: seuput-inc"; do
-              has_line "$update" "$line" || { echo "$update lacks '$line'"; exit 1; }
-            done
+            node tools/migration-test/check-bridge-provider.cjs "$dir/win-unpacked/resources" "$channel" "$BRIDGE_PROFILE" "$dir/$feed"
           }
-          check_flavor "$latest" latest latest.yml "SeuOffice-Setup-$version.exe"
-          check_flavor "$stable" stable stable.yml "SeuOffice-Setup-$version-stable.exe"
+          check_flavor "$latest" latest latest.yml "SeuOffice-Setup-$version$QA_SUFFIX.exe"
+          check_flavor "$stable" stable stable.yml "SeuOffice-Setup-$version-stable$QA_SUFFIX.exe"
 
           # every signable file must be signed, or none: a half-signed build fails
           expected=NotSigned
@@ -367,8 +381,8 @@ jobs:
             echo "::warning::No Windows signing certificate: this build is unsigned (SmartScreen warns on install)."
           fi
           for file in \
-            "$latest/SeuOffice-Setup-$version.exe" \
-            "$stable/SeuOffice-Setup-$version-stable.exe" \
+            "$latest/SeuOffice-Setup-$version$QA_SUFFIX.exe" \
+            "$stable/SeuOffice-Setup-$version-stable$QA_SUFFIX.exe" \
             "$unpacked/SeuOffice.exe" \
             "$unpacked/resources/native/xlsx-sidecar.exe"; do
             status=$(powershell -NoProfile -Command "(Get-AuthenticodeSignature -LiteralPath '$file').Status" | tr -d '\r')
@@ -397,18 +411,18 @@ jobs:
           set -euo pipefail
           version=$(node -p "require('./apps/shell/package.json').version")
           mkdir -p release-files
-          cp "apps/shell/release/SeuOffice-Setup-$version.exe" \
-            "apps/shell/release/SeuOffice-Setup-$version.exe.blockmap" \
+          cp "apps/shell/release/SeuOffice-Setup-$version$QA_SUFFIX.exe" \
+            "apps/shell/release/SeuOffice-Setup-$version$QA_SUFFIX.exe.blockmap" \
             "apps/shell/release/latest.yml" \
-            "apps/shell/release-stable/SeuOffice-Setup-$version-stable.exe" \
-            "apps/shell/release-stable/SeuOffice-Setup-$version-stable.exe.blockmap" \
+            "apps/shell/release-stable/SeuOffice-Setup-$version-stable$QA_SUFFIX.exe" \
+            "apps/shell/release-stable/SeuOffice-Setup-$version-stable$QA_SUFFIX.exe.blockmap" \
             "apps/shell/release-stable/stable.yml" \
             release-files/
           ls -la release-files
 
       - name: Record the checked Windows bridge build
         if: needs.version.outputs.bridge == 'true'
-        run: node tools/migration-test/record-bridge-build.mjs
+        run: node tools/migration-test/record-bridge-build.mjs "$BRIDGE_PROFILE"
 
       # where the installers came from: this repository, this commit, this workflow
       - name: Attest the build provenance
@@ -424,7 +438,7 @@ jobs:
       - name: Upload the release files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: seuoffice-windows-x64
+          name: seuoffice-windows-x64${{ env.QA_SUFFIX }}
           path: release-files/
           if-no-files-found: error
           retention-days: 14
@@ -506,7 +520,7 @@ jobs:
         working-directory: apps/shell
         run: |
           npm run notices
-          npx electron-builder --mac --config electron-builder.seuoffice.cjs --publish never
+          npx electron-builder --mac --config "$PACKAGING_CONFIG" --publish never
         env:
           SEUOFFICE_GOOGLE_CLIENT_ID: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID }}
           SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET }}
@@ -514,7 +528,7 @@ jobs:
       # pass 2, the stable channel: reuses the JS pass 1 built, only repackages
       - name: Package (stable channel)
         working-directory: apps/shell
-        run: npx electron-builder --mac --config electron-builder.seuoffice.cjs --publish never
+        run: npx electron-builder --mac --config "$PACKAGING_CONFIG" --publish never
         env:
           SEUOFFICE_UPDATE_CHANNEL: stable
           BUILD_DIR: release-stable
@@ -574,15 +588,12 @@ jobs:
             built=$(sed -n 's/^version: *//p' "$dir/$feed" | tr -d "'\"")
             [ "$built" = "$version" ] || { echo "$feed says $built, package.json $version"; exit 1; }
             grep -qF "url: $zip" "$dir/$feed" || { echo "$feed does not name $zip"; exit 1; }
-            local update="$app/Contents/Resources/app-update.yml"
-            for line in "provider: github" "channel: $channel" "repo: seuoffice-tauri-releases" "owner: seuput-inc"; do
-              grep -Fxq -- "$line" "$update" || { echo "$update lacks '$line'"; exit 1; }
-            done
+            node tools/migration-test/check-bridge-provider.cjs "$app/Contents/Resources" "$channel" "$BRIDGE_PROFILE" "$dir/$feed"
 
             bash tools/migration-test/check-bridge-mac.sh "$app" "$dir/$zip" "$dmg"
           }
-          check_flavor apps/shell/release latest latest-mac.yml ''
-          check_flavor apps/shell/release-stable stable stable-mac.yml -stable
+          check_flavor apps/shell/release latest latest-mac.yml "$QA_SUFFIX"
+          check_flavor apps/shell/release-stable stable stable-mac.yml "-stable$QA_SUFFIX"
 
       # The packaged app itself, run without a window: a Markdown and a CSV file
       # (the latter through the xlsx sidecar) are exported to PDF
@@ -604,13 +615,14 @@ jobs:
           set -euo pipefail
           mkdir -p release-files
           for dir in apps/shell/release apps/shell/release-stable; do
-            cp "$dir"/*.dmg "$dir"/*.zip "$dir"/*.blockmap "$dir"/*-mac.yml release-files/
+            cp "$dir"/*.dmg "$dir"/*.zip "$dir"/*.blockmap release-files/
           done
+          cp apps/shell/release/latest-mac.yml apps/shell/release-stable/stable-mac.yml release-files/
           ls -la release-files
 
       - name: Record the checked Mac bridge build
         if: needs.version.outputs.bridge == 'true'
-        run: node tools/migration-test/record-bridge-build.mjs
+        run: node tools/migration-test/record-bridge-build.mjs "$BRIDGE_PROFILE"
 
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -625,7 +637,7 @@ jobs:
       - name: Upload the release files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: seuoffice-mac-arm64
+          name: seuoffice-mac-arm64${{ env.QA_SUFFIX }}
           path: release-files/
           if-no-files-found: error
           retention-days: 14
@@ -696,7 +708,7 @@ jobs:
   release:
     # the one job that writes: a pre-release carrying both platforms, once CI passed
     needs: [version, windows, mac, web]
-    if: needs.version.outputs.publish == 'true'
+    if: needs.version.outputs.publish == 'true' && needs.version.outputs.bridge != 'true' && !inputs.migration_seam
     runs-on: ubuntu-latest
     # mostly waiting: the packages finish well before the CI workflow does
     timeout-minutes: 120
@@ -810,6 +822,10 @@ jobs:
           gh run download "$GITHUB_RUN_ID" --name seuoffice-windows-x64 --dir dist
           gh run download "$GITHUB_RUN_ID" --name seuoffice-mac-arm64 --dir dist
           gh run download "$GITHUB_RUN_ID" --name seuoffice-web-packages --dir dist
+          if compgen -G 'dist/*-migration-seam.*' >/dev/null || [ -e dist/bridge-build.json ]; then
+            echo "::error::refusing a build-only bridge artifact"
+            exit 1
+          fi
           version=${TAG#v}
           for feed in latest.yml stable.yml latest-mac.yml stable-mac.yml; do
             built=$(sed -n 's/^version: *//p' "dist/$feed" | tr -d "'\"\r")
