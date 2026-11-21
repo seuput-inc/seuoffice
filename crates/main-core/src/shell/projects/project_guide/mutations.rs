@@ -868,14 +868,12 @@ mod tests {
     use super::*;
 
     fn fixture(request: MutationRequest) -> (std::path::PathBuf, String, MutationWrite) {
-        let serial = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let base =
-            std::env::temp_dir().join(format!("project-mutation-{}-{serial}", std::process::id()));
+        let prefix = std::env::temp_dir().join("project-mutation-");
+        let base = std::path::PathBuf::from(
+            crate::node_fs::mkdtemp_random(&prefix.to_string_lossy()).unwrap(),
+        );
         let root = base.join("project");
-        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&root).unwrap();
         let root = root.canonicalize().unwrap().to_string_lossy().into_owned();
         let path = base.join("settings.json").to_string_lossy().into_owned();
         let mut settings = crate::shell::app_settings::normalize_projects_settings(None);
