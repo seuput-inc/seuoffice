@@ -12,6 +12,8 @@ node crates/shell/bundle/release-feed.mjs feed --version <판> <설치 파일>..
 
 러너에서 `seuoffice shell` 작업 흐름을 `bundle=true`로 시작하면 재사용 workflow가 `latest`와 `stable` 설치본, 블록맵, 채널 파일을 지어 `rust-bundle-win`과 `rust-bundle-mac` 아티팩트로 올린다. 각 아티팩트에는 원본 SHA, 실행 정보와 파일 해시를 담은 `rust-bundle-manifest.json`이 있다. `next_version`을 지정하면 같은 실행에서 더 높은 판도 만든다. 넘어가기 시험에는 두 실행 번호와 함께 각 판의 버전과 원본 SHA를 지정한다. 두 판을 한 실행에서 만들었다면 `to_run`과 `next_run`에 같은 실행 번호를 쓴다.
 
+Tauri 설치본은 두 채널 모두 `seuput-inc/seuoffice-tauri-releases`에서 다음 판을 찾는다. 일반 채널은 릴리스 피드의 첫 태그를, 안정 채널은 GitHub에서 Latest로 승격한 태그를 사용한다. 조회가 실패해도 Electron 배포 저장소로 돌아가지 않는다.
+
 ## 파일
 
 | 파일                | 내용                                                                                                                                                                                                                                                 |

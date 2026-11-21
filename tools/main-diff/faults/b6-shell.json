@@ -762,8 +762,8 @@
   {
     "name": "updater: manual download names the latest page",
     "file": "main-core/src/shell/updater.rs",
-    "find": "        Some(version) => github_release_tag_url(version),",
-    "replace": "        Some(_) => GITHUB_LATEST_RELEASE_URL.to_owned(),",
+    "find": "            format!(\"{releases}/tag/v{tag}\")",
+    "replace": "            format!(\"{releases}/latest\")",
     "fn": ["updater.initAutoUpdater"]
   },
   {
@@ -783,8 +783,8 @@
   {
     "name": "updater: the dialog button opens nothing",
     "file": "main-core/src/shell/updater.rs",
-    "find": "            if response == 1.0 {\n                host.open_external(GITHUB_LATEST_RELEASE_URL);",
-    "replace": "            if response == 0.0 {\n                host.open_external(GITHUB_LATEST_RELEASE_URL);",
+    "find": "            if response == 1.0 {\n                host.open_external(&manual_download_url_for(None));",
+    "replace": "            if response == 0.0 {\n                host.open_external(&manual_download_url_for(None));",
     "fn": ["updater.checkForUpdatesNow"]
   },
   {

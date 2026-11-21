@@ -1,11 +1,8 @@
-// The update feed of a Tauri release, as electron-builder wrote it for the
-// Electron build, so one release serves both and the updater
-// (src/host/update/feed.rs) reads it the same way.
+// The Tauri release feed uses the electron-updater format on its own repository.
 //
 //   node crates/shell/bundle/release-feed.mjs app-update
 //     before `tauri build`: bundle/out/app-update.yml, which the bundle
-//     config puts in the resources (the repository of packages/i18n's
-//     PRODUCT_REPO_OWNER and PRODUCT_REPO_NAME, the channel, the cache folder)
+//     config puts in the resources (provider, channel, updater cache folder).
 //
 //   node crates/shell/bundle/release-feed.mjs feed --version 0.13.0 <file>...
 //     after it: each file's `.blockmap` beside it and the channel file
@@ -19,11 +16,12 @@
 // map is app-builder's (buildBlockMap), the one electron-builder.seuoffice.cjs
 // writes for the Electron installer.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import updateRepository from '../../../apps/shell/update-repository.json' with { type: 'json' }
 
 const here = dirname(fileURLToPath(import.meta.url))
 const channel = process.env.SEUOFFICE_UPDATE_CHANNEL || 'latest'
@@ -41,18 +39,11 @@ const { values, positionals } = parseArgs({
 const [command, ...files] = positionals
 
 if (command === 'app-update') {
-  // the repository the app and its update checks point at (packages/i18n)
-  const product = readFileSync(join(here, '../../../packages/i18n/src/product.ts'), 'utf8')
-  const constant = (name) => {
-    const match = new RegExp(`export const ${name} = '([^']+)'`).exec(product)
-    if (!match) throw new Error(`packages/i18n/src/product.ts has no ${name} string`)
-    return match[1]
-  }
   const out = join(here, 'out')
   mkdirSync(out, { recursive: true })
   writeFileSync(
     join(out, 'app-update.yml'),
-    `owner: ${constant('PRODUCT_REPO_OWNER')}\nrepo: ${constant('PRODUCT_REPO_NAME')}\nprovider: github\nchannel: ${channel}\nupdaterCacheDirName: seuoffice-updater\n`,
+    `owner: ${updateRepository.owner}\nrepo: ${updateRepository.repo}\nprovider: github\nchannel: ${channel}\nupdaterCacheDirName: seuoffice-updater\n`,
   )
 } else if (command === 'feed') {
   if (!values.version || files.length === 0) {
