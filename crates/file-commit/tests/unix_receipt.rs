@@ -13,10 +13,7 @@ use std::{
 struct Sandbox(PathBuf);
 impl Sandbox {
     fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nonce = getrandom::u64().unwrap();
         let path = std::env::temp_dir().join(format!("file-commit-{}-{nonce}", std::process::id()));
         fs::create_dir(&path).unwrap();
         Self(fs::canonicalize(path).unwrap())
