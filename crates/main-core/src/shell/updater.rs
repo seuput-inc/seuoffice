@@ -39,9 +39,6 @@ use jscompat::{JsObject, JsonValue, date_parse, number_to_string, to_iso_string}
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::packages::electron_utils::github_menu::{
-    GITHUB_LATEST_RELEASE_URL, github_release_tag_url,
-};
 use crate::packages::electron_utils::message_box::MessageBoxOptions;
 use crate::packages::i18n::{I18n, Lang, create_i18n, html_lang};
 use crate::shell::mac_update::{
@@ -191,9 +188,25 @@ pub fn updater_i18n() -> I18n {
 /// `manualDownloadUrlFor`: where a manual install starts, the repository's own
 /// release pages, never a URL taken from remotely fetched update metadata
 pub fn manual_download_url_for(version: Option<&str>) -> String {
+    #[derive(serde::Deserialize)]
+    struct Repository<'a> {
+        owner: &'a str,
+        repo: &'a str,
+    }
+    static RELEASES: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let repo: Repository<'_> = serde_json::from_str(include_str!(
+            "../../../../apps/shell/update-repository.json"
+        ))
+        .expect("bundled update repository");
+        format!("https://github.com/{}/{}/releases", repo.owner, repo.repo)
+    });
+    let releases = RELEASES.as_str();
     match version {
-        Some(version) => github_release_tag_url(version),
-        None => GITHUB_LATEST_RELEASE_URL.to_owned(),
+        Some(version) => {
+            let tag = jscompat::encode_uri_component(version.strip_prefix('v').unwrap_or(version));
+            format!("{releases}/tag/v{tag}")
+        }
+        None => format!("{releases}/latest"),
     }
 }
 
@@ -756,7 +769,7 @@ impl Updater {
             );
             let response = host.show_message_box(&options);
             if response == 1.0 {
-                host.open_external(GITHUB_LATEST_RELEASE_URL);
+                host.open_external(&manual_download_url_for(None));
             }
             return UpdaterStep::Idle;
         }
@@ -1742,6 +1755,18 @@ fn check_end_fields(result: &Option<CheckResult>) -> [(&'static str, Option<Step
         Some(r) if r.is_update_available => [("found", r.update_version.as_deref().and_then(text))],
         _ => [("found", text("none"))],
     }
+}
+
+#[test]
+fn manual_download_uses_the_update_repository_and_keeps_the_tag_in_one_path_segment() {
+    assert_eq!(
+        manual_download_url_for(None),
+        "https://github.com/seuput-inc/seuoffice-tauri-releases/releases/latest"
+    );
+    assert_eq!(
+        manual_download_url_for(Some("v1.2.3-rc/test#2")),
+        "https://github.com/seuput-inc/seuoffice-tauri-releases/releases/tag/v1.2.3-rc%2Ftest%232"
+    );
 }
 
 #[cfg(test)]
