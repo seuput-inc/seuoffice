@@ -135,8 +135,9 @@ copy was there, and the text quotes the page and the button's state (absent, dis
 by which element, or free).
 
 `waitReady` ends when the page is registered and its network has been quiet for a moment. The HWP
-page loads its editor frame after that, so the HWP specs wait in a `prep-` query until the page
-shows the document (`data-phase="ready"`) before they type and before they read a restored one.
+page loads its editor frame after that. The HWP and HWPX edit specs wait for `data-phase="ready"`,
+successful caret placement, and focus in the editor's textarea before sending the first keystroke.
+The recovery specs also wait for the restored document before reading it.
 
 When a restored page lacks the typed text, the checker also says what the edited page showed
 before the crash, where the scenario read it (`<kind>-before`): a text that was never in the

@@ -9,17 +9,10 @@
       "timeoutMs": 120000
     },
     {
-      "op": "wait",
-      "ms": 1500
-    },
-    {
       "op": "query",
       "as": "prep-caret",
-      "js": "(() => { const w = document.querySelector('.hwp-editor-host iframe')?.contentWindow; const s = w?.rhwpStudio; if (!s) return false; if (!w.__e2eCaretHome) { s.automation.registerCommand({ id: 'ext:e2e-caret-home', label: 'E2E caret home', execute(services) { services.getInputHandler().moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }) } }); w.__e2eCaretHome = true; } s.automation.execute('ext:e2e-caret-home'); w.focus(); w.document.querySelector('textarea')?.focus(); return 'ok' })()"
-    },
-    {
-      "op": "wait",
-      "ms": 500
+      "timeoutMs": 60000,
+      "js": "(() => { if (document.querySelector('.hwp-app')?.dataset.phase !== 'ready') return false; const w = document.querySelector('.hwp-editor-host iframe')?.contentWindow; const a = w?.rhwpStudio?.automation; if (!a) return false; if (!w.__e2eCaretHome) { a.registerCommand({ id: 'ext:e2e-caret-home', label: 'E2E caret home', execute(services, result) { result.moved = services.getInputHandler()?.moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }) } }); w.__e2eCaretHome = true; } const result = {}; w.focus(); return a.execute('ext:e2e-caret-home', result).ok && result.moved === true && w.document.activeElement?.tagName === 'TEXTAREA' })()"
     },
     {
       "op": "query",

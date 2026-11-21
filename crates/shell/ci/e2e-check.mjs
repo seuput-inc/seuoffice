@@ -164,6 +164,9 @@ export const CHECKS = [
   ...exported('slides-edit', 'slides-export.pdf', 'slides export', 'SEU-E2E-slides'),
   screenshot('slides-edit', 'slides-after', 'the window shows the deck'),
 
+  query('hwp-edit', 'prep-caret', 'the opened HWP document accepts caret placement', {
+    equals: true,
+  }),
   query('hwp-edit', 'hwp-before', 'the HWP editor finds the typed text', { path: 'count', min: 1 }),
   query('hwp-edit', 'hwp-after', 'the HWP editor finds the text after reopen', {
     path: 'count',
@@ -173,6 +176,9 @@ export const CHECKS = [
   ...exported('hwp-edit', 'hwp-export.pdf', 'hwp export', 'SEU-E2E-hwp'),
   screenshot('hwp-edit', 'hwp-after', 'the window shows the HWP document'),
 
+  query('hwpx-edit', 'prep-caret', 'the opened HWPX document accepts caret placement', {
+    equals: true,
+  }),
   query('hwpx-edit', 'hwp-before', 'the HWP editor finds the typed text', {
     path: 'count',
     min: 1,

@@ -571,6 +571,47 @@ describe('the fixtures the scenarios open', () => {
     ).toEqual(['C:/w/a.docx', 'C:/f/b.pdf', undefined])
   })
 
+  it.each(['hwp-edit', 'hwpx-edit'])('%s waits for the opened document and its caret', (name) => {
+    const { steps } = JSON.parse(
+      fs.readFileSync(new URL(`../e2e/scenarios/${name}.json`, import.meta.url), 'utf8'),
+    )
+    const prep = new Function('document', `return ${steps.find((s) => s.as === 'prep-caret').js}`)
+    let handler = null
+    let command
+    const input = { tagName: 'TEXTAREA', focus: () => (frame.document.activeElement = input) }
+    const frame = {
+      focus() {},
+      document: { activeElement: null, querySelector: () => input },
+      rhwpStudio: {
+        automation: {
+          registerCommand: (def) => (command = def),
+          execute(_id, params) {
+            try {
+              command.execute({ getInputHandler: () => handler }, params)
+              return { ok: true }
+            } catch {
+              return { ok: false }
+            }
+          },
+        },
+      },
+    }
+    const host = { dataset: { phase: 'loading' } }
+    const document = {
+      querySelector: (selector) => (selector === '.hwp-app' ? host : { contentWindow: frame }),
+    }
+    expect(prep(document)).toBe(false)
+    host.dataset.phase = 'ready'
+    expect(prep(document)).toBe(false)
+    handler = { moveCursorTo: () => false }
+    expect(prep(document)).toBe(false)
+    handler.moveCursorTo = () => {
+      input.focus()
+      return true
+    }
+    expect(prep(document)).toBe(true)
+  })
+
   it('names, in every scenario file, only checks the checker knows', () => {
     const dir = path.resolve(import.meta.dirname, '../e2e/scenarios')
     const names = fs.readdirSync(dir).map((file) => file.replace(/\.json$/, ''))
