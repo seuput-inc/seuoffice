@@ -473,8 +473,7 @@ jobs:
           key: electron-mac-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
           restore-keys: electron-mac-${{ runner.arch }}-
 
-      - name: Require a hosted runner without Developer ID credentials for an isolated bridge
-        if: needs.version.outputs.bridge == 'true'
+      - name: Require a hosted runner without Developer ID credentials
         env:
           HAS_CREDENTIALS: ${{ secrets.CSC_LINK != '' || secrets.CSC_KEY_PASSWORD != '' || secrets.APPLE_ID != '' || secrets.APPLE_APP_SPECIFIC_PASSWORD != '' || secrets.APPLE_TEAM_ID != '' }}
         run: |
