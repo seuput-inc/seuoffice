@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -67,7 +68,14 @@ describe.runIf(mac)(
     const m = createSystemFontMetrics()
 
     it('Japanese font requests resolve to matching system faces', () => {
-      const yuSans = office ? /^(Yu Gothic|游ゴシック)/ : /^Hiragino Sans$/
+      // Yu Gothic can be registered by macOS or supplied privately by an Office app.
+      const families = execFileSync('/usr/bin/atsutil', ['fonts', '-list'], { encoding: 'utf8' })
+      const hasYuGothic =
+        /^\s*(Yu ?Gothic|游ゴシック体?)\s*$/im.test(families) ||
+        ['PowerPoint', 'Word', 'Excel'].some((app) =>
+          existsSync(`/Applications/Microsoft ${app}.app/Contents/Resources/DFonts/YuGothM.ttc`),
+        )
+      const yuSans = hasYuGothic ? /^(Yu ?Gothic|游ゴシック)/ : /^Hiragino Sans$/
       expect(m.displayFamily!(style('游ゴシック'))).toMatch(yuSans)
       expect(m.displayFamily!(style('Yu Gothic'))).toMatch(yuSans)
       expect(m.displayFamily!(style('メイリオ'))).toMatch(

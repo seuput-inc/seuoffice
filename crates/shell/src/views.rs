@@ -324,6 +324,9 @@ struct BoundNativeOrigin {
     renderer: RendererGeneration,
     lost: Arc<AtomicBool>,
     _loss_subscription: DocumentRevocation,
+    /// The Docs media permit this page document's first call was captured with: the page had
+    /// loaded no document of its own yet. Calls it carries were made by the page's opening.
+    docs_boot: Arc<std::sync::OnceLock<MediaPermit>>,
 }
 
 #[derive(Clone)]
@@ -1685,6 +1688,7 @@ impl ViewTable {
                             renderer: record.renderer.clone(),
                             lost,
                             _loss_subscription: subscription,
+                            docs_boot: Arc::default(),
                         });
                         (true, retired)
                     },
@@ -1817,7 +1821,7 @@ impl ViewTable {
         view: ViewId,
         expected: &RendererGeneration,
     ) -> Option<CapturedNativeOwner> {
-        let captured = {
+        let (captured, docs_boot) = {
             let inner = self.inner.lock().ok()?;
             let record = inner.views.get(&view)?;
             let bound = record.native_origin.as_ref()?;
@@ -1848,7 +1852,7 @@ impl ViewTable {
             } else {
                 None
             };
-            CapturedNativeOwner {
+            let captured = CapturedNativeOwner {
                 origin: bound.context.clone(),
                 renderer: bound.renderer.clone(),
                 surface: record.sender.surface,
@@ -1860,7 +1864,8 @@ impl ViewTable {
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .clone(),
-            }
+            };
+            (captured, bound.docs_boot.clone())
         };
         if !captured.origin.is_registered()
             || !captured.renderer.is_active()
@@ -1881,7 +1886,25 @@ impl ViewTable {
         {
             return None;
         }
+        if let Some(permit) = captured.docs.as_ref().and_then(MediaViewLease::current) {
+            docs_boot.get_or_init(|| permit);
+        }
         Some(captured)
+    }
+
+    /// The Docs media permit `origin`, the page document bound to `view`, started with (see
+    /// `BoundNativeOrigin::docs_boot`). `None` before its first call, or for another document.
+    pub(crate) fn docs_boot_permit(
+        &self,
+        view: ViewId,
+        origin: &DocumentContext,
+    ) -> Option<MediaPermit> {
+        let inner = self.inner.lock().ok()?;
+        let bound = inner.views.get(&view)?.native_origin.as_ref()?;
+        if bound.context != *origin {
+            return None;
+        }
+        bound.docs_boot.get().cloned()
     }
 
     /// Why [`Self::capture_native_owner`] found nothing, in words, for the trace

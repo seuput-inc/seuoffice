@@ -362,6 +362,7 @@ describe('a running server', () => {
   it('gives the server the minimal system variables and its registered ones, nothing of the app', async () => {
     const connection = await connect(
       localServer({ env: { MY_TOKEN: 'tok-value', SEUOFFICE_INJECTED: 'x' } }),
+      { baseEnv: { ...BASE_ENV, __CF_USER_TEXT_ENCODING: 'parent-only' } },
     )
     const env = JSON.parse(textOf(await connection.callTool('env', {}))) as Record<string, string>
     expect(env.MY_TOKEN).toBe('tok-value')
@@ -375,15 +376,21 @@ describe('a running server', () => {
     ]) {
       expect(names).not.toContain(secret)
     }
-    const allowed = new Set(
-      [...MCP_LOCAL_SYSTEM_ENV, ...MCP_LOCAL_WINDOWS_ENV, 'MY_TOKEN'].map((n) =>
-        process.platform === 'win32' ? n.toUpperCase() : n,
-      ),
-    )
-    const unexpected = names.filter(
-      (name) => !allowed.has(process.platform === 'win32' ? name.toUpperCase() : name),
-    )
-    expect(unexpected).toEqual([])
+    const win = process.platform === 'win32'
+    const normalize = (name: string): string => (win ? name.toUpperCase() : name)
+    const windowsEnv = win ? MCP_LOCAL_WINDOWS_ENV : []
+    const allowed = new Set([...MCP_LOCAL_SYSTEM_ENV, ...windowsEnv, 'MY_TOKEN'].map(normalize))
+    const sent = Object.keys(connection.spawns[0]!.options.env!)
+    expect(sent.filter((name) => !allowed.has(normalize(name)))).toEqual([])
+
+    // macOS Node can create this variable even when spawned with an empty environment.
+    expect(env.__CF_USER_TEXT_ENCODING).not.toBe('parent-only')
+    const unexpected = names.filter((name) => !allowed.has(normalize(name)))
+    if (process.platform === 'darwin') {
+      expect(unexpected.filter((name) => name !== '__CF_USER_TEXT_ENCODING')).toEqual([])
+    } else {
+      expect(unexpected).toEqual([])
+    }
     expect(env.PATH ?? env.Path).toContain(dirname(process.execPath))
   })
 

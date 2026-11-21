@@ -272,42 +272,29 @@ mod tests {
             .unwrap();
             (target, issuer)
         };
-        let opens: [(Surface, &str, Box<dyn Fn(ViewId)>); 5] = [
-            (
-                Surface::Markdown,
-                "saved.md",
-                Box::new(move |view: ViewId| markdown.track_view(view, None)),
-            ),
-            (
-                Surface::Html,
-                "saved.html",
-                Box::new(move |view: ViewId| html.track_view(view, None)),
-            ),
-            (
-                Surface::Pdf,
-                "saved.pdf",
-                Box::new(move |view: ViewId| pdf.open_view(view, None)),
-            ),
-            (
-                Surface::Epub,
-                "saved.epub",
-                Box::new(move |view: ViewId| epub.open_view(view, None)),
-            ),
-            (
-                Surface::Hwp,
-                "saved.hwp",
-                Box::new(move |view: ViewId| {
-                    hwp.grant_and_track(view, None, crate::hwp::UntitledOption::No)
-                }),
-            ),
+        type OpenCase<'a> = (Surface, &'static str, &'a dyn Fn(ViewId));
+        let opens: [OpenCase<'_>; 5] = [
+            (Surface::Markdown, "saved.md", &|view| {
+                markdown.track_view(view, None)
+            }),
+            (Surface::Html, "saved.html", &|view| {
+                html.track_view(view, None)
+            }),
+            (Surface::Pdf, "saved.pdf", &|view| pdf.open_view(view, None)),
+            (Surface::Epub, "saved.epub", &|view| {
+                epub.open_view(view, None)
+            }),
+            (Surface::Hwp, "saved.hwp", &|view| {
+                hwp.grant_and_track(view, None, crate::hwp::UntitledOption::No)
+            }),
         ];
-        for (id, (surface, name, open)) in (10..).zip(opens.iter()) {
-            let view = rt.view(id, *surface).view;
-            let (target, _issuer) = saved_target(view, *surface, *name);
+        for (id, (surface, name, open)) in (10..).zip(opens) {
+            let view = rt.view(id, surface).view;
+            let (target, _issuer) = saved_target(view, surface, name);
             let editor = provided
                 .all::<dyn DocumentEditors>()
                 .into_iter()
-                .find(|editor| editor.saved_surface() == *surface)
+                .find(|editor| editor.saved_surface() == surface)
                 .unwrap();
             assert!(
                 editor.prepare_saved_document(target.clone()).is_err(),

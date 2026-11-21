@@ -502,6 +502,15 @@ export function toUniverFreeze(freeze: { frozenRows: number; frozenColumns: numb
   }
 }
 
+export function startOpeningViewport(
+  file: Pick<WorkbookFile, 'savedLoadId'>,
+  start: () => void,
+): void {
+  // The shell shows a saved copy only after its first range loads. Its hidden view may never paint.
+  if (file.savedLoadId !== undefined) start()
+  else requestAnimationFrame(start)
+}
+
 export function loadWorkbookSkeleton(runtime: UniverRuntime | null, file: WorkbookFile): void {
   if (!runtime) return
   const activeWorkbook = runtime.univerAPI.getActiveWorkbook()

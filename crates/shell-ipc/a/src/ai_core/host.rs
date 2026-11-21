@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use jscompat::JsonValue;
 use main_core::packages::ai_search::search_tools::{SearchAnswer, SearchOptions};
@@ -66,10 +66,12 @@ pub type AiCoreHostHandle = Arc<dyn AiCoreHost>;
 #[derive(Default)]
 pub struct PendingAiDocs {
     contents: Arc<Mutex<HashMap<i64, PendingAiDoc>>>,
+    #[cfg(any(test, feature = "probe"))]
     synthetic: bool,
 }
 
 enum PendingAiDoc {
+    #[cfg(any(test, feature = "probe"))]
     Synthetic(serde_json::Value),
     Accepted(Box<AcceptedAiDoc>),
 }
@@ -340,7 +342,7 @@ impl PendingAiDocs {
         );
         self.contents
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(wc_id, PendingAiDoc::Synthetic(content.clone()));
     }
 
@@ -419,6 +421,7 @@ impl PendingAiDocs {
         cancel: &CancelToken,
         effects: Option<&shell_contract::hosts::OwnedEffectsHost>,
     ) -> Result<Option<serde_json::Value>, String> {
+        #[cfg(any(test, feature = "probe"))]
         if self.synthetic {
             return Ok(self
                 .contents
