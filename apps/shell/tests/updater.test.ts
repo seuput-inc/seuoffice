@@ -14,12 +14,7 @@ import { HttpError } from 'builder-util-runtime'
 // deep import on purpose: 'electron-updater' itself is mocked below, the
 // provider that talks to GitHub is the dependency's real code
 import { GitHubProvider } from 'electron-updater/out/providers/GitHubProvider'
-import {
-  GITHUB_LATEST_RELEASE_URL,
-  GITHUB_REPO_NAME,
-  GITHUB_REPO_OWNER,
-  githubReleaseTagUrl,
-} from '@seuoffice/electron-utils'
+import updateRepository from '../update-repository.json'
 import type { UpdateUiState } from '../src/shared/update-api'
 
 /**
@@ -27,8 +22,7 @@ import type { UpdateUiState } from '../src/shared/update-api'
  * driven by the strong-guidance update window — the renderer's Download /
  * Install / Later actions come back through update-window.ts callbacks.
  *
- * The feed is the GitHub Releases of the product repository. Where a test is
- * about what that feed answers, the mocked `checkForUpdates` runs
+ * Where a test is about what the release feed answers, the mocked `checkForUpdates` runs
  * electron-updater's real GitHubProvider over canned github.com responses, so
  * the errors and the release it picks are the dependency's own.
  */
@@ -241,23 +235,10 @@ function lastShownActions(): UpdateActions {
 
 /** the version the mocked app reports (see the electron mock above) */
 const CURRENT_VERSION = '0.1.0'
-const RELEASES_PATH = `/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases`
-
-/**
- * What github.com answered for the product repository before its first
- * release (recorded 2026-10-13): HTTP 200 and an Atom feed without a single
- * entry. `GET <releases>/latest` answered 302 to the release list at the same
- * time, and `<releases>/latest/download/latest.yml` answered 404.
- */
-const EMPTY_RELEASES_ATOM = `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xml:lang="en-US">
-  <id>tag:github.com,2008:https://github.com/pblsketch/ieumoffice/releases</id>
-  <link type="text/html" rel="alternate" href="https://github.com/pblsketch/ieumoffice/releases"/>
-  <link type="application/atom+xml" rel="self" href="https://github.com/pblsketch/ieumoffice/releases.atom"/>
-  <title>Release notes from seuoffice</title>
-  <updated>2026-10-13T06:34:27Z</updated>
-</feed>
-`
+const DEPLOYED_REPOSITORY = Object.freeze({ owner: 'seuput-inc', repo: 'seuoffice' })
+const PRODUCT_PATH = '/seuput-inc/seuoffice/releases'
+const RELEASES_PATH = '/seuput-inc/seuoffice-tauri-releases/releases'
+const RELEASES_URL = `https://github.com${RELEASES_PATH}`
 
 /** A stand-in for the repository's release list as github.com serves it. */
 interface FakeGitHub {
@@ -276,26 +257,44 @@ interface FakeGitHub {
 
 const NO_RELEASE: FakeGitHub = { tags: [], latest: null, assets: {} }
 
+function macAssets(version: string): Record<string, string> {
+  return {
+    'latest-mac.yml': version,
+    'stable-mac.yml': version,
+    [`SeuOffice-${version}-arm64-mac.zip`]: 'general zip',
+    [`SeuOffice-${version}-arm64-mac-stable.zip`]: 'stable zip',
+  }
+}
+
+const BRIDGE_RELEASE: FakeGitHub = {
+  tags: ['v0.2.0'],
+  latest: 'v0.2.0',
+  assets: { 'v0.2.0': macAssets('0.2.0') },
+}
+
 function escapeXml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-function releasesAtom(tags: string[], notes: Record<string, string> = {}): string {
+function releasesAtom(base: string, tags: string[], notes: Record<string, string> = {}): string {
   const entries = tags.map(
     (tag) => `  <entry>
     <id>tag:github.com,2008:Repository/1/${tag}</id>
     <updated>2026-10-13T00:00:00Z</updated>
-    <link rel="alternate" type="text/html" href="https://github.com${RELEASES_PATH}/tag/${tag}"/>
+    <link rel="alternate" type="text/html" href="https://github.com${base}/tag/${tag}"/>
     <title>${tag}</title>
     <content type="html">${escapeXml(notes[tag] ?? 'notes')}</content>
   </entry>
 `,
   )
-  return EMPTY_RELEASES_ATOM.replace('</feed>', `${entries.join('')}</feed>`)
+  return `<feed xmlns="http://www.w3.org/2005/Atom">${entries.join('')}</feed>`
 }
 
-function feedFile(version: string): string {
-  const installer = `IeumOffice-Setup-${version}.exe`
+function feedFile(version: string, name: string): string {
+  const suffix = name.startsWith('stable') ? '-stable' : ''
+  const installer = name.endsWith('-mac.yml')
+    ? `SeuOffice-${version}-arm64-mac${suffix}.zip`
+    : `SeuOffice-Setup-${version}${suffix}.exe`
   return [
     `version: ${version}`,
     'files:',
@@ -314,55 +313,80 @@ const isNewer = (a: string, b: string): boolean =>
 
 /**
  * Routes the mocked `checkForUpdates` through electron-updater's real GitHub
- * provider, answering its requests from `github`. The provider reads the
+ * provider, answering requests from the two in-memory repositories. The provider reads the
  * channel and pre-release switch the code under test set on the updater, and —
  * like AppUpdater.checkForUpdates — a failure is both emitted as 'error' and
  * rejected, a newer version is announced through 'update-available'.
  * Returns the request paths in the order they were made.
  */
-function checkAgainstGitHub(github: FakeGitHub): string[] {
+function checkAgainstGitHub(
+  candidate: FakeGitHub,
+  repository = updateRepository,
+  channel: 'latest' | 'stable' = 'stable',
+): string[] {
   const requested: string[] = []
-  const answer = (path: string): string => {
+  const routes = [
+    [RELEASES_PATH, candidate],
+    [PRODUCT_PATH, BRIDGE_RELEASE],
+  ] as const
+  const answer = (host: string, path: string): string => {
+    if (host !== 'github.com') throw new Error(`Unexpected update host: ${host}`)
     requested.push(path)
-    if (path === `${RELEASES_PATH}.atom`) {
+    const route = routes.find(([base]) => path === `${base}.atom` || path.startsWith(`${base}/`))
+    if (!route) throw new HttpError(404)
+    const [base, github] = route
+    if (path === `${base}.atom`) {
       if (github.listAnswers === 'not-found') throw new HttpError(404)
       if (github.listAnswers === 'server-error') throw new HttpError(500)
       if (github.listAnswers === 'not-a-feed') return '<!DOCTYPE html><html><body>Sign in</body>'
-      return releasesAtom(github.tags, github.notes)
+      return releasesAtom(base, github.tags, github.notes)
     }
-    if (path === `${RELEASES_PATH}/latest`) {
+    if (path === `${base}/latest`) {
       // electron-updater asks for JSON; without a full release GitHub
       // redirects to the HTML release list instead, which the executor follows
       return github.latest === null
         ? '<!DOCTYPE html><html><body>Releases</body></html>'
         : JSON.stringify({ tag_name: github.latest })
     }
-    const download = /\/download\/([^/]+)\/([^/]+)$/.exec(path)
-    const version = download ? github.assets[download[1]]?.[download[2]] : undefined
-    if (version === undefined) throw new HttpError(404)
-    return feedFile(version)
+    const download = /^\/download\/([^/]+)\/([^/]+)$/.exec(path.slice(base.length))
+    if (!download) throw new HttpError(404)
+    const [, tag, name] = download
+    const asset = github.assets[tag]?.[name]
+    if (asset === undefined) throw new HttpError(404)
+    return name.endsWith('.zip') ? asset : feedFile(asset, name)
   }
   checkForUpdates.mockImplementation((async () => {
     const provider = new GitHubProvider(
-      { provider: 'github', owner: GITHUB_REPO_OWNER, repo: GITHUB_REPO_NAME },
+      { provider: 'github', ...repository, channel },
       {
         channel: updaterState.channel,
         allowPrerelease: updaterState.allowPrerelease ?? false,
         // the real AppUpdater hands a semver instance here; full-changelog
         // notes read `.raw`
-        currentVersion: { raw: CURRENT_VERSION },
+        currentVersion: { raw: appState.version },
         fullChangelog: updaterState.fullChangelog,
       } as never,
       {
         isUseMultipleRangeRequest: false,
-        platform: 'win32',
-        executor: { request: async (options: { path: string }) => answer(options.path) },
+        platform: process.platform,
+        executor: {
+          request: async (options: { hostname: string; path: string }) =>
+            answer(options.hostname, options.path),
+        },
       } as never,
     )
     try {
       const updateInfo = await provider.getLatestVersion()
-      const isUpdateAvailable = isNewer(updateInfo.version, CURRENT_VERSION)
-      if (isUpdateAvailable) updaterState.listeners.get('update-available')?.(updateInfo)
+      const isUpdateAvailable = isNewer(updateInfo.version, appState.version)
+      if (isUpdateAvailable) {
+        if (process.platform === 'darwin') {
+          downloadUpdate.mockImplementation(async () => {
+            const [{ url }] = provider.resolveFiles(updateInfo)
+            return answer(url.hostname, url.pathname)
+          })
+        }
+        updaterState.listeners.get('update-available')?.(updateInfo)
+      }
       return { isUpdateAvailable, updateInfo }
     } catch (err) {
       updaterState.listeners.get('error')?.(err)
@@ -999,7 +1023,7 @@ describe('an installer that did not update the app', () => {
     updaterState.listeners.get('update-available')!({ version: '0.2.0' })
     expect(lastShownState().phase).toBe('manual')
     lastShownActions().onOpenDownload()
-    expect(openExternal).toHaveBeenCalledWith(githubReleaseTagUrl('0.2.0'))
+    expect(openExternal).toHaveBeenCalledWith(`${RELEASES_URL}/tag/v0.2.0`)
   })
 
   it('forgets an attempt that did update the app', async () => {
@@ -1095,14 +1119,11 @@ describe('manual download fallback', () => {
 
   // the offered version may be a release not yet promoted (latest channel),
   // which GitHub's "Latest" page would not show
-  it("opens the offered version's release page of the product's repository", async () => {
-    const actions = await failTwiceIntoManual({ version: '0.2.0' })
+  it("opens the offered version's page on the dedicated release repository", async () => {
+    const actions = await failTwiceIntoManual({ version: 'v0.2.0+build.7' })
     actions.onOpenDownload()
     expect(openExternal).toHaveBeenCalledTimes(1)
-    expect(openExternal).toHaveBeenCalledWith(githubReleaseTagUrl('0.2.0'))
-    expect(githubReleaseTagUrl('0.2.0')).toBe(
-      'https://github.com/seuput-inc/seuoffice/releases/tag/v0.2.0',
-    )
+    expect(openExternal).toHaveBeenCalledWith(`${RELEASES_URL}/tag/v0.2.0%2Bbuild.7`)
   })
 
   it('never follows a download URL supplied by the update metadata', async () => {
@@ -1114,7 +1135,7 @@ describe('manual download fallback', () => {
       ],
     })
     actions.onOpenDownload()
-    expect(openExternal).toHaveBeenCalledWith(githubReleaseTagUrl('0.2.0'))
+    expect(openExternal).toHaveBeenCalledWith(`${RELEASES_URL}/tag/v0.2.0`)
   })
 })
 
@@ -1278,8 +1299,8 @@ describe('macOS: the app installs its own update (decision 0097)', () => {
     expect(downloadUpdate).not.toHaveBeenCalled()
     expect(pushUpdateState).not.toHaveBeenCalledWith({ phase: 'downloading', percent: 0 })
     expect(openExternal).toHaveBeenCalledTimes(2)
-    expect(openExternal).toHaveBeenNthCalledWith(1, githubReleaseTagUrl('0.3.0-beta.1'))
-    expect(openExternal).toHaveBeenNthCalledWith(2, githubReleaseTagUrl('0.3.0-beta.1'))
+    expect(openExternal).toHaveBeenNthCalledWith(1, `${RELEASES_URL}/tag/v0.3.0-beta.1`)
+    expect(openExternal).toHaveBeenNthCalledWith(2, `${RELEASES_URL}/tag/v0.3.0-beta.1`)
     quitCompletes()
     expect(macInstall.swap).not.toHaveBeenCalled()
   })
@@ -1315,8 +1336,9 @@ describe('GitHub Releases feed', () => {
   async function firstCheck(
     github: FakeGitHub,
     channel: 'stable' | 'latest' = 'stable',
+    repository = updateRepository,
   ): Promise<string[]> {
-    const requested = checkAgainstGitHub(github)
+    const requested = checkAgainstGitHub(github, repository, channel)
     const { initAutoUpdater } = await loadUpdater()
     initAutoUpdater(() => null, undefined, channel)
     vi.advanceTimersByTime(FIRST_CHECK_DELAY_MS)
@@ -1376,6 +1398,65 @@ describe('GitHub Releases feed', () => {
     await firstCheck({ tags: ['v0.2.0'], latest: null, assets: { 'v0.2.0': feeds('0.2.0') } })
     expect(showUpdateWindow).not.toHaveBeenCalled()
     expect(showMessageBox).not.toHaveBeenCalled()
+  })
+
+  describe('the Mac transition', () => {
+    const channels = ['latest', 'stable'] as const
+    const candidate: FakeGitHub = {
+      tags: ['v0.3.0'],
+      latest: null,
+      assets: { 'v0.3.0': macAssets('0.3.0') },
+    }
+
+    beforeEach(() => {
+      platformSpy?.restore()
+      setPlatform('darwin')
+    })
+
+    async function expectDownload(
+      requests: string[],
+      base: string,
+      version: string,
+      channel: (typeof channels)[number],
+    ): Promise<void> {
+      expect(lastShownState().version).toBe(version)
+      lastShownActions().onDownload()
+      const dir = `${base}/download/v${version}`
+      const suffix = channel === 'stable' ? '-stable' : ''
+      expect(requests).toContain(`${dir}/${channel}-mac.yml`)
+      expect(requests.at(-1)).toBe(`${dir}/SeuOffice-${version}-arm64-mac${suffix}.zip`)
+      expect(requests.every((path) => path.startsWith(base))).toBe(true)
+      await expect(downloadUpdate.mock.results[0].value).resolves.toBe(
+        channel === 'stable' ? 'stable zip' : 'general zip',
+      )
+    }
+
+    it.each(channels)('offers deployed %s users only the bridge', async (channel) => {
+      const promoted = { ...candidate, latest: 'v0.3.0' }
+      const requests = await firstCheck(promoted, channel, DEPLOYED_REPOSITORY)
+      await expectDownload(requests, PRODUCT_PATH, '0.2.0', channel)
+    })
+
+    it.each(channels)('downloads the candidate zip for a %s bridge', async (channel) => {
+      appState.version = '0.2.0'
+      const releases = { ...candidate }
+      const requests = await firstCheck(releases, channel)
+      if (channel === 'stable') {
+        expect(showUpdateWindow).not.toHaveBeenCalled()
+        releases.latest = 'v0.3.0'
+        vi.advanceTimersByTime(RECHECK_INTERVAL_MS)
+        await flushAsync()
+      }
+      await expectDownload(requests, RELEASES_PATH, '0.3.0', channel)
+    })
+
+    it.each(channels)('does not fall back when the %s candidate feed is empty', async (channel) => {
+      appState.version = '0.2.0'
+      const requests = await firstCheck(NO_RELEASE, channel)
+      expect(requests).toEqual([`${RELEASES_PATH}.atom`])
+      expect(showUpdateWindow).not.toHaveBeenCalled()
+      expect(downloadUpdate).not.toHaveBeenCalled()
+    })
   })
 
   it('drives the download phases for a release found on GitHub', async () => {
@@ -1604,7 +1685,7 @@ describe('checkForUpdatesNow (r148 manual check)', () => {
 
     expect(showMessageBox).toHaveBeenCalledTimes(1)
     expect(lastDialogOpts().buttons.length).toBe(2)
-    expect(openExternal).toHaveBeenCalledWith(GITHUB_LATEST_RELEASE_URL)
+    expect(openExternal).toHaveBeenCalledWith(`${RELEASES_URL}/latest`)
     expect(checkForUpdates).not.toHaveBeenCalled()
   })
 

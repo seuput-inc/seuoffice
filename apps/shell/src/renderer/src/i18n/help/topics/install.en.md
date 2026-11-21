@@ -1,6 +1,6 @@
 # Installing SeuOffice
 
-Every version is published on the [Releases page](https://github.com/seuput-inc/seuoffice/releases/latest) of the project on GitHub.
+The [project releases](https://github.com/seuput-inc/seuoffice/releases/latest) include the Electron bridge. This version gets its next update from the separate [Tauri releases](https://github.com/seuput-inc/seuoffice-tauri-releases/releases).
 
 ## Pick the file for your machine
 
@@ -72,7 +72,7 @@ Also on a Mac:
 
 ## Updates
 
-- SeuOffice looks for a newer version on the same GitHub Releases page. When one is published, **Settings ▸ About** offers it: press **Update to …**, wait for the download, then press **Restart & install**. On Windows an installer window shows the progress; when it finishes, SeuOffice opens again with the documents you had open. On a Mac the app closes, is swapped for the new version and opens again with the documents you had open. That works for an app in the Applications folder; one opened straight from the disk image points you to the download page instead. The update installs only when you press that button, never when you simply close the app.
+- SeuOffice looks for updates in the Tauri releases. When a new version is available, **Settings ▸ About** offers it: press **Update to …**, wait for the download, then press **Restart & install**. On Windows an installer window shows the progress; when it finishes, SeuOffice opens again with the documents you had open. On a Mac the app closes, is swapped for the new version and opens again with the documents you had open. That works for an app in the Applications folder; one opened straight from the disk image points you to the download page instead. The update installs only when you press that button, never when you simply close the app.
 - **Menu (☰) ▸ Check for updates** checks whenever you ask. On a Mac it is **Help ▸ Check for updates**.
 - When the check fails — no network, or nothing published yet — nothing happens, and the app keeps working as before.
 - Updates are not code-signed either. Before installing one, the app checks the downloaded file against the checksum published with that release.

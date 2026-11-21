@@ -27,7 +27,7 @@ import type { UpdateLogger, UpdateStep, UpdateStepFields } from './update-log'
 import { reopenedByInstaller, requestUpdateRestart, updateRestartRequested } from './update-restart'
 import type { UpdateInfo } from 'electron-updater'
 import { createI18n, getUiLang, htmlLang } from '@seuoffice/i18n'
-import { GITHUB_LATEST_RELEASE_URL, githubReleaseTagUrl } from '@seuoffice/electron-utils'
+import updateRepository from '../../update-repository.json'
 import type {
   UpdatePhase,
   UpdateReleaseNotes,
@@ -45,7 +45,7 @@ import {
 import { normalizeReleaseNotes } from './update-notes'
 
 /**
- * Auto-update from the GitHub Releases of the product's public repository,
+ * Auto-update from the dedicated Tauri release repository,
  * downloading only the changed blocks when it can (see below).
  *
  * A release carries the versioned installer and its `latest.yml`
@@ -151,7 +151,10 @@ const MANUAL_FALLBACK_AFTER = 2
 // page: on the latest channel it may be a pre-release, which GitHub's
 // "Latest" page does not show.
 function manualDownloadUrlFor(version: string | null): string {
-  return version !== null ? githubReleaseTagUrl(version) : GITHUB_LATEST_RELEASE_URL
+  const releases = `https://github.com/${updateRepository.owner}/${updateRepository.repo}/releases`
+  return version === null
+    ? `${releases}/latest`
+    : `${releases}/tag/v${encodeURIComponent(version.replace(/^v/, ''))}`
 }
 
 // electron-updater error codes that mean "the repository has nothing to offer
@@ -283,7 +286,7 @@ export async function checkForUpdatesNow(): Promise<void> {
         defaultId: 0,
         cancelId: 0,
       })
-      if (response === 1) void shell.openExternal(GITHUB_LATEST_RELEASE_URL)
+      if (response === 1) void shell.openExternal(manualDownloadUrlFor(null))
       return
     }
     dismissedVersion = null

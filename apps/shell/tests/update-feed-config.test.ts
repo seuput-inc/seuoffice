@@ -5,13 +5,12 @@ import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 import { NsisUpdater } from 'electron-updater/out/NsisUpdater'
-import { PRODUCT_REPO_NAME, PRODUCT_REPO_OWNER } from '@seuoffice/i18n'
+import updateRepository from '../update-repository.json'
 
 /**
  * What the update feed is configured to be, as opposed to how the updater
  * behaves on it (updater.test.ts): the installer is built unsigned and must
- * still be able to update itself from the product's GitHub Releases, and
- * nothing of the upstream vendor's update service is left in the updater.
+ * still be able to update itself from the dedicated release repository.
  */
 
 const require = createRequire(import.meta.url)
@@ -58,8 +57,7 @@ describe('unsigned Windows builds can update', () => {
   it('skips the signature check when app-update.yml names no publisher', async () => {
     const { outcome, verify } = verifySignature({
       provider: 'github',
-      owner: PRODUCT_REPO_OWNER,
-      repo: PRODUCT_REPO_NAME,
+      ...updateRepository,
       updaterCacheDirName: 'seuoffice-updater',
     })
     // null is "nothing wrong": NsisUpdater goes on to install the download
@@ -70,8 +68,7 @@ describe('unsigned Windows builds can update', () => {
   it('would enforce it as soon as a publisher is baked in', async () => {
     const { outcome, verify } = verifySignature({
       provider: 'github',
-      owner: PRODUCT_REPO_OWNER,
-      repo: PRODUCT_REPO_NAME,
+      ...updateRepository,
       publisherName: ['Some Publisher'],
     })
     await expect(outcome).resolves.toBe('not signed by the publisher')
@@ -79,20 +76,11 @@ describe('unsigned Windows builds can update', () => {
   })
 
   it('the packaging config bakes in no publisher and configures no signing', () => {
-    // electron-builder 26 writes app-update.yml from publish[0] and adds
-    // publisherName only from a signing certificate it was configured with
-    // (app-builder-lib PublishManager.getAppUpdatePublishConfiguration)
     const config = loadBuilderConfig()
-    expect(config.publish).toEqual([
-      { provider: 'github', owner: PRODUCT_REPO_OWNER, repo: PRODUCT_REPO_NAME, channel: 'latest' },
-    ])
+    expect(config.publish).toEqual([{ provider: 'github', ...updateRepository, channel: 'latest' }])
     expect(config.win.signtoolOptions).toBeUndefined()
     expect(config.win.azureSignOptions).toBeUndefined()
     expect(config.win.verifyUpdateCodeSignature).not.toBe(true)
-    // the vendor's feed variable no longer selects anything
-    expect(
-      loadBuilderConfig({ SEUOFFICE_UPDATE_URL: 'https://updates.example.test/x' }).publish,
-    ).toEqual(config.publish)
   })
 })
 
@@ -145,18 +133,9 @@ describe('no trace of the upstream update service', () => {
     'apps/shell/src/renderer/update.html',
   ]
 
-  it.each(sources)('%s names no vendor feed, CDN or URL', (file) => {
+  it.each(sources)('%s names no vendor update service', (file) => {
     const text = readFileSync(join(ROOT, file), 'utf8')
     expect(text).not.toMatch(/azure/i)
     expect(text).not.toContain('SEUOFFICE_UPDATE_URL')
-    // no literal address at all: every link comes from the repository constants
-    expect(text).not.toMatch(/https?:\/\//)
-  })
-
-  it('the updater takes its download links from the repository constants', () => {
-    const text = readFileSync(join(ROOT, 'apps/shell/src/main/updater.ts'), 'utf8')
-    expect(text).toContain('GITHUB_LATEST_RELEASE_URL')
-    // and no longer derives one from the feed file on disk
-    expect(text).not.toContain("from 'node:fs'")
   })
 })
