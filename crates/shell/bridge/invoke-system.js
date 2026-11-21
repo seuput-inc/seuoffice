@@ -433,14 +433,10 @@
       0,
       MAX_SELECTION,
     )
-    let srcUrl = null
-    let mediaType = 'none'
+    let imageSrc = null
     if (element && element.tagName === 'IMG') {
       const src = element.currentSrc || element.src || ''
-      if (src.length > 0 && src.length <= MAX_SRC) {
-        srcUrl = src
-        mediaType = 'image'
-      }
+      if (src.length > 0 && src.length <= MAX_SRC) imageSrc = src
     }
     const x = event.clientX
     const y = event.clientY
@@ -449,16 +445,9 @@
     const message = stringify({
       isEditable: editable,
       selectionText: selection,
-      srcUrl,
-      mediaType,
+      imageSrc,
       x,
       y,
-      editFlags: {
-        canCut: editable && selection.length > 0,
-        canCopy: selection.length > 0,
-        canPaste: editable,
-        canSelectAll: true,
-      },
       word: editable ? wordAt(element, x, y) : null,
     })
     exchange(state, 'ipc_context_menu', 0, 0, 'application/json', message, undefined, ignore)

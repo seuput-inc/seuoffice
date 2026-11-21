@@ -802,9 +802,6 @@ jobs:
       - name: rhwp source
         working-directory: .
         run: node tools/build-rhwp-core.mjs --source-only
-      - name: document engine
-        working-directory: .
-        run: npm run build:wasm
       - name: apps (the renderer bundles the shell serves, the sheets sidecar, the HWP studio)
         working-directory: .
         run: npm run build:all

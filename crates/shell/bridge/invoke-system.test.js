@@ -406,11 +406,29 @@ it('forwards an unclaimed contextmenu to ipc_context_menu and leaves claimed one
   expect(JSON.parse(sent.body)).toEqual({
     isEditable: false,
     selectionText: 'picked',
-    srcUrl: 'genoffice-app-docs://localhost/a.png',
-    mediaType: 'image',
+    imageSrc: 'genoffice-app-docs://localhost/a.png',
     x: 12,
     y: 34,
-    editFlags: { canCut: false, canCopy: true, canPaste: false, canSelectAll: true },
     word: null,
+  })
+})
+
+it.each([
+  ['IMG', '', 'fallback.png', 'fallback.png'],
+  ['IMG', '', '', null],
+  ['IMG', 'x'.repeat(8193), '', null],
+  ['VIDEO', 'movie.mp4', '', null],
+])('bounds the contextmenu image source for %s', async (tagName, currentSrc, src, expected) => {
+  const { window, listeners, requests } = setup()
+  await vi.waitFor(() => expect(window.__seuofficeCheck(11)).toBe(true))
+  listeners.get('contextmenu')({
+    target: { nodeType: 1, tagName, currentSrc, src },
+    clientX: 1,
+    clientY: 2,
+    preventDefault() {},
+  })
+  await vi.waitFor(() => {
+    const sent = requests.find((request) => request.url.endsWith('ipc_context_menu'))
+    expect(JSON.parse(sent.body).imageSrc).toBe(expected)
   })
 })

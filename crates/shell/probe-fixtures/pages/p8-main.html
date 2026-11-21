@@ -97,11 +97,9 @@
         value: await window.__TAURI_INTERNALS__.invoke('ipc_context_menu', {
           isEditable: true,
           selectionText: '',
-          srcUrl: null,
-          mediaType: 'none',
+          imageSrc: null,
           x: 10,
           y: 10,
-          editFlags: { canCut: false, canCopy: false, canPaste: true, canSelectAll: true },
           word: 'teh',
         }),
       }

@@ -108,15 +108,6 @@ impl FocusCapture {
     }
 }
 
-/// Which editing commands the field under the click allows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EditFlags {
-    pub can_cut: bool,
-    pub can_copy: bool,
-    pub can_paste: bool,
-    pub can_select_all: bool,
-}
-
 /// A right click as the menu template reads it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ContextMenuParams {
@@ -124,9 +115,7 @@ pub struct ContextMenuParams {
     pub selection_text: String,
     pub misspelled_word: String,
     pub dictionary_suggestions: Vec<String>,
-    pub edit_flags: EditFlags,
-    pub media_type: Option<String>,
-    pub src_url: Option<String>,
+    pub image_src: Option<String>,
     /// The click in CSS pixels of the page's viewport.
     pub x: f64,
     pub y: f64,
@@ -159,10 +148,8 @@ const SRC_URL_MAX_CHARS: usize = 8192;
 const WORD_MAX_CHARS: usize = 64;
 const MAX_SUGGESTIONS: usize = 5;
 
-/// The bridge's `contextmenu` forwarder posts `{ isEditable, selectionText, srcUrl, mediaType,
-/// x, y, editFlags: { canCut, canCopy, canPaste, canSelectAll }, word }` as JSON with the
-/// document nonce header. `word` is the word under the click in an editable field, if any;
-/// the click is in CSS pixels of the viewport.
+/// The bridge forwards the DOM observations and click coordinates with the document nonce.
+/// `word` is the word under the click in an editable field, if any.
 #[tauri::command]
 pub async fn ipc_context_menu(webview: Webview, request: Request<'_>) -> Result<(), String> {
     let origin = redeem(&webview, request.headers()).ok_or(crate::ipc::NOT_READY)?;
@@ -199,11 +186,9 @@ pub async fn ipc_context_menu(webview: Webview, request: Request<'_>) -> Result<
 struct Payload {
     is_editable: bool,
     selection_text: String,
-    src_url: Option<String>,
-    media_type: Option<String>,
+    image_src: Option<String>,
     x: f64,
     y: f64,
-    edit_flags: EditFlags,
     word: Option<String>,
 }
 
@@ -212,25 +197,14 @@ impl Payload {
         let object = value
             .as_object()
             .ok_or("Invalid context menu: not an object.")?;
-        let flags = match object.get("editFlags") {
-            None | Some(Value::Null) => Map::new(),
-            Some(Value::Object(flags)) => flags.clone(),
-            Some(_) => return Err("Invalid context menu: editFlags is not an object.".into()),
-        };
         let selection_text = text(object, "selectionText")?.unwrap_or_default();
         Ok(Self {
             is_editable: flag(object, "isEditable")?,
             selection_text: selection_text.chars().take(SELECTION_MAX_CHARS).collect(),
-            src_url: bounded(text(object, "srcUrl")?, "srcUrl", SRC_URL_MAX_CHARS)?,
-            media_type: text(object, "mediaType")?,
+            image_src: bounded(text(object, "imageSrc")?, "imageSrc", SRC_URL_MAX_CHARS)?
+                .filter(|src| !src.is_empty()),
             x: coordinate(object, "x")?,
             y: coordinate(object, "y")?,
-            edit_flags: EditFlags {
-                can_cut: flag(&flags, "canCut")?,
-                can_copy: flag(&flags, "canCopy")?,
-                can_paste: flag(&flags, "canPaste")?,
-                can_select_all: flag(&flags, "canSelectAll")?,
-            },
             word: text(object, "word")?.filter(|word| {
                 word.chars().count() <= WORD_MAX_CHARS && !word.chars().any(char::is_whitespace)
             }),
@@ -270,9 +244,7 @@ impl Payload {
             selection_text: self.selection_text,
             misspelled_word,
             dictionary_suggestions,
-            edit_flags: self.edit_flags,
-            media_type: self.media_type,
-            src_url: self.src_url,
+            image_src: self.image_src,
             x: self.x,
             y: self.y,
         }
@@ -423,11 +395,9 @@ mod tests {
         json!({
             "isEditable": true,
             "selectionText": "teh",
-            "srcUrl": null,
-            "mediaType": "none",
+            "imageSrc": null,
             "x": 12.5,
             "y": 40,
-            "editFlags": { "canCut": true, "canPaste": true },
             "word": "teh",
         })
     }
@@ -440,18 +410,8 @@ mod tests {
         assert_eq!(params.selection_text, "teh");
         assert_eq!(params.misspelled_word, "teh");
         assert_eq!(params.dictionary_suggestions, ["the"]);
-        assert_eq!(params.media_type.as_deref(), Some("none"));
-        assert_eq!(params.src_url, None);
+        assert_eq!(params.image_src, None);
         assert_eq!((params.x, params.y), (12.5, 40.0));
-        assert_eq!(
-            params.edit_flags,
-            EditFlags {
-                can_cut: true,
-                can_copy: false,
-                can_paste: true,
-                can_select_all: false
-            }
-        );
     }
 
     #[test]
@@ -482,7 +442,7 @@ mod tests {
         let payload = Payload::parse(&value).unwrap();
         assert_eq!(payload.selection_text.chars().count(), SELECTION_MAX_CHARS);
         let mut value = click();
-        value["srcUrl"] = json!("u".repeat(SRC_URL_MAX_CHARS + 1));
+        value["imageSrc"] = json!("u".repeat(SRC_URL_MAX_CHARS + 1));
         assert!(Payload::parse(&value).is_err());
     }
 

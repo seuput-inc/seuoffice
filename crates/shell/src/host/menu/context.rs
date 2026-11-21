@@ -66,7 +66,7 @@ pub(crate) fn install(app: &AppHandle, views: Arc<ViewTable>, windows: Arc<Windo
             return eprintln!("shell: a context menu of '{label}' was refused");
         };
         let (view, zoom) = (sender.view, views.zoom(sender.view));
-        let params = params_of(&params);
+        let params = params_of(params);
         let app = handle.clone();
         post_core(move |provided, services| {
             pop_up(&app, provided, services, view, &label, params, zoom);
@@ -104,20 +104,16 @@ pub(super) fn last_misspelling(view: ViewId) -> Option<(String, f64, f64)> {
 }
 
 /// The page's click as the menu template reads it
-fn params_of(raw: &native::menu::ContextMenuParams) -> ContextMenuParams {
+fn params_of(raw: native::menu::ContextMenuParams) -> ContextMenuParams {
+    let edit_flags = EditFlags::from_dom_selection(raw.is_editable, &raw.selection_text);
     ContextMenuParams {
         is_editable: raw.is_editable,
-        selection_text: raw.selection_text.clone(),
-        misspelled_word: raw.misspelled_word.clone(),
-        dictionary_suggestions: raw.dictionary_suggestions.clone(),
-        edit_flags: EditFlags {
-            can_cut: raw.edit_flags.can_cut,
-            can_copy: raw.edit_flags.can_copy,
-            can_paste: raw.edit_flags.can_paste,
-            can_select_all: raw.edit_flags.can_select_all,
-        },
-        media_type: raw.media_type.clone(),
-        src_url: raw.src_url.clone(),
+        selection_text: raw.selection_text,
+        misspelled_word: raw.misspelled_word,
+        dictionary_suggestions: raw.dictionary_suggestions,
+        edit_flags,
+        media_type: raw.image_src.as_ref().map(|_| "image".to_owned()),
+        src_url: raw.image_src,
         x: raw.x,
         y: raw.y,
     }
@@ -305,12 +301,23 @@ fn image_png_at(webview: &tauri::Webview, x: f64, y: f64) -> Result<Vec<u8>, Str
             const canvas = document.createElement('canvas');
             canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
             canvas.getContext('2d').drawImage(img, 0, 0);
-            return canvas.toDataURL('image/png').slice('data:image/png;base64,'.length);
+            return canvas.toDataURL('image/png');
         }})()"
     );
     let answer = evaluate(webview, &script)?;
-    let base64 = answer.as_str().ok_or("no image data")?;
-    Ok(jscompat::buffer_from_base64(base64))
+    decode_canvas_png(answer.as_str().ok_or("no image data")?)
+}
+
+fn decode_canvas_png(data_url: &str) -> Result<Vec<u8>, String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let payload = data_url
+        .strip_prefix("data:image/png;base64,")
+        .filter(|s| !s.is_empty())
+        .ok_or("canvas returned no PNG image")?;
+    STANDARD
+        .decode(payload)
+        .map_err(|_| "invalid base64 in canvas PNG".to_owned())
 }
 
 /// How long the page may take to answer a script of a menu action
@@ -496,6 +503,48 @@ mod tests {
     use main_core::packages::electron_utils::dialog_memory::show_save_dialog_with_memory;
 
     use super::*;
+
+    #[test]
+    fn copy_image_decodes_only_a_nonempty_canvas_png_response() {
+        assert_eq!(
+            decode_canvas_png("data:image/png;base64,iVBORw0KGgo=").unwrap(),
+            b"\x89PNG\r\n\x1a\n"
+        );
+        for url in [
+            "data:,",
+            "data:image/png;base64,",
+            "data:image/jpeg;base64,/9j/",
+            "data:image/png;base64,AA!A",
+        ] {
+            assert!(decode_canvas_png(url).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn only_an_image_click_offers_image_actions() {
+        use main_core::packages::electron_utils::context_menu::{
+            ContextMenuItem, build_context_menu_items,
+        };
+
+        let actions = |image_src: Option<&str>| {
+            let params = params_of(native::menu::ContextMenuParams {
+                image_src: image_src.map(str::to_owned),
+                ..Default::default()
+            });
+            build_context_menu_items(&params, &context_menu_labels("en"))
+                .into_iter()
+                .map(|item| match item {
+                    ContextMenuItem::Image { action, .. } => action.name(),
+                    other => panic!("unexpected menu entry: {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(actions(None).is_empty());
+        assert_eq!(
+            actions(Some("asset://diagram.png")),
+            ["viewImage", "copyImage", "saveImageAs"]
+        );
+    }
 
     /// A save dialog that picks `path`
     struct Picks(Option<PathBuf>);
