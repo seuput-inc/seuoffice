@@ -1,8 +1,10 @@
 // The Tauri release feed uses the electron-updater format on its own repository.
 //
-//   node crates/shell/bundle/release-feed.mjs app-update
+//   node crates/shell/bundle/release-feed.mjs app-update [--mode loopback]
 //     before `tauri build`: bundle/out/app-update.yml, which the bundle
 //     config puts in the resources (provider, channel, updater cache folder).
+//     Only nonpublishing migration QA bundles specify loopback. The option
+//     selects a fixed provider here; it is not part of the installed runtime.
 //
 //   node crates/shell/bundle/release-feed.mjs feed --version 0.13.0 <file>...
 //     after it: each file's `.blockmap` beside it and the channel file
@@ -33,17 +35,23 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     version: { type: 'string' },
+    mode: { type: 'string', default: 'release' },
     platform: { type: 'string', default: process.platform },
   },
 })
 const [command, ...files] = positionals
+if (!['release', 'loopback'].includes(values.mode)) throw new Error('invalid build mode')
 
 if (command === 'app-update') {
   const out = join(here, 'out')
   mkdirSync(out, { recursive: true })
+  const provider =
+    values.mode === 'loopback'
+      ? 'provider: generic\nurl: http://127.0.0.1:8765/'
+      : `owner: ${updateRepository.owner}\nrepo: ${updateRepository.repo}\nprovider: github`
   writeFileSync(
     join(out, 'app-update.yml'),
-    `owner: ${updateRepository.owner}\nrepo: ${updateRepository.repo}\nprovider: github\nchannel: ${channel}\nupdaterCacheDirName: seuoffice-updater\n`,
+    `${provider}\nchannel: ${channel}\nupdaterCacheDirName: seuoffice-updater\n`,
   )
 } else if (command === 'feed') {
   if (!values.version || files.length === 0) {
