@@ -20,7 +20,7 @@ export function suffixFeed(plan, selectedStage) {
       !urls.includes(basename(installer)) ||
       !urls.every((name) => byName.has(name) && /^[\w.-]+$/.test(name)) ||
       !lines.every((line) =>
-        /^(?:|version: [\d.]+|files:|  - url: [\w.-]+|    (?:size|blockMapSize): \d+|(?:    )?sha512: [A-Za-z0-9+/=]+|path: [\w.-]+|releaseDate: '[\dT:.Z-]+')$/.test(
+        /^(?:|version: [\d.]+|files:| {2}- url: [\w.-]+| {4}(?:size|blockMapSize): \d+|(?: {4})?sha512: [A-Za-z0-9+/=]+|path: [\w.-]+|releaseDate: '[\dT:.Z-]+')$/.test(
           line,
         ),
       ) ||
