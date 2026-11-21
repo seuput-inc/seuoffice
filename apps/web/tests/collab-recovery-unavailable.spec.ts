@@ -39,6 +39,15 @@ test('an hwp opened with collab ends up open under the edit lock, edits and save
   })
   await page.goto(`/?${query}`)
   await page.locator('#edit').setChecked(true)
+  // The checkbox now describes the next file, not the HWP already opening for editing.
+  await page.route(
+    '**/hwp/index.html?*',
+    async (route) => {
+      await page.locator('#edit').uncheck()
+      await route.continue()
+    },
+    { times: 1 },
+  )
   await page.setInputFiles('#file', MEMO)
 
   const app = page.frameLocator('#viewer iframe')
@@ -73,5 +82,32 @@ test('an hwp opened with collab ends up open under the edit lock, edits and save
     return { version: saved.version, bytes: Array.from(saved.bytes) }
   })
   expect(stored.version).toBeNull()
-  expect(textOf(new Uint8Array(stored.bytes))).toContain('SEURECOVER')
+  const edited = textOf(new Uint8Array(stored.bytes))
+  expect(edited).toContain('SEURECOVER')
+  expect(edited.replace('SEURECOVER', '')).toBe(textOf(readFileSync(MEMO)))
 })
+
+for (const name of ['memo.hwp', 'memo.hwpx']) {
+  test(`${name} falls back to viewing without saving`, async ({ page }) => {
+    await page.goto('/?collab=read-only&access=view')
+    await page.setInputFiles('#file', resolve(dirname(MEMO), name))
+
+    await expect(page.locator('#status')).toHaveText(name, { timeout: 60_000 })
+    const launcher = await page.evaluate(async () => {
+      const host = window.seuLauncher!
+      return {
+        mode: host.mode,
+        openError: host.openError,
+        saveRejected: (await host.save()) !== null,
+        saved: host.saved,
+      }
+    })
+    expect(launcher).toEqual({
+      mode: 'view',
+      openError: 'collab_unavailable',
+      saveRejected: true,
+      saved: null,
+    })
+    await expect(page.locator('#save')).toBeHidden()
+  })
+}
