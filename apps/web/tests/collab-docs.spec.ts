@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseDocx } from '@seuoffice/docx-engine'
 import { expect, test } from '@playwright/test'
-import { openCoEdited, settled, typeAfter, type CoEditor } from './collab'
+import { openCoEdited, serverHook, settled, typeAfter, type CoEditor } from './collab'
 
 const repo = fileURLToPath(new URL('../../..', import.meta.url))
 const SIMPLE = resolve(repo, 'fixtures/generated/simple.docx')
@@ -110,6 +110,22 @@ test('two people edit one docx at once, a late joiner and a viewer follow, a sav
   expect(all).toContain('alice-three')
   expect(all).not.toContain('dave-typed')
   await expect.poll(async () => (await bob.status()).saved).toBe(version)
+})
+
+test('an editor reauthorized as a viewer enters read mode and still follows edits', async ({
+  browser,
+}) => {
+  const documentId = freshDocument()
+  const alice = await openCoEdited(browser, SIMPLE, { documentId, user: 'alice' })
+  const bob = await openCoEdited(browser, SIMPLE, { documentId, user: 'bob' })
+  const body = bob.frame.locator('.ProseMirror').first()
+  await expect(body).toHaveAttribute('contenteditable', 'true')
+
+  expect((await serverHook('revoke', documentId, 'bob')).dropped).toBe(1)
+  await expect.poll(async () => (await bob.status()).canEdit).toBe(false)
+  await expect(body).toHaveAttribute('contenteditable', 'false')
+  await typeAfter(alice, FIRST, ' still-following')
+  await expect(body).toContainText('still-following')
 })
 
 test('the app’s own save button saves the co-edited version through the host', async ({

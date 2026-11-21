@@ -9,6 +9,7 @@
  * - `cut`: drop the user's sockets abruptly, as a network does; the page reconnects
  * - `hold`: drop them and refuse the user's upgrades until `release`
  * - `release`: take the user's upgrades again
+ * - `revoke`: remove the user's edit grant and close their sockets to reauthenticate
  * - `diverge`: an extra editor socket joins the document and reports a fingerprint no page
  *   has, so the session ends as `diverged` at its current version
  * - `reset`: the host's `collab.reset(documentId)`
@@ -48,6 +49,7 @@ export function attachCollabServer(http: Server): void {
   const sockets = new WebSocketServer({ noServer: true })
   const sessions = new Set<Session>()
   const held = new Set<string>()
+  const viewOnly = new Set<string>()
   // the format and file of each document's latest editor hello: what `diverge` says hello with
   const hellos = new Map<string, Hello>()
 
@@ -99,6 +101,9 @@ export function attachCollabServer(http: Server): void {
       case 'release':
         held.delete(userKey(documentId, need(userId)))
         return {}
+      case 'revoke':
+        viewOnly.add(userKey(documentId, need(userId)))
+        return { dropped: dropUser(documentId, need(userId)) }
       case 'diverge':
         return diverge(collab, documentId, hellos.get(documentId))
       case 'reset':
@@ -136,7 +141,8 @@ export function attachCollabServer(http: Server): void {
         documentId,
         userId,
         name: url.searchParams.get('name') ?? userId,
-        canEdit: url.searchParams.get('access') !== 'view',
+        canEdit:
+          url.searchParams.get('access') !== 'view' && !viewOnly.has(userKey(documentId, userId)),
       })
     })
   })
