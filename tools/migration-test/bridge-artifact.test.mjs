@@ -10,7 +10,6 @@ const repository = 'seuput-inc/seuoffice'
 const branch = 'integration/tauri-first-candidate'
 const workflow = '.github/workflows/seuoffice-desktop.yml'
 const sha = 'a'.repeat(40)
-const macIdentity = 'B'.repeat(40)
 const invocation = `https://github.com/${repository}/actions/runs/42/attempts/2`
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const platforms = {
@@ -65,10 +64,10 @@ function fixture(t, platform = 'win32') {
   }
   const listing = { artifacts: [artifact], total_count: 1 }
   const record = {
-    schema: 'seuoffice-electron-bridge-build/v1',
+    schema: 'seuoffice-electron-bridge-build/v2',
     platform,
     version: '1.2.3',
-    signingIdentity: platform === 'darwin' ? macIdentity : null,
+    signing: platform === 'darwin' ? 'ad-hoc' : 'unsigned',
     runId: '42',
     runAttempt: '2',
     sourceSha: sha,
@@ -110,7 +109,6 @@ function fixture(t, platform = 'win32') {
     return verified
   }
   const args = [platform, '42', '1.2.3', sha, dir]
-  const verifyWith = (...identity) => verifyBridge([...args, ...identity], gh)
   return {
     artifact,
     certificate,
@@ -120,8 +118,7 @@ function fixture(t, platform = 'win32') {
     subject,
     record,
     attestRecord,
-    verifyWith,
-    verify: () => (platform === 'darwin' ? verifyWith(macIdentity) : verifyWith()),
+    verify: (...extra) => verifyBridge([...args, ...extra], gh),
   }
 }
 
@@ -133,7 +130,7 @@ for (const [platform, spec] of Object.entries(platforms)) {
     assert.equal(receipt.artifact.id, artifact.id)
     assert.equal(receipt.artifact.reportedArchiveDigest, artifact.digest)
     assert.equal(receipt.platformSigning, 'not-verified')
-    assert.equal(receipt.buildRecord.signingIdentity, platform === 'darwin' ? macIdentity : null)
+    assert.equal(receipt.buildRecord.signing, platform === 'darwin' ? 'ad-hoc' : 'unsigned')
     assert.equal(receipt.buildRecord.sha256, sha256(JSON.stringify(record)))
     assert.equal(basename(receipt.buildRecord.path), 'bridge-build.json')
     assert.equal(receipt.g6, 'not-tested')
@@ -208,16 +205,21 @@ test('rejects changed update bytes and old builds that never attested the update
   await assert.rejects(mac.verify, /stable\.zip\.blockmap/)
 })
 
-test('requires an independent public Mac fingerprint and rejects one on Windows', async (t) => {
-  const mac = fixture(t, 'darwin')
-  await assert.rejects(mac.verifyWith, /usage/)
-  await assert.rejects(() => mac.verifyWith(macIdentity.toLowerCase()), /usage/)
-  await assert.rejects(() => mac.verifyWith('D'.repeat(40)), /signing identity/)
-  const win = fixture(t)
-  await assert.rejects(() => win.verifyWith(macIdentity), /usage/)
-  win.attestRecord({ ...win.record, signingIdentity: macIdentity })
-  await assert.rejects(win.verify, /signing identity/)
-})
+for (const platform of Object.keys(platforms)) {
+  test(`${platform} rejects an extra CLI argument and attested records with the wrong signing mode`, async (t) => {
+    const { verify, attestRecord, record } = fixture(t, platform)
+    await assert.rejects(() => verify('B'.repeat(40)), /usage/)
+    for (const signing of [
+      platform === 'darwin' ? 'unsigned' : 'ad-hoc',
+      null,
+      undefined,
+      'B'.repeat(40),
+    ]) {
+      attestRecord({ ...record, signing })
+      await assert.rejects(verify, /signing mode/)
+    }
+  })
+}
 
 test('requires the exact attested build record before interpreting its contents', async (t) => {
   const { dir, verify } = fixture(t)
@@ -234,7 +236,7 @@ test('requires the exact attested build record before interpreting its contents'
 test('rejects even attested records with the wrong build, run attempt or schema', async (t) => {
   const { record, attestRecord, verify } = fixture(t, 'darwin')
   for (const change of [
-    { schema: 'other' },
+    { schema: 'seuoffice-electron-bridge-build/v1' },
     { platform: 'win32' },
     { version: '1.2.4' },
     { sourceSha: 'f'.repeat(40) },
@@ -242,10 +244,8 @@ test('rejects even attested records with the wrong build, run attempt or schema'
     { runId: 42 },
     { runAttempt: '1' },
     { runAttempt: 2 },
-    { signingIdentity: null },
-    { signingIdentity: undefined },
-    { signingIdentity: 'SeuOffice Self Sign' },
-    { extra: 'not part of v1' },
+    { signingIdentity: 'B'.repeat(40) },
+    { extra: 'not part of v2' },
   ]) {
     attestRecord({ ...record, ...change })
     await assert.rejects(verify, /bridge-build\.json/)

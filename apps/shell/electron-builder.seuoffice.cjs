@@ -8,9 +8,7 @@
  * app updates itself from) and x64 Windows (NSIS). Linux, Intel Mac and
  * Windows on ARM are neither built nor released.
  *
- * Mac signing: a bridge candidate uses the fixed self-signed identity from
- * decision 0035, without notarization. Other builds use Developer ID and
- * notarization with CSC_LINK, or stay signed ad hoc without it.
+ * Both Mac channels sign the app ad hoc, without a certificate or notarization.
  *
  * Size: the editor modules' own main bundles stay out of the package (see
  * withoutModuleMains). Chromium's locales all stay (no electronLanguages):
@@ -37,38 +35,21 @@ const mac = {
     { target: 'zip', arch: [RELEASE_ARCH.darwin] },
   ],
 }
-const macSigned = Boolean(process.env.CSC_LINK)
-const bridgeMac = process.platform === 'darwin' && process.env.SEUOFFICE_BRIDGE_CANDIDATE === 'true'
-if (bridgeMac) {
-  const identity = process.env.SEUOFFICE_MAC_SIGN_IDENTITY
-  if (!identity || !/^[0-9A-F]{40}$/.test(identity)) {
-    throw new Error('Bridge packaging requires the imported SEUOFFICE_MAC_SIGN_IDENTITY SHA-1')
-  }
-  if (macSigned) throw new Error('Bridge packaging cannot use CSC_LINK')
-  // Builder 26 skips mac.sign if discovery finds no valid identity. Its "-"
-  // sentinel reaches the hook even for an untrusted self-signed certificate.
+if (process.platform === 'darwin') {
+  // Builder imports CSC_LINK before it invokes mac.sign, even for ad hoc signing.
+  if (process.env.CSC_LINK != null) throw new Error('Ad hoc Mac packaging cannot import CSC_LINK')
+  // Builder 26 looks for a keychain identity containing "-" before falling
+  // back to ad hoc. Pass the literal "-" to codesign even on a nonempty keychain.
   mac.identity = '-'
   mac.timestamp = 'none'
   mac.sign = (options) =>
     require('@electron/osx-sign').signAsync({
       ...options,
-      identity,
+      identity: '-',
       identityValidation: false,
       preAutoEntitlements: false,
       preEmbedProvisioningProfile: false,
     })
-} else if (macSigned) {
-  const missing = ['APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID'].filter(
-    (name) => !process.env[name],
-  )
-  // Gatekeeper refuses a Developer ID app that is not notarized
-  if (missing.length > 0) {
-    throw new Error(`CSC_LINK is set but notarization needs ${missing.join(', ')}`)
-  }
-  // no identity: electron-builder signs with the CSC_LINK certificate
-  delete mac.identity
-  mac.hardenedRuntime = true
-  mac.notarize = true
 }
 
 const { linux: _linux, deb: _deb, rpm: _rpm, appImage: _appImage, ...shared } = base
@@ -127,11 +108,10 @@ const config = {
   ...shared,
   extraResources: withoutModuleMains(shared.extraResources),
   mac,
-  dmg: { ...base.dmg, sign: macSigned },
   win: { ...base.win, target: [{ target: 'nsis', arch: [RELEASE_ARCH.win32] }] },
   nsis: { ...base.nsis, useZip: true, differentialPackage: false },
   artifactBuildCompleted: writeInstallerBlockmap,
-  afterAllArtifactBuild: bridgeMac ? null : shared.afterAllArtifactBuild,
+  afterAllArtifactBuild: process.platform === 'darwin' ? null : shared.afterAllArtifactBuild,
   beforePack: async (context) => {
     const arch = Arch[context.arch]
     if (RELEASE_ARCH[context.electronPlatformName] !== arch) {

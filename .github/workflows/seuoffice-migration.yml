@@ -11,7 +11,7 @@ name: seuoffice migration
 #   gh workflow run "seuoffice migration" --ref <branch>
 #   gh workflow run "seuoffice migration" --ref <branch> -f to_run=<id> -f to_version=<version> -f to_source_sha=<sha> -f next_run=<id> -f next_version=<version> -f next_source_sha=<sha>
 # Verify a nonpublishing bridge build for G6 preparation without running either app:
-#   gh workflow run "seuoffice migration" --ref integration/tauri-first-candidate -f bridge_provenance_only=true -f to_run=<id> -f to_version=<version> -f to_source_sha=<sha> -f bridge_signer_sha1=<independently-trusted-public-SHA1>
+#   gh workflow run "seuoffice migration" --ref integration/tauri-first-candidate -f bridge_provenance_only=true -f to_run=<id> -f to_version=<version> -f to_source_sha=<sha>
 # A published release, a pre-release included, is checked before it is
 # promoted: the installed release `from` updates through its own update window
 # to the release `to_tag`, served from that release's own latest*.yml and
@@ -32,10 +32,6 @@ on:
         description: Verify Electron bridge provenance only (no installation, migration or release receipt)
         type: boolean
         default: false
-      bridge_signer_sha1:
-        description: Independently trusted public 0035 certificate SHA-1 in uppercase hex (bridge mode only)
-        type: string
-        required: false
       from:
         description: Electron releases to start from, comma separated tags; "oldest" and "previous" are resolved
         required: false
@@ -97,7 +93,6 @@ jobs:
       BRIDGE_RUN: ${{ inputs.to_run }}
       BRIDGE_VERSION: ${{ inputs.to_version }}
       BRIDGE_SHA: ${{ inputs.to_source_sha }}
-      BRIDGE_SIGNER_SHA1: ${{ inputs.bridge_signer_sha1 }}
     steps:
       - name: Require the approved branch and one bridge build
         env:
@@ -108,7 +103,7 @@ jobs:
           [[ "$GITHUB_REPOSITORY" == seuput-inc/seuoffice && "$GITHUB_REF" == refs/heads/integration/tauri-first-candidate ]]
           [[ -z "$MIGRATION_TARGETS" && ( -z "$FROM" || "$FROM" == oldest,previous ) ]]
           [[ "$BRIDGE_RUN" =~ ^[1-9][0-9]*$ && "$BRIDGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          [[ "$BRIDGE_SHA" =~ ^[a-f0-9]{40}$ && "$BRIDGE_SIGNER_SHA1" =~ ^[A-F0-9]{40}$ ]]
+          [[ "$BRIDGE_SHA" =~ ^[a-f0-9]{40}$ ]]
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -128,11 +123,10 @@ jobs:
           mkdir "$out"
           for platform in win32 darwin; do
             name=seuoffice-windows-x64
-            identity=()
-            if [[ "$platform" == darwin ]]; then name=seuoffice-mac-arm64; identity=("$BRIDGE_SIGNER_SHA1"); fi
+            if [[ "$platform" == darwin ]]; then name=seuoffice-mac-arm64; fi
             dir="$RUNNER_TEMP/$name"
             gh run download "$BRIDGE_RUN" --repo "$GH_REPO" --name "$name" --dir "$dir"
-            node tools/migration-test/bridge-artifact.mjs "$platform" "$BRIDGE_RUN" "$BRIDGE_VERSION" "$BRIDGE_SHA" "$dir" "${identity[@]}" > "$out/$platform.json"
+            node tools/migration-test/bridge-artifact.mjs "$platform" "$BRIDGE_RUN" "$BRIDGE_VERSION" "$BRIDGE_SHA" "$dir" > "$out/$platform.json"
           done
           jq -es '.[0].invocation == .[1].invocation' "$out/win32.json" "$out/darwin.json" >/dev/null
       - uses: actions/upload-artifact@v4
@@ -153,8 +147,6 @@ jobs:
       oldest: ${{ steps.r.outputs.oldest }}
       previous: ${{ steps.r.outputs.previous }}
     steps:
-      - if: inputs.bridge_signer_sha1 != ''
-        run: echo '::error::bridge_signer_sha1 requires bridge_provenance_only'; exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

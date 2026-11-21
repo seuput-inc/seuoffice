@@ -11,7 +11,7 @@ const branch = 'integration/tauri-first-candidate'
 const sourceRef = `refs/heads/${branch}`
 const workflow = '.github/workflows/seuoffice-desktop.yml'
 const usage =
-  'usage: node bridge-artifact.mjs <win32|darwin> <run-id> <x.y.z> <source-sha> <artifact-dir> [<expected-mac-cert-sha1> (required on darwin only)]'
+  'usage: node bridge-artifact.mjs <win32|darwin> <run-id> <x.y.z> <source-sha> <artifact-dir>'
 
 function ghJson(...args) {
   return JSON.parse(
@@ -20,11 +20,10 @@ function ghJson(...args) {
 }
 
 export async function verifyBridge(args, gh = ghJson) {
-  const [platform, runId, version, sourceSha, directory, expectedMacIdentity] = args
+  const [platform, runId, version, sourceSha, directory] = args
   const mac = platform === 'darwin'
   if (
-    args.length !== (mac ? 6 : 5) ||
-    (mac && !/^[0-9A-F]{40}$/.test(expectedMacIdentity)) ||
+    args.length !== 5 ||
     !['win32', 'darwin'].includes(platform) ||
     !/^[1-9]\d*$/.test(runId) ||
     !/^\d+\.\d+\.\d+$/.test(version) ||
@@ -120,16 +119,16 @@ export async function verifyBridge(args, gh = ghJson) {
   attest(recordName, recordPath, recordDigest)
   const record = JSON.parse(recordBytes.toString('utf8'))
   const expectedRecord = {
-    schema: 'seuoffice-electron-bridge-build/v1',
+    schema: 'seuoffice-electron-bridge-build/v2',
     platform,
     version,
-    signingIdentity: mac ? expectedMacIdentity : null,
+    signing: mac ? 'ad-hoc' : 'unsigned',
     runId,
     runAttempt: String(run.run_attempt),
     sourceSha,
   }
   if (!isDeepStrictEqual(record, expectedRecord)) {
-    throw new Error('bridge-build.json differs from the expected build or signing identity')
+    throw new Error('bridge-build.json differs from the expected build or signing mode')
   }
 
   const files = []
@@ -166,7 +165,7 @@ export async function verifyBridge(args, gh = ghJson) {
     buildRecord: {
       path: recordPath,
       sha256: recordDigest,
-      signingIdentity: record.signingIdentity,
+      signing: record.signing,
     },
     repository,
     workflow,

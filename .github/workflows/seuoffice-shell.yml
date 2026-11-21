@@ -149,17 +149,11 @@ jobs:
       - name: Tauri CLI
         run: npm install --no-audit --no-fund
 
-      - name: signing identity (decision 0035)
-        env:
-          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
-          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
-        run: ci/mac-self-sign.sh
-
       - name: build the app bundle
         id: build
         run: |
           start=$(date +%s)
-          export APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY"
+          export APPLE_SIGNING_IDENTITY=-
           npx tauri build --bundles app --verbose --config '{"bundle":{"resources":{"out/engine-host":"engine-host","../../apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar":"native/xlsx-sidecar","../../packages/pdf2docx/ocr-helper/vision-ocr":"ocr/vision-ocr"}}}' -- --locked
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
           ci/mac-check-signature.sh target/release/bundle/macos/*.app
@@ -622,8 +616,7 @@ jobs:
 
       - name: build environment
         run: |
-          # ad-hoc signing on the Mac (the probes read no keychain item, so they need no fixed
-          # identity), and the Strawberry perl vendored OpenSSL configures with (Git Bash's perl lacks modules)
+          # Git Bash's perl lacks modules needed by vendored OpenSSL.
           if [ "$RUNNER_OS" = macOS ]; then echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"; fi
           if [ "$RUNNER_OS" = Windows ]; then echo 'OPENSSL_SRC_PERL=C:\Strawberry\perl\bin\perl.exe' >> "$GITHUB_ENV"; fi
           rustc --version
@@ -825,16 +818,10 @@ jobs:
       - name: Tauri CLI
         if: runner.os == 'macOS'
         run: npm install --no-audit --no-fund
-      - name: signing identity (decision 0035)
-        if: runner.os == 'macOS'
-        env:
-          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
-          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
-        run: ci/mac-self-sign.sh
       - name: build the app bundle (macOS)
         if: runner.os == 'macOS'
         run: |
-          export APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY"
+          export APPLE_SIGNING_IDENTITY=-
           config=$(node e2e/stage-resources.mjs mac-config)
           npx tauri build --bundles app --verbose --config "$config" -- --locked --features e2e-replay
           app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)

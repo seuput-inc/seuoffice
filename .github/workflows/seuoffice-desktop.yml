@@ -29,16 +29,9 @@ name: seuoffice desktop release
 # stable once checked:
 #   gh release edit vX.Y.Z --prerelease=false --latest
 #
-# Signing (repository secrets):
-#   Windows  WIN_CSC_LINK (base64 PFX or https URL), WIN_CSC_KEY_PASSWORD
-#   Mac      CSC_LINK, CSC_KEY_PASSWORD (Developer ID Application certificate),
-#            APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID (notarization)
-# A platform without its secrets is built unsigned (Mac: signed ad hoc). The
-# owner runs seuoffice unsigned for now (decision 0013), so the release job
-# publishes either way and says in the notes which platforms are signed. The
-# app updates itself unsigned on both platforms (Mac: the app's own zip
-# staging, not Squirrel). Once a signed release is out, never publish an
-# unsigned one again: a signed install only takes updates from its signer.
+# Windows signs with WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD when configured.
+# The Apple Silicon bridge is signed ad hoc without notarization. Its updater
+# stages the zip itself instead of using Squirrel.
 #
 # A run started by hand without `release` (on any branch) builds and uploads
 # the artifacts only, at the package.json version.
@@ -54,10 +47,6 @@ on:
         default: false
       bridge_version:
         description: Build only the Electron bridge for both platforms (candidate branch only)
-        type: string
-        required: false
-      bridge_signer_sha1:
-        description: Expected public SHA-1 fingerprint of the decision 0035 certificate
         type: string
         required: false
       candidate_version:
@@ -96,19 +85,17 @@ jobs:
           CANDIDATE_VERSION: ${{ inputs.candidate_version }}
           NEXT_VERSION: ${{ inputs.next_version }}
           BRIDGE_VERSION: ${{ inputs.bridge_version }}
-          BRIDGE_SIGNER: ${{ inputs.bridge_signer_sha1 }}
           RELEASE: ${{ inputs.release }}
         run: |
           set -euo pipefail
           base=$(node -p "require('./apps/shell/package.json').version")
           publish=false
           bridge=false
-          if [ -n "$BRIDGE_VERSION$BRIDGE_SIGNER" ]; then
+          if [ -n "$BRIDGE_VERSION" ]; then
             if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REPOSITORY" != seuput-inc/seuoffice ||
                   "$GITHUB_REF" != refs/heads/integration/tauri-first-candidate || "$RELEASE" != false ||
-                  -n "$CANDIDATE_VERSION$NEXT_VERSION" || ! "$BRIDGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ||
-                  ! "$BRIDGE_SIGNER" =~ ^[A-F0-9]{40}$ ]]; then
-              echo "::error::bridge requires a nonpublishing candidate branch dispatch, bridge_version and public bridge_signer_sha1 only"
+                  -n "$CANDIDATE_VERSION$NEXT_VERSION" || ! "$BRIDGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::bridge requires a nonpublishing candidate branch dispatch with bridge_version only"
               exit 1
             fi
             version=$BRIDGE_VERSION
@@ -451,10 +438,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
-    outputs:
-      signed: ${{ steps.signing.outputs.signed }}
     env:
-      BRIDGE_BUILD: ${{ needs.version.outputs.bridge }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - name: Checkout
@@ -489,30 +473,17 @@ jobs:
           key: electron-mac-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
           restore-keys: electron-mac-${{ runner.arch }}-
 
-      # signed=true only when the certificate and the notarization credentials
-      # are all there. A certificate without them fails the packaging step
-      # (electron-builder.seuoffice.cjs); nothing here prints a value.
-      - name: Detect the signing certificate
-        id: signing
+      - name: Require a hosted runner without Developer ID credentials for an isolated bridge
+        if: needs.version.outputs.bridge == 'true'
         env:
-          HAS_LINK: ${{ secrets.CSC_LINK != '' }}
-          HAS_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD != '' }}
-          HAS_APPLE_ID: ${{ secrets.APPLE_ID != '' }}
-          HAS_APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD != '' }}
-          HAS_TEAM: ${{ secrets.APPLE_TEAM_ID != '' }}
+          HAS_CREDENTIALS: ${{ secrets.CSC_LINK != '' || secrets.CSC_KEY_PASSWORD != '' || secrets.APPLE_ID != '' || secrets.APPLE_APP_SPECIFIC_PASSWORD != '' || secrets.APPLE_TEAM_ID != '' }}
         run: |
           set -euo pipefail
-          signed=false
-          if [ "$HAS_LINK" = "true" ] && [ "$HAS_PASSWORD" = "true" ] &&
-            [ "$HAS_APPLE_ID" = "true" ] && [ "$HAS_APP_PASSWORD" = "true" ] && [ "$HAS_TEAM" = "true" ]; then
-            signed=true
-          fi
-          echo "signed=$signed" >> "$GITHUB_OUTPUT"
-          if [[ "$BRIDGE_BUILD" = true && "$HAS_LINK$HAS_PASSWORD$HAS_APPLE_ID$HAS_APP_PASSWORD$HAS_TEAM" == *true* ]]; then
-            echo "::error::the fixed bridge signer cannot be mixed with Developer ID or notarization"
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          if [ "$HAS_CREDENTIALS" = true ]; then
+            echo "::error::the ad hoc bridge cannot be mixed with Developer ID or notarization"
             exit 1
           fi
-          echo "signed=$signed"
 
       - name: Install dependencies
         run: npm ci
@@ -530,61 +501,26 @@ jobs:
           SEUOFFICE_GOOGLE_CLIENT_ID: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID }}
           SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET }}
 
-      - name: Import the fixed bridge identity on the hosted runner
-        if: needs.version.outputs.bridge == 'true'
-        env:
-          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
-          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
-        run: |
-          test "$RUNNER_ENVIRONMENT" = github-hosted
-          crates/shell/ci/mac-self-sign.sh
-
-      - name: Check the imported public fingerprint
-        if: needs.version.outputs.bridge == 'true'
-        env:
-          EXPECTED: ${{ inputs.bridge_signer_sha1 }}
-        run: |
-          test "$SEUOFFICE_MAC_SIGN_IDENTITY" = "$EXPECTED"
-          echo "SEUOFFICE_BRIDGE_CANDIDATE=true" >> "$GITHUB_ENV"
-
       # pass 1, the latest channel: Build apps already compiled the shell, so
       # only the notices are made here (dist:mac would compile it again)
       - name: Package (latest channel)
         working-directory: apps/shell
-        # an empty secret arrives as "" and electron-builder reads CSC_LINK="" as a path: unset the empty ones
         run: |
-          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            [ -n "${!name}" ] || unset "$name"
-          done
           npm run notices
           npx electron-builder --mac --config electron-builder.seuoffice.cjs --publish never
         env:
           SEUOFFICE_GOOGLE_CLIENT_ID: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID }}
           SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       # pass 2, the stable channel: reuses the JS pass 1 built, only repackages
       - name: Package (stable channel)
         working-directory: apps/shell
-        run: |
-          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            [ -n "${!name}" ] || unset "$name"
-          done
-          npx electron-builder --mac --config electron-builder.seuoffice.cjs --publish never
+        run: npx electron-builder --mac --config electron-builder.seuoffice.cjs --publish never
         env:
           SEUOFFICE_UPDATE_CHANNEL: stable
           BUILD_DIR: release-stable
           SEUOFFICE_GOOGLE_CLIENT_ID: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_ID || secrets.GENOFFICE_GOOGLE_CLIENT_ID }}
           SEUOFFICE_GOOGLE_CLIENT_SECRET: ${{ secrets.SEUOFFICE_GOOGLE_CLIENT_SECRET || secrets.GENOFFICE_GOOGLE_CLIENT_SECRET }}
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: The Google Drive client is in the build
         env:
@@ -600,8 +536,6 @@ jobs:
           }
 
       - name: Check the apps, their feeds, CPU and signatures
-        env:
-          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
           set -euo pipefail
           version=$(node -p "require('./apps/shell/package.json').version")
@@ -609,10 +543,6 @@ jobs:
             echo "::error::package.json version is $version, but the tag is $GITHUB_REF_NAME"
             exit 1
           fi
-          if [ "$SIGNED" != "true" ] && [ "$BRIDGE_BUILD" != true ]; then
-            echo "::warning::No Developer ID certificate or notarization credentials: this build is signed ad hoc (Gatekeeper asks the user to allow it)."
-          fi
-
           check_flavor() {
             local dir=$1 channel=$2 feed=$3 suffix=$4
             local app="$dir/mac-arm64/SeuOffice.app"
@@ -650,21 +580,7 @@ jobs:
               grep -Fxq -- "$line" "$update" || { echo "$update lacks '$line'"; exit 1; }
             done
 
-            if [ "$BRIDGE_BUILD" = true ]; then
-              bash tools/migration-test/check-bridge-mac.sh "$app" "$dir/$zip" "$dmg"
-              return
-            fi
-            codesign --verify --deep --strict --verbose=2 "$app"
-            # read the whole report first: grep -q quitting early would break the pipe
-            local signature
-            signature="$(codesign -dv --verbose=2 "$app" 2>&1)"
-            if [ "$SIGNED" = "true" ]; then
-              grep -q 'Authority=Developer ID Application' <<<"$signature" || { echo "$signature"; exit 1; }
-              spctl --assess --type execute --verbose=2 "$app"
-              xcrun stapler validate "$dmg"
-            else
-              grep -q 'Signature=adhoc' <<<"$signature" || { echo "$signature"; exit 1; }
-            fi
+            bash tools/migration-test/check-bridge-mac.sh "$app" "$dir/$zip" "$dmg"
           }
           check_flavor apps/shell/release latest latest-mac.yml ''
           check_flavor apps/shell/release-stable stable stable-mac.yml -stable
@@ -847,7 +763,6 @@ jobs:
       - name: Write the release notes
         env:
           WINDOWS_SIGNED: ${{ needs.windows.outputs.signed }}
-          MAC_SIGNED: ${{ needs.mac.outputs.signed }}
         run: |
           set -euo pipefail
           # the body is what changed, in the person's words: the update window shows
@@ -862,7 +777,7 @@ jobs:
             echo
             echo "    gh release edit $TAG --prerelease=false --latest"
             echo
-            echo "서명: Windows $([ "$WINDOWS_SIGNED" = "true" ] && echo 됨 || echo 없음), Mac $([ "$MAC_SIGNED" = "true" ] && echo 'Developer ID와 공증' || echo '없음(ad hoc)')."
+            echo "서명: Windows $([ "$WINDOWS_SIGNED" = "true" ] && echo 됨 || echo 없음), Mac ad hoc(공증 없음)."
             echo
             echo "웹에 붙이는 묶음(seuoffice-embed, seuoffice-web)과 공동 편집 서버 묶음(seuoffice-collab)도 이 릴리스에 있다."
             echo

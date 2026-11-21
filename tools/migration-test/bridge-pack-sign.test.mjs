@@ -7,8 +7,6 @@ import { runInNewContext } from 'node:vm'
 
 const shell = resolve(import.meta.dirname, '../../apps/shell')
 const require = createRequire(join(shell, 'electron-builder.cjs'))
-const fingerprint = '0123456789ABCDEF'.repeat(2) + '01234567'
-const candidate = { SEUOFFICE_BRIDGE_CANDIDATE: 'true', SEUOFFICE_MAC_SIGN_IDENTITY: fingerprint }
 
 function releaseConfig(platform, env, signAsync) {
   function load(file) {
@@ -31,47 +29,43 @@ function releaseConfig(platform, env, signAsync) {
   return load('electron-builder.seuoffice.cjs')
 }
 
-test('the Mac bridge signs the packager bundle with the imported fingerprint, without notarization', async (t) => {
-  const sign = t.mock.fn()
-  const config = releaseConfig('darwin', candidate, sign)
-  assert.equal(config.mac.identity, '-') // The builder gate that invokes mac.sign.
-  assert.equal(config.mac.notarize, false)
-  assert.equal(config.mac.timestamp, 'none')
-  assert.equal(config.dmg.sign, false)
-  assert.equal(config.afterAllArtifactBuild, null)
-
-  const optionsForFile = () => ({ entitlements: 'build/entitlements.mac.plist' })
-  const app = 'release/mac-arm64/SeuOffice.app'
-  await config.mac.sign({ app, identity: '-', optionsForFile })
-  assert.equal(sign.mock.callCount(), 1)
-  const [options] = sign.mock.calls[0].arguments
-  assert.equal(options.app, app)
-  assert.equal(options.optionsForFile, optionsForFile)
-  assert.equal(options.identity, fingerprint)
-  assert.equal(options.identityValidation, false)
-})
-
-test('a bridge cannot fall back to ad hoc or Developer ID if the fixed signer is unavailable', async () => {
-  for (const identity of [undefined, '-', 'SeuOffice Self Sign', '0'.repeat(39), 'Z'.repeat(40)]) {
-    assert.throws(
-      () => releaseConfig('darwin', { ...candidate, SEUOFFICE_MAC_SIGN_IDENTITY: identity }),
-      /SEUOFFICE_MAC_SIGN_IDENTITY/,
-    )
-  }
-  assert.throws(() => releaseConfig('darwin', { ...candidate, CSC_LINK: 'other.p12' }), /CSC_LINK/)
-  const config = releaseConfig('darwin', candidate, async () => {
-    throw new Error('identity unavailable')
-  })
-  await assert.rejects(config.mac.sign({ identity: '-' }), /identity unavailable/)
-})
-
-test('other platforms and ordinary Mac builds do not select the bridge signer', () => {
-  for (const config of [
-    releaseConfig('win32', candidate),
-    releaseConfig('darwin', { ...candidate, SEUOFFICE_BRIDGE_CANDIDATE: 'false' }),
-  ]) {
-    assert.equal(config.mac.sign, undefined)
+for (const channel of ['latest', 'stable']) {
+  test(`the ${channel} Mac bridge signs ad hoc despite a discovered identity`, async (t) => {
+    const sign = t.mock.fn()
+    const config = releaseConfig('darwin', { SEUOFFICE_UPDATE_CHANNEL: channel }, sign)
     assert.equal(config.mac.identity, '-')
-    assert.equal(config.afterAllArtifactBuild, 'build/notarize-dmg.js')
+    assert.equal(config.mac.hardenedRuntime, false)
+    assert.equal(config.mac.notarize, false)
+    assert.equal(config.dmg.sign, false)
+    assert.equal(config.afterAllArtifactBuild, null)
+
+    const optionsForFile = () => ({ entitlements: 'build/entitlements.mac.plist' })
+    const app = 'release/mac-arm64/SeuOffice.app'
+    await config.mac.sign({ app, identity: 'Developer ID Application: Test-Only', optionsForFile })
+    assert.equal(sign.mock.callCount(), 1)
+    const [options] = sign.mock.calls[0].arguments
+    assert.equal(options.app, app)
+    assert.equal(options.optionsForFile, optionsForFile)
+    assert.equal(options.identity, '-')
+    assert.equal(options.identityValidation, false)
+  })
+}
+
+test('Mac packaging refuses any CSC_LINK before builder can import a certificate', () => {
+  for (const link of ['', 'other.p12']) {
+    assert.throws(() => releaseConfig('darwin', { CSC_LINK: link }), /CSC_LINK/)
   }
+})
+
+test('a signing failure stops packaging instead of emitting an unsigned app', async () => {
+  const config = releaseConfig('darwin', {}, async () => {
+    throw new Error('codesign failed')
+  })
+  await assert.rejects(config.mac.sign({ app: 'SeuOffice.app' }), /codesign failed/)
+})
+
+test('Mac signing does not override Windows signing', () => {
+  const config = releaseConfig('win32', { SEUOFFICE_WIN_SIGN_MODE: 'production' })
+  assert.equal(typeof config.win.signtoolOptions.sign, 'function')
+  assert.equal(config.mac.sign, undefined)
 })

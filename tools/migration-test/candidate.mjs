@@ -108,8 +108,7 @@ const expected =
           'stable-mac.yml': 'feed',
         },
       }
-const signingKinds =
-  platform === 'win32' ? ['unsigned', 'authenticode'] : ['self-signed', 'developer-id-notarized']
+const signingKinds = platform === 'win32' ? ['unsigned', 'authenticode'] : ['ad-hoc']
 for (const channel of channels) {
   const names = expected[channel.channel]
   if (

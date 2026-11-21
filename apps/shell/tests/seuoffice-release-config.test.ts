@@ -8,11 +8,6 @@ const OVERLAY = resolve(SHELL, 'electron-builder.seuoffice.cjs')
 const BASE = resolve(SHELL, 'electron-builder.cjs')
 const ENV_NAMES = [
   'CSC_LINK',
-  'APPLE_ID',
-  'APPLE_APP_SPECIFIC_PASSWORD',
-  'APPLE_TEAM_ID',
-  'SEUOFFICE_BRIDGE_CANDIDATE',
-  'SEUOFFICE_MAC_SIGN_IDENTITY',
   'SEUOFFICE_MAC_X64',
   'SEUOFFICE_WIN_ARM64',
   'SEUOFFICE_UPDATE_CHANNEL',
@@ -144,30 +139,14 @@ describe('what the package leaves out', () => {
 })
 
 describe('Mac signing', () => {
-  it('stays ad hoc without a certificate', () => {
-    const config = loadRelease()
-    expect(config.mac.identity).toBe('-')
-    expect(config.mac.notarize).toBe(false)
-    expect(config.dmg.sign).toBe(false)
-  })
-
-  it('signs with the Developer ID certificate and notarizes when one is given', () => {
-    const config = loadRelease({
-      CSC_LINK: 'base64-p12',
-      APPLE_ID: 'dev@example.test',
-      APPLE_APP_SPECIFIC_PASSWORD: 'secret',
-      APPLE_TEAM_ID: 'TEAM123456',
-    })
-    expect('identity' in config.mac).toBe(false)
-    expect(config.mac.hardenedRuntime).toBe(true)
-    expect(config.mac.notarize).toBe(true)
-    expect(config.dmg.sign).toBe(true)
-  })
-
-  it('refuses a certificate without the notarization credentials', () => {
-    expect(() => loadRelease({ CSC_LINK: 'base64-p12', APPLE_ID: 'dev@example.test' })).toThrow(
-      /APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID/,
-    )
+  it('uses ad hoc app signatures and does not notarize either release channel', () => {
+    for (const channel of ['latest', 'stable']) {
+      const config = loadRelease({ SEUOFFICE_UPDATE_CHANNEL: channel })
+      expect(config.mac.identity).toBe('-')
+      expect(config.mac.hardenedRuntime).toBe(false)
+      expect(config.mac.notarize).toBe(false)
+      expect(config.dmg.sign).toBe(false)
+    }
   })
 })
 

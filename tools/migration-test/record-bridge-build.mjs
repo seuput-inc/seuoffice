@@ -2,20 +2,18 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 const { platform, arch, env } = process
 const { version } = JSON.parse(readFileSync('apps/shell/package.json', 'utf8'))
-const signingIdentity = platform === 'darwin' ? env.SEUOFFICE_MAC_SIGN_IDENTITY : null
 const supported =
-  (platform === 'win32' && arch === 'x64') ||
-  (platform === 'darwin' && arch === 'arm64' && /^[A-F0-9]{40}$/.test(signingIdentity || ''))
+  (platform === 'win32' && arch === 'x64') || (platform === 'darwin' && arch === 'arm64')
 if (!supported) {
-  throw new Error('unsupported bridge platform, architecture or signer')
+  throw new Error('unsupported bridge platform or architecture')
 }
 writeFileSync(
   'release-files/bridge-build.json',
   JSON.stringify({
-    schema: 'seuoffice-electron-bridge-build/v1',
+    schema: 'seuoffice-electron-bridge-build/v2',
     platform,
     version,
-    signingIdentity,
+    signing: platform === 'darwin' ? 'ad-hoc' : 'unsigned',
     sourceSha: env.GITHUB_SHA,
     runId: env.GITHUB_RUN_ID,
     runAttempt: env.GITHUB_RUN_ATTEMPT,

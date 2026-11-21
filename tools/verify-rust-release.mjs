@@ -217,9 +217,9 @@ for (const [artifact, platform, arch, signing] of [
     names.push([`${names.at(-1)[0]}.blockmap`, 'blockmap'])
     names.push([`${channel.channel}${platform === 'darwin' ? '-mac' : ''}.yml`, 'feed'])
     if (
-      !(
-        platform === 'win32' ? ['unsigned', 'authenticode'] : ['ad-hoc', 'developer-id-notarized']
-      ).includes(channel.signing) ||
+      !(platform === 'win32' ? ['unsigned', 'authenticode'] : ['ad-hoc']).includes(
+        channel.signing,
+      ) ||
       !Array.isArray(channel.files) ||
       channel.files.length !== names.length
     )

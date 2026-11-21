@@ -126,13 +126,6 @@ jobs:
       - name: Tauri CLI
         working-directory: crates/shell
         run: npm install --no-audit --no-fund
-      - name: Signing identity (macOS, decision 0035)
-        if: matrix.platform == 'mac'
-        working-directory: crates/shell
-        env:
-          MAC_SELF_SIGN_P12: ${{ secrets.MAC_SELF_SIGN_P12 }}
-          MAC_SELF_SIGN_PASSWORD: ${{ secrets.MAC_SELF_SIGN_PASSWORD }}
-        run: ../../.bundle-definition/crates/shell/ci/mac-self-sign.sh
       - name: Package both channels
         working-directory: crates/shell
         env:
@@ -215,7 +208,7 @@ jobs:
                 profile_preflight
                 node bundle/release-feed.mjs feed --version "$v" --platform win32 "$installer"
               else
-                APPLE_SIGNING_IDENTITY="$SEUOFFICE_MAC_SIGN_IDENTITY" npx tauri build --config bundle/macos.conf.json --config "{\"version\":\"$v\"}" --bundles app,dmg --verbose -- --locked
+                APPLE_SIGNING_IDENTITY=- npx tauri build --config bundle/macos.conf.json --config "{\"version\":\"$v\"}" --bundles app,dmg --verbose -- --locked
                 [ "$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d | wc -l | tr -d ' ')" = 1 ]
                 [ "$(find target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -type f | wc -l | tr -d ' ')" = 1 ]
                 app=$(find target/release/bundle/macos -maxdepth 1 -name '*.app' -type d)
@@ -261,7 +254,7 @@ jobs:
         run: |
           set -euo pipefail
           signing=unsigned
-          [ '${{ matrix.platform }}' != mac ] || signing=self-signed
+          [ '${{ matrix.platform }}' != mac ] || signing=ad-hoc
           node .bundle-definition/crates/shell/bundle/bundle-manifest.mjs --root "$RUNNER_TEMP/release" --platform '${{ matrix.node_platform }}' --versions "$VERSION $NEXT_VERSION" --source "$SOURCE" --definition "$GITHUB_SHA" --run "$GITHUB_RUN_ID" --signing "$signing"
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
