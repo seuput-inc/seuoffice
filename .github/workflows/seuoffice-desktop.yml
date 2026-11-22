@@ -87,6 +87,16 @@ jobs:
               echo "::error::a release runs on main only, not $GITHUB_REF"
               exit 1
             fi
+            # A release of a commit that already has a version (the same dispatch sent twice,
+            # say after the sender restarted) publishes nothing: the next number would be a
+            # second release of the same code. Peeled tags (^{}) cover annotated tags.
+            released=$(git ls-remote --tags origin 'refs/tags/v*' |
+              awk -v sha="$GITHUB_SHA" '$1 == sha { sub("refs/tags/", "", $2); sub(/\^\{\}$/, "", $2); print $2 }' |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+            if [ -n "$released" ]; then
+              echo "::error::$GITHUB_SHA is already released as $released; nothing to release"
+              exit 1
+            fi
             highest=$(git ls-remote --tags --refs origin 'refs/tags/v*' | sed 's#.*refs/tags/v##' |
               grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
             if [ -z "$highest" ] || [ "$(printf '%s\n%s\n' "$highest" "$base" | sort -V | tail -n 1)" != "$highest" ]; then
