@@ -1,0 +1,303 @@
+import { createHash } from 'node:crypto'
+import { setImmediate as yieldIO, setTimeout as delay } from 'node:timers/promises'
+import { types } from 'node:util'
+import { HistoryError, type Json } from '@seuoffice/collab/client'
+import { launchStream } from './sandbox.js'
+
+const FILE_LIMIT = 50 * 1024 * 1024
+const CHUNK = 64 * 1024
+
+type Source = { byteLength: number; open(): AsyncIterable<Uint8Array> }
+type Stage = { write(bytes: Uint8Array): Promise<void>; abort(): Promise<void> }
+type Part = Buffer | { offset: number; length: number }
+
+function invalid(detail: string): never {
+  throw new HistoryError('invalid_history', detail)
+}
+
+function frame(bytes: Uint8Array): Buffer {
+  const data = Buffer.alloc(4 + bytes.byteLength)
+  data.writeUInt32LE(bytes.byteLength)
+  data.set(bytes, 4)
+  return data
+}
+
+async function consume(
+  input: AsyncIterable<Uint8Array>,
+  signal: AbortSignal,
+  visit: (bytes: Uint8Array) => Promise<void>,
+) {
+  signal.throwIfAborted()
+  const iterator = input[Symbol.asyncIterator]()
+  let active = true
+  const cancel = () => {
+    if (!active) return
+    active = false
+    // An external producer may never settle an outstanding next() or return().
+    void Promise.resolve()
+      .then(() => iterator.return?.())
+      .catch(() => {})
+  }
+  signal.addEventListener('abort', cancel, { once: true })
+  try {
+    for (;;) {
+      signal.throwIfAborted()
+      const item = await iterator.next()
+      signal.throwIfAborted()
+      if (item.done) {
+        active = false
+        return
+      }
+      if (!types.isUint8Array(item.value)) invalid('invalid input chunk')
+      await visit(item.value)
+    }
+  } finally {
+    signal.removeEventListener('abort', cancel)
+    cancel()
+  }
+}
+
+async function readBase(
+  source: Source,
+  length: number,
+  signal: AbortSignal,
+  visit: (bytes: Uint8Array, offset: number) => Promise<void>,
+): Promise<string> {
+  signal.throwIfAborted()
+  const hash = createHash('sha256')
+  let offset = 0
+  await consume(source.open(), signal, async (raw) => {
+    const size = raw.byteLength
+    if (size > length - offset) invalid('base exceeds declared length')
+    if (!size) return yieldIO()
+    for (let i = 0; i < size; i += CHUNK) {
+      signal.throwIfAborted()
+      // A producer may reuse its storage. Hash and deliver the same bounded snapshot.
+      const chunk = Buffer.from(raw.subarray(i, Math.min(i + CHUNK, size)))
+      hash.update(chunk)
+      await visit(chunk, offset)
+      offset += chunk.byteLength
+    }
+  })
+  if (offset !== length) invalid('incomplete base')
+  return hash.digest('hex')
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function json(value: unknown, depth = 0): value is Json {
+  if (depth > 32) return false
+  if (Array.isArray(value)) return value.every((item) => json(item, depth + 1))
+  if (record(value))
+    return Object.entries(value).every(
+      ([key, item]) =>
+        key !== '__proto__' &&
+        key !== 'prototype' &&
+        key !== 'constructor' &&
+        json(item, depth + 1),
+    )
+  return (
+    value === null ||
+    typeof value === 'boolean' ||
+    typeof value === 'string' ||
+    Number.isFinite(value)
+  )
+}
+
+function recipe(output: Buffer, length: number, digest: string | undefined, mixed: boolean) {
+  let meta: unknown
+  try {
+    meta = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(output))
+  } catch {
+    invalid('invalid sandbox response')
+  }
+  if (!record(meta)) invalid('invalid sandbox response')
+  if ('error' in meta) {
+    if (
+      meta.error === 'unsupported' ||
+      meta.error === 'conflict' ||
+      meta.error === 'invalid_history'
+    )
+      throw new HistoryError(meta.error)
+    invalid('unknown sandbox error')
+  }
+  if (
+    !digest ||
+    meta.baseHash !== digest ||
+    typeof meta.fileName !== 'string' ||
+    (meta.fileName !== 'history.pdf' &&
+      (!mixed || !['history.docx', 'history.xlsx', 'history.pptx'].includes(meta.fileName))) ||
+    !Array.isArray(meta.parts) ||
+    meta.parts.length > 8192
+  )
+    invalid('invalid sandbox recipe')
+  const compensation = meta.compensation
+  if (
+    compensation !== undefined &&
+    (!Array.isArray(compensation) ||
+      !compensation.length ||
+      !compensation.every((op): op is Json => json(op)))
+  )
+    invalid('invalid sandbox compensation')
+  const parts: Part[] = []
+  let sourceEnd = 0
+  let outputSize = 0
+  for (const part of meta.parts) {
+    if (!record(part)) invalid('invalid output part')
+    if ('data' in part) {
+      if (Object.keys(part).length !== 1 || typeof part.data !== 'string' || !part.data.length)
+        invalid('invalid generated part')
+      const bytes = Buffer.from(part.data, 'base64')
+      if (bytes.toString('base64') !== part.data) invalid('invalid generated bytes')
+      parts.push(bytes)
+      outputSize += bytes.length
+    } else {
+      const { offset, length: size } = part
+      if (
+        Object.keys(part).length !== 2 ||
+        typeof offset !== 'number' ||
+        !Number.isSafeInteger(offset) ||
+        offset < sourceEnd ||
+        typeof size !== 'number' ||
+        !Number.isSafeInteger(size) ||
+        size <= 0 ||
+        size > length - offset
+      )
+        invalid('out-of-order or out-of-bounds source span')
+      sourceEnd = offset + size
+      parts.push({ offset, length: size })
+      outputSize += size
+    }
+  }
+  if (outputSize <= 0 || outputSize > FILE_LIMIT) invalid('invalid output length')
+  return { fileName: meta.fileName, parts, compensation }
+}
+
+async function stageRecipe(
+  source: Source,
+  length: number,
+  parts: Part[],
+  stage: Stage,
+  signal: AbortSignal,
+) {
+  let index = 0
+  const digest = await readBase(source, length, signal, async (bytes, start) => {
+    const end = start + bytes.byteLength
+    while (index < parts.length) {
+      signal.throwIfAborted()
+      const part = parts[index]
+      if (Buffer.isBuffer(part)) {
+        for (let i = 0; i < part.length; i += CHUNK) {
+          signal.throwIfAborted()
+          await stage.write(part.subarray(i, i + CHUNK))
+        }
+      } else {
+        if (part.offset >= end) break
+        const spanEnd = part.offset + part.length
+        await stage.write(
+          bytes.subarray(Math.max(0, part.offset - start), Math.min(end, spanEnd) - start),
+        )
+        if (spanEnd > end) break
+      }
+      index++
+    }
+  })
+  if (index !== parts.length) invalid('incomplete recipe')
+  return digest
+}
+
+async function renderStaged(
+  mode: 'rgb' | 'mixed',
+  source: Source,
+  header: Uint8Array,
+  changes: AsyncIterable<Uint8Array>,
+  stage: Stage,
+  signal?: AbortSignal,
+  compensationAuthor = '',
+): Promise<{ fileName: string; compensation?: Json[] }> {
+  try {
+    signal?.throwIfAborted()
+    const deadline = performance.now() + 15000
+    const remainingMs = () => {
+      const ms = Math.ceil(deadline - performance.now())
+      if (ms <= 0) throw new HistoryError('unsupported', 'stream render timed out')
+      return ms
+    }
+    const length = source.byteLength
+    if (
+      !Number.isSafeInteger(length) ||
+      length <= 0 ||
+      length > FILE_LIMIT ||
+      !types.isUint8Array(header) ||
+      !header.byteLength ||
+      header.byteLength > 8192
+    )
+      invalid('invalid stream header or base length')
+    const head = frame(header)
+    let digest: string | undefined
+    const output = await launchStream(
+      mode,
+      remainingMs,
+      async (write, signal) => {
+        if (mode === 'mixed') {
+          if (
+            typeof compensationAuthor !== 'string' ||
+            compensationAuthor.length > 256 * 1024 ||
+            Buffer.byteLength(compensationAuthor) > 256 * 1024 ||
+            /[\uD800-\uDFFF]/u.test(compensationAuthor)
+          )
+            throw new HistoryError('unsupported', 'compensation author exceeds replay profile')
+          await write(frame(Buffer.from(compensationAuthor)))
+        }
+        await write(head)
+        const size = Buffer.allocUnsafe(4)
+        size.writeUInt32LE(length)
+        await write(size)
+        const hash = await readBase(source, length, signal, write)
+        let historyBytes = head.length - 4 + ',"changes":[]'.length
+        let comma = 0
+        await consume(changes, signal, async (change) => {
+          historyBytes += comma + change.byteLength
+          if (
+            !change.byteLength ||
+            change.byteLength > 256 * 1024 ||
+            historyBytes > 32 * 1024 * 1024
+          )
+            invalid('history exceeds stream limits')
+          comma = 1
+          await write(frame(change))
+        })
+        digest = hash
+      },
+      signal,
+    )
+    signal?.throwIfAborted()
+    const { fileName, parts, compensation } = recipe(output, length, digest, mode === 'mixed')
+    const controller = new AbortController()
+    const staging = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    try {
+      const timeout = delay(remainingMs(), undefined, { signal: staging }).then(() => {
+        throw new HistoryError('unsupported', 'stream render timed out')
+      })
+      const stagedHash = await Promise.race([
+        stageRecipe(source, length, parts, stage, staging),
+        timeout,
+      ])
+      staging.throwIfAborted()
+      remainingMs()
+      if (stagedHash !== digest) invalid('base changed between reads')
+    } finally {
+      controller.abort()
+    }
+    return compensation ? { fileName, compensation } : { fileName }
+  } catch (error) {
+    await stage.abort()
+    signal?.throwIfAborted()
+    throw error
+  }
+}
+
+export const renderStream = renderStaged.bind(null, 'rgb')
+export const renderHistory = renderStaged.bind(null, 'mixed')

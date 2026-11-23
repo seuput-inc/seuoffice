@@ -122,6 +122,18 @@ describe('our CollabStore', () => {
 
 예제를 쓰려면 [작업자 페이지](examples/history-worker.html) 옆의 `embed/`에 같은 판 `@seuoffice/embed`의 `dist/`를 서빙한다. `workerPageUrl`에는 이 페이지의 절대 주소를, `officeBaseUrl`에는 웹 묶음의 루트 주소를 넣는다. 두 주소의 출처가 다르면 웹 묶음의 `embed-origins.json`에서 작업자 출처를 허용한다.
 
+### 이력을 전부 메모리에 올리지 않는 호스트
+
+`@seuoffice/collab/server`의 `createHistoryServer({ store, renderStream })`는 같은 `exportHistory`, `restoreHistory`, `undoHistory`를 제공한다. 소켓의 `accept`도 같은 서버 인스턴스를 써야 한다. `store`는 `StreamHistoryStore`이며, 한 명령의 세 번째 인자로 `AbortSignal`을 줄 수 있다. 커밋 전에 취소하면 비공개 결과를 버린다. 트랜잭션 커밋 후에 응답을 잃으면 같은 `requestId`로 재시도한다. 이미 저장한 변경을 취소 신호로 되돌리지는 않는다.
+
+여러 문서 형식을 받는 호스트는 `renderStream` 콜백에 같은 판 `@seuoffice/history-renderer`의 `renderHistory`를 연결한다. 형식별 서버나 저장소는 필요하지 않다. 콜백의 여섯째 인자는 선택 취소 때 기록할 인증된 사용자 ID다. 직접 감싸는 경우 이 값도 전달해야 게스트가 실제 보상 변경을 포함한 재생 한도를 검사한다.
+
+- `readHistoryStream`은 문서·에포크·버전에 고정된 원본 스트림과 `1..version`의 UTF-8 `Change` 프레임을 순서대로 제공한다. 기준 해시와 형식은 저장소가 보유한 메타데이터에서 읽는다. 호스트는 전체 JSON을 읽어 프레임으로 다시 나누지 않는다.
+- 렌더링은 문서 큐 밖에서만 한다. 내보내는 결과는 읽기 권한과 임시 파일을 만들 때의 현재 에포크·머리를 다시 확인한 뒤에만 전달한다. 성공 결과인 `StreamHistoryArtifact`는 `fileName`, `byteLength`, `open()`, `dispose()`를 제공한다. 소비자는 다운로드 성공·중단 모두 `finally`에서 `dispose()`한다.
+- 복원은 임시 파일을 독립된 새 판으로 옮긴다. 선택 취소는 렌더링한 파일을 폐기하고 SDK가 만든 보상 `Change` 하나를 추가한다. 저장소는 문서 큐 안의 한 트랜잭션에서 권한·대상 저자, 명령 의도와 영수증, 기대 에포크·머리를 검사하고, 결과와 영수증을 함께 커밋한다. 임시 파일은 중복 요청이거나 실패해도 남기지 않는다.
+
+[SQLite 청크 저장소와 스트림 렌더러 연결 예제](../history-renderer/examples/stream-host.mjs)는 합성 파일용이다. `render`를 받는 기존 바이트 모드와 달리 원본을 두 번 읽을 수 있어야 하며, 입력 검증·취소·보상까지 처리하는 신뢰된 렌더러를 연결한다. 사용자 요청을 저장소 포트에 직접 연결하지 않는다.
+
 ## 엔진 붙이기
 
 페이지는 `CollabLink`(웹에서는 `@seuoffice/web-platform`의 `collabLink()`)와 연 파일을 넘겨 참여한다. 편집기는 `join.baseBytes`를 연다. 다른 사람이 먼저 연 문서면 호스트가 준 바이트가 아니라 그 문서의 기준 파일이 온다.

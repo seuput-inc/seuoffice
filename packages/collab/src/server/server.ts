@@ -111,6 +111,8 @@ export interface ServerCoreOptions extends CollabServerOptions {
 export interface ServerCore extends CollabServer {
   /** resolves once no document has queued work */
   idle(): Promise<void>
+  /** Publish an authorized staged export after earlier socket and history operations. */
+  inDocumentQueue<T>(documentId: string, run: () => Promise<T>): Promise<T>
   /** Commit in the same document queue as idle/drop and socket submits, then deliver the result. */
   commitHistory(
     documentId: string,
@@ -577,6 +579,19 @@ export function createServerCore({
     }
   }
 
+  function inDocumentQueue<T>(documentId: string, run: () => Promise<T>): Promise<T> {
+    if (closing) return Promise.reject(new Error('server closed'))
+    const outcome = deferred<T>()
+    void enqueue(docFor(documentId), null, async () => {
+      try {
+        outcome.resolve(await run())
+      } catch (error) {
+        outcome.reject(error)
+      }
+    })
+    return outcome.promise
+  }
+
   return {
     accept(socket, principal) {
       if (closing) {
@@ -650,25 +665,19 @@ export function createServerCore({
       })
       if (outcome.failed) throw outcome.error
     },
-    async commitHistory(documentId, epoch, commit) {
-      if (closing) throw new Error('server closed')
-      const doc = docFor(documentId)
-      const outcome = deferred<HistoryReceipt>()
-      void enqueue(doc, null, async () => {
-        try {
-          const receipt = await commit()
-          if (receipt.kind === 'undone') {
-            for (const conn of live(doc)) {
-              if (conn.epoch === epoch && conn.sent < receipt.version)
-                await forSocket(doc, conn, () => catchUp(doc, conn, receipt.version))
-            }
+    inDocumentQueue,
+    commitHistory(documentId, epoch, commit) {
+      return inDocumentQueue(documentId, async () => {
+        const receipt = await commit()
+        if (receipt.kind === 'undone') {
+          const doc = docFor(documentId)
+          for (const conn of live(doc)) {
+            if (conn.epoch === epoch && conn.sent < receipt.version)
+              await forSocket(doc, conn, () => catchUp(doc, conn, receipt.version))
           }
-          outcome.resolve(receipt)
-        } catch (error) {
-          outcome.reject(error)
         }
+        return receipt
       })
-      return outcome.promise
     },
     async close() {
       closing = true

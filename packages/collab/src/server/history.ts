@@ -11,6 +11,12 @@ import { createServerCore, type CollabServer, type Limits, type Principal } from
 import type { CollabStore } from './store.js'
 import { utf8Length } from '../wire.js'
 import { MAX_CHANGE_BYTES } from '../limits.js'
+import {
+  withStreamHistory,
+  type StreamHistoryArtifact,
+  type StreamHistoryOptions,
+  type StreamHistoryWrite,
+} from './stream-history.js'
 
 export interface HistoryPoint {
   epoch: string
@@ -67,10 +73,23 @@ export interface RetainedHistoryStore extends CollabStore {
   readRevision(principal: Principal, revisionId: string): Promise<HistoryArtifact>
 }
 
-export interface HistoryServer extends CollabServer {
-  exportHistory(principal: Principal, source: HistoryPoint): Promise<HistoryArtifact>
+export interface HistoryServer<Artifact = HistoryArtifact> extends CollabServer {
+  exportHistory(principal: Principal, source: HistoryPoint): Promise<Artifact>
   restoreHistory(principal: Principal, input: RestoreRequest): Promise<RestoreReceipt>
   undoHistory(principal: Principal, input: UndoRequest): Promise<UndoReceipt>
+}
+export interface StreamHistoryServer extends HistoryServer<StreamHistoryArtifact> {
+  exportHistory(
+    principal: Principal,
+    source: HistoryPoint,
+    signal?: AbortSignal,
+  ): Promise<StreamHistoryArtifact>
+  restoreHistory(
+    principal: Principal,
+    input: RestoreRequest,
+    signal?: AbortSignal,
+  ): Promise<RestoreReceipt>
+  undoHistory(principal: Principal, input: UndoRequest, signal?: AbortSignal): Promise<UndoReceipt>
 }
 
 function point({ epoch, version }: HistoryPoint): HistoryPoint {
@@ -85,30 +104,49 @@ function point({ epoch, version }: HistoryPoint): HistoryPoint {
   return { epoch, version }
 }
 
-/** Route every socket and history command for a document to its one owning server. */
-export function createHistoryServer(options: {
+interface ByteHistoryOptions {
   store: RetainedHistoryStore
   limits?: Partial<Limits>
   /** Host-controlled isolated editor worker, never a result uploaded by the requesting user. */
   render: (baseBytes: Uint8Array, request: HistoryRequest) => Promise<HistoryResult>
-}): HistoryServer {
-  const { store, render } = options
+}
+
+/** Route sockets and history commands for a document to one owning server. */
+export function createHistoryServer(options: StreamHistoryOptions): StreamHistoryServer
+export function createHistoryServer(options: ByteHistoryOptions): HistoryServer
+export function createHistoryServer(
+  options: ByteHistoryOptions | StreamHistoryOptions,
+): HistoryServer<HistoryArtifact | StreamHistoryArtifact> {
+  const { store } = options
+  const shutdown = new AbortController()
+  const signalFor = (signal?: AbortSignal) =>
+    signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
   const server = createServerCore(options)
-  let closed = false
+  const staging = new Set<Promise<unknown>>()
+  function track<T>(work: Promise<T>): Promise<T> {
+    staging.add(work)
+    return work.finally(() => staging.delete(work))
+  }
 
   function principalFor(p: Principal, action: HistoryAction): Principal {
-    if (closed || !p?.documentId || !p.userId || (action !== 'export' && p.canEdit !== true))
+    if (
+      shutdown.signal.aborted ||
+      !p?.documentId ||
+      !p.userId ||
+      (action !== 'export' && p.canEdit !== true)
+    )
       throw new Error('history forbidden')
     return { ...p }
   }
 
   async function artifact(
+    bytes: ByteHistoryOptions,
     p: Principal,
     source: HistoryPoint,
     action: HistoryAction,
     undo?: UndoRequest['target'],
   ): Promise<HistoryResult> {
-    const { baseBytes, request } = await store.readHistory(p, source, action)
+    const { baseBytes, request } = await bytes.store.readHistory(p, source, action)
     if (
       request.epoch !== source.epoch ||
       request.version !== source.version ||
@@ -119,12 +157,25 @@ export function createHistoryServer(options: {
     const prefix = undo ? { ...request, undo } : request
     checkPrefix(prefix, request.format)
     if (undo) await store.authorizeUndoTarget(p, undo)
-    const result = await render(baseBytes, prefix)
+    const result = await bytes.render(baseBytes, prefix)
     assertHistoryResult(result, !!undo)
     return result
   }
 
-  async function mutate(p: Principal, command: HistoryCommand): Promise<HistoryReceipt> {
+  function checkSubmit(base: number, ops: Json[]) {
+    if (
+      utf8Length(JSON.stringify({ t: 'submit', seq: 1, base, ops })) >
+      (options.limits?.maxChangeBytes ?? MAX_CHANGE_BYTES)
+    )
+      throw new Error('compensation too large')
+  }
+
+  async function mutate(
+    p: Principal,
+    command: HistoryCommand,
+    signal: AbortSignal,
+  ): Promise<HistoryReceipt> {
+    signal.throwIfAborted()
     if (
       typeof command.requestId !== 'string' ||
       !command.requestId ||
@@ -136,50 +187,94 @@ export function createHistoryServer(options: {
       return server.commitHistory(p.documentId, command.expected.epoch, async () => {
         if (command.kind === 'undo') await store.authorizeUndoTarget(p, command.target)
         else await store.authorizeHistory(p, command.kind)
+        signal.throwIfAborted()
         return receipt
       })
     }
     const undo = command.kind === 'undo' ? command.target : undefined
     const source = command.kind === 'restore' ? command.source : command.expected
-    const file = await artifact(p, source, command.kind, undo)
+    if ('renderStream' in options) {
+      return track(
+        withStreamHistory(
+          options,
+          p,
+          source,
+          command.kind,
+          undo,
+          signal,
+          (stage, fileName, change) => {
+            let write: StreamHistoryWrite
+            if (command.kind === 'restore') write = { command, stage, fileName }
+            else {
+              if (!change) throw new Error('missing compensation')
+              checkSubmit(command.expected.version, change.ops)
+              write = { command, change }
+            }
+            return server.commitHistory(p.documentId, command.expected.epoch, () => {
+              signal.throwIfAborted()
+              return options.store.commitHistoryStream(p, write, signal)
+            })
+          },
+        ),
+      )
+    }
+    const file = await artifact(options, p, source, command.kind, undo)
     let write: HistoryWrite
     if (command.kind === 'restore') write = { command, artifact: file }
     else {
       const compensation = file.compensation!
-      const frame = { t: 'submit', seq: 1, base: command.expected.version, ops: compensation }
-      if (utf8Length(JSON.stringify(frame)) > (options.limits?.maxChangeBytes ?? MAX_CHANGE_BYTES))
-        throw new Error('compensation too large')
+      checkSubmit(command.expected.version, compensation)
       write = { command, compensation }
     }
     return server.commitHistory(p.documentId, command.expected.epoch, () =>
-      store.commitHistory(p, write),
+      options.store.commitHistory(p, write),
     )
   }
 
   return {
     accept: server.accept,
     reset: server.reset,
-    close() {
-      closed = true
-      return server.close()
+    async close() {
+      shutdown.abort(new Error('server closed'))
+      await Promise.all([server.close(), Promise.allSettled(staging)])
     },
-    async exportHistory(principal, source) {
+    async exportHistory(principal, source, signal?: AbortSignal) {
       const p = principalFor(principal, 'export')
-      const file = await artifact(p, point(source), 'export')
+      if ('renderStream' in options) {
+        const active = signalFor(signal)
+        return track(
+          withStreamHistory(options, p, point(source), 'export', undefined, active, (stage, name) =>
+            server.inDocumentQueue(p.documentId, async () => {
+              await store.authorizeHistory(p, 'export')
+              active.throwIfAborted()
+              return options.store.publishHistoryExport(p, stage, name, active)
+            }),
+          ),
+        )
+      }
+      const file = await artifact(options, p, point(source), 'export')
       await store.authorizeHistory(p, 'export')
       return file
     },
-    async restoreHistory(principal, { source, expected, requestId }) {
-      const receipt = await mutate(principalFor(principal, 'restore'), {
-        kind: 'restore',
-        source: point(source),
-        expected: point(expected),
-        requestId,
-      })
+    async restoreHistory(principal, { source, expected, requestId }, signal?: AbortSignal) {
+      const receipt = await mutate(
+        principalFor(principal, 'restore'),
+        {
+          kind: 'restore',
+          source: point(source),
+          expected: point(expected),
+          requestId,
+        },
+        signalFor(signal),
+      )
       if (receipt.kind !== 'restored') throw new Error('invalid restore receipt')
       return receipt
     },
-    async undoHistory(principal, { target: { epoch, v, index }, expected, requestId }) {
+    async undoHistory(
+      principal,
+      { target: { epoch, v, index }, expected, requestId },
+      signal?: AbortSignal,
+    ) {
       if (
         epoch !== expected.epoch ||
         !Number.isSafeInteger(v) ||
@@ -189,12 +284,16 @@ export function createHistoryServer(options: {
         index < 0
       )
         throw new Error('invalid undo target')
-      const receipt = await mutate(principalFor(principal, 'undo'), {
-        kind: 'undo',
-        expected: point(expected),
-        target: { epoch, v, index },
-        requestId,
-      })
+      const receipt = await mutate(
+        principalFor(principal, 'undo'),
+        {
+          kind: 'undo',
+          expected: point(expected),
+          target: { epoch, v, index },
+          requestId,
+        },
+        signalFor(signal),
+      )
       if (receipt.kind !== 'undone') throw new Error('invalid undo receipt')
       return receipt
     },

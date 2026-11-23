@@ -1,0 +1,115 @@
+# 브라우저 없는 이력 렌더러
+
+`@seuoffice/history-renderer`는 **미게시 로컬 후보**다. 입력은 보유한 원본과 그 원본에서 시작하는 `HistoryRequest`의 UTF-8 JSON 바이트다. 현재 파일에서 과거를 추정하지 않는다. 네 형식 모두 아래에 적은 편집만 처리하며 브라우저 편집기 전체를 대체하지 않는다.
+
+```ts
+import { renderBytes } from '@seuoffice/history-renderer'
+
+const { bytes, fileName, compensation } = await renderBytes(baseBytes, requestJsonBytes)
+```
+
+`renderBytes(base: Uint8Array, requestJson: Uint8Array): Promise<HistoryResult>`는 네 형식의 작은 문서를 처리한다. 호스트에서 신뢰되지 않은 요청을 먼저 `JSON.parse`하지 않는다. 결과의 `bytes`는 다시 열 수 있는 파일이다. `undo`를 주면 지정한 연산만 상쇄하는 wire 연산도 반환한다. 호스트가 아직 기록하지 않은 결과이며, 전체 버전을 롤백하지 않는다. `invalid_history`는 잘못된 입력·원본 해시·로그·대상을, `unsupported`는 처리할 수 없는 문서·연산·실행 환경을, `conflict`는 후속 편집을 보존하면서 취소할 수 없음을 뜻한다.
+
+## 브라우저와의 차이
+
+아래에 허용한다고 적지 않은 연산과 구조는 지원 계약 밖이다. 한 변경에 여러 wire 연산이 있으면 모두 처리할 수 있어야 한다. 단순 문서에서도 일반 편집기가 부가 구조를 넣으면 이 후보에서 열리지 않을 수 있다.
+
+| 형식           | 재생·선택 취소                                                                                                                                                                                                                                                   | 지원하지 않는 첫 경계                                                                                                                                                                                                                                                                                                |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| DOCX, 스키마 4 | 한 문단 안에서 `ReplaceStep`과 `AddMarkStep`·`RemoveMarkStep`을 복합 적용한다. 굵게·기울임·밑줄·취소선, 글꼴·색·크기·강조·음영·위아래 첨자·문자 간격 등 직접 서식을 기록한다. 동료의 독립 편집은 위치를 매핑하며, 이전 서식을 복원하지 못하는 역연산은 거부한다. | 문단 간 교체·표·필드·링크·추적 변경·측정이나 복합 문자 서식 해석이 필요한 경우, 문단 밖의 `side`는 받지 않는다. [브라우저 어댑터](../../apps/docs/src/web/collab-adapter.ts)                                                                                                                                         |
+| XLSX, 스키마 3 | `sheet.mutation.set-range-values`로 A1:Z1000 안의 여러 칸에 숫자·문자열을 쓰거나 비운다. 보기의 눈금선과 오른쪽에서 왼쪽 쓰기도 재생한다. 셀 보상은 원본 타입과 서식을 보존하고 후속 쓰기가 겹치면 충돌한다.                                                     | `planCellEditsToXlsx`는 수식 재계산·참조 이동 엔진이 아니다. 수식·병합·스타일 편집, 행열 삽입·이동·크기, 탭·이름·보기의 나머지 [허용 목록](../../apps/sheets/src/web/collab-mutations.ts)은 지원하지 않는다. 브라우저의 단일 리터럴 셀 취소와 달리 안전하게 되돌릴 수 있는 여러 칸도 허용한다.                       |
+| PPTX, 스키마 3 | 실제 `openDeck`·`applyOp`·`deckFile`로 `blankSlide`, `duplicateSlide`, `deleteSlides`, `notes`, `text`를 재생한다. 생성 취소는 그 슬라이드만 삭제하며 동료가 남긴 메모가 있으면 충돌한다. 같은 문단·런 배치를 유지하는 도형 텍스트도 복원한다.                   | 그룹·자동 맞춤·런 배치가 변하는 텍스트는 서식을 보장할 수 없다. 차트 내장 통합문서·OLE·압축 글꼴·SVG·EMF 등 중첩 입력은 열지 않는다. 메모·삭제 자체의 선택 취소는 제공하지 않는다. [브라우저 모델](../../apps/slides/src/web/collab-adapter.ts)                                                                      |
+| PDF, 스키마 2  | 메타데이터·회전·`stampCfg`·미저장 `markups`를 기록하며, 브라우저와 같은 `capturePdfInverse`로 대상 편집을 선택 취소한다. 빈 페이지·순서·삭제도 재생한다. 고전 xref와 pdf-lib의 압축 xref·객체 스트림을 검증한다.                                                 | `noteEdits`, `drawings`, `formFields`, `formEdits`, `formWidgetEdits`는 지원하지 않는다. 브라우저도 `annotDeletes`, `textEdits`, `textInserts`, `imageEdits`는 거부한다. 일반 사진·내장 글꼴·임의의 주석·XMP·암호화·증분 갱신·중첩 페이지 트리는 받지 않는다. [브라우저 wire](../../apps/pdf/src/web/collab-wire.ts) |
+
+PDF 도장은 워터마크·머리말·꼬리말·쪽 번호를 최종 표시 순서의 페이지에 기록한다. DOM 비트맵 대신 WinAnsi 텍스트(Helvetica) 또는 완성형 한글과 ASCII가 섞인 줄의 고정 Pretendard 윤곽을 사용한다. 호스트 글꼴과 픽셀 일치, 윤곽의 검색·복사는 보장하지 않는다. 한글 윤곽 줄은 128자, WinAnsi 줄은 1,024자 이하이며 페이지당 스트림 16개, 스트림당 2,048바이트 제한도 적용된다. 이모지·결합형·지원하지 않는 글꼴 대체는 추정하지 않는다.
+
+미저장 주석은 형광펜·밑줄·취소선·물결 밑줄의 quad, 색, 제목과 실제 PDF 외형을 쓴다. 최종 주석 최대 128개, 주석마다 quad 16개·좌표 절댓값 14,400·외형 2,048바이트 이하다. 다른 ID는 유지한다. 같은 ID의 후속 편집이나 대상 페이지 회전·삭제와 충돌하면 보상을 기록하지 않는다. 저장된 주석을 미저장 ID로 역추정하지 않는다.
+
+기본 문서 호환 검증에는 openpyxl 3.1.5, python-pptx 1.0.2, pypdf 7.1.1을 쓴다. `python tests/generate-basic-documents.py "$GENERATED_FIXTURES"`로 합성 원본을 만든 뒤 `GENERATED_FIXTURES`를 설치본의 `generated-*.test.mjs`에 전달한다. XLSX는 빈 통합문서 보호 선언과 기본 보기만 추가로 인식한다. PPTX는 정해진 위치와 관계·콘텐츠 형식이 맞는 미리보기와 python-pptx 기본 인쇄 설정만 복사한다. PDF는 평평한 페이지 트리 키의 순서와 `0.0` 원점을 허용한다. 임의 인쇄 데이터, 활성 보호, 중첩 페이지 트리는 지원하지 않는다.
+
+## 실행 경계와 한도
+
+`renderBytes`에서 Node는 입력 바이트 길이만 검사해 파이프로 전달한다. 호출마다 패키지에 고정된 Deno 2.9.6을 시작한다. 게스트가 UTF-8, JSON, ZIP, XML, PDF를 처음 해석하며, 동일한 게스트에서 `replayHistory`와 형식별 저장까지 실행한다. 브라우저, DOM, 수신 포트, 외부 서비스는 사용하지 않는다. 결과 메타데이터와 파일만 Node로 돌아온다. 원본 ZIP의 압축 방식이나 바이트 배열 전체가 유지된다는 보장은 없다.
+
+- 게스트에는 읽기·쓰기·네트워크·환경 변수·자식 프로세스·FFI·시스템 조회·원격 import 권한이 없다. 런타임은 설치된 고정 번들만 시작하며, 권한 요청·원격 모듈·npm·설정 탐색을 끈다. 런타임이 쓰는 임시 디렉터리는 호스트가 회수한다. 전역 `deno`나 다른 엔진으로 대체하지 않는다. 권한 정책은 [Deno 런타임](https://docs.deno.com/runtime/fundamentals/security/)을 신뢰한다. OS 가상 머신이나 전체 RSS 할당량은 아니다.
+- 원본·결과 각 2 MiB, 요청 JSON 1 MiB, 변경 128개, 연산 256개, JSON 노드 16,384개, 깊이 32, 키·문자열 합계 256 KiB. `replayHistory`가 epoch·요청 버전·연속 버전·중복 제출·SHA-256·보상 크기를 추가 확인한다.
+- OOXML은 단일 classic ZIP의 STORE/DEFLATE만 허용한다. ZIP 항목 256개, 항목당 해제 1 MiB, 전체 해제 4 MiB. 중앙·로컬 헤더, 이름·영역 중복, 실제 해제량, CRC를 확인한다. ZIP64·암호화·서명·추가 필드·주석은 받지 않는다. PDF 프로필은 1 MiB, 128페이지, 260객체 이하이다.
+- DOCX·PPTX는 빌드가 공식 `office_wasm.wasm`의 실제 import 목록을 검사한 뒤 바이트를 고정 JS 모듈에 담는다. 게스트가 이 모듈을 읽으므로 WASM 경로를 열 권한은 필요하지 않다. WASI 환경 개수는 0이고 파일 열기·프로세스 실행·소켓 import는 없다. 허용 함수는 난수, 시계, 빈 환경, 출력, 오류 종료, 엔진 호출 중의 콜백과 정렬 비교다. WASM 선형 메모리는 128 MiB, V8 old space는 96 MiB, 호출당 제한 시간은 15초, 표준 출력·오류는 각각 약 3 MiB다. 동시 호출 수·전체 RSS·사용자별 할당량은 호스트가 제한해야 한다.
+
+### 작은 문서와 큰 PDF를 같은 서버에서 처리하기
+
+```ts
+import { createHistoryServer } from '@seuoffice/collab/server'
+import { renderHistory } from '@seuoffice/history-renderer'
+
+const server = createHistoryServer({ store, renderStream: renderHistory })
+```
+
+문서 소유자는 이 인스턴스 하나로 소켓과 `exportHistory`, `restoreHistory`, `undoHistory`를 처리한다. 형식마다 저장소나 서버를 만들지 않는다. SDK는 보유 원본과 변경 프레임을 그대로 보내며, 선택 취소이면 보상 변경에 기록할 인증된 저자도 넘긴다. 게스트가 형식과 프로필을 정한 뒤 해당 편집기를 한 번 실행한다.
+
+| 보유 원본           | 게스트가 쓰는 편집기               | 한도                                   |
+| ------------------- | ---------------------------------- | -------------------------------------- |
+| DOCX·XLSX·PPTX      | `renderBytes`와 같은 바이트 편집기 | 원본·출력 2 MiB, 요청 1 MiB            |
+| 일반 PDF            | 바이트 PDF 편집기                  | 원본·출력 PDF 프로필 1 MiB, 요청 1 MiB |
+| 검증된 RGB 화상 PDF | 아래의 스트림 PDF 편집기           | 원본·출력 50 MiB, 요청 32 MiB          |
+
+1 MiB 이하 PDF도 실제 구조가 RGB 화상 프로필이면 스트림으로 처리한다. 파일명이나 본문의 단어만으로 사진으로 판정하지 않는다. 1 MiB보다 큰 일반 PDF는 지원하지 않는다. 단일 변경 프레임은 어느 경로든 256 KiB 이하다. 인증·해시·버전·편집 충돌·연산 거부가 발생하면 다른 편집기로 다시 시도하지 않는다. 어떤 편집기를 사용해도 공개·복원·보상은 같은 비공개 임시 저장과 권한 재검사·문서 큐·트랜잭션을 거친다.
+
+### 큰 화상 PDF의 스트림 경로
+
+`renderStream(source, headerBytes, changeFrames, stage, signal?)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 기존 네 형식의 파일·해제·이력 상한을 올리지 않는다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
+
+허용하는 원본은 classic xref, 평평한 페이지 트리, LF 줄 끝을 가진 PDF다. 한 페이지에 마스크·압축 없는 8비트 `DeviceRGB` 사진 하나가 페이지 전체를 채워야 한다. 사진의 길이·가로·세로, 각 객체의 역할과 xref 위치를 확인한다. 최대 64페이지이며 사진을 뺀 PDF 구문은 1 MiB 이하다. JPEG·압축 스트림·문자 본문·기존 주석·중첩 리소스, `stampCfg`·`markups` 편집은 이 경로로 처리하지 않는다.
+
+- `source`에는 바이트 수와 같은 불변 원본의 스트림을 다시 여는 `open()`이 필요하다. 게스트는 첫 스트림 전체와 SHA-256을 검증한다. 호스트는 검증된 원본 범위와 게스트가 만든 작은 조각으로 비공개 `stage`를 채우며 두 번째 스트림의 SHA-256도 대조한다. 변경 가능한 현재 파일이나 인접 버전을 원본으로 쓰지 않는다.
+- `stage.write(bytes)`는 외부에 보이지 않는 저장 대상에만 쓴다. `stage.abort()`는 진행 중인 쓰기까지 폐기해야 한다. `renderStream` 성공은 저장 영수증이 아니다. 공식 서버에는 `createHistoryServer({ store, renderStream })`로 연결한다. 기존 바이트 방식인 `{ store, render }`는 독립된 선택지다.
+- 파일·결과 최대 50 MiB, 요청은 머리글·변경·배열 구분자 포함 최대 32 MiB다. 머리글 8 KiB, 변경 하나 256 KiB, 한 변경에 연산 256개, 전체 버전 65,536개·연산 131,072개·클라이언트 256명 이하다. 한 변경씩 JSON 복잡도·버전·중복 제출을 확인하고 대상 연산의 역연산과 후속 충돌만 추적한다. 기록을 축약하거나 처음 몇 개 변경을 건너뛰지 않는다.
+- 선택 취소 시 새 클라이언트 한 명과 보상 변경 하나를 추가로 재생할 공간이 필요하다. 이 공간이 없으면 `unsupported`다. 기록 앞부분을 빼서 성공으로 바꾸지 않으며, 이 경우를 동료 편집 `conflict`로 표시하지 않는다.
+- 게스트의 권한·시간·메모리 설정은 `renderBytes`와 같다. 원본 사진이나 결과 파일 전체는 게스트 표준 출력으로 보내지 않는다. 출력 조립 과정에서 새 공개 파일을 만들지 않는다. 호스트가 두 번의 읽기와 비공개 저장을 제공할 수 없으면 이 진입점을 사용할 수 없다.
+
+### 포장본 실측
+
+Debian 12 ARM64, Node 22.23.4, glibc 2.36, Deno 2.9.6, 네트워크를 끈 컨테이너에서 측정했다. 두 페이지의 지형 RGB 영상과 고도 단면값을 편집에 사용했다. 다음 값은 최종본 요청 각 1회다. 시간에는 호스트의 원본 두 번 읽기와 비공개 파일 저장·동기화가 포함된다. 재열기와 합성 자료 생성 시간은 제외했다. 호스트와 게스트의 동시 RSS는 4 ms 간격 관측의 최댓값이며 메모리 상한을 뜻하지 않는다.
+
+|     원본 B | 이력 JSON B |   연산 | 시간 ms | CPU ms (Node/Deno) | 동시 RSS KiB | 게스트 stdout B |
+| ---------: | ----------: | -----: | ------: | -----------------: | -----------: | --------------: |
+|  1,039,925 |     260,825 |    274 |      97 |              12/80 |      127,468 |           6,295 |
+|  8,377,883 |   4,193,500 |  4,342 |     147 |             51/120 |      148,004 |           6,494 |
+| 52,408,082 |  33,553,874 | 34,290 |     656 |            452/410 |      211,416 |           6,949 |
+
+마지막 원본에서 한 사람의 첫 페이지 회전만 취소한 뒤 동료의 둘째 페이지 270도와 마지막 단면값을 확인했다. 52,411,898 B인 보상 적용 파일은 전체 이력 끝에 보상을 추가해 재생한 파일과 SHA-256이 같았다. 별도 사본을 수정한 뒤에도 원래 최종본은 바뀌지 않았다. 입력을 33,586,722 B까지 늘린 이력은 `invalid_history`로 거부했다. 원본이 두 번째 읽기에서 달라진 경우에도 출력 파일을 남기지 않았다.
+
+두 상한을 동시에 채운 별도 요청도 확인했다. 52,428,800 B 원본과 33,554,432 B의 연속 JSON(1,075버전·34,292연산)으로 최종본을 만드는 데 397 ms가 걸렸다. 게스트 stdout 6,081 B를 받아 52,428,593 B의 파일을 조립했다. 별도 프로세스에서 원본·결과를 열어 페이지 회전, 마지막 단면값, 두 영상의 픽셀 SHA-256을 대조했다. 파일 크기는 두 영상의 해상도로, 이력 크기는 실제 고도 표본 구간으로 맞췄다.
+
+이 수치를 OOXML에 적용할 수 없다. 합성 XLSX 4,800셀(압축 22,723 B)에서는 5회 중앙값이 입력 연결 0.010 ms, 게스트 입력 읽기 2.16 ms, JSON·해시 검사 0.73 ms, ZIP 검사 12.64 ms, 엔진 열기 35.25 ms, 재생·저장 21.93 ms, 결과 ZIP 검사 1.78 ms였다. 26,000셀(압축 111,456 B, 워크시트 XML 736,114 B)은 ZIP 검사를 통과하고 엔진의 XML 복잡도 제한에서 거부됐다. 파일 크기만 보고 지원 여부를 판정할 수 없다.
+
+검증을 재현하려면 아래 두 tarball과 `pdf-lib@1.17.1`을 설치한 Linux ARM64 소비자에 `tests/stream-proof*.mjs`를 복사한다. `node stream-proof.mjs all "$OUT"`은 크기별 재생·취소·거부를, `node stream-proof-exact.mjs "$OUT"`은 두 상한을 동시에 채운 요청을 검사한다. `evidence.json`에는 요청별 CPU·시간, 파일 해시와 독립 재열기 결과가 남는다. 크기별 검사에서는 RSS와 실패 시 폐기 여부도 기록한다. 측정값은 호출당 자료이며 동시 처리량이나 최소 기기 사양이 아니다.
+
+## 설치와 확인
+
+manifest의 Node 요구는 `>=22.12`이고 glibc 최소 버전은 선언하지 않는다. Linux ARM64 glibc 또는 macOS ARM64용 `@deno/linux-arm64-glibc@2.9.6`·`@deno/darwin-arm64@2.9.6`을 설치 시점에 준비한다. `--omit=optional`은 사용할 수 없고 실행 중 다운로드는 없다. Debian 12 ARM64(Node 22.23.4·glibc 2.36)에서 이 후보의 포장본으로 네트워크 없이 DOCX 서식과 PDF 도장·주석을 재생하고 보상 파일을 다시 열었다. `4803a96a`의 네 형식 포장본은 Node 24.18.1·glibc 2.39에서 확인했다. Alpine musl·x64 바이너리는 제공하지 않는다.
+
+워크스페이스의 개발용 `collab`은 `0.1.0`이지만 소비자가 받는 GitHub Releases의 번호와는 다르다. 예를 들어 실제 `v0.12.51` tarball 안의 `collab`은 `0.12.51`이고 `createHistoryServer`가 없어 사용할 수 없다. 아래 명령은 현재 체크아웃으로 **두 패키지를 같은 버전**에 포장하고 렌더러의 `dependencies["@seuoffice/collab"]`도 그 버전으로 고정한다. 소스 manifest·태그·릴리스를 바꾸지 않는다.
+
+```sh
+# 먼저 npm ci --ignore-scripts. 이어서 같은 소스의 공식 엔진과 고지를 준비한다.
+# CI 기본 경로는 npm run build:wasm 및 node tools/gen-third-party-notices.mjs의 출력이다.
+# 기존 빌드를 재사용할 때만 두 파일의 경로를 지정한다.
+export SEUOFFICE_WASM=/path/to/office_wasm.wasm
+export SEUOFFICE_WASM_NOTICES=/path/to/THIRD-PARTY-NOTICES.txt
+node packages/history-renderer/pack-pair.mjs 0.12.52-rc.5 "$OUT"
+# 별도 호스트에서 두 tarball 및 플랫폼용 npm 의존성을 미리 준비한 뒤 설치한다.
+npm install --offline --ignore-scripts "$OUT/seuoffice-collab-0.12.52-rc.5.tgz" "$OUT/seuoffice-history-renderer-0.12.52-rc.5.tgz"
+npm ls @seuoffice/collab @seuoffice/history-renderer
+node node_modules/@seuoffice/history-renderer/examples/retained-host.mjs
+```
+
+`0.12.52-rc.5`는 로컬 조합을 식별하는 번호이지 게시한 판이 아니다. 위 스트림 자원 측정표는 앞선 `rc.3`의 렌더러 단독 호출 결과이며 서버 저장 비용을 포함하지 않는다. [판 내기](../../docs/seuoffice/판-내기.md)의 공급 경로는 같은 태그·커밋에서 렌더러와 `collab`을 포장하고 GitHub Release의 자산 digest를 확인한다. 이 후보에 대해 태그 생성이나 배포를 실행하지 않았다.
+
+[호스트 예제](examples/retained-host.mjs)는 합성 DOCX와 독립된 두 편집을 보유하고, 첫 편집의 보상만 3번 버전에 기록한다. 같은 요청을 두 번 보내도 영수증이 같고 다시 연 문서에 두 번째 사람의 `Two?`가 남아야 한다. 예제의 메모리 저장소를 운영용으로 쓰라는 뜻은 아니다. 보유 범위, 인증·권한, 기대 epoch·버전에서의 원자적 추가, 중복 제거, 보상 저장은 기존 `createHistoryServer`와 호스트 저장소의 책임이다.
+
+[스트림 호스트 예제](examples/stream-host.mjs)의 `createStreamHost(database, authorize, authorizeTarget)`는 Node `DatabaseSync`와 호스트의 현재 권한 정책을 받는다. `exportHistory`, `restoreHistory`, `undoHistory`가 같은 서버의 소켓 쓰기와 문서 큐를 공유한다. [예제 저장소](examples/stream-store.mjs)는 청크 행을 비공개로 쓰고, 최종 권한·epoch·버전과 영수증을 한 SQLite 쓰기 트랜잭션에서 확인한다. 다운로드에는 `downloadHistory`를 쓰거나 `try/finally`에서 반환된 사본의 `dispose()`를 호출한다. 요청을 취소하면 게스트와 비공개 쓰기도 취소된다. 강제 프로세스 종료는 `finally`를 실행하지 않으므로, 호스트는 활성 작업이 없는 시점에 폐기되지 않은 임시 행을 회수해야 한다. SQLite 행 삭제는 디스크의 안전한 지우기를 뜻하지 않는다.
+
+서버 통합 검증은 같은 소비자에 `tests/sdk-stream*.mjs`와 `tests/stream-proof-{exact,fixture,reopen}.mjs`를 복사해 `node sdk-stream.mjs all "$OUT"`으로 실행한다. 바이트 API로 우회하지 않고 인증된 세 명령을 호출한다.
+
+저장소의 형식 대조 시험과 [브라우저 시험](../../apps/web/tests/collab-history-formats.spec.ts)은 [동일한 원본 생성 함수·wire·영수증·재열기 검증](../../apps/web/tests/collab-history-cases.ts)을 사용한다. 독립 설치본 검증은 `node packages/history-renderer/tests/pack-tests.mjs "$CONSUMER/tests"`로 신뢰된 시험·원본 생성기·재열기 도구만 묶고, 소비자 디렉터리에서 Vitest를 실행한다. 실제 서버와 렌더러는 이 번들에 포함하지 않으므로 설치된 두 tarball이 사용된다. 시험 측 `SEUOFFICE_WASM`은 독립 재열기용이며 제품 게스트는 패키지에 든 WASM만 연다. `capabilities.test.ts`는 같은 설치본 실행기로 합성 자격 표식·파일·루프백·프로세스 접근 거부와 WASM 상한을 확인한다. 공개 API에는 실행할 모듈 경로를 받는 인자가 없다.
