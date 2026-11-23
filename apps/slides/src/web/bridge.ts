@@ -28,7 +28,7 @@ import { deckReads } from './deck-reads'
 import { currentSession, openPptxForWeb, renderDeck } from './session'
 
 // `ready` must say so before anything asks for the document
-registerCollabCapable()
+registerCollabCapable({ history: true })
 
 /** The languages the slides renderer's bridge speaks (narrower than the shared Lang) */
 type SlidesLang = Awaited<ReturnType<SlidesApi['getLanguage']>>
@@ -292,7 +292,9 @@ const slidesApi: Partial<SlidesApi> = {
       reportError('collab_unavailable', error instanceof Error ? error.message : String(error))
       return null
     }
-    return reportFirst(await openPptxForWeb(doc, fitWidthPx))
+    const opened = await openPptxForWeb(doc, fitWidthPx)
+    if (!opened) window.seuCollab?.fail?.('the presentation could not be opened')
+    return reportFirst(opened)
   },
   openPptxPath: async (path, fitWidthPx) => {
     // a second open would replace the co-edited deck with the host's file

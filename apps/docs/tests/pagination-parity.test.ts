@@ -28,8 +28,6 @@ const __dirname = dirname(__filename)
 const CORPUS_DIR = join(__dirname, 'pagination-corpus/docx')
 const BASELINE_FILE = join(__dirname, 'pagination-corpus/baseline-lo.json')
 const BASELINE_WORD_FILE = join(__dirname, 'pagination-corpus/baseline-word.json')
-const REPO_ROOT = join(__dirname, '../../..')
-const REPORT_FILE = join(REPO_ROOT, '.task/pagination-parity-report.md')
 
 // ─── Main logic ────────────────────────────────────────────────────────────
 
@@ -281,7 +279,8 @@ describe('pagination parity (F2: line-level pagination + page-break constraints)
         wordResults.push(await runParity(stem, wordBaseline[stem]))
       }
 
-      writeReport(results, wordResults)
+      const reportFile = process.env.SEUOFFICE_PAGINATION_REPORT
+      if (reportFile) writeReport(reportFile, results, wordResults)
 
       const summarize = (rs: ParityResult[], label: string) => {
         const valid = rs.filter((r) => !r.error)
@@ -322,7 +321,7 @@ describe('pagination parity (F2: line-level pagination + page-break constraints)
 
 // ─── Report generation ──────────────────────────────────────────────────────
 
-function writeReport(results: ParityResult[], wordResults: ParityResult[] = []) {
+function writeReport(file: string, results: ParityResult[], wordResults: ParityResult[]) {
   const valid = results.filter((r) => !r.error)
   const failed = results.filter((r) => r.error)
   const totalLo = valid.reduce((s, r) => s + r.loPages, 0)
@@ -444,16 +443,7 @@ function writeReport(results: ParityResult[], wordResults: ParityResult[] = []) 
     `2. 09-large-paragraph line-break points off by 2-3 chars (kerning precision explicitly out of scope per plan §2)`,
   )
 
-  const reportText = lines.join('\n')
-
-  try {
-    mkdirSync(dirname(REPORT_FILE), { recursive: true })
-    writeFileSync(REPORT_FILE, reportText)
-    console.log(`\nReport written to: ${REPORT_FILE}`)
-  } catch (e) {
-    console.warn('Failed to write the report (path not writable):', e)
-    console.log('\n--- report start ---')
-    console.log(reportText)
-    console.log('--- report end ---')
-  }
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, lines.join('\n'))
+  console.log(`\nReport written to: ${file}`)
 }

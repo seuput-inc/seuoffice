@@ -33,7 +33,12 @@
  * this page's undo history is emptied when someone else's change could make
  * an undo take that change back.
  */
-import { type CollabAdapter, type Json, MAX_CHANGE_BYTES } from '@seuoffice/collab/client'
+import {
+  type CollabAdapter,
+  HistoryError,
+  type Json,
+  MAX_CHANGE_BYTES,
+} from '@seuoffice/collab/client'
 import {
   CommandType,
   CustomCommandExecutionError,
@@ -49,6 +54,7 @@ import {
 import { FormulaDataModel, IDefinedNamesService } from '@univerjs/engine-formula'
 import { journalSuppression } from '../renderer/univer-state'
 import { fingerprintText, hashText } from './collab-fingerprint'
+import { captureCellUndo } from './collab-history'
 import type { JournalRevert } from './collab-journal'
 import {
   classify,
@@ -195,6 +201,8 @@ export interface SheetsCollabHandles {
   readonly unitId: string
   /** the file of exactly the workbook on screen; must not reopen or change anything */
   produceFile(): Promise<{ fileName: string; bytes: Uint8Array }>
+  /** The file may hold formulas that the grid installs as cached values. */
+  fileAllowsCellUndo(): boolean
   /**
    * The app's save journal records every mutation that runs. Called right
    * before a local mutation runs; the result puts the journal back to that
@@ -1129,6 +1137,11 @@ export function sheetsCollabAdapter(
       }
     },
     integrate,
+    captureUndo(op) {
+      if (broken) throw broken
+      if (!handles.fileAllowsCellUndo()) throw new HistoryError('unsupported')
+      return captureCellUndo(workbook, op)
+    },
     confirmed(ops) {
       for (const op of ops) undoOf.delete(op)
     },

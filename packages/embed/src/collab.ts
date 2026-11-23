@@ -24,6 +24,25 @@ export interface WebSocketLike {
   ): void
 }
 
+/** Standalone SDK types match the retained history contract of @seuoffice/collab/client. */
+export type HistoryJson =
+  null | boolean | number | string | HistoryJson[] | { [key: string]: HistoryJson }
+
+export interface HistoryRequest {
+  epoch: string
+  format: { name: string; schema: number }
+  baseHash: string
+  changes: { v: number; client: string; seq: number; author: string; ops: HistoryJson[] }[]
+  version: number
+  undo?: { epoch: string; v: number; index: number }
+}
+
+export interface HistoryResult {
+  fileName: string
+  bytes: Uint8Array
+  compensation?: HistoryJson[]
+}
+
 /** Structurally identical to `CollabStatus` of `@seuoffice/collab/client`, which owns it */
 export type CollabStatus = {
   phase: 'joining' | 'live' | 'offline' | 'failed'

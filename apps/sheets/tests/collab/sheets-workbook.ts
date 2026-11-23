@@ -23,6 +23,7 @@ import type { EditJournal } from '../../src/renderer/edit-journal'
 import {
   type SheetOp,
   type SheetsCollabAdapter,
+  type SheetsCollabHandles,
   type SheetsCollabOptions,
   sheetsCollabAdapter,
 } from '../../src/web/collab-adapter'
@@ -118,6 +119,7 @@ export function openBook(
   bytes: Uint8Array,
   options: SheetsCollabOptions = {},
   journal?: EditJournal,
+  produceFile?: SheetsCollabHandles['produceFile'],
 ): OpenedBook {
   const univer = new Univer({
     logLevel: LogLevel.SILENT,
@@ -160,7 +162,10 @@ export function openBook(
     {
       univer,
       unitId: workbook.getUnitId(),
-      produceFile: async () => ({ fileName: 'book.json', bytes: fileOf(workbook.save()) }),
+      // The headless model installs every cell, including formulas. It has no file-only features.
+      fileAllowsCellUndo: () => true,
+      produceFile:
+        produceFile ?? (async () => ({ fileName: 'book.json', bytes: fileOf(workbook.save()) })),
       ...(journal
         ? {
             journalMark: (mutation) => journalMark(journal, mutation),

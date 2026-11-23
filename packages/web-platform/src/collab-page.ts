@@ -3,8 +3,10 @@ import { collabLink, reportCollabStatus } from './collab-link'
 import { editMode } from './document-store'
 import {
   holdOpened,
+  hostHistory,
   onHostExportRequest,
   onHostSaveRequest,
+  reply,
   reportDirty,
   reportError,
   saveToHost,
@@ -93,6 +95,62 @@ export async function joinPageCollab<Handles, Op>(options: {
    */
   inputBeforeAttach?(target: EventTarget | null): boolean
 }): Promise<PageCollab<Handles> | null> {
+  const history = hostHistory()
+  if (history) {
+    // Ordinary viewers must not load the collaboration engine.
+    const { replayHistory, HistoryError } = await import('@seuoffice/collab/client')
+    const answer = { type: 'history_done', requestId: history.requestId }
+    let finished = false
+    let attaching: Promise<void> | undefined
+    const fail = (message: string, code = 'unsupported'): void => {
+      if (finished) return
+      finished = true
+      releaseInput()
+      reply({ ...answer, ok: false, code, message })
+    }
+    const attach = (handles: Handles): Promise<void> =>
+      (attaching ??= (async () => {
+        if (finished) return
+        try {
+          const adapter = await options.adapter(handles)
+          if (finished) return
+          const result = await replayHistory(
+            adapter,
+            options.format,
+            options.bytes,
+            history.request,
+          )
+          if (finished) return
+          const { bytes, fileName, compensation } = result
+          const buffer =
+            bytes.buffer instanceof ArrayBuffer && bytes.byteLength === bytes.buffer.byteLength
+              ? bytes.buffer
+              : new Uint8Array(bytes).buffer
+          reply({ ...answer, ok: true, fileName, bytes: buffer, compensation }, [buffer])
+          finished = true
+          releaseInput()
+        } catch (error) {
+          fail(
+            error instanceof Error ? error.message : String(error),
+            error instanceof HistoryError ? error.code : 'unsupported',
+          )
+        }
+      })())
+    window.seuCollab = {
+      attach: (handles) => attach(handles as Handles),
+      fail,
+      unsaved: () => false,
+    }
+    const releaseInput = holdInput()
+    return {
+      baseBytes: options.bytes,
+      attach,
+      save: async () => {
+        throw new Error('a history render cannot save')
+      },
+      self: () => null,
+    }
+  }
   const link = collabLink()
   if (!link) return null
   // pages that never co-edit never load the engine

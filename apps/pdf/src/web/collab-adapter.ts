@@ -16,7 +16,7 @@
  * lives outside the snapshot (outline, attachments, protection, redaction
  * marks) is refused where the App would start it, with a message.
  */
-import type { CollabAdapter, Json } from '@seuoffice/collab/client'
+import { HistoryError, type CollabAdapter, type Json } from '@seuoffice/collab/client'
 import { lookup, type Op, type PlanResult } from '../renderer/edit-ops'
 import type { EditSnapshot } from '../renderer/edit-state'
 import {
@@ -280,6 +280,50 @@ export function createPdfAdapter(options: PdfAdapterOptions): CollabAdapter<PdfO
       return () => {
         if (emit === handler) emit = null
         if (host.link.current === link) host.link.current = null
+      }
+    },
+
+    captureUndo(op) {
+      const values = new Set<string>()
+      let rotates = false
+      const markups = new Set<string>()
+      const pages = new Set<number>()
+      for (const put of op.puts) {
+        if (put.b === 'metadata' || put.b === 'stampCfg') values.add(put.b)
+        else if (put.b === 'rotations') {
+          rotates = true
+          pages.add(put.k)
+        } else if (put.b === 'markups' && put.v !== null) {
+          markups.add(put.id)
+        } else throw new HistoryError('unsupported')
+      }
+      const after = foldPeer(confirmed, op.puts, basePages)
+      if (markups.size) {
+        for (const state of [confirmed, after])
+          for (const m of state.markups) if (markups.has(m.id)) pages.add(m.pageIndex)
+      }
+      const inverse = diff(after, confirmed, basePages)
+      if (!inverse.length || !matches(foldPeer(after, inverse, basePages), confirmed))
+        throw new HistoryError('unsupported')
+      return (later) => {
+        for (const change of later) {
+          for (const put of change.puts) {
+            if (
+              values.has(put.b) ||
+              (put.b === 'markups' && markups.has(put.id)) ||
+              ((put.b === 'deleted' || put.b === 'rotations') && pages.has(put.k)) ||
+              // A rotation also transforms picture stamps; a drawing removal carries no page.
+              (put.b === 'drawings' && rotates)
+            ) {
+              return null
+            }
+          }
+        }
+        const compensation = { id: options.newId(), puts: inverse }
+        const wire = encode(compensation)
+        if (unshareable(wire) || sizeOf(wire) > options.maxOpBytes)
+          throw new HistoryError('unsupported')
+        return [compensation]
       }
     },
 

@@ -4,6 +4,7 @@ import {
   DEFAULT_OPEN_TIMEOUT_MS,
   DEFAULT_SANDBOX,
   openDocument,
+  renderHistory,
   SeuofficeEmbedError,
   type SavedFile,
 } from '../src/index'
@@ -21,6 +22,100 @@ function post(source: Window | null, origin: string, data: Record<string, unknow
 }
 
 const ORIGIN = 'https://office.example'
+
+describe('retained history', () => {
+  const options = {
+    baseUrl: BASE,
+    fileName: 'memo.docx',
+    bytes: new Uint8Array([7]),
+    history: {
+      epoch: 'e',
+      format: { name: 'docx', schema: 4 },
+      baseHash: '0'.repeat(64),
+      changes: [],
+      version: 0,
+    },
+  }
+
+  it('opens a separate viewer, accepts only its correlated answer, and leaves the live editor alone', async () => {
+    const onSave = vi.fn(async () => {})
+    const live = openDocument(document.body, { ...options, mode: 'edit', onSave })
+    const result = renderHistory(document.body, options)
+    const frame = document.querySelectorAll('iframe')[1]!
+    const page = frame.contentWindow!
+    const sent = vi.spyOn(page, 'postMessage').mockImplementation(() => {})
+    const ready = { type: 'ready', history: true }
+    post(page, 'https://elsewhere.example', ready)
+    expect(sent).not.toHaveBeenCalled()
+    post(page, ORIGIN, ready)
+    const [open, origin] = sent.mock.calls[0]!
+    expect(origin).toBe(ORIGIN)
+    expect(new URL(frame.src).searchParams.get('mode')).toBe('view')
+    expect(open).toMatchObject({
+      type: 'open',
+      history: options.history,
+      collab: false,
+      autoSave: false,
+      ai: false,
+    })
+    expect(new Uint8Array(open.bytes)).toEqual(options.bytes)
+    const answer = {
+      type: 'history_done',
+      requestId: open.requestId,
+      ok: true,
+      fileName: options.fileName,
+    }
+    post(live.iframe.contentWindow, ORIGIN, { ...answer, bytes: new ArrayBuffer(1) })
+    post(page, ORIGIN, { ...answer, requestId: 'not-this-render', bytes: new ArrayBuffer(1) })
+    post(page, ORIGIN, { type: 'save', saveId: 1, bytes: new ArrayBuffer(1) })
+    post(page, ORIGIN, { ...answer, bytes: new Uint8Array([42]).buffer })
+    await expect(result).resolves.toEqual({ fileName: 'memo.docx', bytes: new Uint8Array([42]) })
+    expect(onSave).not.toHaveBeenCalled()
+    expect(frame.isConnected).toBe(false)
+    expect(live.iframe.isConnected).toBe(true)
+    live.destroy()
+  })
+
+  it('does not hand the base to an older editor and removes a silent editor at the deadline', async () => {
+    const unsupported = renderHistory(document.body, options)
+    const page = document.querySelector('iframe')!.contentWindow!
+    const sent = vi.spyOn(page, 'postMessage').mockImplementation(() => {})
+    post(page, ORIGIN, { type: 'ready', collab: true })
+    await expect(unsupported).rejects.toMatchObject({ code: 'unsupported' })
+    expect(sent).not.toHaveBeenCalled()
+    await expect(renderHistory(document.body, { ...options, timeoutMs: 5 })).rejects.toMatchObject({
+      code: 'timeout',
+    })
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+
+  it.each([
+    [{ ok: false, code: 'conflict' }, 'conflict'],
+    [{ ok: false, code: 'unsupported' }, 'unsupported'],
+    [{ ok: false, code: 'invalid_history' }, 'invalid_history'],
+    [{ ok: true, compensation: [], bytes: new ArrayBuffer(1) }, 'invalid_history'],
+    [
+      { ok: true, compensation: [new Uint8Array([1])], bytes: new ArrayBuffer(1) },
+      'invalid_history',
+    ],
+  ] as const)('rejects refused or malformed undo results', async (payload, code) => {
+    const result = renderHistory(document.body, {
+      ...options,
+      history: { ...options.history, undo: { epoch: 'e', v: 1, index: 0 } },
+    })
+    const page = document.querySelector('iframe')!.contentWindow!
+    const sent = vi.spyOn(page, 'postMessage').mockImplementation(() => {})
+    post(page, ORIGIN, { type: 'ready', history: true })
+    post(page, ORIGIN, {
+      type: 'history_done',
+      requestId: sent.mock.calls[0]![0].requestId,
+      fileName: 'memo.docx',
+      ...payload,
+    })
+    await expect(result).rejects.toMatchObject({ code })
+    expect(document.querySelector('iframe')).toBeNull()
+  })
+})
 
 describe('the iframe sandbox', () => {
   const open = (extra: Record<string, unknown> = {}) =>

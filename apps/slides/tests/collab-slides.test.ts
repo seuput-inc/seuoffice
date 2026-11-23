@@ -144,8 +144,7 @@ interface Page {
   replaced: string[][]
 }
 
-/** `draws`: the page renders around every integrate, the way collab-side.ts does for the renderer */
-function openPage(opened: OpenedPptx, draws = false): Page {
+function openPage(opened: OpenedPptx, mode?: 'draw' | 'history'): Page {
   const session: Session = {
     path: 'deck.pptx',
     opened,
@@ -161,12 +160,13 @@ function openPage(opened: OpenedPptx, draws = false): Page {
   const collab = createSlidesCollab({
     session,
     fileName: 'deck.pptx',
+    history: mode === 'history',
     changing: () => {
-      if (draws) shown = drawnOf(render())
+      if (mode === 'draw') shown = drawnOf(render())
     },
     refresh: (other) => {
       replaced.push(other)
-      if (draws) redraws.push(redrawFrom(shown, render()))
+      if (mode === 'draw') redraws.push(redrawFrom(shown, render()))
     },
     refused: (reason) => refusals.push(reason),
   })
@@ -307,6 +307,125 @@ const run = (kinds: readonly Kind[], seed: number, clients = 3) =>
 // (its own toyMap makes 0 ops there too)
 const SEEDS = [1, 2, 4, 5, 6, 7, 8, 9, 10, 11]
 
+describe('detached PPTX history', () => {
+  it.each(['blankSlide', 'duplicateSlide'] as const)(
+    'reopens the earlier file and compensates %s at the head without erasing Bob’s notes',
+    async (kind) => {
+      const bytes = await createBlankPptx()
+      const alice = openPage(await openPptx(bytes))
+      const bob = openPage(await openPptx(bytes))
+      const source = slideIdAt(alice.session.opened, 0)!
+      const aliceOps: SlidesOp[] = []
+      const bobOps: SlidesOp[] = []
+      alice.collab.adapter.listen((ops) => aliceOps.push(...ops))
+      bob.collab.adapter.listen((ops) => bobOps.push(...ops))
+      alice.collab.adapter.setEditable(true)
+      bob.collab.adapter.setEditable(true)
+      const created = alice.collab.edit(() =>
+        slideEdit(
+          alice.session,
+          'alice.1',
+          kind === 'blankSlide'
+            ? { kind, slide: source, before: false, made: '' }
+            : { kind, slide: source, clearText: false, made: '' },
+        ),
+      )!
+      const made = created.applied.made!
+      bob.collab.adapter.integrate(aliceOps, [])
+      bob.collab.edit(() =>
+        slideEdit(bob.session, 'bob.1', {
+          kind: 'notes',
+          slide: source,
+          text: 'Bob kept this note',
+        }),
+      )
+      alice.collab.adapter.confirmed?.(aliceOps)
+      alice.collab.adapter.integrate(bobOps, [])
+      const live = await alice.collab.adapter.fingerprint()
+
+      const { adapter } = openPage(await openPptx(bytes), 'history').collab
+      const target = adapter.decode(alice.collab.adapter.encode(aliceOps[0]!))
+      const later = bobOps.map((op) => adapter.decode(bob.collab.adapter.encode(op)))
+      const compensate = adapter.captureUndo!(target)
+      adapter.integrate([target], [])
+      const earlier = await openPptx((await adapter.produceFile()).bytes)
+      expect(earlier.deck.slides.map(slideDurableId)).toEqual([source, made])
+      expect(getSlideNotes(earlier.archive, earlier.deck.slides[0]!.path)).toBe('')
+
+      adapter.integrate(later, [])
+      expect(await adapter.fingerprint()).toBe(live)
+      const inverse = compensate(later)
+      expect(inverse?.map((op) => op.edit)).toEqual([{ kind: 'deleteSlides', slides: [made] }])
+      expect(await adapter.fingerprint()).toBe(live)
+      adapter.integrate(
+        inverse!.map((op) => adapter.decode(adapter.encode(op))),
+        [],
+      )
+      const restored = await openPptx((await adapter.produceFile()).bytes)
+      expect(restored.deck.slides.map(slideDurableId)).toEqual([source])
+      const path = restored.deck.slides[0]!.path
+      expect(getSlideNotes(restored.archive, path)).toBe('Bob kept this note')
+      expect(restored.archive.readText(path)).toBe(earlier.archive.readText(path))
+      expect(await alice.collab.adapter.fingerprint()).toBe(live)
+    },
+  )
+
+  it('refuses to delete the slide Bob annotated, including within a multi-op change', async () => {
+    const { adapter } = openPage(await openPptx(await createBlankPptx()), 'history').collab
+    const add = adapter.decode({
+      id: 'alice.1',
+      edit: { kind: 'blankSlide', slide: 's_1', before: false, made: 's_2' },
+    })
+    const note = adapter.decode({
+      id: 'bob.1',
+      edit: { kind: 'notes', slide: 's_2', text: 'Keep this slide' },
+    })
+    const compensate = adapter.captureUndo!(add)
+    adapter.integrate([add, note], [])
+    expect(compensate([note])).toBeNull()
+    expect(() => adapter.captureUndo!(note)).toThrow(
+      expect.objectContaining({ code: 'unsupported' }),
+    )
+    const head = await openPptx((await adapter.produceFile()).bytes)
+    expect(head.deck.slides).toHaveLength(2)
+    expect(getSlideNotes(head.archive, head.deck.slides[1]!.path)).toBe('Keep this slide')
+  })
+
+  it('refuses to break a jump to the new slide from text on an older slide', async () => {
+    const { session, collab } = openPage(await openPptx(base), 'history')
+    const { adapter } = collab
+    const first = session.opened.deck.slides[0]!
+    const add: SlidesOp = {
+      id: 'alice.1',
+      edit: { kind: 'blankSlide', slide: slideDurableId(first), before: false, made: 's_5' },
+    }
+    const link: SlidesOp = {
+      id: 'bob.1',
+      edit: {
+        kind: 'text',
+        at: collab.refOf(first.elements.find(editable)!.id)!,
+        paragraphs: [{ runs: [{ text: 'New slide', link: { kind: 'slide', slideIndex: 1 } }] }],
+      },
+    }
+    const compensate = adapter.captureUndo!(add)
+    adapter.integrate([add, link], [])
+    expect(compensate([link])).toBeNull()
+  })
+
+  it('rejects a log naming the wrong created slide or a missing target', async () => {
+    const edits: SlidesOp['edit'][] = [
+      { kind: 'blankSlide', slide: 's_1', before: false, made: 's_9' },
+      { kind: 'notes', slide: 's_9', text: 'misplaced' },
+      { kind: 'deleteSlides', slides: ['s_1', 's_9'] },
+    ]
+    for (const edit of edits) {
+      const { adapter } = openPage(await openPptx(await createBlankPptx()), 'history').collab
+      const op = adapter.decode(encodeOp({ id: 'alice.1', edit }))
+      expect(() => adapter.integrate([op], [])).toThrow('PPTX history')
+    }
+  })
+})
+
 describe('people editing one deck at once, under the conformance kit', () => {
   for (const seed of SEEDS) {
     it(`two people typing in the same text box end with the text the server ordered last (seed ${seed})`, async () => {
@@ -395,7 +514,7 @@ describe('the edits themselves', () => {
   }
 
   it('other people’s edits redraw only the slides they changed, also around this person’s own edit', () => {
-    const a = openPage(cloneDeck(baseDeck), true)
+    const a = openPage(cloneDeck(baseDeck), 'draw')
     const b = openPage(cloneDeck(baseDeck))
     const mine: SlidesOp[] = []
     a.collab.adapter.listen((ops) => mine.push(...ops))

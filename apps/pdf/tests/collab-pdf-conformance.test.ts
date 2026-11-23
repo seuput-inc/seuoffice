@@ -7,9 +7,8 @@
  * a failure names its seed.
  */
 import type { Json } from '@seuoffice/collab/client'
+import { simulate, type SimulatedEditor } from '@seuoffice/collab/conformance'
 import { describe, expect, it } from 'vitest'
-// the kit from its source: this package's vitest config has no seuoffice-source condition
-import { simulate, type SimulatedEditor } from '../../../packages/collab/src/conformance/index'
 import type { EditSnapshot } from '../src/renderer/edit-state'
 import { pageCount, type PdfOp } from '../src/web/collab-model'
 import { randomAction } from './collab/actions'

@@ -26,6 +26,12 @@ await doc.opened // 문서가 화면에 뜨면 끝, 실패하면 SeuofficeEmbedE
 doc.destroy()
 ```
 
+## 보존된 공동 편집 판을 파일로 꺼내기
+
+`renderHistory(container, { baseUrl, fileName, bytes, history })`는 현재 열린 편집기와 별개로 보기 전용 iframe을 만든다. `bytes`는 에포크의 기준 파일이고 `history`는 같은 에포크의 형식·기준 해시·버전과 그 버전까지의 변경이다. 성공하면 `{ fileName, bytes }`를 반환하고 iframe을 제거한다. 이 호출에는 공동 편집 소켓이나 `onSave`가 필요 없다.
+
+호스트가 파일을 영구 보관하거나 연산을 취소하려면 신뢰하는 호스트 작업자에서 이 함수를 실행한다. 사용자의 브라우저가 돌려준 바이트나 보상 연산을 곧바로 저장하지 않는다. [이력 서버와 호스트의 권한·저장 계약](../collab/README.md#이력-파일-꺼내기-새-판-복원-선택-취소)을 따른다. 이력 지원을 선언하지 않은 편집기는 `unsupported`, 이력이 잘못되면 `invalid_history`, 다른 편집을 보존하는 선택 취소가 불가능하면 `conflict`다.
+
 ## 다른 출처에서 서빙할 때
 
 웹 묶음을 붙이는 쪽 페이지와 다른 출처(주소의 scheme, 호스트, 포트 중 하나라도 다르면 다른 출처)에서 서빙하면, 묶음의 페이지는 그 호스트가 보낸 `open`을 기본으로 받지 않는다. 받지 않은 호스트에는 `origin_not_allowed`가 돌아가 `opened`가 바로 reject된다(아래 "오류"). 묶음을 서빙하는 쪽이 허용할 호스트 출처를 묶음 루트(`docs/`, `pdf/` 폴더와 같은 자리)의 `embed-origins.json`에 적는다.
@@ -96,6 +102,14 @@ const doc = openDocument(container, {
 
 await doc.save() // 페이지에 저장을 요청한다
 ```
+
+### 모바일에서 다른 탭으로 갔다 돌아올 때
+
+`onDirtyChange(true)`는 저장할 변경이 있다는 알림이다. 복구할 문서 바이트는 이때가 아니라 `onSave`에 온다. 호스트는 탭이 숨겨졌다는 이유로 iframe을 없애거나 다시 만들지 않는다. 편집 화면을 닫기 전에 변경을 보존해야 한다면 화면이 열려 있을 때 `await doc.save()`를 호출한다. 호스트 저장소에 쓰기를 마친 뒤에만 `onSave`를 resolve한다. 저장이 실패하면 iframe을 유지하고 다시 저장할 수 있게 한다.
+
+v0.12.51의 모의 docx로 크로미움 모바일 에뮬레이션(390 × 844, `autoSave: false`)에서 확인했다. 화면 너비만 바꾸면 `visibilitychange`가 없었다. 다른 탭을 열어 앞에 놓고 돌아오면 호스트와 iframe 모두 `hidden`, `visible`을 차례로 받았다. 편집한 글과 미저장 상태가 남았고 `onSave`는 불리지 않았다. 복귀 뒤 첫 `doc.save()`에서 호스트가 저장을 거절하자 `save_failed`가 돌아왔고 글과 미저장 상태가 유지됐다. 다시 저장하자 미저장 표시가 사라졌고 저장된 docx 본문에서 편집한 글을 확인했다.
+
+이 결과는 같은 iframe이 살아 있는 동안에 한한다. 모바일 운영체제가 탭을 버리거나 앱을 끝낸 뒤의 복구를 보장하지 않는다. 종료 시점의 비동기 저장에 의존하지 않는다.
 
 ### 자동 저장과 저장 사유
 
@@ -176,7 +190,10 @@ const doc = openDocument(container, {
 
 `collab`을 넘기면 여러 사람이 같은 문서를 동시에 고친다. 보기·고치기 둘 다 된다. 공동 편집 서버와의 WebSocket은 호스트가 연다. 호스트가 자기 인증으로 연결을 만들고, 이 패키지는 페이지와 그 소켓 사이에서 프레임을 그대로 나른다. 페이지는 문서 주소나 토큰을 모른다.
 
+아래 `collabOpen`은 SDK 필드가 아니라 호스트가 이 문서 열기에 발급한 핸들이다. 호스트 서버는 이 핸들을 사용자·문서와 공동 편집 에포크 하나에 묶는다. `connect`와 `onSave`는 재연결하거나 저장을 재시도해도 같은 핸들을 쓴다.
+
 ```ts
+const collabOpen = await host.openCollab(documentId)
 const open = (collab: boolean) =>
   openDocument(container, {
     baseUrl: `${location.origin}/seuoffice/`,
@@ -186,13 +203,10 @@ const open = (collab: boolean) =>
     ...(collab
       ? {
           collab: {
-            connect: () => new WebSocket(`${collabUrl}?doc=${documentId}`),
+            connect: () => host.connect(collabOpen),
             onStatus: (status) => showPeers(status.peers),
           },
-          onSave: async ({ fileName, bytes, version }) => {
-            // 이미 저장된 판보다 낮은 version이면 throw한다
-            await uploadToServer(fileName, bytes, version)
-          },
+          onSave: (file) => host.commitCollabFile(collabOpen, file),
         }
       : { onSave: async ({ fileName, bytes }) => uploadToServer(fileName, bytes) }),
   })
@@ -214,7 +228,8 @@ try {
 - 함께 고칠 때는 편집 잠금을 잡지 않는다. 같은 문서를 연 사람은 모두 같은 서버에 붙는다.
 - `connect()`는 페이지가 연결을 원할 때마다 불린다. 끊긴 뒤 다시 붙을 때도 불리고, 그때 이전 소켓은 닫힌다. 페이지가 아무리 자주 원해도 `connect()`는 250ms에 한 번까지만 불린다.
 - `connect()`는 아직 열리는 중인 소켓도, 이미 열린 소켓도 돌려줄 수 있다. 실패하거나, 소켓에 오류가 나거나, 15초(`connectTimeoutMs`) 안에 열리지 않으면 페이지는 끊긴 것으로 보고 다시 시도한다.
-- `onSave`는 `version`을 함께 받는다. 이미 저장한 판보다 낮은 `version`이 오면 `onSave`는 반드시 reject(throw)해야 한다. 그러지 않으면 늦게 도착한 오래된 저장이 새 저장을 덮어쓰고, 다음 편집은 그 오래된 파일에서 시작한다.
+- `onSave`가 받는 `CollabSavedFile`에는 `version`은 있지만 에포크(`epoch`)는 없다. `version`은 한 에포크 안에서만 비교한다. 에포크가 바뀌면 기존 핸들을 새 에포크에 다시 묶지 않는다. 다시 열어 새 핸들을 받는다.
+- `host.commitCollabFile`은 호스트가 구현한다. 현재 쓰기 권한, 핸들의 에포크와 현재 에포크의 일치, 같은 에포크에서 저장한 판보다 낮지 않은 `version`을 한 트랜잭션에서 확인하고 저장 판과 파일 포인터를 함께 갱신한다. 핸들이 어느 에포크인지 확정할 수 없거나 이 조건부 갱신을 할 수 없으면 `onSave`를 거절한다. 중계하는 소켓 프레임은 공개 API가 아니므로 해석해 에포크를 알아내지 않는다. [호스트의 파일 저장 계약](../collab/README.md#호스트가-꼭-할-일)을 따른다.
 - `doc.collabCapable`은 페이지가 `ready`에서 알린 값이다. 페이지가 답하지 않았거나 문서가 닫혔으면 `false`다.
 - `doc.destroy()`는 소켓도 닫는다. `collab`을 주지 않으면 공동 편집 메시지는 하나도 오가지 않는다.
 

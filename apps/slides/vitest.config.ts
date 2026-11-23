@@ -15,6 +15,7 @@ export default defineConfig({
   // Pin resolution to this repo's workspace sources (matches tsconfig paths)
   resolve: {
     alias: {
+      '@seuoffice/collab/client': resolve(here, '../../packages/collab/src/client/index.ts'),
       // Subpath before the bare name: string aliases are prefix replacements
       '@seuoffice/pptx-engine/table-grid': resolve(
         here,

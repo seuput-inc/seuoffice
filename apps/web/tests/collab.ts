@@ -190,7 +190,7 @@ export async function edited(editor: CoEditor, act: () => Promise<void>): Promis
 }
 
 /** What the test server does on a spec's word (tests/collab-server.ts) */
-export type ServerHook = 'cut' | 'hold' | 'release' | 'diverge' | 'reset'
+export type ServerHook = 'cut' | 'hold' | 'release' | 'revoke' | 'diverge' | 'reset'
 
 export async function serverHook(
   op: ServerHook,

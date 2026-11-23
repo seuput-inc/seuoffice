@@ -1011,7 +1011,9 @@ export function App() {
   const [showReviewPane, setShowReviewPane] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('print')
   const [readModeChoice, setReadMode] = useState(false)
-  const readMode = readModeChoice || WEB_VIEW_LOCKED
+  const [collabViewOnly, setCollabViewOnly] = useState(false)
+  const viewLocked = WEB_VIEW_LOCKED || collabViewOnly
+  const readMode = readModeChoice || viewLocked
   /** F5: Read Mode in fullscreen, with the status bar hidden (presentation) */
   const [presenting, setPresenting] = useState(false)
   /** cancels a pending page-fit when the show ends before its timer runs */
@@ -1153,20 +1155,23 @@ export function App() {
   const [trackChanges, setTrackChanges] = useState(false)
   // only the document toggle (ribbon / status bar / shortcut) maps to w:trackRevisions
   const [trackRevisionsDirty, setTrackRevisionsDirty] = useState(false)
-  const setTrackChangesByUser = useCallback((on: boolean) => {
-    // the document's setting, which every co-editor's page follows: not a viewer's to switch
-    if (WEB_VIEW_LOCKED) return
-    if (on && refuseInOdt('trackChanges')) return
-    setTrackChanges(on)
-    setTrackRevisionsDirty(true)
-  }, [])
+  const setTrackChangesByUser = useCallback(
+    (on: boolean) => {
+      // the document's setting, which every co-editor's page follows: not a viewer's to switch
+      if (viewLocked) return
+      if (on && refuseInOdt('trackChanges')) return
+      setTrackChanges(on)
+      setTrackRevisionsDirty(true)
+    },
+    [viewLocked],
+  )
   const toggleTrackChangesByUser = useCallback(() => {
-    if (WEB_VIEW_LOCKED) return
+    if (viewLocked) return
     // tracking is never on in an ODT document, so a toggle there turns it on
     if (refuseInOdt('trackChanges')) return
     setTrackChanges((v) => !v)
     setTrackRevisionsDirty(true)
-  }, [])
+  }, [viewLocked])
   const [revisionDisplay, setRevisionDisplay] = useState<RevisionDisplayMode>('all')
   /** the user picked a Markup view this session: opening another document keeps it */
   const revisionDisplayRef = useRef(revisionDisplay)
@@ -2485,7 +2490,8 @@ export function App() {
 
   // web co-editing: the session takes the document once it is on screen (absent on the desktop)
   useEffect(() => {
-    if (doc && editor) void window.seuCollab?.attach({ editor, context: fileCtxRef })
+    if (doc && editor)
+      void window.seuCollab?.attach({ editor, context: fileCtxRef, setCollabViewOnly })
   }, [doc, editor])
 
   const loadFile = useCallback(async (result: OpenDocxResult) => {
@@ -8476,7 +8482,7 @@ export function App() {
 
   return (
     <div
-      className={`app ${readMode ? 'read-mode' : ''}${WEB_VIEW_LOCKED ? ' web-view' : ''}${presenting ? ' presentation-mode' : ''}${commentsUi.panel ? ' comments-pane-open' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${balloonsActive && balloonMode === 'revisions' ? ' rev-balloon' : ''}${revisionFilter.insDel ? '' : ' rev-hide-insdel'}${revisionFilter.format ? '' : ' rev-hide-format'}${tcOptions.balloonLines ? '' : ' markup-no-lines'}`}
+      className={`app ${readMode ? 'read-mode' : ''}${viewLocked ? ' web-view' : ''}${presenting ? ' presentation-mode' : ''}${commentsUi.panel ? ' comments-pane-open' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${balloonsActive && balloonMode === 'revisions' ? ' rev-balloon' : ''}${revisionFilter.insDel ? '' : ' rev-hide-insdel'}${revisionFilter.format ? '' : ' rev-hide-format'}${tcOptions.balloonLines ? '' : ' markup-no-lines'}`}
       data-balloons={balloonsActive ? balloonMode : undefined}
       data-comment-cards={commentsUi.cards ? '' : undefined}
       data-comment-focus={commentFocus?.id}
@@ -8980,7 +8986,7 @@ export function App() {
                 </div>
               )}
             </div>
-            {readMode && !WEB_VIEW_LOCKED && (
+            {readMode && !viewLocked && (
               <button className="read-exit" onClick={() => setReadMode(false)}>
                 {t('appExitReadMode')}
               </button>
@@ -9070,7 +9076,7 @@ export function App() {
                     className={`status-item status-btn status-track${trackChanges ? ' on' : ''}`}
                     data-tip={t('ribbonTrackChangesTip')}
                     aria-pressed={trackChanges}
-                    disabled={isProtected || trackChangesForced || WEB_VIEW_LOCKED}
+                    disabled={isProtected || trackChangesForced || viewLocked}
                     {...odtOffProps(odtDoc)}
                     onClick={toggleTrackChangesByUser}
                   >
@@ -9244,7 +9250,7 @@ export function App() {
             onResolve: (id) => resolveComment(id, true),
           }}
           trackChanges={
-            isProtected || trackChangesForced || WEB_VIEW_LOCKED
+            isProtected || trackChangesForced || viewLocked
               ? null
               : { on: trackChanges, onToggle: toggleTrackChangesByUser }
           }

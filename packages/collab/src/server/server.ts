@@ -28,6 +28,7 @@ import {
 } from '../wire.js'
 import { decideHello, decideSubmit, type HelloDecision } from './decide.js'
 import type { AppendResult, CollabStore, EpochHead } from './store.js'
+import type { HistoryReceipt } from './history.js'
 
 /** Who is on the other end of a socket; the host authenticated the upgrade and decides it */
 export interface Principal {
@@ -110,6 +111,12 @@ export interface ServerCoreOptions extends CollabServerOptions {
 export interface ServerCore extends CollabServer {
   /** resolves once no document has queued work */
   idle(): Promise<void>
+  /** Commit in the same document queue as idle/drop and socket submits, then deliver the result. */
+  commitHistory(
+    documentId: string,
+    epoch: string,
+    commit: () => Promise<HistoryReceipt>,
+  ): Promise<HistoryReceipt>
 }
 
 /** `new` until its hello; `closed` sockets are forgotten and their frames ignored */
@@ -351,6 +358,7 @@ export function createServerCore({
 
   async function answerHello(doc: Doc, conn: Conn): Promise<void> {
     const hello = conn.hello!
+    if (hello.resume?.client.startsWith('history:')) return reject(doc, conn, 'forbidden')
     const epoch = await store.load(doc.id)
     const known = epoch ? epochState(doc, epoch) : null
     const issued = hello.resume ? known?.clients.get(hello.resume.client) : undefined
@@ -641,6 +649,26 @@ export function createServerCore({
         }
       })
       if (outcome.failed) throw outcome.error
+    },
+    async commitHistory(documentId, epoch, commit) {
+      if (closing) throw new Error('server closed')
+      const doc = docFor(documentId)
+      const outcome = deferred<HistoryReceipt>()
+      void enqueue(doc, null, async () => {
+        try {
+          const receipt = await commit()
+          if (receipt.kind === 'undone') {
+            for (const conn of live(doc)) {
+              if (conn.epoch === epoch && conn.sent < receipt.version)
+                await forSocket(doc, conn, () => catchUp(doc, conn, receipt.version))
+            }
+          }
+          outcome.resolve(receipt)
+        } catch (error) {
+          outcome.reject(error)
+        }
+      })
+      return outcome.promise
     },
     async close() {
       closing = true

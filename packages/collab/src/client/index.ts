@@ -1,5 +1,7 @@
 export { joinCollab } from './join.js'
 export { CollabError } from './api.js'
+export { HistoryError, replayHistory } from '../history.js'
+export type { HistoryOpId, HistoryRequest, HistoryResult } from '../history.js'
 export { MAX_CHANGE_BYTES, SUBMIT_CHUNK_BYTES } from '../limits.js'
 export type {
   CollabAdapter,

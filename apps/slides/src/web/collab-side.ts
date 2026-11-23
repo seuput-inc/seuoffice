@@ -5,7 +5,7 @@
  * as are undo, redo and AI edits, which restore or hold whole deck snapshots no other page has.
  */
 import { slideDurableId } from '@seuoffice/pptx-engine'
-import { webLanguage } from '@seuoffice/web-platform'
+import { historyMode, webLanguage } from '@seuoffice/web-platform'
 import type { CollabAdapter } from '@seuoffice/collab/client'
 import { showToast } from '../renderer/components/toast-bus'
 import { buildSlideUpdate, rebuildSlide } from '../main/session-state'
@@ -132,6 +132,7 @@ export function openSlidesCollab(
   const collab = createSlidesCollab({
     session,
     fileName: page.fileName,
+    history: !!historyMode(),
     changing: () => {
       shown = drawnOf(renderDeck() ?? [])
     },

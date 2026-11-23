@@ -19,7 +19,7 @@ import {
 } from '@seuoffice/pptx-engine'
 import type { EditParagraph } from '@seuoffice/pptx-ops'
 import type { RenderSlide } from '@seuoffice/pptx-render'
-import type { CollabAdapter } from '@seuoffice/collab/client'
+import { HistoryError, type CollabAdapter } from '@seuoffice/collab/client'
 import { applyAutofitResize, syncAutofitScale } from '../main/autofit-writeback'
 import { rebuildSlide, type Session } from '../main/session-state'
 import type { SlideUpdate } from '../shared/ipc'
@@ -48,6 +48,8 @@ export type Refusal = 'frozen' | 'gone'
 export interface SlidesCollabOptions {
   session: Session
   fileName: string
+  /** A detached history replay must not silently skip a mismatched authoritative edit. */
+  history?: boolean
   /** other people's edits are about to change the deck: until now it is what the renderer shows */
   changing(): void
   /**
@@ -158,6 +160,20 @@ export function createSlidesCollab(options: SlidesCollabOptions): SlidesCollab {
     return applied
   }
 
+  function applyLogged(op: SlidesOp): void {
+    const edit = op.edit
+    if (
+      edit.kind === 'deleteSlides' &&
+      edit.slides.some((slide) => slide !== GONE && slideIndexOf(deck(), slide) < 0)
+    )
+      throw new Error('PPTX history refers to a missing slide')
+    const applied = run(op)
+    const matches = applied
+      ? !createsSlide(edit) || applied.made === edit.made
+      : renamed(op, () => GONE) === op
+    if (!matches) throw new Error('PPTX history does not match the deck')
+  }
+
   /**
    * Apply this person's unconfirmed `local` again on the new confirmed deck. Each op stays (the
    * log holds every op a person sent); one that no longer applies is rewritten to name no slide,
@@ -202,6 +218,11 @@ export function createSlidesCollab(options: SlidesCollabOptions): SlidesCollab {
     },
 
     integrate(remote, local) {
+      if (options.history) {
+        if (local.length) throw new Error('PPTX history cannot include unconfirmed edits')
+        for (const op of remote) applyLogged(op)
+        return []
+      }
       options.changing()
       for (const [key, ref] of elementRefs(deck())) seen.set(key, ref)
       const shown = new Map(slideIds(deck()).map((slide) => [slide, born.get(slide)]))
@@ -236,6 +257,30 @@ export function createSlidesCollab(options: SlidesCollabOptions): SlidesCollab {
       if (unconfirmed <= 0) {
         unconfirmed = 0
         confirmed = null
+      }
+    },
+
+    captureUndo(op) {
+      const edit = op.edit
+      if (!createsSlide(edit)) throw new HistoryError('unsupported')
+      const { made } = edit
+      if (slideIndexOf(deck(), edit.slide) < 0 || slideIndexOf(deck(), made) >= 0) return () => null
+      return (later) => {
+        // A deleted part name can be reused by another slide. Only delete the slide this op made.
+        if (born.get(made) !== op.id) return null
+        for (const { edit: next } of later) {
+          if (next.kind === 'notes' && next.slide !== made) continue
+          if (
+            next.kind === 'text' &&
+            next.at.slide !== made &&
+            !next.paragraphs.some((p) =>
+              p.runs.some((r) => r.link?.kind === 'slide' || r.link?.kind === 'action'),
+            )
+          )
+            continue
+          return null
+        }
+        return [{ id: crypto.randomUUID(), edit: { kind: 'deleteSlides', slides: [made] } }]
       }
     },
 

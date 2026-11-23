@@ -34,6 +34,9 @@ describe('the built @seuoffice/embed', () => {
   it('imports every sibling module with its extension', () => {
     expect(readFileSync(join(out, 'index.js'), 'utf8')).toMatch(/from '\.\/collab\.js'/)
     expect(readFileSync(join(out, 'index.d.ts'), 'utf8')).not.toMatch(/from '\.\/collab'/)
+    expect(readFileSync(join(out, 'collab.d.ts'), 'utf8')).not.toMatch(
+      /from ['"]@seuoffice\/collab/,
+    )
   })
 
   it('loads in Node ESM without a bundler', () => {
@@ -41,6 +44,7 @@ describe('the built @seuoffice/embed', () => {
       const embed = await import(${JSON.stringify(pathToFileURL(join(out, 'index.js')).href)})
       console.log(JSON.stringify({
         openDocument: typeof embed.openDocument,
+        renderHistory: typeof embed.renderHistory,
         sandbox: embed.DEFAULT_SANDBOX,
         openTimeoutMs: embed.DEFAULT_OPEN_TIMEOUT_MS,
         error: typeof embed.SeuofficeEmbedError,
@@ -51,6 +55,7 @@ describe('the built @seuoffice/embed', () => {
     })
     expect(JSON.parse(printed)).toEqual({
       openDocument: 'function',
+      renderHistory: 'function',
       sandbox: 'allow-scripts allow-same-origin allow-downloads',
       openTimeoutMs: 60000,
       error: 'function',

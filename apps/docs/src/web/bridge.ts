@@ -39,7 +39,7 @@ import type { DocsCollabHandles } from './collab-side'
 import { WEB_RENDERER, openDecryptedDocx, openDocxFromBytes } from './open-docx'
 
 // `ready` must say so before anything asks for the document
-registerCollabCapable()
+registerCollabCapable({ history: true })
 
 const noop = (): void => {}
 const unsubscribe = (): (() => void) => noop
@@ -58,8 +58,10 @@ let pendingConsumed = false
 /** the reason the host gave for refusing the last save, for a host-asked save to report back */
 let lastSaveError: string | undefined
 
+type DocsPageHandles = DocsCollabHandles & { setCollabViewOnly(value: boolean): void }
+
 /** set when the host asked for co-editing and the page joined its session */
-let coEditing: PageCollab<DocsCollabHandles> | null = null
+let coEditing: PageCollab<DocsPageHandles> | null = null
 
 /** the renderer's author-name listeners: in co-editing the name is the one the session gives this user */
 const authorListeners = new Set<(name: string) => void>()
@@ -134,15 +136,20 @@ const saveDocxToHost: DesktopApi['saveDocx'] = async (path, data, auto, hostSave
  * a later joiner opens the session's base file, not the host's copy.
  */
 async function joinDocsCollab(doc: WebDocument): Promise<void> {
-  const page = await joinPageCollab<DocsCollabHandles, DocsOp>({
+  let setViewOnly: DocsPageHandles['setCollabViewOnly']
+  const page = await joinPageCollab<DocsPageHandles, DocsOp>({
     // 4: run-level wrappers ride in the document (the `inlineWrap` mark), so the same file
     // opens as another document than under 3. 3: header and footer table rows are cell nodes,
     // text inserted then deleted is two revisions, and the room shares track changes.
     format: { name: 'docx', schema: 4 },
-    status: onSessionStatus,
+    status: ({ canEdit }) => {
+      setViewOnly(!canEdit)
+      onSessionStatus()
+    },
     fileName: doc.fileName,
     bytes: doc.bytes,
     adapter: async (handles) => {
+      setViewOnly = handles.setCollabViewOnly
       // the renderer's modules are loaded by now; a page that never co-edits never loads these
       const { openDocsCollab } = await import('./collab-side')
       return openDocsCollab(handles, {

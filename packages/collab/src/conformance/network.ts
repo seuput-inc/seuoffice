@@ -235,7 +235,7 @@ export class SimNetwork {
   async client<Op, E extends SimulatedEditor<Op>>(
     principal: Principal,
     file: CollabFile,
-    factory: (bytes: Uint8Array) => E,
+    factory: (bytes: Uint8Array) => E & SimulatedEditor<Op>,
   ): Promise<SimClient<Op, E>> {
     const client = new SimClient<Op, E>(this, principal, file, factory)
     this.clients.push(client as unknown as SimClient<unknown>)

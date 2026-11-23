@@ -2188,13 +2188,11 @@ export default function App() {
       with blank stand-ins for lost pages is read-only too: the save pipeline reads the
       damaged file, whose pages no longer line up with the view. */
   const hostReadOnlyReason = window.pdfApi.readOnlyReason
-  const readOnly =
-    status === 'ready' &&
-    (hostReadOnlyReason !== undefined ||
-      documentDamaged ||
-      (documentEncrypted &&
-        (!sessionUnlocked ||
-          (diskLock !== null && !diskLock.unlockedAsOwner && !diskLock.modifying))))
+  const sourceReadOnly =
+    documentDamaged ||
+    (documentEncrypted &&
+      (!sessionUnlocked || (diskLock !== null && !diskLock.unlockedAsOwner && !diskLock.modifying)))
+  const readOnly = status === 'ready' && (hostReadOnlyReason !== undefined || sourceReadOnly)
   const readOnlyReason = hostReadOnlyReason ?? (documentDamaged ? t('roDamaged') : t('roEncrypted'))
   /** Only the owner password may change or lift protection: a user-password
       session, even one allowed to modify the content, must not be able to strip
@@ -3192,12 +3190,14 @@ export default function App() {
       },
       // the opened file's pages: only a reload changes them, and a co-edited page never reloads
       pageSizes: sizes,
+      historySourceReady:
+        !sourceReadOnly && failedPages.size === 0 && sizes.length === doc.numPages,
       password: () => diskPasswordRef.current,
       notice: (text: string) => showNoticeRef.current(text),
       unsaved: setCollabUnsaved,
       commitDrafts: () => collabAppRef.current.commitDrafts(),
     })
-  }, [status, doc, sizes])
+  }, [status, doc, sizes, sourceReadOnly, failedPages])
 
   // ── Full-text search ──
 

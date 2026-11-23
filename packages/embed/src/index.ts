@@ -29,9 +29,21 @@
  * page answers `thumbnail_done` with the bytes or the code of why it has none.
  */
 
-import { createCollabPipe, type CollabRelay } from './collab.js'
+import {
+  createCollabPipe,
+  type CollabRelay,
+  type HistoryJson,
+  type HistoryRequest,
+  type HistoryResult,
+} from './collab.js'
 
-export type { CollabRelay, CollabStatus, WebSocketLike } from './collab.js'
+export type {
+  CollabRelay,
+  CollabStatus,
+  HistoryRequest,
+  HistoryResult,
+  WebSocketLike,
+} from './collab.js'
 
 export type SeuofficeApp = 'docs' | 'sheets' | 'slides' | 'pdf' | 'hwp'
 
@@ -70,6 +82,9 @@ export type EmbedErrorCode =
   | 'open_timeout'
   | 'invalid_sandbox'
   | 'origin_not_allowed'
+  | 'invalid_history'
+  | 'unsupported'
+  | 'conflict'
   | ThumbnailErrorCode
 
 /**
@@ -255,6 +270,170 @@ const REQUIRED_SANDBOX = ['allow-scripts', 'allow-same-origin']
 /** How long the page has, after the host sent the bytes, to answer `opened` or `error` */
 export const DEFAULT_OPEN_TIMEOUT_MS = 60000
 
+export interface RenderHistoryOptions {
+  baseUrl: string
+  fileName: string
+  bytes: ArrayBuffer | Uint8Array
+  history: HistoryRequest
+  lang?: string
+  /** Total time for the disposable editor to load, replay and produce the file. */
+  timeoutMs?: number
+}
+
+let nextHistoryId = 0
+
+/** Replay a retained prefix in a new, read-only editor. Never opens a socket or calls onSave. */
+export async function renderHistory(
+  container: HTMLElement,
+  options: RenderHistoryOptions,
+): Promise<HistoryResult> {
+  const app = appForFileName(options.fileName)
+  if (!app) throw new SeuofficeEmbedError('unsupported', `no editor opens ${options.fileName}`)
+  if (options.bytes.byteLength > MAX_EMBED_BYTES)
+    throw new SeuofficeEmbedError('too_large', 'the base file exceeds the embed size limit')
+  if (!options.history || typeof options.history !== 'object')
+    throw new SeuofficeEmbedError('invalid_history', 'no history request')
+  const url = new URL(`${app}/index.html`, options.baseUrl)
+  url.search = new URLSearchParams({ mode: 'view', lang: options.lang ?? 'ko' }).toString()
+  const frame = container.ownerDocument.createElement('iframe')
+  frame.setAttribute('sandbox', REQUIRED_SANDBOX.join(' '))
+  frame.setAttribute('aria-hidden', 'true')
+  frame.inert = true
+  frame.tabIndex = -1
+  // Keep a layout viewport for editors that initialize from its dimensions.
+  frame.style.cssText =
+    'position:fixed;inset:0;width:100%;height:100%;opacity:0;pointer-events:none;border:0'
+  frame.src = url.href
+  const view = container.ownerDocument.defaultView ?? window
+  const requestId = String(++nextHistoryId)
+  let sent = false
+  let undo = false
+  let receive!: (event: MessageEvent) => void
+  let timer: number | undefined
+  try {
+    return await new Promise<HistoryResult>((resolve, reject) => {
+      receive = (event) => {
+        if (event.source !== frame.contentWindow || event.origin !== url.origin) return
+        const data = event.data as Record<string, unknown> | null
+        if (!data || data.source !== SOURCE || data.version !== VERSION) return
+        if (data.type === 'ready' && !sent) {
+          sent = true
+          if (data.history !== true) {
+            reject(new SeuofficeEmbedError('unsupported', 'this editor does not support history'))
+            return
+          }
+          try {
+            const bytes = copyBytes(options.bytes)
+            undo = options.history.undo !== undefined
+            frame.contentWindow!.postMessage(
+              {
+                source: SOURCE,
+                version: VERSION,
+                type: 'open',
+                requestId,
+                fileName: options.fileName,
+                bytes,
+                history: options.history,
+                collab: false,
+                autoSave: false,
+                ai: false,
+              },
+              url.origin,
+              [bytes],
+            )
+          } catch (error) {
+            reject(new SeuofficeEmbedError('invalid_history', String(error)))
+          }
+        } else if (
+          sent &&
+          (data.type === 'error' || (data.type === 'history_done' && data.requestId === requestId))
+        ) {
+          if (data.type === 'error' || data.ok !== true) {
+            const code =
+              data.code === 'unsupported_format' || data.code === 'collab_unavailable'
+                ? 'unsupported'
+                : data.code === 'invalid_history' ||
+                    data.code === 'conflict' ||
+                    data.code === 'unsupported' ||
+                    isPageErrorCode(data.code)
+                  ? data.code
+                  : 'open_failed'
+            reject(new SeuofficeEmbedError(code, String(data.message ?? code)))
+            return
+          }
+          const { bytes, fileName, compensation } = data
+          if (
+            !(bytes instanceof ArrayBuffer) ||
+            !bytes.byteLength ||
+            typeof fileName !== 'string' ||
+            !fileName
+          ) {
+            reject(new SeuofficeEmbedError('invalid_history', 'invalid history result'))
+            return
+          }
+          try {
+            const file = { fileName, bytes: new Uint8Array(bytes) }
+            if (undo) {
+              if (
+                !Array.isArray(compensation) ||
+                !compensation.length ||
+                !isHistoryJson(compensation)
+              )
+                throw new Error('invalid compensation')
+              resolve({ ...file, compensation })
+            } else if (compensation === undefined) {
+              resolve(file)
+            } else {
+              throw new Error('unexpected compensation')
+            }
+          } catch {
+            reject(new SeuofficeEmbedError('invalid_history', 'invalid compensation'))
+          }
+        }
+      }
+      view.addEventListener('message', receive)
+      timer = view.setTimeout(
+        () =>
+          reject(new SeuofficeEmbedError('timeout', 'the history editor did not answer in time')),
+        options.timeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS,
+      )
+      container.appendChild(frame)
+    })
+  } finally {
+    view.clearTimeout(timer)
+    view.removeEventListener('message', receive)
+    frame.remove()
+  }
+}
+
+function isHistoryJson(
+  value: unknown,
+  memo = new Map<object, boolean>(),
+  depth = 0,
+): value is HistoryJson {
+  if (depth > 256) return false
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return true
+  if (typeof value !== 'object') return typeof value === 'number' && Number.isFinite(value)
+  const known = memo.get(value)
+  if (known !== undefined) return known
+  // Reject cycles without repeatedly walking shared subtrees in a structured clone.
+  memo.set(value, false)
+  if (!Array.isArray(value)) {
+    const proto: unknown = Object.getPrototypeOf(value)
+    if (proto !== null && proto !== Object.prototype) return false
+  }
+  for (const child of Array.isArray(value) ? value : Object.values(value)) {
+    if (!isHistoryJson(child, memo, depth + 1)) return false
+  }
+  memo.set(value, true)
+  return true
+}
+
+// A view can come from another window or from Buffer. Transfer only an exact, owned copy.
+function copyBytes(bytes: ArrayBuffer | Uint8Array): ArrayBuffer {
+  return new Uint8Array(ArrayBuffer.isView(bytes) ? bytes : new Uint8Array(bytes)).buffer
+}
+
 export function openDocument(
   container: HTMLElement,
   options: CollabOpenOptions,
@@ -385,14 +564,7 @@ export function openDocument(container: HTMLElement, options: OpenOptions): Coll
         options.openTimeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS,
       )
       collabAnswer(data.collab === true)
-      // an exact fresh copy: a view's slice() may share its backing buffer (Buffer#slice does)
-      const source =
-        options.bytes instanceof ArrayBuffer
-          ? new Uint8Array(options.bytes)
-          : new Uint8Array(options.bytes.buffer, options.bytes.byteOffset, options.bytes.byteLength)
-      const copy = new Uint8Array(source.byteLength)
-      copy.set(source)
-      const bytes = copy.buffer
+      const bytes = copyBytes(options.bytes)
       iframe.contentWindow!.postMessage(
         {
           source: SOURCE,

@@ -19,13 +19,14 @@
  * a PNG, or the code of why there is none (see thumbnail.ts).
  */
 
+import type { HistoryRequest } from '@seuoffice/collab/client'
 import { makeThumbnail, ThumbnailRefusal, type ThumbnailSource } from './thumbnail'
 
 export const EMBED_SOURCE = 'seuoffice'
 export const EMBED_VERSION = 1
 
 export type EmbedOpenErrorCode =
-  'unsupported_format' | 'too_large' | 'open_failed' | 'collab_unavailable'
+  'unsupported_format' | 'too_large' | 'open_failed' | 'collab_unavailable' | 'unsupported'
 
 export interface EmbedOpen {
   fileName: string
@@ -69,6 +70,8 @@ let exportRequestHandler: (() => Promise<{ fileName: string; bytes: Uint8Array }
 /** What draws the first page for a host's `thumbnail`; an app that draws none sets nothing */
 let thumbnailSource: ThumbnailSource | undefined
 let collabCapable = false
+let historyCapable = false
+let historyOpen: { requestId: string; request: HistoryRequest } | undefined
 let collabMessageHandler: ((data: Record<string, unknown>) => void) | undefined
 let collabOffered = false
 
@@ -228,6 +231,7 @@ function listen(): Promise<EmbedOpen | null> {
     const data = event.data as Record<string, unknown> | null
     if (!data || data.source !== EMBED_SOURCE || data.version !== EMBED_VERSION) return
     if (data.type !== 'open') return
+    if ('history' in data && event.source !== window.parent) return
     const { source: sender, origin } = event
     void allowed.then((origins) => {
       if (accepted) return
@@ -239,6 +243,39 @@ function listen(): Promise<EmbedOpen | null> {
       accepted = true
       window.removeEventListener('message', onOpen)
       peer = { target: sender as Window, origin }
+      if ('history' in data) {
+        if (
+          !historyCapable ||
+          new URLSearchParams(location.search).get('mode') !== 'view' ||
+          data.collab !== false ||
+          data.ai !== false ||
+          data.autoSave !== false
+        ) {
+          reply({ type: 'error', code: 'unsupported', message: 'this page cannot replay history' })
+          resolve(null)
+          return
+        }
+        if (
+          !data.history ||
+          typeof data.history !== 'object' ||
+          typeof data.requestId !== 'string' ||
+          !data.requestId
+        ) {
+          reply({ type: 'error', code: 'invalid_history', message: 'invalid history request' })
+          resolve(null)
+          return
+        }
+        // replayHistory validates the entire retained prefix before applying it.
+        historyOpen = { requestId: data.requestId, request: data.history as HistoryRequest }
+        resolve({
+          fileName: data.fileName,
+          bytes: data.bytes,
+          ai: false,
+          autoSave: false,
+          collab: false,
+        })
+        return
+      }
       window.addEventListener('message', onHostMessage)
       // a page that goes away stops reading: the host should stop paying for the answers
       window.addEventListener('pagehide', cancelAllAiRequests)
@@ -253,9 +290,15 @@ function listen(): Promise<EmbedOpen | null> {
     })
   }
   window.addEventListener('message', onOpen)
-  // ready carries only whether this page co-edits, so any parent may hear it
+  // Only capabilities go to an unknown parent; the base and history use the accepted origin.
   window.parent.postMessage(
-    { source: EMBED_SOURCE, version: EMBED_VERSION, type: 'ready', collab: collabCapable },
+    {
+      source: EMBED_SOURCE,
+      version: EMBED_VERSION,
+      type: 'ready',
+      collab: collabCapable,
+      history: historyCapable,
+    },
     '*',
   )
   return promise
@@ -508,6 +551,7 @@ export function saveToHost(
   reason: SaveReason,
   collab?: { version: number },
 ): Promise<void> {
+  if (historyMode()) return Promise.reject(new Error('a history render cannot save'))
   if (!peer) return Promise.reject(new Error('no host to save to: the page is not embedded'))
   const saveId = nextSaveId++
   // an exact fresh copy the page can transfer without losing its own
@@ -562,9 +606,19 @@ export function onHostThumbnailRequest(source: ThumbnailSource): () => void {
  * Declare that this app co-edits. Call it before anything asks for the
  * document: `ready` carries the answer, and the host decides from it.
  */
-export function registerCollabCapable(): void {
+export function registerCollabCapable(options?: { history?: boolean }): void {
   if (started) throw new Error('registerCollabCapable must run before the page announces ready')
   collabCapable = true
+  historyCapable = options?.history === true
+}
+
+/** True only for a dedicated view opened by the authenticated host with a retained prefix. */
+export function historyMode(): boolean {
+  return historyOpen !== undefined
+}
+
+export function hostHistory(): typeof historyOpen {
+  return historyOpen
 }
 
 /** The host's `collab_*` messages, already checked to come from the host */

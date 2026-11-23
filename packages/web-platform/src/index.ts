@@ -12,6 +12,7 @@ export {
   type WebDocument,
 } from './document-store'
 export {
+  historyMode,
   hostEnablesAutoSave,
   onHostSaveRequest,
   onHostThumbnailRequest,

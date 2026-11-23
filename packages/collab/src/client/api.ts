@@ -28,6 +28,13 @@ export interface CollabAdapter<Op> {
    * it applies on top of `remote`. Synchronous; must not call `emit`.
    */
   integrate(remote: Op[], local: Op[]): Op[]
+  /**
+   * In an isolated history editor, capture the state just before `op`. At the requested head,
+   * plan new ops that undo just that edit while retaining every independent later edit.
+   * Neither call mutates the editor. Return null for a conflict; throw HistoryError('unsupported')
+   * for an op this adapter cannot invert. `later` includes the rest of the target's change.
+   */
+  captureUndo?(op: Op): (later: readonly Op[]) => readonly Op[] | null
   /** this client's ops became confirmed (for adapters that keep a confirmed copy) */
   confirmed?(ops: Op[]): void
   /**
