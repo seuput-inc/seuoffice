@@ -21,6 +21,7 @@ export type {
   RetainedHistoryStore,
   UndoReceipt,
   UndoRequest,
+  UndoTargetPolicy,
 } from './history.js'
 export type { AppendRequest, AppendResult, CollabStore, EpochHead, NewEpoch } from './store.js'
 export type { Change, Format, Json } from '../model.js'

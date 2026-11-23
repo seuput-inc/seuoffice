@@ -7,6 +7,7 @@ import {
   memoryHistoryStore,
   type Principal,
   type ServerSocket,
+  type UndoTargetPolicy,
 } from '../src/server/index'
 import { sha256 } from '../src/sha256'
 import { parseServerFrame, type BytesFrame, type ServerFrame } from '../src/wire'
@@ -28,7 +29,11 @@ async function render(base: Uint8Array, request: HistoryRequest): Promise<Histor
   return { ...file, bytes: Uint8Array.of(value + delta), compensation: [delta] }
 }
 
-async function setup(renderer = render, idleEpochMs = Infinity) {
+async function setup(
+  renderer = render,
+  idleEpochMs = Infinity,
+  authorizeTarget?: UndoTargetPolicy,
+) {
   const grants = new Map([
     ['alice', 'edit'],
     ['bob', 'edit'],
@@ -38,6 +43,7 @@ async function setup(renderer = render, idleEpochMs = Infinity) {
     (user, action) =>
       user.documentId === 'doc' &&
       (action === 'export' ? grants.has(user.userId) : grants.get(user.userId) === 'edit'),
+    authorizeTarget,
   )
   const server = createHistoryServer({ store, render: renderer, limits: { idleEpochMs } })
   const baseHash = await sha256(bytes)
@@ -241,6 +247,108 @@ describe('retained history through the host API', () => {
     grants.delete('alice')
     resume.resolve()
     await expect(saving).rejects.toThrow(/forbidden/)
+    expect(await store.load('doc')).toMatchObject({ head: 1, saved: 0 })
+    await server.close()
+  })
+
+  it('authorizes only the named operation and rechecks a stored receipt before returning it', async () => {
+    const bob = { ...p, userId: 'bob' }
+    let granted = true
+    let renders = 0
+    const { server, store } = await setup(
+      (base, req) => {
+        renders++
+        return render(base, req)
+      },
+      Infinity,
+      (who, target) =>
+        granted &&
+        who.documentId === 'doc' &&
+        who.userId === 'bob' &&
+        target.epoch === 'A' &&
+        target.v === 2 &&
+        target.index === 1 &&
+        target.author === 'alice',
+    )
+    await store.append('doc', 'A', {
+      base: 1,
+      client: 'writer',
+      seq: 2,
+      author: 'alice',
+      ops: [3, 8],
+    })
+    const before = await store.read('doc', 'A', 0, 10)
+    const command = {
+      ...undo,
+      expected: { epoch: 'A', version: 2 },
+      target: { epoch: 'A', v: 2, index: 1 },
+    }
+    await expect(
+      server.undoHistory(bob, { ...command, target: { ...command.target, index: 0 } }),
+    ).rejects.toThrow(/target/)
+    await expect(server.undoHistory({ ...bob, documentId: 'other' }, command)).rejects.toThrow()
+    await expect(
+      server.undoHistory(bob, { ...command, target: { ...command.target, epoch: 'B' } }),
+    ).rejects.toThrow()
+    expect(renders).toBe(0)
+    expect(await store.read('doc', 'A', 0, 10)).toEqual(before)
+    const receipt = await server.undoHistory(bob, command)
+    expect(receipt).toEqual({ kind: 'undone', version: 3 })
+    const after = await store.read('doc', 'A', 0, 10)
+    expect(after).toEqual([...before, expect.objectContaining({ author: 'bob', ops: [-8] })])
+    expect(await server.undoHistory(bob, command)).toEqual(receipt)
+    const readReceipt = store.historyReceipt
+    store.historyReceipt = async (...args) => {
+      const saved = await readReceipt(...args)
+      granted = false
+      return saved
+    }
+    await expect(server.undoHistory(bob, command)).rejects.toThrow(/target/)
+    expect(renders).toBe(1)
+    expect(await store.read('doc', 'A', 0, 10)).toEqual(after)
+    await server.close()
+  })
+
+  it('does not start the renderer after a grant is revoked while reading the prefix', async () => {
+    let granted = true
+    let renders = 0
+    const { server, store } = await setup(
+      (base, req) => {
+        renders++
+        return render(base, req)
+      },
+      Infinity,
+      () => granted,
+    )
+    const read = store.readHistory
+    store.readHistory = async (...args) => {
+      const prefix = await read(...args)
+      granted = false
+      return prefix
+    }
+    const before = await store.read('doc', 'A', 0, 10)
+    await expect(server.undoHistory({ ...p, userId: 'bob' }, undo)).rejects.toThrow(/target/)
+    expect(renders).toBe(0)
+    expect(await store.read('doc', 'A', 0, 10)).toEqual(before)
+    await server.close()
+  })
+
+  it('leaves the prefix intact when a target grant is revoked during rendering', async () => {
+    let granted = true
+    let renders = 0
+    const { server, store } = await setup(
+      (base, req) => {
+        renders++
+        granted = false
+        return render(base, req)
+      },
+      Infinity,
+      (who, target) => granted && who.userId === 'bob' && target.author === 'alice',
+    )
+    const before = await store.read('doc', 'A', 0, 10)
+    await expect(server.undoHistory({ ...p, userId: 'bob' }, undo)).rejects.toThrow(/target/)
+    expect(renders).toBe(1)
+    expect(await store.read('doc', 'A', 0, 10)).toEqual(before)
     expect(await store.load('doc')).toMatchObject({ head: 1, saved: 0 })
     await server.close()
   })

@@ -1,3 +1,4 @@
+import type { HistoryOpId } from '../history.js'
 import type { Change, Format, Json } from '../model.js'
 import type { Principal } from './server.js'
 import type {
@@ -6,6 +7,7 @@ import type {
   HistoryCommand,
   HistoryReceipt,
   RetainedHistoryStore,
+  UndoTargetPolicy,
 } from './history.js'
 
 /** What the server needs to know about a document's epoch without reading its base or log */
@@ -158,6 +160,7 @@ function liveStore(
 /** Process-local reference. Dropping the live epoch removes only its active pointer. */
 export function memoryHistoryStore(
   authorize: (principal: Principal, action: HistoryAction) => boolean,
+  authorizeTarget: UndoTargetPolicy = (p, target) => target.author === p.userId,
 ): RetainedHistoryStore {
   const active = new Map<string, StoredEpoch>()
   const archive = new Map<string, StoredEpoch>()
@@ -176,8 +179,28 @@ export function memoryHistoryStore(
       throw new Error('history forbidden')
   }
 
+  function allowedUndo(p: Principal, { epoch, v, index }: HistoryOpId): void {
+    allowed(p, 'undo')
+    const live = active.get(p.documentId)
+    if (!live || live.id !== epoch) throw new Error('stale history head')
+    const change = live.log[v - 1]
+    if (
+      !change ||
+      change.v !== v ||
+      !change.author ||
+      !Number.isSafeInteger(index) ||
+      index < 0 ||
+      index >= change.ops.length ||
+      authorizeTarget(p, { epoch, v, index, author: change.author }) !== true
+    )
+      throw new Error('undo target unavailable')
+  }
+
   function lookup(p: Principal, cmd: HistoryCommand) {
-    allowed(p, cmd.kind)
+    if (cmd.kind === 'undo') {
+      if (cmd.target.epoch !== cmd.expected.epoch) throw new Error('invalid undo target')
+      allowedUndo(p, cmd.target)
+    } else allowed(p, cmd.kind)
     const id = key(p.documentId, p.userId, cmd.requestId)
     const { expected } = cmd
     const intent = JSON.stringify([
@@ -202,6 +225,9 @@ export function memoryHistoryStore(
     ...store,
     async authorizeHistory(p, action) {
       allowed(p, action)
+    },
+    async authorizeUndoTarget(p, target) {
+      allowedUndo(p, target)
     },
     async readHistory(p, { epoch, version }, action) {
       allowed(p, action)

@@ -9,8 +9,8 @@
  *   action: 'restore', expected: head, source: { epoch: head.epoch, version: 0 },
  *   requestId: crypto.randomUUID(),
  * })
- * For undo choose one of the caller's changes and an index below its opCount. Reuse the exact
- * request including its requestId after a lost reply, not a new head from describe().
+ * By default choose one of the caller's changes and an index below its opCount. Reuse the exact
+ * command and requestId after a lost reply. The host can set a narrower or wider target policy.
  */
 import type { Browser } from 'playwright-core'
 import type * as Embed from '@seuoffice/embed'
@@ -22,6 +22,7 @@ import {
   type RestoreRequest,
   type ServerSocket,
   type UndoRequest,
+  type UndoTargetPolicy,
 } from '@seuoffice/collab/server'
 
 declare global {
@@ -50,12 +51,13 @@ export function createDocxHistoryHost(options: {
   sessions: ReadonlyMap<string, HostSession>
   grants: ReadonlyMap<string, ReadonlyMap<string, 'view' | 'edit'>>
   currentFileHashes: ReadonlyMap<string, string>
+  authorizeUndoTarget?: UndoTargetPolicy
 }) {
   const { browser, workerPageUrl, officeBaseUrl, sessions, grants } = options
   const store = memoryHistoryStore(({ userId, documentId }, action) => {
     const role = grants.get(documentId)?.get(userId)
     return role === 'edit' || (action === 'export' && role === 'view')
-  })
+  }, options.authorizeUndoTarget)
   const server = createHistoryServer({
     store,
     async render(base, request) {

@@ -30,6 +30,11 @@ export interface UndoRequest {
 }
 
 export type HistoryAction = 'export' | 'restore' | 'undo'
+/** The host decides from an authenticated principal and an author read from the retained log. */
+export type UndoTargetPolicy = (
+  principal: Readonly<Principal>,
+  target: Readonly<HistoryOpId & { author: string }>,
+) => boolean
 export type HistoryCommand =
   ({ kind: 'restore' } & RestoreRequest) | ({ kind: 'undo' } & UndoRequest)
 export type RestoreReceipt = { kind: 'restored'; revisionId: string }
@@ -52,9 +57,11 @@ export interface RetainedHistoryStore extends CollabStore {
     request: HistoryRequest
   }>
   authorizeHistory(principal: Principal, action: HistoryAction): Promise<void>
-  /** Authorize before reading the receipt. Reject reuse of a key for a different intent. */
+  /** Check the document grant and the exact operation in its active epoch. */
+  authorizeUndoTarget(principal: Principal, target: HistoryOpId): Promise<void>
+  /** Authorize the command, including its undo target, before returning a receipt. */
   historyReceipt(principal: Principal, command: HistoryCommand): Promise<HistoryReceipt | null>
-  /** Atomically authorize, deduplicate, CAS live epoch/head, fork or undo a not-yet-undone target,
+  /** Atomically reauthorize the command and target, deduplicate, CAS live epoch/head, fork or undo a not-yet-undone target,
    * and record the receipt. A fork adds a revision; it never updates a current revision pointer. */
   commitHistory(principal: Principal, write: HistoryWrite): Promise<HistoryReceipt>
   readRevision(principal: Principal, revisionId: string): Promise<HistoryArtifact>
@@ -109,13 +116,10 @@ export function createHistoryServer(options: {
       request.baseHash !== (await sha256(baseBytes))
     )
       throw new Error('invalid retained history')
-    checkPrefix(request, request.format)
-    if (undo) {
-      const change = request.changes[undo.v - 1]
-      if (!change || change.author !== p.userId || undo.index >= change.ops.length)
-        throw new Error('undo target unavailable')
-    }
-    const result = await render(baseBytes, undo ? { ...request, undo } : request)
+    const prefix = undo ? { ...request, undo } : request
+    checkPrefix(prefix, request.format)
+    if (undo) await store.authorizeUndoTarget(p, undo)
+    const result = await render(baseBytes, prefix)
     assertHistoryResult(result, !!undo)
     return result
   }
@@ -130,7 +134,8 @@ export function createHistoryServer(options: {
     const receipt = await store.historyReceipt(p, command)
     if (receipt) {
       return server.commitHistory(p.documentId, command.expected.epoch, async () => {
-        await store.authorizeHistory(p, command.kind)
+        if (command.kind === 'undo') await store.authorizeUndoTarget(p, command.target)
+        else await store.authorizeHistory(p, command.kind)
         return receipt
       })
     }
