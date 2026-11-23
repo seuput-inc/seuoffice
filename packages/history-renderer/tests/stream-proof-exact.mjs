@@ -12,6 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   change,
   fileHash,
@@ -26,17 +27,6 @@ import {
 
 const fileLimit = 50 * MiB,
   jsonLimit = 32 * MiB
-const [out, mode = 'head', prior] = process.argv.slice(2)
-assert(
-  out && (mode === 'head' || (mode === 'undo' && prior)),
-  'usage: node stream-proof-exact.mjs <scratch-directory> [undo <verified-exact-head-directory>]',
-)
-assert(
-  import.meta.resolve('@seuoffice/history-renderer').includes('/node_modules/'),
-  'run in packed consumer',
-)
-await mkdir(out, { recursive: true })
-const dir = await mkdtemp(join(resolve(out), 'terrain-proof-exact-'))
 
 // The retained observations have 180 evenly spaced samples. Publish only an identified measured interval.
 function interval(op, start, end) {
@@ -130,7 +120,7 @@ function exactLayout() {
   assert.fail('no exact two-raster layout')
 }
 
-function exactPdf() {
+export function exactPdf(dir) {
   const { parts, size, subject } = exactLayout()
   const path = join(dir, 'retained.pdf'),
     fd = openSync(path, 'wx')
@@ -235,7 +225,7 @@ async function child(name, job) {
   })
 }
 
-async function freshLog(path, pdf, budget, epoch, withUndo = false) {
+export async function freshLog(path, pdf, budget, epoch, withUndo = false) {
   const log = makeHistory(path, pdf, budget - 384)
   const newHeader = { ...header(pdf.hash, log.version + 1), epoch }
   if (withUndo) newHeader.undo = { epoch, v: 1, index: 1 }
@@ -260,8 +250,8 @@ const reopen = (pdf, path, meta, angles) =>
     angles,
     images: pdf.images,
   })
-async function exactHead() {
-  const pdf = exactPdf()
+async function exactHead(dir) {
+  const pdf = exactPdf(dir)
   const log = await freshLog(dir, pdf, jsonLimit, 'terrain-survey')
   const output = join(dir, 'head.pdf')
   const run = await render(pdf, log.path, log.newHeader, output)
@@ -286,7 +276,7 @@ async function exactHead() {
   }
 }
 
-async function exactUndo() {
+async function exactUndo(dir, prior) {
   const previous = JSON.parse(await readFile(join(prior, 'evidence.json'), 'utf8'))
   const pdf = {
     path: join(prior, 'retained.pdf'),
@@ -423,6 +413,19 @@ async function exactUndo() {
   }
 }
 
-const evidence = mode === 'undo' ? await exactUndo() : await exactHead()
-await writeFile(join(dir, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n')
-console.log(JSON.stringify(evidence))
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [out, mode = 'head', prior] = process.argv.slice(2)
+  assert(
+    out && (mode === 'head' || (mode === 'undo' && prior)),
+    'usage: node stream-proof-exact.mjs <scratch-directory> [undo <verified-exact-head-directory>]',
+  )
+  assert(
+    import.meta.resolve('@seuoffice/history-renderer').includes('/node_modules/'),
+    'run in packed consumer',
+  )
+  await mkdir(out, { recursive: true })
+  const dir = await mkdtemp(join(resolve(out), 'terrain-proof-exact-'))
+  const evidence = mode === 'undo' ? await exactUndo(dir, prior) : await exactHead(dir)
+  await writeFile(join(dir, 'evidence.json'), JSON.stringify(evidence, null, 2) + '\n')
+  console.log(JSON.stringify(evidence))
+}

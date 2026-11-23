@@ -80,6 +80,10 @@ export function assertHistoryResult(value: unknown, undo: boolean): asserts valu
     !bytes.byteLength
   )
     invalid('empty history file')
+  assertHistoryCompensation(compensation, undo)
+}
+
+export function assertHistoryCompensation(compensation: unknown, undo: boolean): void {
   if (undo) {
     checkOps(compensation)
     if (

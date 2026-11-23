@@ -91,8 +91,10 @@ function sandboxFailure() {
 export async function launchStream(
   remainingMs: () => number,
   input: (write: (bytes: Uint8Array) => Promise<void>, signal: AbortSignal) => Promise<void>,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   return sandbox(new URL('stream-guest.js', import.meta.url), async (bin, args, options) => {
+    signal?.throwIfAborted()
     const child = spawn(bin, args, {
       ...options,
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -100,6 +102,11 @@ export async function launchStream(
       killSignal: 'SIGKILL',
     })
     const controller = new AbortController()
+    const cancel = () => {
+      child.kill('SIGKILL')
+      controller.abort(signal?.reason)
+    }
+    signal?.addEventListener('abort', cancel, { once: true })
     const limit = 3 * 1024 * 1024
     const chunks: Buffer[] = []
     let size = 0
@@ -136,6 +143,7 @@ export async function launchStream(
       await Promise.race([sending, closed])
       return await closed
     } finally {
+      signal?.removeEventListener('abort', cancel)
       controller.abort()
       child.stdin.destroy()
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')

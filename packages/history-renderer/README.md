@@ -36,12 +36,12 @@ PDF 도장은 워터마크·머리말·꼬리말·쪽 번호를 최종 표시 �
 
 ### 큰 화상 PDF의 스트림 경로
 
-`renderStream(source, headerBytes, changeFrames, stage)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 기존 네 형식의 파일·해제·이력 상한을 올리지 않는다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
+`renderStream(source, headerBytes, changeFrames, stage, signal?)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 기존 네 형식의 파일·해제·이력 상한을 올리지 않는다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
 
 허용하는 원본은 classic xref, 평평한 페이지 트리, LF 줄 끝을 가진 PDF다. 한 페이지에 마스크·압축 없는 8비트 `DeviceRGB` 사진 하나가 페이지 전체를 채워야 한다. 사진의 길이·가로·세로, 각 객체의 역할과 xref 위치를 확인한다. 최대 64페이지이며 사진을 뺀 PDF 구문은 1 MiB 이하다. JPEG·압축 스트림·문자 본문·기존 주석·중첩 리소스, `stampCfg`·`markups` 편집은 이 경로로 처리하지 않는다.
 
 - `source`에는 바이트 수와 같은 불변 원본의 스트림을 다시 여는 `open()`이 필요하다. 게스트는 첫 스트림 전체와 SHA-256을 검증한다. 호스트는 검증된 원본 범위와 게스트가 만든 작은 조각으로 비공개 `stage`를 채우며 두 번째 스트림의 SHA-256도 대조한다. 변경 가능한 현재 파일이나 인접 버전을 원본으로 쓰지 않는다.
-- `stage.write(bytes)`는 외부에 보이지 않는 저장 대상에만 쓴다. `stage.abort()`는 진행 중인 쓰기까지 폐기해야 한다. `renderStream` 성공은 저장 영수증이 아니다. 성공 뒤에도 권한·중복·기대 epoch/버전과 저장의 원자성을 확인하는 일은 호스트 책임이다. `createHistoryServer`의 기존 메모리 기반 콜백을 자동으로 스트림으로 바꾸지 않는다.
+- `stage.write(bytes)`는 외부에 보이지 않는 저장 대상에만 쓴다. `stage.abort()`는 진행 중인 쓰기까지 폐기해야 한다. `renderStream` 성공은 저장 영수증이 아니다. 공식 서버에는 `createHistoryServer({ store, renderStream })`로 연결한다. 기존 바이트 방식인 `{ store, render }`는 독립된 선택지다.
 - 파일·결과 최대 50 MiB, 요청은 머리글·변경·배열 구분자 포함 최대 32 MiB다. 머리글 8 KiB, 변경 하나 256 KiB, 한 변경에 연산 256개, 전체 버전 65,536개·연산 131,072개·클라이언트 256명 이하다. 한 변경씩 JSON 복잡도·버전·중복 제출을 확인하고 대상 연산의 역연산과 후속 충돌만 추적한다. 기록을 축약하거나 처음 몇 개 변경을 건너뛰지 않는다.
 - 선택 취소 시 새 클라이언트 한 명과 보상 변경 하나를 추가로 재생할 공간이 필요하다. 이 공간이 없으면 `unsupported`다. 기록 앞부분을 빼서 성공으로 바꾸지 않으며, 이 경우를 동료 편집 `conflict`로 표시하지 않는다.
 - 게스트의 권한·시간·메모리 설정은 `renderBytes`와 같다. 원본 사진이나 결과 파일 전체는 게스트 표준 출력으로 보내지 않는다. 출력 조립 과정에서 새 공개 파일을 만들지 않는다. 호스트가 두 번의 읽기와 비공개 저장을 제공할 수 없으면 이 진입점을 사용할 수 없다.
@@ -76,15 +76,19 @@ manifest의 Node 요구는 `>=22.12`이고 glibc 최소 버전은 선언하지 �
 # 기존 빌드를 재사용할 때만 두 파일의 경로를 지정한다.
 export SEUOFFICE_WASM=/path/to/office_wasm.wasm
 export SEUOFFICE_WASM_NOTICES=/path/to/THIRD-PARTY-NOTICES.txt
-node packages/history-renderer/pack-pair.mjs 0.12.52-rc.3 "$OUT"
+node packages/history-renderer/pack-pair.mjs 0.12.52-rc.4 "$OUT"
 # 별도 호스트에서 두 tarball 및 플랫폼용 npm 의존성을 미리 준비한 뒤 설치한다.
-npm install --offline --ignore-scripts "$OUT/seuoffice-collab-0.12.52-rc.3.tgz" "$OUT/seuoffice-history-renderer-0.12.52-rc.3.tgz"
+npm install --offline --ignore-scripts "$OUT/seuoffice-collab-0.12.52-rc.4.tgz" "$OUT/seuoffice-history-renderer-0.12.52-rc.4.tgz"
 npm ls @seuoffice/collab @seuoffice/history-renderer
 node node_modules/@seuoffice/history-renderer/examples/retained-host.mjs
 ```
 
-`0.12.52-rc.3`은 로컬 조합을 식별하는 번호이지 게시한 판이 아니다. [판 내기](../../docs/seuoffice/판-내기.md)의 공급 경로는 같은 태그·커밋에서 렌더러와 `collab`을 포장하고 GitHub Release의 자산 digest를 확인한다. 이 후보에 대해 태그 생성이나 배포를 실행하지 않았다.
+`0.12.52-rc.4`는 로컬 조합을 식별하는 번호이지 게시한 판이 아니다. 위 스트림 자원 측정표는 앞선 `rc.3`의 렌더러 단독 호출 결과이며 서버 저장 비용을 포함하지 않는다. [판 내기](../../docs/seuoffice/판-내기.md)의 공급 경로는 같은 태그·커밋에서 렌더러와 `collab`을 포장하고 GitHub Release의 자산 digest를 확인한다. 이 후보에 대해 태그 생성이나 배포를 실행하지 않았다.
 
 [호스트 예제](examples/retained-host.mjs)는 합성 DOCX와 독립된 두 편집을 보유하고, 첫 편집의 보상만 3번 버전에 기록한다. 같은 요청을 두 번 보내도 영수증이 같고 다시 연 문서에 두 번째 사람의 `Two?`가 남아야 한다. 예제의 메모리 저장소를 운영용으로 쓰라는 뜻은 아니다. 보유 범위, 인증·권한, 기대 epoch·버전에서의 원자적 추가, 중복 제거, 보상 저장은 기존 `createHistoryServer`와 호스트 저장소의 책임이다.
+
+[스트림 호스트 예제](examples/stream-host.mjs)의 `createStreamHost(database, authorize, authorizeTarget)`는 Node `DatabaseSync`와 호스트의 현재 권한 정책을 받는다. `exportHistory`, `restoreHistory`, `undoHistory`가 같은 서버의 소켓 쓰기와 문서 큐를 공유한다. [예제 저장소](examples/stream-store.mjs)는 청크 행을 비공개로 쓰고, 최종 권한·epoch·버전과 영수증을 한 SQLite 쓰기 트랜잭션에서 확인한다. 다운로드에는 `downloadHistory`를 쓰거나 `try/finally`에서 반환된 사본의 `dispose()`를 호출한다. 요청을 취소하면 게스트와 비공개 쓰기도 취소된다. 강제 프로세스 종료는 `finally`를 실행하지 않으므로, 호스트는 활성 작업이 없는 시점에 폐기되지 않은 임시 행을 회수해야 한다. SQLite 행 삭제는 디스크의 안전한 지우기를 뜻하지 않는다.
+
+서버 통합 검증은 같은 소비자에 `tests/sdk-stream*.mjs`와 `tests/stream-proof-{exact,fixture,reopen}.mjs`를 복사해 `node sdk-stream.mjs all "$OUT"`으로 실행한다. 바이트 API로 우회하지 않고 인증된 세 명령을 호출한다.
 
 저장소의 형식 대조 시험과 [브라우저 시험](../../apps/web/tests/collab-history-formats.spec.ts)은 [동일한 원본 생성 함수·wire·영수증·재열기 검증](../../apps/web/tests/collab-history-cases.ts)을 사용한다. 독립 설치본 검증은 `node packages/history-renderer/tests/pack-tests.mjs "$CONSUMER/tests"`로 신뢰된 시험·원본 생성기·재열기 도구만 묶고, 소비자 디렉터리에서 Vitest를 실행한다. 실제 서버와 렌더러는 이 번들에 포함하지 않으므로 설치된 두 tarball이 사용된다. 시험 측 `SEUOFFICE_WASM`은 독립 재열기용이며 제품 게스트는 패키지에 든 WASM만 연다. `capabilities.test.ts`는 같은 설치본 실행기로 합성 자격 표식·파일·루프백·프로세스 접근 거부와 WASM 상한을 확인한다. 공개 API에는 실행할 모듈 경로를 받는 인자가 없다.

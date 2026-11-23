@@ -63,6 +63,7 @@ async function readBase(
   signal: AbortSignal,
   visit: (bytes: Uint8Array, offset: number) => Promise<void>,
 ): Promise<string> {
+  signal.throwIfAborted()
   const hash = createHash('sha256')
   let offset = 0
   await consume(source.open(), signal, async (raw) => {
@@ -205,14 +206,16 @@ async function stageRecipe(
   return digest
 }
 
-/** The private stage's abort must discard even a pending write. Only the caller may publish it. */
+/** Stage abort is idempotent and discards pending writes. Only the caller may publish the stage. */
 export async function renderStream(
   source: Source,
   header: Uint8Array,
   changes: AsyncIterable<Uint8Array>,
   stage: Stage,
+  signal?: AbortSignal,
 ): Promise<{ fileName: string; compensation?: Json[] }> {
   try {
+    signal?.throwIfAborted()
     const deadline = performance.now() + 15000
     const remainingMs = () => {
       const ms = Math.ceil(deadline - performance.now())
@@ -231,33 +234,44 @@ export async function renderStream(
       invalid('invalid stream header or base length')
     const head = frame(header)
     let digest: string | undefined
-    const output = await launchStream(remainingMs, async (write, signal) => {
-      await write(head)
-      const size = Buffer.allocUnsafe(4)
-      size.writeUInt32LE(length)
-      await write(size)
-      const hash = await readBase(source, length, signal, write)
-      let historyBytes = head.length - 4 + ',"changes":[]'.length
-      let comma = 0
-      await consume(changes, signal, async (change) => {
-        historyBytes += comma + change.byteLength
-        if (!change.byteLength || change.byteLength > 256 * 1024 || historyBytes > 32 * 1024 * 1024)
-          invalid('history exceeds stream limits')
-        comma = 1
-        await write(frame(change))
-      })
-      digest = hash
-    })
+    const output = await launchStream(
+      remainingMs,
+      async (write, signal) => {
+        await write(head)
+        const size = Buffer.allocUnsafe(4)
+        size.writeUInt32LE(length)
+        await write(size)
+        const hash = await readBase(source, length, signal, write)
+        let historyBytes = head.length - 4 + ',"changes":[]'.length
+        let comma = 0
+        await consume(changes, signal, async (change) => {
+          historyBytes += comma + change.byteLength
+          if (
+            !change.byteLength ||
+            change.byteLength > 256 * 1024 ||
+            historyBytes > 32 * 1024 * 1024
+          )
+            invalid('history exceeds stream limits')
+          comma = 1
+          await write(frame(change))
+        })
+        digest = hash
+      },
+      signal,
+    )
+    signal?.throwIfAborted()
     const { parts, compensation } = recipe(output, length, digest)
     const controller = new AbortController()
+    const staging = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
     try {
-      const timeout = delay(remainingMs(), undefined, { signal: controller.signal }).then(() => {
+      const timeout = delay(remainingMs(), undefined, { signal: staging }).then(() => {
         throw new HistoryError('unsupported', 'stream render timed out')
       })
       const stagedHash = await Promise.race([
-        stageRecipe(source, length, parts, stage, controller.signal),
+        stageRecipe(source, length, parts, stage, staging),
         timeout,
       ])
+      staging.throwIfAborted()
       remainingMs()
       if (stagedHash !== digest) invalid('base changed between reads')
     } finally {
@@ -266,6 +280,7 @@ export async function renderStream(
     return compensation ? { fileName: 'history.pdf', compensation } : { fileName: 'history.pdf' }
   } catch (error) {
     await stage.abort()
+    signal?.throwIfAborted()
     throw error
   }
 }

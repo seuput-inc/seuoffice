@@ -15,6 +15,7 @@ export type {
   HistoryPoint,
   HistoryReceipt,
   HistoryServer,
+  StreamHistoryServer,
   HistoryWrite,
   RestoreReceipt,
   RestoreRequest,
@@ -25,3 +26,11 @@ export type {
 } from './history.js'
 export type { AppendRequest, AppendResult, CollabStore, EpochHead, NewEpoch } from './store.js'
 export type { Change, Format, Json } from '../model.js'
+export type {
+  HistoryByteSource,
+  HistoryStage,
+  StreamHistoryArtifact,
+  StreamHistoryOptions,
+  StreamHistoryStore,
+  StreamHistoryWrite,
+} from './stream-history.js'
