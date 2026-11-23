@@ -18,6 +18,7 @@
     "@seuoffice/agent-core": "*",
     "@seuoffice/ai-provider": "*",
     "@seuoffice/ai-search": "*",
+    "@seuoffice/collab": "*",
     "@seuoffice/electron-utils": "*",
     "@seuoffice/font-metrics": "*",
     "@seuoffice/i18n": "*",

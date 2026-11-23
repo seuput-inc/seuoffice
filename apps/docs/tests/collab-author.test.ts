@@ -176,7 +176,10 @@ describe('track changes while two people co-edit', () => {
     const recorder = bob.editor.storage.trackChanges
     recorder.author = authorName()
     onAuthorNameChanged(() => (recorder.author = authorName()))
-    await window.seuCollab!.attach(bob)
+    await window.seuCollab!.attach({
+      ...bob,
+      setCollabViewOnly: (value: boolean) => bob.editor.setEditable(!value, false),
+    })
 
     const join = await joinCollab(directLink('Alice'), { format: FORMAT, bytes })
     const alice = openEditor('/alice/memo.docx')
