@@ -147,16 +147,14 @@ export function checkPages({ objects, root, info }: PdfEnvelope): number {
   const catalog = /^<< \/Type \/Catalog \/Pages (\d{1,3}) 0 R >>$/.exec(compact(body(root)))
   profile(catalog)
   const treeId = Number(catalog[1])
-  const tree =
-    /^<< \/Type \/Pages \/Kids \[((?: \d{1,3} 0 R){1,128}) \] \/Count (\d{1,3}) >>$/.exec(
-      compact(body(treeId)),
-    )
-  profile(tree)
-  const kids = [...tree[1]!.matchAll(/ (\d+) 0 R/g)]
-  profile(kids.length === Number(tree[2]))
+  const tree = dict(dictionary(body(treeId)), '/Type', '/Kids', '/Count')
+  const kids = array(tree.get('/Kids'), 1, 128)
+  const count = tree.get('/Count')
+  profile(tree.get('/Type') === '/Pages' && typeof count === 'string' && /^\d{1,3}$/.test(count))
+  profile(kids.length === Number(count))
   const checkedFonts = new Map<number, Font>()
   for (const kid of kids) {
-    const owner = Number(kid[1])
+    const owner = ref(kid)
     const page = dict(
       dictionary(body(owner)),
       '/Type',
@@ -169,7 +167,10 @@ export function checkPages({ objects, root, info }: PdfEnvelope): number {
     )
     profile(page.get('/Type') === '/Page' && ref(page.get('/Parent')) === treeId)
     const box = array(page.get('/MediaBox'), 4, 4)
-    profile(box[0] === '0' && box[1] === '0')
+    for (let i = 0; i < 2; i++) {
+      const v = box[i]
+      profile(typeof v === 'string' && /^0(?:\.0{1,8})?$/.test(v))
+    }
     for (const v of box.slice(2)) {
       profile(typeof v === 'string' && /^\d{1,5}(?:\.\d{1,8})?$/.test(v) && num(v, 0, 14400) > 0)
     }

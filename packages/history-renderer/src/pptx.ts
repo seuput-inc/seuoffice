@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { HistoryError } from '@seuoffice/collab/client'
 import {
   getSlideNotes,
@@ -131,7 +132,7 @@ function relationships(root: PartNode) {
   return byId
 }
 const internal = (rel: PartNode) =>
-  !attr(rel, 'TargetMode') || attr(rel, 'TargetMode') === 'Internal'
+  attr(rel, 'TargetMode') === undefined || attr(rel, 'TargetMode') === 'Internal'
 
 type TextEdit = Extract<SlidesEdit, { kind: 'text' }>
 const textOnly = (value: string) =>
@@ -211,15 +212,20 @@ const xmlRels = new Set([
   ].map((name) => `${R}/${name}`),
   `${RELS}/metadata/core-properties`,
 ])
-const rasterPath = /^(?:ppt\/media\/[^/]+|docProps\/thumbnail)\.(?:png|jpe?g)$/i
+const rasterPath = /^ppt\/media\/[^/]+\.(?:png|jpe?g)$/i
+const thumbnailPath = /^docProps\/thumbnail\.(?:png|jpe?g)$/
+const printerPath = 'ppt/printerSettings/printerSettings1.bin'
 
 function checkSlideList(parts: ReadonlyMap<string, Uint8Array>) {
   const xml = (path: string) => parseXml(utf8.decode(parts.get(path) ?? invalid()))
   const byOwner = new Map<string, Map<string, PartNode>>()
+  const metadata = new Map<string, string>()
   for (const path of parts.keys()) {
+    if (/\.rels$/i.test(path) && !path.endsWith('.rels')) unsupported()
     if (!path.endsWith('.rels')) continue
     const owner = path === '_rels/.rels' ? '' : path.replace(/(^|\/)_rels\/([^/]+)\.rels$/, '$1$2')
     if (owner && (owner === path || !parts.has(owner))) invalid()
+    if (owner === printerPath || thumbnailPath.test(owner)) unsupported()
     const links = relationships(xml(path))
     for (const link of links.values()) {
       const type = attr(link, 'Type')
@@ -230,7 +236,25 @@ function checkSlideList(parts: ReadonlyMap<string, Uint8Array>) {
       if (!internal(link)) unsupported()
       const target = resolveTarget(owner, attr(link, 'Target')!)
       if (!target || !parts.has(target)) invalid()
-      if (type === `${R}/image` || type === `${RELS}/metadata/thumbnail`) {
+      if (type === `${R}/printerSettings`) {
+        if (
+          owner !== 'ppt/presentation.xml' ||
+          attr(link, 'Target') !== 'printerSettings/printerSettings1.bin' ||
+          target !== printerPath ||
+          metadata.has(target)
+        )
+          unsupported()
+        metadata.set(target, `${MIME}printerSettings`)
+      } else if (type === `${RELS}/metadata/thumbnail`) {
+        if (
+          owner ||
+          attr(link, 'Target') !== target ||
+          !thumbnailPath.test(target) ||
+          metadata.has(target)
+        )
+          unsupported()
+        metadata.set(target, target.endsWith('.png') ? 'image/png' : 'image/jpeg')
+      } else if (type === `${R}/image`) {
         if (!rasterPath.test(target)) unsupported()
       } else if (!type || !xmlRels.has(type) || !/\.xml$/i.test(target)) unsupported()
     }
@@ -243,7 +267,21 @@ function checkSlideList(parts: ReadonlyMap<string, Uint8Array>) {
     const name = attr(node, 'PartName'),
       type = attr(node, 'ContentType')
     if (node.tag.uri !== TYPES || !name || !type || types.has(name)) invalid()
+    for (const path of metadata.keys())
+      if (name !== `/${path}` && name.toLowerCase() === `/${path.toLowerCase()}`) unsupported()
     types.set(name, type)
+  }
+  const defaults = new Map<string, string>()
+  for (const node of children(typesRoot, 'Default')) {
+    const ext = attr(node, 'Extension')?.toLowerCase(),
+      type = attr(node, 'ContentType')
+    if (node.tag.uri !== TYPES || !ext || !type || defaults.has(ext)) invalid()
+    defaults.set(ext, type)
+  }
+  for (const path of parts.keys()) {
+    if (path !== printerPath && !thumbnailPath.test(path)) continue
+    const declared = types.get(`/${path}`) ?? defaults.get(path.slice(path.lastIndexOf('.') + 1))
+    if (!declared || declared !== metadata.get(path)) unsupported()
   }
   const office = [...(byOwner.get('') ?? invalid()).values()].filter(
     (r) => attr(r, 'Type') === `${R}/officeDocument`,
@@ -315,10 +353,15 @@ export async function openPptx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sl
         if (root.tag.name !== 'p:sld') unsupported()
         one(one(root, 'p:cSld'), 'p:spTree')
       }
+    } else if (entry.name === printerPath) {
+      // Accept the stock python-pptx template payload, not arbitrary binary printer instructions.
+      if (
+        createHash('sha256').update(data).digest('hex') !==
+        'd7768f87e07d29634782e448ece1cddd05a52b9499254222b1190bc8f6dc579e'
+      )
+        unsupported()
     } else {
-      // The edit paths copy these pixels as opaque bytes. Neither read nested office packages
-      // nor enter any image/font decoder merely because the outer ZIP fitted its budget.
-      if (!rasterPath.test(entry.name)) unsupported()
+      if (!rasterPath.test(entry.name) && !thumbnailPath.test(entry.name)) unsupported()
       if (entry.name.toLowerCase().endsWith('.png')) {
         if (data.length < 8 || ![137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => data[i] === v))
           invalid()

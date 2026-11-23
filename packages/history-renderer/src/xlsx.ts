@@ -43,7 +43,19 @@ type Sheet = {
 type SourceCells = Map<string, number | null | undefined>
 type Element = { name: string; attrs: Record<string, string>; children: Element[]; text: string }
 
-function parsePart(xml: string): Element {
+const defaultWorkbookView = Object.entries({
+  visibility: 'visible',
+  minimized: '0',
+  showHorizontalScroll: '1',
+  showVerticalScroll: '1',
+  showSheetTabs: '1',
+  tabRatio: '600',
+  firstSheet: '0',
+  activeTab: '0',
+  autoFilterDateGrouping: '1',
+})
+
+function parsePart(xml: string, path: string): Element {
   // The gateway patches serialized tags. Do not let a comment, alternate namespace or
   // entity-spelled address mean something different to its scanner and to the XML reader.
   if (xml.includes('<!') || /<[^<>]*&/.test(xml)) unsupported('unsupported XLSX XML spelling')
@@ -58,7 +70,21 @@ function parsePart(xml: string): Element {
       unsupported('XLSX encoding')
   })
   parser.on('opentag', ({ name, attributes }) => {
-    if (++count > 40000 || stack.length > 8 || Object.keys(attributes).length > 8)
+    const attrCount = Object.keys(attributes).length
+    if (
+      ++count > 40000 ||
+      stack.length > 8 ||
+      (attrCount > 8 &&
+        !(
+          path === workbookPath &&
+          stack.length === 2 &&
+          stack[0]!.name === 'workbook' &&
+          stack[1]!.name === 'bookViews' &&
+          name === 'workbookView' &&
+          attrCount === defaultWorkbookView.length &&
+          defaultWorkbookView.every(([key, value]) => attributes[key] === value)
+        ))
+    )
       unsupported('XLSX XML complexity')
     if (
       !/^[A-Za-z][A-Za-z0-9]*$/.test(name) ||
@@ -105,7 +131,7 @@ function rootNamespace(
   workbook = false,
 ) {
   const attrs = shape(node, name, workbook ? ['xmlns', 'xmlns:r'] : ['xmlns'], children)
-  if (attrs.xmlns !== namespace || (workbook && attrs['xmlns:r'] !== relNs))
+  if (attrs.xmlns !== namespace || (attrs['xmlns:r'] !== undefined && attrs['xmlns:r'] !== relNs))
     unsupported('unsupported XLSX namespace')
 }
 
@@ -233,7 +259,16 @@ function inspectSheet(
     root,
     'worksheet',
     ['xmlns', 'xmlns:r'],
-    ['dimension', 'sheetData', 'mergeCells', 'cols', 'sheetViews', 'sheetFormatPr', 'pageMargins'],
+    [
+      'sheetPr',
+      'dimension',
+      'sheetData',
+      'mergeCells',
+      'cols',
+      'sheetViews',
+      'sheetFormatPr',
+      'pageMargins',
+    ],
   )
   if (attrs.xmlns !== sheetNs || (attrs['xmlns:r'] !== undefined && attrs['xmlns:r'] !== relNs))
     unsupported('unsupported XLSX worksheet namespace')
@@ -245,6 +280,17 @@ function inspectSheet(
     if (count.has(section.name)) invalid('duplicate XLSX worksheet section')
     count.add(section.name)
     switch (section.name) {
+      case 'sheetPr': {
+        shape(section, 'sheetPr', [], ['outlinePr', 'pageSetUpPr'])
+        const outline = shape(one(section, 'outlinePr'), 'outlinePr', [
+          'summaryBelow',
+          'summaryRight',
+        ])
+        if (outline.summaryBelow !== '1' || outline.summaryRight !== '1')
+          unsupported('unsupported XLSX outline properties')
+        shape(one(section, 'pageSetUpPr'), 'pageSetUpPr', [])
+        break
+      }
       case 'dimension': {
         const { ref } = shape(section, 'dimension', ['ref'])
         if (!ref || !/^[A-Z][1-9]\d{0,3}(?::[A-Z][1-9]\d{0,3})?$/.test(ref))
@@ -427,7 +473,7 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
   }
   async function part(path: string) {
     const xml = await text(path)
-    const root = parsePart(xml)
+    const root = parsePart(xml, path)
     textParts.set(path, canonicalXmlSpelling(xml))
     return root
   }
@@ -452,9 +498,11 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
     workbook,
     'workbook',
     sheetNs,
-    ['sheets', 'calcPr', 'definedNames', 'bookViews', 'workbookPr'],
+    ['sheets', 'calcPr', 'definedNames', 'bookViews', 'workbookPr', 'workbookProtection'],
     true,
   )
+  if (workbook.children.some((child) => child.name === 'workbookProtection'))
+    shape(one(workbook, 'workbookProtection'), 'workbookProtection', [])
   if (workbook.children.some((child) => child.name === 'calcPr')) {
     shape(one(workbook, 'calcPr'), 'calcPr', [
       'calcId',
@@ -475,15 +523,22 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
   if (workbook.children.some((child) => child.name === 'bookViews')) {
     const views = one(workbook, 'bookViews')
     shape(views, 'bookViews', [], ['workbookView'])
-    shape(one(views, 'workbookView'), 'workbookView', [
-      'activeTab',
-      'firstSheet',
-      'xWindow',
-      'yWindow',
-      'windowWidth',
-      'windowHeight',
-      'visibility',
-    ])
+    const view = one(views, 'workbookView')
+    shape(
+      view,
+      'workbookView',
+      Object.keys(view.attrs).length === defaultWorkbookView.length
+        ? defaultWorkbookView.map(([key]) => key)
+        : [
+            'activeTab',
+            'firstSheet',
+            'xWindow',
+            'yWindow',
+            'windowWidth',
+            'windowHeight',
+            'visibility',
+          ],
+    )
   }
   const list = one(workbook, 'sheets')
   shape(list, 'sheets', [], ['sheet'])
@@ -492,7 +547,18 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
   const names = new Map<string, Sheet>()
   const sheets = new Map<string, Sheet>()
   for (const item of list.children) {
-    const { name, sheetId, 'r:id': rid } = shape(item, 'sheet', ['name', 'sheetId', 'r:id'])
+    const {
+      name,
+      sheetId,
+      state,
+      'r:id': rid,
+      'xmlns:r': localNs,
+    } = shape(item, 'sheet', ['name', 'sheetId', 'r:id', 'state', 'xmlns:r'])
+    if (
+      (localNs ?? workbook.attrs['xmlns:r']) !== relNs ||
+      (state !== undefined && state !== 'visible')
+    )
+      unsupported('unsupported XLSX sheet namespace or visibility')
     if (
       !name ||
       !/^[\p{L}\p{N} ._-]{1,31}$/u.test(name) ||
@@ -691,11 +757,21 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
         )
       for (const [path, content] of replacements) {
         const original = zip.file(path) ?? invalid('missing XLSX replacement part')
-        zip.file(path, content, { createFolders: false, date: original.date })
+        zip.file(path, content, {
+          createFolders: false,
+          date: original.date,
+          comment: original.comment,
+          unixPermissions: original.unixPermissions,
+          dosPermissions: original.dosPermissions,
+        })
       }
       return {
         fileName: 'history.xlsx',
-        bytes: await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' }),
+        bytes: await zip.generateAsync({
+          type: 'uint8array',
+          compression: 'DEFLATE',
+          platform: zip.files[workbookPath]!.unixPermissions != null ? 'UNIX' : 'DOS',
+        }),
       }
     },
   }
