@@ -26,6 +26,12 @@ await doc.opened // 문서가 화면에 뜨면 끝, 실패하면 SeuofficeEmbedE
 doc.destroy()
 ```
 
+## 보존된 공동 편집 판을 파일로 꺼내기
+
+`renderHistory(container, { baseUrl, fileName, bytes, history })`는 현재 열린 편집기와 별개로 보기 전용 iframe을 만든다. `bytes`는 에포크의 기준 파일이고 `history`는 같은 에포크의 형식·기준 해시·버전과 그 버전까지의 변경이다. 성공하면 `{ fileName, bytes }`를 반환하고 iframe을 제거한다. 이 호출에는 공동 편집 소켓이나 `onSave`가 필요 없다.
+
+호스트가 파일을 영구 보관하거나 연산을 취소하려면 신뢰하는 호스트 작업자에서 이 함수를 실행한다. 사용자의 브라우저가 돌려준 바이트나 보상 연산을 곧바로 저장하지 않는다. [이력 서버와 호스트의 권한·저장 계약](../collab/README.md#이력-파일-꺼내기-새-판-복원-선택-취소)을 따른다. 이력 지원을 선언하지 않은 편집기는 `unsupported`, 이력이 잘못되면 `invalid_history`, 다른 편집을 보존하는 선택 취소가 불가능하면 `conflict`다.
+
 ## 다른 출처에서 서빙할 때
 
 웹 묶음을 붙이는 쪽 페이지와 다른 출처(주소의 scheme, 호스트, 포트 중 하나라도 다르면 다른 출처)에서 서빙하면, 묶음의 페이지는 그 호스트가 보낸 `open`을 기본으로 받지 않는다. 받지 않은 호스트에는 `origin_not_allowed`가 돌아가 `opened`가 바로 reject된다(아래 "오류"). 묶음을 서빙하는 쪽이 허용할 호스트 출처를 묶음 루트(`docs/`, `pdf/` 폴더와 같은 자리)의 `embed-origins.json`에 적는다.

@@ -72,7 +72,13 @@ function checkOps(ops: unknown): asserts ops is Json[] {
 export function assertHistoryResult(value: unknown, undo: boolean): asserts value is HistoryResult {
   if (!value || typeof value !== 'object') invalid('no history file')
   const { fileName, bytes, compensation } = value as Partial<HistoryResult>
-  if (typeof fileName !== 'string' || !fileName || !(bytes instanceof Uint8Array) || !bytes.length)
+  if (
+    typeof fileName !== 'string' ||
+    !fileName ||
+    !ArrayBuffer.isView(bytes) ||
+    Object.prototype.toString.call(bytes) !== '[object Uint8Array]' ||
+    !bytes.byteLength
+  )
     invalid('empty history file')
   if (undo) {
     checkOps(compensation)

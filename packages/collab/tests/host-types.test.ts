@@ -1,6 +1,10 @@
 import { describe, expectTypeOf, it } from 'vitest'
-import type { CollabLink, CollabStatus } from '../src/client/index'
-import type { CollabStatus as EmbedStatus } from '../../embed/src/collab'
+import type { CollabLink, CollabStatus, HistoryRequest, HistoryResult } from '../src/client/index'
+import type {
+  CollabStatus as EmbedStatus,
+  HistoryRequest as EmbedHistoryRequest,
+  HistoryResult as EmbedHistoryResult,
+} from '../../embed/src/collab'
 import type {
   CollabLink as PageLink,
   CollabStatus as PageStatus,
@@ -12,6 +16,8 @@ import type {
 describe('the shapes the host packages copy', () => {
   it('are the engine’s own', () => {
     expectTypeOf<EmbedStatus>().toEqualTypeOf<CollabStatus>()
+    expectTypeOf<EmbedHistoryRequest>().toEqualTypeOf<HistoryRequest>()
+    expectTypeOf<EmbedHistoryResult>().toEqualTypeOf<HistoryResult>()
     expectTypeOf<PageStatus>().toEqualTypeOf<CollabStatus>()
     expectTypeOf<PageLink>().toEqualTypeOf<CollabLink>()
   })

@@ -99,11 +99,11 @@ const statuses = (): CollabStatus[] =>
     .filter((message) => message.type === 'collab_status')
     .map((message) => message.status as CollabStatus)
 
-function join(editors: ToyEditor<MapOp>[]) {
+function join(editors: ToyEditor<MapOp>[], bytes = toyMap.file()) {
   return page.joinPageCollab<{ bytes: Uint8Array }, MapOp>({
     format: toyMap.format,
     fileName: 'memo.toy',
-    bytes: toyMap.file(),
+    bytes,
     adapter: ({ bytes }) => {
       const editor = toyMap.open(bytes)
       editors.push(editor)
@@ -139,6 +139,91 @@ afterEach(async () => {
   delete window.seuCollab
   Object.defineProperty(window, 'parent', { value: window, configurable: true })
   document.body.replaceChildren()
+})
+
+describe('rendering retained history', () => {
+  const request = {
+    epoch: 'first',
+    format: toyMap.format,
+    // SHA-256 of the empty toy file ("[]").
+    baseHash: '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+    version: 1,
+    changes: [
+      { v: 1, client: 'alice', author: 'Alice', seq: 1, ops: [{ id: '1', key: 'a', value: 7 }] },
+    ],
+  }
+  function openHistory(extra: Record<string, unknown> = {}) {
+    channel.registerCollabCapable({ history: true })
+    const opening = channel.receiveOpen()
+    fromHost({
+      type: 'open',
+      fileName: 'toy.json',
+      bytes: new Uint8Array(toyMap.file()).buffer,
+      history: request,
+      requestId: 'r1',
+      autoSave: false,
+      ai: false,
+      collab: false,
+      ...extra,
+    })
+    return opening
+  }
+
+  it('produces the file after attach without joining, saving, or releasing input early', async () => {
+    const { stored } = playHost({ canEdit: true })
+    history.replaceState(null, '', '/?mode=view')
+    const bytes = new Uint8Array(new TextEncoder().encode('[["b",3]]'))
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+    const baseHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
+    const opened = await openHistory({ bytes: bytes.buffer, history: { ...request, baseHash } })
+    const editors: ToyEditor<MapOp>[] = []
+    const collab = (await join(editors, new Uint8Array(opened!.bytes)))!
+    expect(window.dispatchEvent(new Event('keydown', { cancelable: true }))).toBe(false)
+    expect(sent.some((message) => message.type === 'history_done')).toBe(false)
+    await collab.attach({ bytes: collab.baseBytes })
+    await collab.attach({ bytes: collab.baseBytes })
+    const answers = sent.filter((message) => message.type === 'history_done')
+    expect(answers).toHaveLength(1)
+    expect(answers[0], String(answers[0]?.message)).toMatchObject({
+      requestId: 'r1',
+      fileName: 'toy.json',
+      ok: true,
+    })
+    expect(new TextDecoder().decode(answers[0]!.bytes as ArrayBuffer)).toBe('[["a",7],["b",3]]')
+    expect(editors).toHaveLength(1)
+    expect(editors[0]!.editable).toBe(false)
+    fromHost({ type: 'request_save', requestId: 2 })
+    await expect(collab.save({ reason: 'host' })).rejects.toThrow()
+    await expect(channel.saveToHost('toy.json', toyMap.file(), 'user')).rejects.toThrow()
+    expect(stored).toEqual([])
+    expect(sent.some((message) => String(message.type).startsWith('collab_'))).toBe(false)
+  })
+
+  it.each([
+    ['edit', false],
+    ['view', true],
+  ] as const)('refuses a history open with mode=%s and collab=%s', async (mode, collab) => {
+    playHost({ canEdit: true })
+    history.replaceState(null, '', `/?mode=${mode}`)
+    await expect(openHistory({ collab })).resolves.toBeNull()
+    expect(channel.historyMode()).toBe(false)
+    expect(sent).toContainEqual(expect.objectContaining({ type: 'error', code: 'unsupported' }))
+  })
+
+  it('returns no bytes if the renderer refuses a protected body', async () => {
+    playHost({ canEdit: false })
+    history.replaceState(null, '', '/?mode=view')
+    await openHistory()
+    const editors: ToyEditor<MapOp>[] = []
+    const collab = (await join(editors))!
+    window.seuCollab!.fail!('protected document')
+    await collab.attach({ bytes: collab.baseBytes })
+    expect(editors).toEqual([])
+    const answers = sent.filter((message) => message.type === 'history_done')
+    expect(answers).toHaveLength(1)
+    expect(answers[0]).toMatchObject({ requestId: 'r1', ok: false, code: 'unsupported' })
+    expect(answers[0]).not.toHaveProperty('bytes')
+  })
 })
 
 describe('joining a co-edited page', () => {
