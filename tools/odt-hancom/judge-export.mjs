@@ -8,11 +8,9 @@
 //
 //   node tools/odt-hancom/judge-export.mjs [--corpus DIR] [--run DIR] [--editor-pages FILE]
 //
-// The editor's page count comes from the docs pagination-parity report (`npx vitest run
-// tests/pagination-parity.test.ts` in apps/docs writes <repo>/.task/pagination-parity-report.md,
-// column "Our pages"): the editor's own page layout. The app's PDF export page count
-// (export.mjs) is shown beside it. Needs <run>/export/export.json, <run>/export/look and
-// <run>/docx-look. Writes <run>/export/judge.json.
+// Pass the docs pagination-parity test's SEUOFFICE_PAGINATION_REPORT output as --editor-pages.
+// Its "Our pages" column measures the editor layout; the app PDF page count is shown beside it.
+// Needs <run>/export/export.json, <run>/export/look and <run>/docx-look. Writes <run>/export/judge.json.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import {

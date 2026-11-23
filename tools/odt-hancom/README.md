@@ -40,7 +40,11 @@ node tools/odt-hancom/export.mjs                  # docx 27개 → run/export/od
 node tools/odt-hancom/look-edits.mjs              # 한컴으로 읽기: base, edits, export, docx (한 번에 한글 하나)
 node tools/odt-hancom/validate.mjs                # ODF 검사기: 받은 파일, 고친 사본, 내보낸 ODT
 node tools/odt-hancom/judge.mjs                   # 고친 사본 판정 → run/judge.json
-node tools/odt-hancom/judge-export.mjs            # 내보내기 판정 → run/export/judge.json
+# Git Bash: 앞 단계에서 사용한 결과 폴더의 절대 경로를 지정한다.
+run='E:/github/odt-corpus/run-YYYY-MM-DD'
+report="$run/pagination-parity-report.md"
+SEUOFFICE_PAGINATION_REPORT="$report" npm run test -w @seuoffice/docs -- tests/pagination-parity.test.ts &&
+  node tools/odt-hancom/judge-export.mjs --run "$run" --editor-pages "$report"
 ```
 
 각 스크립트는 `--corpus`, `--run`을 받는다. `make-edits.mjs`는 `--kinds none,text`, `--only <파일 이름 정규식>`, `--jobs 3`도 받는다. `look-edits.mjs`는 `--what base,edits`, `--kinds`로 일부만 읽는다.
@@ -94,4 +98,4 @@ python tools/odt-hancom/hancom.py look --out <폴더> <파일 또는 폴더>... 
 - 고친 것 없는 저장: 쪽·조판 부호·표·글자·용지가 받은 파일과 같다.
 - 고친 저장: 표시 글자가 보이고, 표·조판 부호 수가 의도대로이며(행·칸·그림 ±1), 받은 글자가 빠지지 않고(행 삭제는 그 행의 글자만), 표시 자리의 모양(굵게 1, 크기 1400, 가운데 3, 색)이 의도대로다. 쪽 수가 2쪽 이상 달라지면 원인을 적어야 하는 항목으로 따로 센다.
 - ODF 검사기: 고친 사본의 오류가 받은 파일보다 많지 않고, 받은 파일에 없던 오류 문구가 없다.
-- 새 문서 내보내기: 글자·표·그림·각주가 빠지지 않고, 용지·여백이 같으며, 첫 본문 문단의 글꼴·크기·줄 간격이 한컴이 docx를 직접 읽은 것과 같고, 쪽 수가 편집기(앱 PDF) 쪽 수의 10% 안이다.
+- 새 문서 내보내기: 글자·표·그림·각주가 빠지지 않고, 용지·여백이 같으며, 첫 본문 문단의 글꼴·크기·줄 간격이 한컴이 docx를 직접 읽은 것과 같고, 쪽 수가 지정한 보고서의 편집기 쪽 수에서 10% 안이다. 앱 PDF 쪽 수는 참고값이다.
