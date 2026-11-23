@@ -6,6 +6,21 @@ export type {
   Principal,
   ServerSocket,
 } from './server.js'
-export { memoryStore } from './store.js'
+export { memoryHistoryStore, memoryStore } from './store.js'
+export { createHistoryServer } from './history.js'
+export type {
+  HistoryAction,
+  HistoryArtifact,
+  HistoryCommand,
+  HistoryPoint,
+  HistoryReceipt,
+  HistoryServer,
+  HistoryWrite,
+  RestoreReceipt,
+  RestoreRequest,
+  RetainedHistoryStore,
+  UndoReceipt,
+  UndoRequest,
+} from './history.js'
 export type { AppendRequest, AppendResult, CollabStore, EpochHead, NewEpoch } from './store.js'
 export type { Change, Format, Json } from '../model.js'
