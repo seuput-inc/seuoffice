@@ -6,6 +6,7 @@ import {
   createAiStreamBridge,
   createWebBridge,
   editMode,
+  historyMode,
   installWebBridge,
   onHostSaveRequest,
   onHostThumbnailRequest,
@@ -42,7 +43,7 @@ const noop = (): void => {}
 const unsubscribe = (): (() => void) => noop
 
 // Before the page announces ready: this page can co-edit when the host asks for it
-registerCollabCapable()
+registerCollabCapable({ history: true })
 
 /** The co-editing session when the host asked for one: saves then go through it */
 let collab: PageCollab<SheetsRendererHandles> | null = null
@@ -113,9 +114,10 @@ async function openQueuedDocument(): Promise<WorkbookFile | null> {
   try {
     // joined before anything opens: a session already running hands back its base file
     // pages the host did not ask to co-edit never load the adapter or the engine
-    if (collabLink()) {
+    if (collabLink() || historyMode()) {
       const { joinSheetsCollab } = await import('./collab-join')
       collab = await joinSheetsCollab(doc.fileName, doc.bytes)
+      if (!collab && historyMode()) throw new Error('The workbook history session could not open.')
     }
     const bytes = collab?.baseBytes ?? doc.bytes
     const engineName = engineFileName(/\.[^./]+$/.exec(doc.fileName)?.[0].toLowerCase() ?? '')

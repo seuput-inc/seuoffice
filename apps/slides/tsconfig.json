@@ -7,6 +7,7 @@
     // Pin resolution to this repo's workspace sources (avoids stale types when node_modules links point elsewhere)
     "baseUrl": ".",
     "paths": {
+      "@seuoffice/collab/client": ["../../packages/collab/src/client/index.ts"],
       "@seuoffice/pptx-engine": ["../../packages/pptx-engine/src/index.ts"],
       "@seuoffice/pptx-engine/table-grid": ["../../packages/pptx-engine/src/table-grid.ts"],
       "@seuoffice/pptx-engine/identity": ["../../packages/pptx-engine/src/identity.ts"],

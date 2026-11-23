@@ -5,6 +5,7 @@ import {
   createWebBridge,
   documentByPath,
   editMode,
+  historyMode,
   installWebBridge,
   onHostSaveRequest,
   onHostThumbnailRequest,
@@ -25,7 +26,7 @@ import type { PdfCollabHandles } from './collab-join'
 import { saveOnWeb, viewOnlyReason } from './save'
 
 // `ready` must say so before anything asks for the document
-registerCollabCapable()
+registerCollabCapable({ history: true })
 
 const noop = (): void => {}
 const unsubscribe = (): (() => void) => noop
@@ -83,7 +84,10 @@ async function consumeDocument(): Promise<string | null> {
   if (!doc) return null
   try {
     // a page the host did not ask to co-edit loads none of it
-    if (collabLink()) coEditing = await (await import('./collab-join')).joinPdfCollab(doc)
+    if (collabLink() || historyMode()) {
+      coEditing = await (await import('./collab-join')).joinPdfCollab(doc)
+      if (!coEditing) throw new Error('The PDF collaboration adapter could not open the document')
+    }
   } catch (error) {
     reportError('collab_unavailable', error instanceof Error ? error.message : String(error))
     return null

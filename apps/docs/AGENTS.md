@@ -84,6 +84,7 @@ Word 문서(.docx)와 ODT(.odt) 에디터다. 그리고 배포되는 앱 전체�
 ## 원본과 다른 점
 
 - 공동 편집에서 문서 모델의 속성은 `apps/docs/src/web/collab-attr-classes.ts`에 적힌 종류(token·text 등)로만 받는다. 표에 없는 속성은 거절하고, 이름만 보고 판단하지 않는다. 새 속성은 표 항목과 `tests/collab-attr-classes.test.ts`가 함께 붙어야 들어간다.
+- DOCX 공동 편집의 과거 판은 해당 시점까지 격리 편집기에서 재생한 뒤 `openDocsCollab`의 일반 DOCX 저장 경로로 쓴다. 선택 취소는 문단 안 글자 교체와 mark 변경만 지원한다. `captureUndo`는 ProseMirror 역단계가 원래 문서를 복원하는지 확인하고, 동료가 겹치지 않는 곳에 쓴 글은 보존한다. 동료가 삭제 자리를 건드렸거나 여러 단계가 차지한 범위 안을 고쳤으면 충돌이다. 표 구조나 메모 목록처럼 위치만으로 의존성을 판별할 수 없는 단계가 대상이나 후속 변경에 있으면 지원하지 않는다고 답한다. 두 사람이 고친 파일을 저장하고 다시 여는 시험은 `tests/collab-history.test.ts`다.
 
 ## 테스트
 

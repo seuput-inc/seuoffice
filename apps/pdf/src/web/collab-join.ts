@@ -4,6 +4,7 @@
  * person reads when the session refuses a change.
  */
 import {
+  historyMode,
   joinPageCollab,
   webLanguage,
   type CollabStatus,
@@ -19,6 +20,7 @@ import type { PdfOp } from './collab-model'
 export interface PdfCollabHandles extends PdfHost {
   /** the opened file's pages, unrotated */
   pageSizes: readonly PageSize[]
+  historySourceReady: boolean
   /** the open password of a protected file */
   password(): string | null
   /** the App's notice line */
@@ -116,6 +118,9 @@ export function joinPdfCollab(doc: WebDocument): Promise<PageCollab<PdfCollabHan
     fileName: doc.fileName,
     bytes: doc.bytes,
     adapter: async (handles) => {
+      if (historyMode() && !handles.historySourceReady) {
+        throw new Error('Cannot replay history on an incomplete or read-only PDF')
+      }
       app = handles
       // a page that never co-edits never loads these
       const [{ MAX_CHANGE_BYTES }, { createPdfAdapter }, { produceCoEditedFile }] =

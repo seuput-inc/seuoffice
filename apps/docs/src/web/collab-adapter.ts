@@ -15,11 +15,18 @@
  * prosemirror-collab's `rebaseSteps`: undo the tail, apply the remote steps,
  * re-apply the tail mapped through them, all in one transaction.
  */
-import type { CollabAdapter, Json } from '@seuoffice/collab/client'
+import { HistoryError, type CollabAdapter, type Json } from '@seuoffice/collab/client'
 import type { Editor } from '@tiptap/core'
 import { Plugin, PluginKey, TextSelection, type Transaction } from '@tiptap/pm/state'
-import type { Node as PmNode } from '@tiptap/pm/model'
-import { Step, Transform } from '@tiptap/pm/transform'
+import type { Node as PmNode, Slice } from '@tiptap/pm/model'
+import {
+  AddMarkStep,
+  Mapping,
+  RemoveMarkStep,
+  ReplaceStep,
+  Step,
+  Transform,
+} from '@tiptap/pm/transform'
 import * as pmCollab from 'prosemirror-collab'
 import { TABLE_TRAILING_SKIP } from '../renderer/editor/extensions'
 import { TRACK_IGNORE } from '../renderer/editor/revisions'
@@ -142,6 +149,88 @@ interface Outgoing {
  * the peer removed is dropped instead of bringing the section back.
  */
 const REMOVAL_WINS = /^section:/
+
+type TextStep = ReplaceStep | AddMarkStep | RemoveMarkStep
+
+const textOnly = (slice: Slice) =>
+  !slice.openStart && !slice.openEnd && slice.content.content.every((node) => node.isText)
+
+/** Body text and its marks have position ranges. Side entries, atoms and structure do not share that rule. */
+function textStep(doc: PmNode, step: Step): step is TextStep {
+  if (!(
+    step instanceof ReplaceStep ||
+    step instanceof AddMarkStep ||
+    step instanceof RemoveMarkStep
+  )) {
+    return false
+  }
+  const from = doc.resolve(step.from)
+  if (!from.parent.isTextblock || !from.sameParent(doc.resolve(step.to))) return false
+  return (
+    textOnly(doc.slice(step.from, step.to)) &&
+    (!(step instanceof ReplaceStep) || textOnly(step.slice))
+  )
+}
+
+function captureTextUndo(editor: Editor, target: DocsOp, limit: number) {
+  const before = editor.state.doc
+  if (target.kind !== 'steps' || !target.steps.length) throw new HistoryError('unsupported')
+  const selected = new Transform(before)
+  const inverses: Step[] = []
+  let start = Infinity
+  let end = -Infinity
+  for (const step of target.steps) {
+    if (!textStep(selected.doc, step)) throw new HistoryError('unsupported')
+    inverses.push(step.invert(selected.doc))
+    selected.step(step)
+    const map = step.getMap()
+    start = Math.min(step.from, map.map(start, -1))
+    const insertedEnd = step instanceof ReplaceStep ? step.from + step.slice.size : step.to
+    end = Math.max(insertedEnd, map.map(end, 1))
+  }
+  // A native mark inverse need not restore marks the target already covered.
+  const restored = new Transform(selected.doc)
+  for (let i = inverses.length - 1; i >= 0; i--) restored.step(inverses[i])
+  if (before.eq(selected.doc) || !before.eq(restored.doc)) throw new HistoryError('unsupported')
+
+  return (later: readonly DocsOp[]): DocsOp[] | null => {
+    const mapping = new Mapping()
+    mapping.appendMapping(selected.mapping)
+    let left = start
+    let right = end
+    let head = selected.doc
+    for (const op of later) {
+      if (op.kind !== 'steps') throw new HistoryError('unsupported')
+      for (const step of op.steps) {
+        if (!textStep(head, step)) throw new HistoryError('unsupported')
+        // The gap left by a deletion has no unambiguous side. Compound edits also protect their gaps.
+        const touches =
+          left === right || inverses.length > 1
+            ? step.from <= right && step.to >= left
+            : step.from < right && step.to > left
+        if (touches) return null
+        const map = step.getMap()
+        mapping.appendMap(map)
+        left = map.map(left, 1)
+        right = map.map(right, -1)
+        const result = step.apply(head)
+        if (!result.doc) throw new Error(result.failed ?? 'invalid later step')
+        head = result.doc
+      }
+    }
+    if (!head.eq(editor.state.doc)) return null
+    const undo = new Transform(head)
+    for (let i = inverses.length - 1; i >= 0; i--) {
+      const step = inverses[i].map(mapping.slice(i + 1))
+      if (!step || undo.maybeStep(step).failed) return null
+      mapping.appendMap(step.getMap(), i)
+    }
+    const wire = undo.steps.map((step) => step.toJSON() as Json)
+    if (tooLarge(wire, limit) || wire.some((step) => !kept(safeStep, step)))
+      throw new HistoryError('unsupported')
+    return [{ kind: 'steps', steps: undo.steps }]
+  }
+}
 
 export function createDocsAdapter(options: DocsAdapterOptions): CollabAdapter<DocsOp> {
   const { editor, side } = options
@@ -518,6 +607,8 @@ export function createDocsAdapter(options: DocsAdapterOptions): CollabAdapter<Do
   }
 
   return {
+    captureUndo: (op) => captureTextUndo(editor, op, options.maxOpBytes),
+
     encode(op): Json {
       if (op.kind === 'side') return { kind: 'side', key: op.key, value: op.value }
       const steps: Json[] = op.steps.map((step) => step.toJSON() as Json)

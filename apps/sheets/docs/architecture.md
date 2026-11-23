@@ -52,6 +52,10 @@ Each document eventually owns:
 
 The PoC implements the normalized snapshot and in-memory journal. The OOXML gateway operates independently to prove that untouched package entries survive a surgical cell edit.
 
+The embedded history page opens the epoch's base XLSX in a separate workbook. The co-editing adapter applies the requested log prefix. The normal save journal then writes an XLSX copy without reopening or changing the live workbook.
+
+Selective undo accepts a direct, single-cell text or numeric write. It captures the previous value before replay and returns a value-only mutation for the current head. A later write to that cell conflicts, even if it writes the same value. Other single-cell literal writes remain intact. The adapter refuses structural changes, unknown operations, formulas, tables, pivots, and protected or incompletely indexed sheets. It does not restore rich text, merged cells, or custom cell data.
+
 ## Adapter boundary
 
 Product code depends on `WorkbookAdapter`, not Univer APIs. The adapter exposes:

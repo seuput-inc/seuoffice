@@ -37,6 +37,27 @@ const subtypes = (doc: PDFDocument, pageIndex: number): string[] => {
   )
 }
 
+async function detached() {
+  const bytes = await basePdf()
+  const file: CoEditedFile = {
+    path: '/web/shared.pdf',
+    fileName: 'shared.pdf',
+    bytes,
+    pageSizes: [0, 1, 2].map(() => ({ width: A4[0], height: A4[1] })),
+    password: () => null,
+  }
+  const carol = new HeadlessPdf(3, emptySnapshot())
+  const adapter = createPdfAdapter({
+    host: carol,
+    basePages: 3,
+    produce: (s) => produceCoEditedFile(s, file),
+    refused: (reason) => reason.kind,
+    maxOpBytes: 1 << 20,
+    newId: carol.newId,
+  })
+  return { bytes, file, carol, adapter }
+}
+
 describe('the co-edited PDF file', () => {
   it('a save by a page that only replayed the log holds both people’s edits', async () => {
     const room = new Room(blankFile(3))
@@ -55,23 +76,7 @@ describe('the co-edited PDF file', () => {
     room.settle(alice, bob)
     expect(alice.print()).toBe(bob.print())
 
-    const bytes = await basePdf()
-    const file: CoEditedFile = {
-      path: '/web/shared.pdf',
-      fileName: 'shared.pdf',
-      bytes,
-      pageSizes: [0, 1, 2].map(() => ({ width: A4[0], height: A4[1] })),
-      password: () => null,
-    }
-    const carol = new HeadlessPdf(3, emptySnapshot())
-    const adapter = createPdfAdapter({
-      host: carol,
-      basePages: 3,
-      produce: (s) => produceCoEditedFile(s, file),
-      refused: (reason) => reason.kind,
-      maxOpBytes: 1 << 20,
-      newId: carol.newId,
-    })
+    const { bytes, file, carol, adapter } = await detached()
     const sent: PdfOp[] = []
     adapter.listen((ops) => sent.push(...ops))
     adapter.integrate(
@@ -106,5 +111,73 @@ describe('the co-edited PDF file', () => {
     // the base file is what every page opened: the save never wrote into it
     expect(file.bytes).toBe(bytes)
     expect((await PDFDocument.load(bytes)).getPageCount()).toBe(3)
+  })
+
+  it('reopens a prefix and compensates one title edit without removing another author’s rotation', async () => {
+    const room = new Room(blankFile(3))
+    const alice = room.join()
+    const bob = room.join()
+    function title(page: typeof alice, value: string) {
+      expect(page.app.apply([{ op: 'setMetadata', metadata: { title: value } }]).failures).toEqual(
+        [],
+      )
+      room.settle(page)
+    }
+    title(bob, 'Before Alice')
+    title(alice, 'Alice')
+    expect(rotate(bob.app, [1], 90)).toBe(true)
+    room.settle(bob)
+    title(bob, 'After Alice')
+
+    for (const dependent of [false, true]) {
+      const { adapter } = await detached()
+      const ops = room.log.map((wire) => adapter.decode(wire))
+      adapter.integrate([ops[0]!], [])
+      const undo = adapter.captureUndo!(ops[1]!)
+      adapter.integrate([ops[1]!], [])
+      const reopen = async () => PDFDocument.load((await adapter.produceFile()).bytes)
+      const prefix = await reopen()
+      expect(prefix.getTitle()).toBe('Alice')
+      expect(prefix.getPage(1).getRotation().angle).toBe(0)
+      const suffix = ops.slice(2, dependent ? 4 : 3)
+      adapter.integrate(suffix, [])
+      const compensation = undo(suffix)
+      if (dependent) {
+        expect(compensation).toBeNull()
+        expect((await reopen()).getTitle()).toBe('After Alice')
+      } else {
+        expect(compensation).toHaveLength(1)
+        expect((await reopen()).getTitle()).toBe('Alice')
+        adapter.integrate(
+          compensation!.map((op) => adapter.decode(adapter.encode(op))),
+          [],
+        )
+        const output = await reopen()
+        expect(output.getTitle()).toBe('Before Alice')
+        expect(output.getPage(1).getRotation().angle).toBe(90)
+      }
+    }
+  })
+
+  it('leaves a later markup when undoing another and refuses to undo page deletion', async () => {
+    const room = new Room(blankFile(3))
+    const alice = room.join()
+    const bob = room.join()
+    expect(highlight(alice.app, 0)).toBe(true)
+    expect(highlight(bob.app, 1)).toBe(true)
+    room.settle(alice, bob)
+    const { adapter } = await detached()
+    const [first, second] = room.log.map((wire) => adapter.decode(wire))
+    const undo = adapter.captureUndo!(first!)
+    adapter.integrate([first!, second!], [])
+    const compensation = undo([second!])
+    expect(compensation).toHaveLength(1)
+    adapter.integrate([...compensation!], [])
+    const output = await PDFDocument.load((await adapter.produceFile()).bytes)
+    expect(subtypes(output, 0)).toEqual([])
+    expect(subtypes(output, 1)).toEqual(['Highlight'])
+    const deletion = adapter.decode({ id: 'delete', puts: [{ b: 'deleted', k: 0, v: true }] })
+    expect(undo([deletion])).toBeNull()
+    expect(() => adapter.captureUndo!(deletion)).toThrow()
   })
 })

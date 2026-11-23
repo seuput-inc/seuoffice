@@ -85,6 +85,17 @@ export function joinSheetsCollab(
         {
           univer: runtime.univer,
           unitId,
+          fileAllowsCellUndo: () =>
+            state.formulaTextTruncated.size === 0 &&
+            state.file.sheets.every(
+              (sheet) =>
+                state.formulaText.get(sheet.id)?.size === 0 &&
+                state.sheetProtections.get(sheet.id)?.protected === false &&
+                sheet.tables.length === 0 &&
+                sheet.cellImages.length === 0 &&
+                sheet.pivotTables.length === 0 &&
+                !sheet.pivotsUnlocated,
+            ),
           async produceFile() {
             // 'template' builds the same save request but only writes a copy: no reopen, no re-ided sheets
             const outcome = await handleSave(

@@ -39,7 +39,7 @@ import type { DocsCollabHandles } from './collab-side'
 import { WEB_RENDERER, openDecryptedDocx, openDocxFromBytes } from './open-docx'
 
 // `ready` must say so before anything asks for the document
-registerCollabCapable()
+registerCollabCapable({ history: true })
 
 const noop = (): void => {}
 const unsubscribe = (): (() => void) => noop
