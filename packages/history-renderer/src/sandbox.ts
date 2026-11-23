@@ -24,7 +24,7 @@ const flags = [
   '--deny-ffi',
   '--deny-sys',
   '--deny-import',
-  '--v8-flags=--max-old-space-size=96',
+  '--v8-flags=--max-old-space-size=96,--wasm-max-mem-pages=2048',
 ]
 const require = createRequire(import.meta.url)
 const exec = promisify(execFile)

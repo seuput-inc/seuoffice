@@ -1,6 +1,6 @@
 {
   "name": "@seuoffice/history-renderer",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0-rc.1",
   "private": true,
   "description": "Render retained office document history from bytes in Node.js",
   "license": "FSL-1.1-ALv2",
@@ -42,7 +42,10 @@
     "@deno/linux-arm64-glibc": "2.9.6"
   },
   "devDependencies": {
+    "@seuoffice/docx-engine": "*",
+    "@seuoffice/engine-wasm": "*",
     "@seuoffice/pptx-engine": "*",
+    "@seuoffice/pptx-ops": "*",
     "@seuoffice/xlsx-gateway": "*",
     "@seuoffice/zip-gate": "*",
     "@types/node": "^24.10.1",

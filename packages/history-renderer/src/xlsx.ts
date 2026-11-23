@@ -1,39 +1,46 @@
-import { HistoryError, type Json } from '@seuoffice/collab/client'
-import { formatAddress, parseAddress } from '@seuoffice/xlsx-gateway/domain/cell-address'
-import { MINIMAL_STYLESHEET_XML } from '@seuoffice/xlsx-gateway/gateway/xlsx-default-styles'
-import { DEFAULT_THEME_XML } from '@seuoffice/xlsx-gateway/gateway/xlsx-default-theme'
+import {
+  parseAddress,
+  parseRange,
+  type RangeBounds,
+} from '@seuoffice/xlsx-gateway/domain/cell-address'
+import { formulaReads, type FormulaRead } from '@seuoffice/xlsx-gateway/gateway/formula-reads'
 import { decodeXlsxEscapes } from '@seuoffice/xlsx-gateway/gateway/xlsx-escapes'
-import { planCellEditsToXlsx, type CellEdit } from '@seuoffice/xlsx-gateway/gateway/xlsx-gateway'
+import {
+  readBasicWorkbook,
+  planCellEditsToXlsx,
+  type CellEdit,
+} from '@seuoffice/xlsx-gateway/gateway/xlsx-gateway'
+import { applyPageSetupState } from '@seuoffice/xlsx-gateway/gateway/xlsx-page-setup'
 import { canonicalXmlSpelling } from '@seuoffice/xlsx-gateway/gateway/xlsx-xml-scan'
 import JSZip from 'jszip'
 import { SaxesParser } from 'saxes'
-import { checkWireMutation } from '../../../apps/sheets/src/web/collab-wire-check'
+import {
+  checkText,
+  decode,
+  encode,
+  invalid,
+  unsupported,
+  type Literal,
+  type SheetOp,
+  type Write,
+} from './xlsx-mutations'
 import type { ByteHistoryAdapter } from './adapter'
 
 const sheetNs = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 const relNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const packageNs = 'http://schemas.openxmlformats.org/package/2006/'
 const spreadsheet = 'application/vnd.openxmlformats-officedocument.spreadsheetml.'
-const setValues = 'sheet.mutation.set-range-values'
 const workbookPath = 'xl/workbook.xml'
 const workbookRels = 'xl/_rels/workbook.xml.rels'
-const invalid = (detail: string): never => {
-  throw new HistoryError('invalid_history', detail)
+type Sheet = {
+  name: string
+  path: string
+  base: Map<string, Literal>
+  edits: Map<string, Literal>
+  locked: Set<string>
+  ranges: RangeBounds[]
 }
-const unsupported = (detail: string): never => {
-  throw new HistoryError('unsupported', detail)
-}
-
-type Literal = string | number | null
-type CellWrite = {
-  id: string
-  sheet: string
-  row: number
-  column: number
-  address: string
-  value: Literal
-}
-type Sheet = { name: string; cells: Map<string, Literal>; edits: Map<string, CellEdit> }
+type SourceCells = Map<string, number | null | undefined>
 type Element = { name: string; attrs: Record<string, string>; children: Element[]; text: string }
 
 function parsePart(xml: string): Element {
@@ -53,6 +60,11 @@ function parsePart(xml: string): Element {
   parser.on('opentag', ({ name, attributes }) => {
     if (++count > 40000 || stack.length > 8 || Object.keys(attributes).length > 8)
       unsupported('XLSX XML complexity')
+    if (
+      !/^[A-Za-z][A-Za-z0-9]*$/.test(name) ||
+      (stack.length && Object.hasOwn(attributes, 'xmlns'))
+    )
+      unsupported('unsupported XLSX namespace')
     const node: Element = { name, attrs: attributes, children: [], text: '' }
     if (stack.length) stack[stack.length - 1]!.children.push(node)
     else root = node
@@ -73,7 +85,7 @@ function shape(node: Element, name: string, attrs: string[], children: string[] 
     node.name !== name ||
     Object.keys(node.attrs).some((key) => !attrs.includes(key)) ||
     node.children.some((child) => !children.includes(child.name)) ||
-    (name !== 't' && name !== 'v' && /\S/.test(node.text))
+    (!['t', 'v', 'f', 'definedName'].includes(name) && /\S/.test(node.text))
   )
     unsupported(`unsupported XLSX ${node.name}`)
   return node.attrs
@@ -109,11 +121,12 @@ function relationships(node: Element) {
   return table
 }
 
-function checkTypes(node: Element, types: Map<string, string>) {
+function checkTypes(node: Element, types: Map<string, string>, paths: readonly string[]) {
   rootNamespace(node, 'Types', `${packageNs}content-types`, ['Default', 'Override'])
   const expected = new Map(types)
   expected.set('xml', 'application/xml')
   expected.set('rels', 'application/vnd.openxmlformats-package.relationships+xml')
+  const seen = new Set<string>()
   for (const child of node.children) {
     const key = child.name === 'Default' ? 'Extension' : 'PartName'
     const attrs = shape(child, child.name, [key, 'ContentType'])
@@ -121,10 +134,14 @@ function checkTypes(node: Element, types: Map<string, string>) {
     if (
       !part ||
       !attrs.ContentType ||
-      expected.get(part) !== attrs.ContentType ||
+      seen.has(part) ||
+      (expected.has(part)
+        ? expected.get(part) !== attrs.ContentType
+        : child.name === 'Override' && !paths.includes(part.slice(1))) ||
       (child.name === 'Override') !== part.startsWith('/')
     )
       unsupported('unsupported XLSX content type')
+    seen.add(part)
     expected.delete(part)
   }
   if (expected.size) invalid('missing XLSX content type')
@@ -140,143 +157,266 @@ function checkAddress(address: string) {
   return pos
 }
 
-function checkText(text: string) {
-  // Do not emit lossy UTF-8 or depend on the engine's CR/CRLF normalization.
-  if (text.length > 32767 || /\r|\p{Cs}/u.test(text)) unsupported('unsupported XLSX literal text')
-  return text
+// Only scalar arithmetic and scalar reductions have no spill footprint. Even for those,
+// writing a precedent would leave the cached result stale without a calculation engine.
+const operand = String.raw`(?:(?:'[A-Za-z0-9 ._-]+'|[A-Za-z_][A-Za-z0-9_.]*)!)?\$?[A-Z]{1,3}\$?[1-9]\d{0,6}`
+const number = String.raw`(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?`
+const scalar = `(?:${operand}|${number})`
+const argument = `(?:${operand}(?::${operand})?|${number})`
+const scalarFormula = new RegExp(
+  `^(?:[-+]?${scalar}(?:\\s*[-+*/^]\\s*[-+]?${scalar})*|(?:SUM|MIN|MAX|COUNT|AVERAGE)\\(\\s*${argument}(?:\\s*,\\s*${argument})*\\s*\\))$`,
+  'i',
+)
+
+function literalText(inline: Element): string | undefined {
+  shape(inline, inline.name, [], ['t', 'r', 'rPh', 'phoneticPr'])
+  if (inline.children.length !== 1 || inline.children[0]!.name !== 't') {
+    // Rich and phonetic text stays untouched. The patcher scans serialized tags:
+    // never admit a second row, cell or formula hidden inside a run.
+    for (const child of inline.children) {
+      if (child.name === 'r' || child.name === 'rPh') {
+        shape(child, child.name, child.name === 'rPh' ? ['sb', 'eb'] : [], ['rPr', 't'])
+        for (const run of child.children) {
+          if (run.name === 't') shape(run, 't', ['xml:space'])
+          else {
+            shape(
+              run,
+              'rPr',
+              [],
+              [
+                'rFont',
+                'charset',
+                'family',
+                'b',
+                'i',
+                'strike',
+                'outline',
+                'shadow',
+                'condense',
+                'extend',
+                'color',
+                'sz',
+                'u',
+                'vertAlign',
+                'scheme',
+              ],
+            )
+            for (const prop of run.children)
+              shape(prop, prop.name, ['val', 'rgb', 'auto', 'indexed', 'theme', 'tint'])
+          }
+        }
+      } else if (child.name === 't') shape(child, 't', ['xml:space'])
+      else shape(child, 'phoneticPr', ['fontId', 'type', 'alignment'])
+    }
+    return undefined
+  }
+  const t = inline.children[0]!
+  const space = shape(t, 't', ['xml:space'])['xml:space']
+  if (space !== undefined && space !== 'default' && space !== 'preserve') return undefined
+  let start = 0
+  let end = t.text.length
+  if (space !== 'preserve') {
+    while (start < end && ' \t\r\n'.includes(t.text[start]!)) start++
+    while (end > start && ' \t\r\n'.includes(t.text[end - 1]!)) end--
+  }
+  return checkText(decodeXlsxEscapes(t.text.slice(start, end)).replace(/\r\n?/g, '\n'))
 }
 
-function readCells(node: Element) {
-  rootNamespace(node, 'worksheet', sheetNs, ['dimension', 'sheetData'])
-  let dimension: { row: number; column: number } | undefined
-  if (node.children.some((child) => child.name === 'dimension')) {
-    if (node.children[0]?.name !== 'dimension') invalid('misplaced XLSX dimension')
-    const { ref } = shape(one(node, 'dimension'), 'dimension', ['ref'])
-    if (!ref || !/^A1(?::[A-Z][1-9]\d{0,3})?$/.test(ref)) unsupported('unsupported XLSX dimension')
-    dimension = checkAddress(ref.split(':').at(-1)!)
+function inspectSheet(
+  root: Element,
+  sheet: Sheet,
+  shared: readonly (string | undefined)[],
+  reads: FormulaRead[],
+  styles: number,
+) {
+  const attrs = shape(
+    root,
+    'worksheet',
+    ['xmlns', 'xmlns:r'],
+    ['dimension', 'sheetData', 'mergeCells', 'cols', 'sheetViews', 'sheetFormatPr', 'pageMargins'],
+  )
+  if (attrs.xmlns !== sheetNs || (attrs['xmlns:r'] !== undefined && attrs['xmlns:r'] !== relNs))
+    unsupported('unsupported XLSX worksheet namespace')
+  const count = new Set<string>()
+  let dimension: RangeBounds | undefined
+  sheet.base.set('showGridlines', 1)
+  sheet.base.set('rightToLeft', 0)
+  for (const section of root.children) {
+    if (count.has(section.name)) invalid('duplicate XLSX worksheet section')
+    count.add(section.name)
+    switch (section.name) {
+      case 'dimension': {
+        const { ref } = shape(section, 'dimension', ['ref'])
+        if (!ref || !/^[A-Z][1-9]\d{0,3}(?::[A-Z][1-9]\d{0,3})?$/.test(ref))
+          return unsupported('unsupported XLSX dimension')
+        const [start, end = start!] = ref.split(':').map(checkAddress)
+        if (start!.row > end.row || start!.column > end.column) invalid('reversed XLSX dimension')
+        dimension = parseRange(ref)
+        break
+      }
+      case 'mergeCells':
+        shape(section, 'mergeCells', ['count'], ['mergeCell'])
+        if (section.children.length > 1024) unsupported('too many XLSX merge ranges')
+        for (const merge of section.children) {
+          const { ref } = shape(merge, 'mergeCell', ['ref'])
+          if (!ref || !/^[A-Z][1-9]\d{0,3}:[A-Z][1-9]\d{0,3}$/.test(ref))
+            return unsupported('unsupported XLSX merge')
+          const [start, end] = ref.split(':').map(checkAddress)
+          if (start!.row > end!.row || start!.column > end!.column) invalid('reversed XLSX merge')
+          sheet.ranges.push(parseRange(ref))
+        }
+        break
+      case 'sheetViews': {
+        shape(section, 'sheetViews', [], ['sheetView'])
+        if (section.children.length !== 1) unsupported('multiple XLSX sheet views')
+        const view = one(section, 'sheetView')
+        shape(
+          view,
+          'sheetView',
+          [
+            'workbookViewId',
+            'rightToLeft',
+            'showGridLines',
+            'zoomScale',
+            'zoomScaleNormal',
+            'tabSelected',
+            'showZeros',
+            'showRowColHeaders',
+          ],
+          ['pane', 'selection'],
+        )
+        if (view.attrs.workbookViewId !== '0') unsupported('unsupported XLSX view id')
+        for (const child of view.children)
+          shape(
+            child,
+            child.name,
+            child.name === 'pane'
+              ? ['xSplit', 'ySplit', 'topLeftCell', 'activePane', 'state']
+              : ['pane', 'activeCell', 'activeCellId', 'sqref'],
+          )
+        for (const [key, attr] of [
+          ['showGridlines', 'showGridLines'],
+          ['rightToLeft', 'rightToLeft'],
+        ] as const) {
+          const flag = view.attrs[attr]
+          if (flag === undefined) continue
+          if (!['0', '1', 'false', 'true'].includes(flag)) invalid('invalid XLSX view flag')
+          sheet.base.set(key, Number(flag === '1' || flag === 'true'))
+        }
+        break
+      }
+      case 'cols':
+        shape(section, 'cols', [], ['col'])
+        for (const col of section.children) {
+          const { min, max } = shape(col, 'col', [
+            'min',
+            'max',
+            'width',
+            'customWidth',
+            'style',
+            'hidden',
+            'bestFit',
+            'outlineLevel',
+          ])
+          if (!/^[1-9]\d*$/.test(min) || !/^[1-9]\d*$/.test(max) || +min > +max || +max > 26)
+            unsupported('outside the XLSX history columns')
+        }
+        break
+      case 'sheetFormatPr':
+        shape(section, 'sheetFormatPr', [
+          'defaultRowHeight',
+          'defaultColWidth',
+          'baseColWidth',
+          'customHeight',
+          'zeroHeight',
+          'outlineLevelRow',
+          'outlineLevelCol',
+        ])
+        break
+      case 'pageMargins':
+        shape(section, 'pageMargins', ['left', 'right', 'top', 'bottom', 'header', 'footer'])
+        break
+    }
   }
-  const data = one(node, 'sheetData')
+  const data = one(root, 'sheetData')
   shape(data, 'sheetData', [], ['row'])
-  const cells = new Map<string, Literal>()
   let lastRow = 0
+  // An undefined entry is a non-numeric cell; numbers are checked against the gateway reader.
+  const addresses: SourceCells = new Map()
   for (const row of data.children) {
-    const { r } = shape(row, 'row', ['r'], ['c'])
+    const { r } = shape(
+      row,
+      'row',
+      ['r', 'spans', 's', 'customFormat', 'ht', 'customHeight', 'hidden', 'outlineLevel'],
+      ['c'],
+    )
     if (!r || !/^[1-9]\d{0,3}$/.test(r) || +r <= lastRow || +r > 1000)
       unsupported('unordered or out-of-grid XLSX row')
     lastRow = +r
     let lastColumn = -1
     for (const cell of row.children) {
-      const { r: address, t } = shape(cell, 'c', ['r', 't'], ['is', 'v'])
+      const { r: address, s, t } = shape(cell, 'c', ['r', 't', 's'], ['is', 'v', 'f'])
       const pos = checkAddress(address)
       if (
         pos.row + 1 !== lastRow ||
         pos.column <= lastColumn ||
-        (dimension && (pos.row > dimension.row || pos.column > dimension.column))
+        (dimension &&
+          (pos.row < dimension.startRow ||
+            pos.row > dimension.endRow ||
+            pos.column < dimension.startColumn ||
+            pos.column > dimension.endColumn))
       )
         invalid('inconsistent XLSX cell address')
+      addresses.set(address, undefined)
       lastColumn = pos.column
-      let value: Literal = null
-      if (t === 'inlineStr') {
-        if (cell.children.length !== 1) invalid('invalid inline string')
+      if (s !== undefined && (!/^\d+$/.test(s) || +s >= styles)) invalid('invalid XLSX cell style')
+      const formulas = cell.children.filter((item) => item.name === 'f')
+      if (formulas.length) {
+        const formula = one(cell, 'f')
+        if (cell.children.some((child) => child.name === 'is') || cell.children.length > 2)
+          invalid('invalid XLSX formula cell')
+        shape(formula, 'f', [])
+        for (const child of cell.children) if (child.name === 'v') shape(child, 'v', [])
+        if (formula.text.length > 8192 || !scalarFormula.test(formula.text))
+          unsupported('formula may spill or require recalculation')
+        const parsed = formulaReads(formula.text)
+        if (parsed.unknown || parsed.names.length || reads.length + parsed.reads.length > 1024)
+          unsupported('unknown XLSX formula precedents')
+        for (const read of parsed.reads) reads.push({ ...read, sheet: read.sheet ?? sheet.name })
+        sheet.locked.add(address)
+      } else if (t === 'inlineStr') {
+        if (cell.children.length !== 1) invalid('invalid XLSX inline string')
         const inline = one(cell, 'is')
-        shape(inline, 'is', [], ['t'])
-        const text = one(inline, 't')
-        const space = shape(text, 't', ['xml:space'])['xml:space']
-        if (space !== undefined && space !== 'preserve') unsupported('unsupported XLSX whitespace')
-        let start = 0
-        let end = text.text.length
-        if (space !== 'preserve') {
-          while (start < end && ' \t\r\n'.includes(text.text[start]!)) start++
-          while (end > start && ' \t\r\n'.includes(text.text[end - 1]!)) end--
-        }
-        value = checkText(decodeXlsxEscapes(text.text.slice(start, end)).replace(/\r\n?/g, '\n'))
-      } else if (t === undefined || t === 'n') {
-        if (cell.children.length) {
-          if (cell.children.length !== 1) invalid('invalid XLSX numeric cell')
-          const number = one(cell, 'v')
-          shape(number, 'v', [])
+        const value = literalText(inline)
+        if (value === undefined) sheet.locked.add(address)
+        else sheet.base.set(address, value)
+      } else if (cell.children.length) {
+        if (cell.children.length !== 1) invalid('invalid XLSX cell contents')
+        const v = one(cell, 'v')
+        shape(v, 'v', [])
+        if (t === 's') {
+          if (!/^(?:0|[1-9]\d*)$/.test(v.text) || +v.text >= shared.length)
+            invalid('invalid XLSX shared string index')
+          const value = shared[+v.text]
+          if (value === undefined) sheet.locked.add(address)
+          else sheet.base.set(address, value)
+        } else if (t === undefined || t === 'n') {
           if (
-            !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(number.text) ||
-            !Number.isFinite(+number.text)
+            !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(v.text) ||
+            !Number.isFinite(+v.text)
           )
             invalid('invalid XLSX number')
-          value = +number.text
-        }
-      } else unsupported('unsupported XLSX cell type')
-      cells.set(address, value)
+          addresses.set(address, +v.text)
+        } else sheet.locked.add(address)
+      } else if (t !== undefined && t !== 'n') sheet.locked.add(address)
+      else addresses.set(address, null)
     }
   }
-  return cells
-}
-
-function record(value: Json | undefined): value is Record<string, Json> {
-  return !!value && typeof value === 'object' && !Array.isArray(value)
-}
-
-function entry(value: Json | undefined) {
-  if (!record(value)) return unsupported('expected one XLSX cell')
-  const entries = Object.entries(value)
-  if (entries.length !== 1) return unsupported('expected one XLSX cell')
-  return entries[0]!
-}
-
-function decode(json: Json): CellWrite {
-  if (!record(json) || typeof json.id !== 'string' || !Array.isArray(json.m))
-    return invalid('invalid Sheets op')
-  if (Object.keys(json).some((key) => key !== 'id' && key !== 'm') || json.m.length !== 1)
-    return unsupported('expected one Sheets mutation')
-  const m = json.m[0]
-  if (!Array.isArray(m) || m.length !== 2) return invalid('invalid Sheets mutation')
-  const [kind, params] = m
-  if (typeof kind !== 'string' || !record(params)) return invalid('invalid Sheets mutation')
-  if (kind !== setValues) return unsupported('not a Sheets literal write')
-  if (Object.keys(params).some((key) => !['subUnitId', 'trigger', 'cellValue'].includes(key)))
-    return unsupported('unexpected Sheets write parameter')
-  checkWireMutation(kind, params)
-  const { trigger, subUnitId, cellValue, options } = params
-  if (
-    typeof subUnitId !== 'string' ||
-    options !== undefined ||
-    (trigger !== undefined && trigger !== 'sheet.command.set-range-values')
-  )
-    return unsupported('not a direct Sheets write')
-  const [row, columns] = entry(cellValue)
-  const [column, cell] = entry(columns)
-  if (
-    !record(cell) ||
-    Object.entries(cell).some(
-      ([key, value]) =>
-        key !== 'v' && key !== 't' && !(value === null && ['f', 'si', 'p'].includes(key)),
-    )
-  )
-    return unsupported('not a plain Sheets cell')
-  const { v, t } = cell
-  if (typeof v === 'string') {
-    // Without an explicit STRING, Univer infers numbers, booleans or FORCE_STRING.
-    if (
-      t !== 1 &&
-      (t !== undefined ||
-        (v.trim() !== '' && !Number.isNaN(Number(v))) ||
-        /^(true|false)$/i.test(v))
-    )
-      return unsupported('ambiguous Sheets text type')
-    checkText(v)
-  } else if (typeof v === 'number') {
-    if (t !== undefined && t !== 2) return unsupported('unsupported Sheets numeric type')
-  } else if (v !== null || t !== undefined) return unsupported('unsupported Sheets value')
-  if (+row >= 1000 || +column >= 26) return unsupported('outside the XLSX history grid')
-  return {
-    id: json.id,
-    sheet: subUnitId,
-    row: +row,
-    column: +column,
-    address: formatAddress(+row, +column),
-    value: v,
-  }
+  return addresses
 }
 
 /** The shared archive gate admits these bytes before a JSZip member is read. */
-export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<CellWrite>> {
+export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<SheetOp>> {
   const zip = await JSZip.loadAsync(bytes)
   const paths = Object.keys(zip.files).filter((path) => !zip.files[path]!.dir)
   const textParts = new Map<string, string>()
@@ -292,25 +432,64 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Ce
     return root
   }
   const packageRels = [...relationships(await part('_rels/.rels')).values()]
-  if (
-    packageRels.length !== 1 ||
-    packageRels[0]!.type !== `${relNs}/officeDocument` ||
-    packageRels[0]!.target !== workbookPath
-  )
-    unsupported('not a plain XLSX package')
+  const office = packageRels.filter((rel) => rel.type === `${relNs}/officeDocument`)
+  if (office.length !== 1 || office[0]!.target !== workbookPath) unsupported('not an XLSX workbook')
+  for (const rel of packageRels) {
+    if (rel === office[0]) continue
+    if (
+      !/^docProps\/[\w-]+\.xml$/.test(rel.target) ||
+      ![
+        `${relNs}/extended-properties`,
+        `${relNs}/custom-properties`,
+        `${packageNs}relationships/metadata/core-properties`,
+      ].includes(rel.type)
+    )
+      unsupported('unsupported XLSX package relationship')
+    if (!zip.file(rel.target)) invalid('missing XLSX document properties')
+  }
   const workbook = await part(workbookPath)
-  rootNamespace(workbook, 'workbook', sheetNs, ['sheets', 'calcPr'], true)
+  rootNamespace(
+    workbook,
+    'workbook',
+    sheetNs,
+    ['sheets', 'calcPr', 'definedNames', 'bookViews', 'workbookPr'],
+    true,
+  )
   if (workbook.children.some((child) => child.name === 'calcPr')) {
-    if (workbook.children.at(-1)?.name !== 'calcPr')
-      invalid('misplaced XLSX calculation properties')
-    if (shape(one(workbook, 'calcPr'), 'calcPr', ['fullCalcOnLoad']).fullCalcOnLoad !== '1')
-      unsupported('unsupported XLSX calculation properties')
+    shape(one(workbook, 'calcPr'), 'calcPr', [
+      'calcId',
+      'calcMode',
+      'fullCalcOnLoad',
+      'forceFullCalc',
+    ])
+  }
+  if (workbook.children.some((child) => child.name === 'definedNames')) {
+    const defined = one(workbook, 'definedNames')
+    shape(defined, 'definedNames', [], ['definedName'])
+    for (const name of defined.children)
+      shape(name, 'definedName', ['name', 'localSheetId', 'hidden'])
+  }
+  if (workbook.children.some((child) => child.name === 'workbookPr')) {
+    shape(one(workbook, 'workbookPr'), 'workbookPr', ['date1904', 'defaultThemeVersion'])
+  }
+  if (workbook.children.some((child) => child.name === 'bookViews')) {
+    const views = one(workbook, 'bookViews')
+    shape(views, 'bookViews', [], ['workbookView'])
+    shape(one(views, 'workbookView'), 'workbookView', [
+      'activeTab',
+      'firstSheet',
+      'xWindow',
+      'yWindow',
+      'windowWidth',
+      'windowHeight',
+      'visibility',
+    ])
   }
   const list = one(workbook, 'sheets')
   shape(list, 'sheets', [], ['sheet'])
   const rels = relationships(await part(workbookRels))
   const types = new Map([[`/${workbookPath}`, `${spreadsheet}sheet.main+xml`]])
-  const names = new Set<string>()
+  const names = new Map<string, Sheet>()
   const sheets = new Map<string, Sheet>()
   for (const item of list.children) {
     const { name, sheetId, 'r:id': rid } = shape(item, 'sheet', ['name', 'sheetId', 'r:id'])
@@ -324,75 +503,175 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Ce
       unsupported('unsupported XLSX sheet identity')
     const id = `sheet-${sheetId}`
     const rel = rels.get(rid) ?? invalid('unresolved XLSX worksheet')
-    if (rel.type !== `${relNs}/worksheet` || !/^worksheets\/[\w-]+\.xml$/.test(rel.target))
+    if (
+      rel.type !== `${relNs}/worksheet` ||
+      !/^(?:\/xl\/)?worksheets\/[\w-]+\.xml$/.test(rel.target)
+    )
       unsupported('unsupported XLSX worksheet target')
-    const path = `xl/${rel.target}`
+    const path = rel.target.startsWith('/') ? rel.target.slice(1) : `xl/${rel.target}`
     if (names.has(name.toLowerCase()) || sheets.has(id) || types.has(`/${path}`))
       invalid('ambiguous XLSX sheet identity')
-    names.add(name.toLowerCase())
+    const sheet: Sheet = {
+      name,
+      path,
+      base: new Map(),
+      edits: new Map(),
+      locked: new Set(),
+      ranges: [],
+    }
+    names.set(name.toLowerCase(), sheet)
     rels.delete(rid)
     types.set(`/${path}`, `${spreadsheet}worksheet+xml`)
-    sheets.set(id, { name, cells: readCells(await part(path)), edits: new Map() })
+    sheets.set(id, sheet)
   }
   if (!sheets.size) invalid('empty XLSX workbook')
+  let styles = 1
+  let shared: (string | undefined)[] = []
   for (const { target, type } of rels.values()) {
     const isStyle = target === 'styles.xml' && type === `${relNs}/styles`
     const isTheme = target === 'theme/theme1.xml' && type === `${relNs}/theme`
-    if (!isStyle && !isTheme) unsupported('unsupported XLSX relationship')
-    const key = `/xl/${target}`
-    if (
-      types.has(key) ||
-      (await text(key.slice(1))) !== (isStyle ? MINIMAL_STYLESHEET_XML : DEFAULT_THEME_XML)
-    )
-      unsupported('not the default XLSX theme or styles')
+    const isStrings = target === 'sharedStrings.xml' && type === `${relNs}/sharedStrings`
+    if (!isStyle && !isTheme && !isStrings) unsupported('unsupported XLSX workbook relationship')
+    const path = `xl/${target}`
+    if (types.has(`/${path}`) || !zip.file(path))
+      invalid('missing or duplicate XLSX relationship target')
+    if (isStyle) {
+      const root = await part(path)
+      if (root.name !== 'styleSheet' || root.attrs.xmlns !== sheetNs)
+        unsupported('unsupported XLSX stylesheet')
+      const formats = one(root, 'cellXfs')
+      shape(formats, 'cellXfs', ['count'], ['xf'])
+      styles = formats.children.length
+    } else if (isStrings) {
+      const root = await part(path)
+      if (shape(root, 'sst', ['xmlns', 'count', 'uniqueCount'], ['si']).xmlns !== sheetNs)
+        unsupported('unsupported XLSX shared strings')
+      shared = root.children.map(literalText)
+    }
     types.set(
-      key,
+      `/${path}`,
       isStyle
         ? `${spreadsheet}styles+xml`
-        : 'application/vnd.openxmlformats-officedocument.theme+xml',
+        : isStrings
+          ? `${spreadsheet}sharedStrings+xml`
+          : 'application/vnd.openxmlformats-officedocument.theme+xml',
     )
   }
-  checkTypes(await part('[Content_Types].xml'), types)
-  if (paths.some((path) => !textParts.has(path) && !types.has(`/${path}`)))
-    unsupported('unsupported XLSX part')
-  const sheetFor = (op: CellWrite) => sheets.get(op.sheet) ?? invalid('unknown Sheets subUnitId')
+  checkTypes(await part('[Content_Types].xml'), types, paths)
+  // These conventional names are opened by the reader/planner even without a relationship.
+  if (
+    ['xl/sharedStrings.xml', 'xl/styles.xml', 'xl/calcChain.xml'].some(
+      (p) => zip.file(p) && !types.has(`/${p}`),
+    )
+  )
+    unsupported('unexpected implicit XLSX part')
+  const reads: FormulaRead[] = []
+  const addresses = new Map<string, SourceCells>()
+  for (const [id, sheet] of sheets)
+    addresses.set(id, inspectSheet(await part(sheet.path), sheet, shared, reads, styles))
+  for (const range of reads) {
+    const source =
+      names.get(range.sheet!.toLowerCase()) ?? invalid('unresolved XLSX formula reference')
+    source.ranges.push(range)
+  }
+  const { snapshot } = await readBasicWorkbook(
+    Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+  )
+  if (snapshot.sheets.length !== sheets.size) unsupported('XLSX reader cannot resolve every sheet')
+  for (const tab of snapshot.sheets) {
+    const sheet = sheets.get(tab.id)
+    if (!sheet || sheet.name !== tab.name) return unsupported('ambiguous XLSX reader sheet')
+    const expected = addresses.get(tab.id)!
+    const cells = Object.entries(tab.cells)
+    if (cells.length !== expected.size) unsupported('XLSX reader cannot resolve every cell')
+    for (const [key, cell] of cells) {
+      if (!expected.has(key)) unsupported('ambiguous XLSX reader address')
+      if (sheet.locked.has(key) || sheet.base.has(key)) continue
+      if (
+        cell.formula !== undefined ||
+        (cell.value !== null && typeof cell.value !== 'number') ||
+        cell.value !== expected.get(key)
+      )
+        return unsupported('XLSX reader literal mismatch')
+      sheet.base.set(key, cell.value)
+    }
+  }
+  function writable({ sheet: id, key }: Write) {
+    const sheet = sheets.get(id) ?? invalid('unknown Sheets subUnitId')
+    if (key === 'showGridlines' || key === 'rightToLeft') return sheet
+    const { row, column } = parseAddress(key)
+    if (
+      sheet.locked.has(key) ||
+      sheet.ranges.some(
+        (area) =>
+          row >= area.startRow &&
+          row <= area.endRow &&
+          column >= area.startColumn &&
+          column <= area.endColumn,
+      )
+    )
+      unsupported('cannot edit a formula, its precedent, a merged or a nonliteral XLSX cell')
+    return sheet
+  }
   return {
     decode,
-    encode({ id, sheet, row, column, value }): Json {
-      const cell: Json =
-        value === null ? { v: null } : { v: value, t: typeof value === 'string' ? 1 : 2 }
-      return {
-        id,
-        m: [[setValues, { subUnitId: sheet, cellValue: { [row]: { [column]: cell } } }]],
-      }
-    },
+    encode,
     integrate(remote, local) {
       if (local.length) invalid('unexpected pending Sheets edits')
       for (const op of remote) {
-        const sheet = sheetFor(op)
-        sheet.cells.set(op.address, op.value)
-        sheet.edits.set(op.address, {
-          sheetName: sheet.name,
-          row: op.row,
-          column: op.column,
-          writeValue: true,
-          cell: { value: op.value },
-        })
+        for (const write of op.writes) {
+          const sheet = writable(write)
+          // Restoring a file literal also restores its original XML (shared string, style, etc.).
+          if (write.value === (sheet.base.get(write.key) ?? null)) sheet.edits.delete(write.key)
+          else sheet.edits.set(write.key, write.value)
+        }
       }
       return []
     },
     captureUndo(op) {
-      const value = sheetFor(op).cells.get(op.address) ?? null
-      if (op.value === null || op.value === value)
-        return unsupported('not an invertible Sheets literal replacement')
+      const targets = new Map<string, { before: Write; last: Literal }>()
+      for (const write of op.writes) {
+        const sheet = writable(write)
+        const key = `${write.sheet}/${write.key}`
+        const target = targets.get(key)
+        if (target) target.last = write.value
+        else {
+          const value = sheet.edits.has(write.key)
+            ? sheet.edits.get(write.key)!
+            : (sheet.base.get(write.key) ?? null)
+          targets.set(key, { before: { ...write, value }, last: write.value })
+        }
+      }
+      const entries = [...targets.values()]
+      if (entries.every(({ before, last }) => before.value === last))
+        return unsupported('not an invertible Sheets replacement')
       return (later) =>
-        later.some((next) => next.sheet === op.sheet && next.address === op.address)
+        later.some((op) => op.writes.some((w) => targets.has(`${w.sheet}/${w.key}`)))
           ? null
-          : [{ ...op, id: crypto.randomUUID(), value }]
+          : [{ id: crypto.randomUUID(), writes: entries.map(({ before }) => before) }]
     },
     async produceFile() {
-      const edits = [...sheets.values()].flatMap((sheet) => [...sheet.edits.values()])
-      if (!edits.length) return { fileName: 'history.xlsx', bytes }
+      const edits: CellEdit[] = []
+      const views = new Map<
+        string,
+        { sheetName: string; showGridlines?: boolean; rightToLeft?: boolean }
+      >()
+      for (const sheet of sheets.values()) {
+        for (const [key, value] of sheet.edits) {
+          if (key === 'showGridlines' || key === 'rightToLeft') {
+            const view = views.get(sheet.path) ?? { sheetName: sheet.name }
+            view[key] = value === 1
+            views.set(sheet.path, view)
+          } else
+            edits.push({
+              sheetName: sheet.name,
+              ...parseAddress(key),
+              writeValue: true,
+              cell: { value },
+            })
+        }
+      }
+      if (!edits.length && !views.size) return { fileName: 'history.xlsx', bytes }
       const plan = await planCellEditsToXlsx(
         {
           paths: async () => paths,
@@ -404,7 +683,13 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Ce
       )
       if (plan.addedEntries.length || plan.removedEntries.length)
         unsupported('unexpected XLSX part change')
-      for (const [path, content] of plan.replaced) {
+      const replacements = new Map(plan.replaced)
+      for (const [path, view] of views)
+        replacements.set(
+          path,
+          applyPageSetupState(replacements.get(path) ?? textParts.get(path)!, view),
+        )
+      for (const [path, content] of replacements) {
         const original = zip.file(path) ?? invalid('missing XLSX replacement part')
         zip.file(path, content, { createFolders: false, date: original.date })
       }

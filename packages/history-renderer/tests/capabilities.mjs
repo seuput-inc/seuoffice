@@ -1,3 +1,4 @@
+const { Deno } = globalThis
 const { path, port } = JSON.parse(await new Response(Deno.stdin.readable).text())
 const checks = {
   credential: () => Deno.env.get('HISTORY_TEST_CREDENTIAL'),
@@ -5,6 +6,7 @@ const checks = {
   write: () => Deno.writeTextFile(path, 'changed'),
   socket: () => Deno.connect({ hostname: '127.0.0.1', port }),
   process: () => new Deno.Command('/bin/echo', { args: ['spawned'] }).output(),
+  wasmMemory: () => new WebAssembly.Memory({ initial: 1 }).grow(2048),
 }
 const result = {}
 for (const [key, check] of Object.entries(checks)) {

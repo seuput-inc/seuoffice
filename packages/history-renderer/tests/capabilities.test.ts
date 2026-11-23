@@ -33,6 +33,7 @@ it('refuses host credentials, a readable file, a live loopback listener and proc
       write: 'NotCapable',
       socket: 'NotCapable',
       process: 'NotCapable',
+      wasmMemory: 'RangeError',
       ffi: 'denied',
       sys: 'denied',
       import: 'denied',

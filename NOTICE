@@ -306,3 +306,5 @@ they name, is in LICENSE-APACHE (shipped as LICENSE-APACHE.txt).
 The optional history-renderer runtime uses Deno (https://github.com/denoland/deno,
 MIT). The renderer bundles saxes (https://github.com/lddubeau/saxes, ISC)
 and ships the bundled JavaScript dependencies' notices in dist/THIRD-PARTY-NOTICES.txt.
+Its XML reader uses @nodable/entities (https://github.com/nodable/val-parsers,
+MIT). The bundled Rust office engine's notices ship in dist/OFFICE-WASM-NOTICES.txt.

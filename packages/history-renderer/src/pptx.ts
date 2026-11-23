@@ -1,8 +1,23 @@
-import { HistoryError, type Json } from '@seuoffice/collab/client'
+import { HistoryError } from '@seuoffice/collab/client'
+import {
+  getSlideNotes,
+  matchesElementRef,
+  notesPathForSlide,
+  openPptx as openDeck,
+  patchSlideXml,
+  resolveTarget,
+  type OpenedPptx,
+} from '@seuoffice/pptx-engine'
 import JSZip from 'jszip'
 import { SaxesParser, type SaxesTagNS } from 'saxes'
-import type { SlidesEdit } from '../../../apps/slides/src/web/collab-ops'
-import { decodeOp, encodeOp, GONE } from '../../../apps/slides/src/web/collab-wire'
+import {
+  applyOp,
+  deckFile,
+  slideIndexOf,
+  type SlidesEdit,
+  type SlidesOp,
+} from '../../../apps/slides/src/web/collab-ops'
+import { decodeOp, encodeOp, GONE, WIRE_LIMITS } from '../../../apps/slides/src/web/collab-wire'
 import type { ByteHistoryAdapter } from './adapter'
 
 const P = 'http://schemas.openxmlformats.org/presentationml/2006/main'
@@ -11,34 +26,15 @@ const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 const RELS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 const TYPES = 'http://schemas.openxmlformats.org/package/2006/content-types'
 const MIME = 'application/vnd.openxmlformats-officedocument.presentationml.'
-const EXT = '{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}'
 const NS: Record<string, string> = {
   p: P,
   a: A,
   a16: 'http://schemas.microsoft.com/office/drawing/2014/main',
   r: R,
 }
-// The editor locates these ranges in the original XML. A second, nested spelling would
-// not necessarily name the element a namespace-aware reader picked.
-const slideParents: Record<string, readonly string[]> = {
-  'p:spTree': ['p:cSld'],
-  'p:cSld': ['p:sld'],
-  'p:sp': ['p:spTree'],
-  'p:nvSpPr': ['p:sp'],
-  'p:cNvPr': ['p:nvGrpSpPr', 'p:nvSpPr'],
-  'p:txBody': ['p:sp'],
-  'a:p': ['p:txBody'],
-  'a:r': ['a:p'],
-  'a:t': ['a:r'],
-  'a:rPr': ['a:r'],
-  'a:fld': [],
-  'a:br': [],
-  'p:ph': [],
-  'a16:creationId': ['a:ext'],
-}
 
 function unsupported(): never {
-  throw new HistoryError('unsupported', 'PPTX is outside the plain text box history profile')
+  throw new HistoryError('unsupported', 'PPTX feature is outside the byte replay profile')
 }
 function invalid(): never {
   throw new HistoryError('invalid_history', 'PPTX history does not identify a unique target')
@@ -47,20 +43,27 @@ function invalid(): never {
 interface PartNode {
   tag: SaxesTagNS
   children: PartNode[]
-  contentStart: number
-  contentEnd: number
   value: string
 }
 
-async function part(zip: JSZip, path: string, name: string, uri: string) {
-  const entry = zip.file(path) ?? invalid()
-  const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-    await entry.async('uint8array'),
-  )
-  const sax = new SaxesParser({ xmlns: true })
+const textParents: Record<string, string> = {
+  'p:cNvPr': 'p:nvSpPr',
+  'p:txBody': 'p:sp',
+  'a:p': 'p:txBody',
+  'a:r': 'a:p',
+  'a:rPr': 'a:r',
+  'a:t': 'a:r',
+}
+
+function parseXml(source: string, fragment = false): PartNode {
+  const sax = new SaxesParser({ xmlns: true, ...(fragment ? { additionalNamespaces: NS } : {}) })
   const stack: PartNode[] = []
   let root: PartNode | undefined
   let count = 0
+  sax.on('error', (error) => {
+    if (fragment) unsupported()
+    throw error
+  })
   sax.on('xmldecl', ({ version, encoding }) => {
     if (version !== '1.0' || (encoding && encoding.toUpperCase() !== 'UTF-8')) unsupported()
   })
@@ -68,24 +71,22 @@ async function part(zip: JSZip, path: string, name: string, uri: string) {
     sax.on(event, unsupported)
   sax.on('opentag', (tag) => {
     if (++count > 16_384 || stack.length >= 64) unsupported()
-    if (tag.uri !== (tag.prefix ? NS[tag.prefix] : uri) || (!tag.prefix && name.includes(':')))
-      unsupported()
-    const allowed =
-      name === 'p:sld' && Object.hasOwn(slideParents, tag.name) ? slideParents[tag.name] : undefined
-    if (allowed && !allowed.includes(stack[stack.length - 1]?.tag.name ?? '')) unsupported()
-    if (
-      Object.values(tag.attributes).some(
-        (a) => a.uri === 'http://schemas.openxmlformats.org/markup-compatibility/2006',
-      )
-    )
-      unsupported()
+    if (Object.hasOwn(NS, tag.prefix) && tag.uri !== NS[tag.prefix]) unsupported()
     if (tag.attributes['r:id'] && tag.attributes['r:id'].uri !== R) unsupported()
+    if (fragment) {
+      if (Object.hasOwn(textParents, tag.name) && stack.at(-1)?.tag.name !== textParents[tag.name])
+        unsupported()
+      if (tag.name === 'a:fld' || tag.name === 'a:br' || (tag.name === 'p:sp' && stack.length))
+        unsupported()
+    }
+    // Saving a deck with embedded fonts may inflate a second, compressed font container.
+    if (tag.local === 'embeddedFontLst' || tag.local === 'embeddedFont') unsupported()
+    // Removing a slide would also have to repair these lists of slide ids.
+    if (tag.local === 'custShowLst' || tag.local === 'sectionLst') unsupported()
     const node: PartNode = {
       tag,
       children: [],
       value: '',
-      contentStart: sax.position,
-      contentEnd: sax.position,
     }
     if (stack.length) stack[stack.length - 1]!.children.push(node)
     else root = node
@@ -94,18 +95,12 @@ async function part(zip: JSZip, path: string, name: string, uri: string) {
   sax.on('text', (value) => {
     const node = stack[stack.length - 1]
     if (node?.tag.name === 'a:t') node.value += value
-    else if (value.trim()) unsupported()
   })
-  sax.on('closetag', (tag) => {
-    const node = stack.pop()!
-    if (!tag.isSelfClosing) {
-      node.contentEnd = source.lastIndexOf('<', sax.position - 1)
-      if (tag.name === 'a:t' && !source.startsWith('</a:t>', node.contentEnd)) unsupported()
-    }
+  sax.on('closetag', () => {
+    stack.pop()
   })
   sax.write(source).close()
-  if (!root || root.tag.name !== name || root.tag.uri !== uri) invalid()
-  return { source, root }
+  return root ?? invalid()
 }
 
 const children = (node: PartNode, name: string) =>
@@ -116,12 +111,20 @@ function one(node: PartNode, name: string): PartNode {
 }
 const attr = (node: PartNode, key: string) => node.tag.attributes[key]?.value
 
-async function relationships(zip: JSZip, path: string) {
-  const { root } = await part(zip, path, 'Relationships', RELS)
+function relationships(root: PartNode) {
+  if (root.tag.name !== 'Relationships' || root.tag.uri !== RELS) invalid()
   const byId = new Map<string, PartNode>()
   for (const rel of root.children) {
     const id = attr(rel, 'Id')
-    if (rel.tag.name !== 'Relationship' || !id || byId.has(id)) invalid()
+    if (
+      rel.tag.name !== 'Relationship' ||
+      rel.tag.uri !== RELS ||
+      !id ||
+      byId.has(id) ||
+      !attr(rel, 'Target') ||
+      !attr(rel, 'Type')
+    )
+      invalid()
     if (attr(rel, 'Type')?.includes('/digital-signature/')) unsupported()
     byId.set(id, rel)
   }
@@ -130,83 +133,119 @@ async function relationships(zip: JSZip, path: string) {
 const internal = (rel: PartNode) =>
   !attr(rel, 'TargetMode') || attr(rel, 'TargetMode') === 'Internal'
 
-interface Box {
-  text: PartNode
-  language: boolean
-  current: string
-}
-
-function boxOf(shape: PartNode): Box {
-  const body = one(shape, 'p:txBody')
-  const para = one(body, 'a:p')
-  const run = one(para, 'a:r')
-  const text = one(run, 'a:t')
-  const props = children(run, 'a:rPr')
-  const bodyProps = one(body, 'a:bodyPr')
-  if (
-    body.children.some((n) => !['a:bodyPr', 'a:lstStyle', 'a:p'].includes(n.tag.name)) ||
-    bodyProps.children.some((n) => n.tag.name !== 'a:noAutofit') ||
-    children(body, 'a:lstStyle').some((n) => n.children.length) ||
-    para.children.some((n) => !['a:r', 'a:endParaRPr'].includes(n.tag.name)) ||
-    run.children.some((n) => !['a:rPr', 'a:t'].includes(n.tag.name)) ||
-    props.length > 1 ||
-    props.some(
-      (n) => n.children.length || Object.keys(n.tag.attributes).some((a) => a !== 'lang'),
-    ) ||
-    text.tag.isSelfClosing ||
-    text.children.length ||
-    Object.keys(text.tag.attributes).length ||
-    !plainText(text.value)
-  )
-    unsupported()
-  return { text, current: text.value, language: !!(props[0] && attr(props[0], 'lang')) }
-}
-
-const plainText = (value: string) =>
+type TextEdit = Extract<SlidesEdit, { kind: 'text' }>
+const textOnly = (value: string) =>
   value.length > 0 && !/[^\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/u.test(value)
-const escapeText = (value: string) =>
-  value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 
-type TextOp = { id: string; edit: Extract<SlidesEdit, { kind: 'text' }> }
-
-function decode(json: Json): TextOp {
-  const { id, edit } = decodeOp(json)
+// Keep the in-place writer on the original run slots; rebuilding a rich txBody can drop markup.
+function textBox(opened: OpenedPptx, edit: TextEdit, undo = false) {
+  if (edit.at.group || edit.autofit) unsupported()
+  const slide = opened.deck.slides[slideIndexOf(opened, edit.at.slide)] ?? invalid()
+  const matches = slide.elements.filter((el) => matchesElementRef(el, edit.at.el))
+  if (matches.length !== 1) invalid()
+  const el = matches[0]!
+  if ((el.type !== 'text' && el.type !== 'shape') || !el.text) unsupported()
+  const shape = parseXml(el.anchor.originalXml, true)
+  if (shape.tag.name !== 'p:sp') unsupported()
+  const body = one(shape, 'p:txBody')
+  const paras = children(body, 'a:p')
   if (
-    edit.kind !== 'text' ||
-    edit.at.group ||
-    edit.at.slide === GONE ||
-    edit.autofit ||
-    edit.paragraphs.length !== 1
+    !paras.length ||
+    paras.length !== edit.paragraphs.length ||
+    paras.length !== el.text.paragraphs.length ||
+    body.children.some((n) => !['a:bodyPr', 'a:lstStyle', 'a:p'].includes(n.tag.name)) ||
+    one(body, 'a:bodyPr').children.some((n) => n.tag.name !== 'a:noAutofit') ||
+    children(body, 'a:lstStyle').some((n) => n.children.length)
   )
     unsupported()
-  const p = edit.paragraphs[0]!
-  const r = p.runs[0]
-  if (
-    p.runs.length !== 1 ||
-    !r ||
-    !plainText(r.text) ||
-    (p.srcPara ?? 0) !== 0 ||
-    (r.srcRun ?? 0) !== 0 ||
-    Object.keys(p).some((k) => k !== 'srcPara' && k !== 'runs') ||
-    Object.keys(r).some((k) => k !== 'srcRun' && k !== 'text')
-  )
-    unsupported()
-  return { id, edit }
+  for (const [i, para] of paras.entries()) {
+    const p = edit.paragraphs[i]!,
+      runs = children(para, 'a:r')
+    if (
+      (p.srcPara ?? i) !== i ||
+      Object.keys(p).some((k) => k !== 'runs' && k !== 'srcPara') ||
+      para.children.some((n) => !['a:r', 'a:endParaRPr'].includes(n.tag.name)) ||
+      !runs.length ||
+      p.runs.length !== runs.length ||
+      el.text.paragraphs[i]!.runs.length !== runs.length
+    )
+      unsupported()
+    for (const [j, run] of runs.entries()) {
+      const r = p.runs[j]!,
+        t = one(run, 'a:t'),
+        props = children(run, 'a:rPr')
+      if (
+        (r.srcRun ?? j) !== j ||
+        r.field !== undefined ||
+        r.redact !== undefined ||
+        (r.link?.kind === 'slide' && r.link.slideIndex >= opened.deck.slides.length) ||
+        !textOnly(r.text) ||
+        !textOnly(t.value) ||
+        t.children.length ||
+        run.children.some((n) => n.tag.name !== 'a:t' && n.tag.name !== 'a:rPr') ||
+        props.length > 1 ||
+        (undo &&
+          (Object.keys(r).some((k) => k !== 'text' && k !== 'srcRun') ||
+            (!props[0]?.tag.attributes.lang && /\p{Script=Hangul}/u.test(r.text))))
+      )
+        unsupported()
+    }
+  }
+  return el
 }
 
-export async function openPptx(bytes: Uint8Array): Promise<ByteHistoryAdapter<TextOp>> {
-  const zip = await JSZip.loadAsync(bytes)
+const xmlRels = new Set([
+  ...[
+    'officeDocument',
+    'slide',
+    'slideLayout',
+    'slideMaster',
+    'theme',
+    'notesSlide',
+    'notesMaster',
+    'presProps',
+    'viewProps',
+    'tableStyles',
+    'extended-properties',
+    'custom-properties',
+  ].map((name) => `${R}/${name}`),
+  `${RELS}/metadata/core-properties`,
+])
+const rasterPath = /^(?:ppt\/media\/[^/]+|docProps\/thumbnail)\.(?:png|jpe?g)$/i
+
+function checkSlideList(parts: ReadonlyMap<string, Uint8Array>) {
+  const xml = (path: string) => parseXml(utf8.decode(parts.get(path) ?? invalid()))
+  const byOwner = new Map<string, Map<string, PartNode>>()
+  for (const path of parts.keys()) {
+    if (!path.endsWith('.rels')) continue
+    const owner = path === '_rels/.rels' ? '' : path.replace(/(^|\/)_rels\/([^/]+)\.rels$/, '$1$2')
+    if (owner && (owner === path || !parts.has(owner))) invalid()
+    const links = relationships(xml(path))
+    for (const link of links.values()) {
+      const type = attr(link, 'Type')
+      if (attr(link, 'TargetMode') === 'External') {
+        if (type !== `${R}/hyperlink`) unsupported()
+        continue
+      }
+      if (!internal(link)) unsupported()
+      const target = resolveTarget(owner, attr(link, 'Target')!)
+      if (!target || !parts.has(target)) invalid()
+      if (type === `${R}/image` || type === `${RELS}/metadata/thumbnail`) {
+        if (!rasterPath.test(target)) unsupported()
+      } else if (!type || !xmlRels.has(type) || !/\.xml$/i.test(target)) unsupported()
+    }
+    byOwner.set(owner, links)
+  }
+  const typesRoot = xml('[Content_Types].xml')
+  if (typesRoot.tag.name !== 'Types' || typesRoot.tag.uri !== TYPES) invalid()
   const types = new Map<string, string>()
-  for (const node of children(
-    (await part(zip, '[Content_Types].xml', 'Types', TYPES)).root,
-    'Override',
-  )) {
+  for (const node of children(typesRoot, 'Override')) {
     const name = attr(node, 'PartName'),
       type = attr(node, 'ContentType')
-    if (!name || !type || types.has(name)) invalid()
+    if (node.tag.uri !== TYPES || !name || !type || types.has(name)) invalid()
     types.set(name, type)
   }
-  const office = [...(await relationships(zip, '_rels/.rels')).values()].filter(
+  const office = [...(byOwner.get('') ?? invalid()).values()].filter(
     (r) => attr(r, 'Type') === `${R}/officeDocument`,
   )
   if (
@@ -216,14 +255,15 @@ export async function openPptx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Te
     types.get('/ppt/presentation.xml') !== `${MIME}presentation.main+xml`
   )
     unsupported()
-  const pres = (await part(zip, 'ppt/presentation.xml', 'p:presentation', P)).root
-  const rels = await relationships(zip, 'ppt/_rels/presentation.xml.rels')
-  const slides = new Map<string, Map<string, Box>>()
-  const parts: { path: string; source: string; boxes: Box[] }[] = []
-  const ids = new Set<string>()
+  const pres = xml('ppt/presentation.xml')
+  if (pres.tag.name !== 'p:presentation') unsupported()
+  const rels = byOwner.get('ppt/presentation.xml') ?? invalid()
+  const ids = new Set<string>(),
+    paths = new Set<string>(),
+    notes = new Set<string>()
   for (const node of one(pres, 'p:sldIdLst').children) {
-    const rel = rels.get(attr(node, 'r:id') ?? '')
-    const id = attr(node, 'id')
+    const rel = rels.get(attr(node, 'r:id') ?? ''),
+      id = attr(node, 'id')
     if (
       node.tag.name !== 'p:sldId' ||
       !id ||
@@ -235,92 +275,166 @@ export async function openPptx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Te
       invalid()
     ids.add(id)
     const target = attr(rel, 'Target') ?? ''
-    const number = /^slides\/slide([1-9]\d*)\.xml$/.exec(target)?.[1]
-    if (!number) unsupported()
-    const slide = `s_${number}`,
-      path = `ppt/${target}`
-    if (slides.has(slide) || types.get(`/${path}`) !== `${MIME}slide+xml`) invalid()
-    const { source, root } = await part(zip, path, 'p:sld', P)
-    const tree = one(one(root, 'p:cSld'), 'p:spTree')
-    const refs = new Map<string, Box>(),
-      boxes: Box[] = []
-    for (const shape of tree.children) {
-      if (shape.tag.name === 'p:nvGrpSpPr' || shape.tag.name === 'p:grpSpPr') continue
-      if (shape.tag.name !== 'p:sp') unsupported()
-      const nv = one(one(shape, 'p:nvSpPr'), 'p:cNvPr')
-      if (nv.children.length !== 1) unsupported()
-      const numeric = attr(nv, 'id') ?? ''
-      const ext = one(one(nv, 'a:extLst'), 'a:ext')
-      if (ext.children.length !== 1) unsupported()
-      const guid = attr(one(ext, 'a16:creationId'), 'id') ?? ''
-      if (
-        attr(ext, 'uri') !== EXT ||
-        !/^\d{1,10}$/.test(numeric) ||
-        !/^\{[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\}$/i.test(guid)
-      )
-        unsupported()
-      const box = boxOf(shape)
-      boxes.push(box)
-      for (const key of new Set([`e_${numeric}`, `e_${guid.slice(1, 9).toLowerCase()}`])) {
-        if (refs.has(key)) invalid()
-        refs.set(key, box)
-      }
-    }
-    parts.push({ path, source, boxes })
-    slides.set(slide, refs)
+    if (!/^slides\/slide[1-9]\d{0,8}\.xml$/.test(target)) unsupported()
+    const path = `ppt/${target}`
+    if (paths.has(path) || !parts.has(path) || types.get(`/${path}`) !== `${MIME}slide+xml`)
+      invalid()
+    paths.add(path)
+    const slideRels = byOwner.get(path)
+    if (!slideRels) continue
+    const links = [...slideRels.values()].filter((r) => attr(r, 'Type') === `${R}/notesSlide`)
+    if (links.length > 1) invalid()
+    if (!links.length) continue
+    const link = links[0]!,
+      note = resolveTarget(path, attr(link, 'Target') ?? '')
+    if (
+      !internal(link) ||
+      !/^ppt\/notesSlides\/notesSlide[1-9]\d{0,8}\.xml$/.test(note) ||
+      types.get(`/${note}`) !== `${MIME}notesSlide+xml` ||
+      notes.has(note) ||
+      xml(note).tag.name !== 'p:notes'
+    )
+      invalid()
+    notes.add(note)
   }
-  if (!slides.size) invalid()
-  const target = (op: TextOp) => slides.get(op.edit.at.slide)?.get(op.edit.at.el) ?? invalid()
+  if (!paths.size) invalid()
+  return [...paths]
+}
+
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
+export async function openPptx(bytes: Uint8Array): Promise<ByteHistoryAdapter<SlidesOp>> {
+  const zip = await JSZip.loadAsync(bytes)
+  const parts = new Map<string, Uint8Array>()
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir) continue
+    const data = await entry.async('uint8array')
+    if (/\.(xml|rels)$/i.test(entry.name)) {
+      const root = parseXml(utf8.decode(data))
+      if (/^ppt\/slides\/slide\d+\.xml$/.test(entry.name)) {
+        if (root.tag.name !== 'p:sld') unsupported()
+        one(one(root, 'p:cSld'), 'p:spTree')
+      }
+    } else {
+      // The edit paths copy these pixels as opaque bytes. Neither read nested office packages
+      // nor enter any image/font decoder merely because the outer ZIP fitted its budget.
+      if (!rasterPath.test(entry.name)) unsupported()
+      if (entry.name.toLowerCase().endsWith('.png')) {
+        if (data.length < 8 || ![137, 80, 78, 71, 13, 10, 26, 10].every((v, i) => data[i] === v))
+          invalid()
+      } else if (data[0] !== 255 || data[1] !== 216 || data[2] !== 255) invalid()
+    }
+    parts.set(entry.name, data)
+  }
+  const paths = checkSlideList(parts)
+  const opened = await openDeck(bytes)
+  parts.clear()
+  const checkModel = (listed: string[]) => {
+    if (
+      listed.length !== opened.deck.slides.length ||
+      listed.some((path, i) => opened.deck.slides[i]!.path !== path)
+    )
+      invalid()
+  }
+  checkModel(paths)
+  let dirty = false
   return {
-    decode,
+    decode: decodeOp,
     encode: encodeOp,
     integrate(remote, local) {
       if (local.length) invalid()
       for (const op of remote) {
-        const box = target(op),
-          text = op.edit.paragraphs[0]!.runs[0]!.text
-        // The editor stamps ko-KR when a changed, untagged run gains Hangul.
-        if (!box.language && /\p{Script=Hangul}/u.test(text)) unsupported()
-        box.current = text
+        const edit = op.edit
+        const targets =
+          edit.kind === 'deleteSlides'
+            ? edit.slides
+            : [edit.kind === 'text' ? edit.at.slide : edit.slide]
+        if (targets.includes(GONE)) unsupported()
+        if (
+          new Set(targets).size !== targets.length ||
+          targets.some((s) => slideIndexOf(opened, s) < 0)
+        )
+          invalid()
+        if (edit.kind === 'text') textBox(opened, edit)
+        if (
+          edit.kind === 'notes' &&
+          edit.text.split(/\r\n|\r|\n/, WIRE_LIMITS.paragraphs + 1).length > WIRE_LIMITS.paragraphs
+        )
+          unsupported()
+        const applied = applyOp(opened, op)
+        if (!applied) invalid()
+        if (applied.linksDropped) unsupported()
+        if (
+          (edit.kind === 'blankSlide' || edit.kind === 'duplicateSlide') &&
+          applied.made !== edit.made
+        )
+          invalid()
+        if (edit.kind !== 'text') {
+          const entries = opened.archive.entries
+          let total = 0
+          if (entries.size > 256) unsupported()
+          for (const part of entries.values())
+            if (part.length > 1024 * 1024 || (total += part.length) > 4 * 1024 * 1024) unsupported()
+          checkModel(checkSlideList(entries))
+          if (edit.kind === 'notes') {
+            const slide = opened.deck.slides[slideIndexOf(opened, edit.slide)]!
+            if (
+              !notesPathForSlide(opened.archive, slide.path) ||
+              getSlideNotes(opened.archive, slide.path) !==
+                edit.text.replace(/\r\n?/g, '\n').replace(/\n+$/, '')
+            )
+              unsupported()
+          }
+        }
+        dirty = true
       }
       return []
     },
-    captureUndo(op) {
-      const box = target(op),
-        text = box.current
-      return (later) =>
-        later.some((next) => target(next) === box)
-          ? null
-          : [
-              {
-                id: crypto.randomUUID(),
-                edit: { kind: 'text', at: op.edit.at, paragraphs: [{ runs: [{ text }] }] },
-              },
-            ]
+    captureUndo({ edit }) {
+      if (edit.kind === 'blankSlide' || edit.kind === 'duplicateSlide') {
+        return (later) => {
+          // Any later structural edit may have copied, removed or reused the created part.
+          for (const { edit: next } of later) {
+            if (next.kind === 'notes' && next.slide !== edit.made) continue
+            if (
+              next.kind === 'text' &&
+              next.at.slide !== edit.made &&
+              !next.paragraphs.some((p) =>
+                p.runs.some((r) => r.link?.kind === 'slide' || r.link?.kind === 'action'),
+              )
+            )
+              continue
+            return null
+          }
+          return [{ id: crypto.randomUUID(), edit: { kind: 'deleteSlides', slides: [edit.made] } }]
+        }
+      }
+      if (edit.kind !== 'text') unsupported()
+      const box = textBox(opened, edit, true)
+      const paragraphs = box.text!.paragraphs.map((p) => ({
+        runs: p.runs.map((r) => ({ text: r.text })),
+      }))
+      return (later) => {
+        if (
+          later.some(({ edit: next }) =>
+            next.kind === 'notes'
+              ? false
+              : next.kind !== 'text' ||
+                (next.at.slide === edit.at.slide && matchesElementRef(box, next.at.el)),
+          )
+        )
+          return null
+        return [{ id: crypto.randomUUID(), edit: { kind: 'text', at: edit.at, paragraphs } }]
+      }
     },
     async produceFile() {
-      let dirty = false
-      for (const { path, source, boxes } of parts) {
-        let pos = 0
-        const chunks: string[] = []
-        for (const box of boxes) {
-          if (box.current === box.text.value) continue
-          chunks.push(source.slice(pos, box.text.contentStart), escapeText(box.current))
-          pos = box.text.contentEnd
-        }
-        if (!chunks.length) continue
-        chunks.push(source.slice(pos))
-        const output = chunks.join('')
-        if (Buffer.byteLength(output) > 1024 * 1024) unsupported()
-        zip.file(path, output, { date: zip.file(path)!.date, createFolders: false })
-        dirty = true
+      for (const slide of opened.deck.slides) {
+        if (!slide.structureDirty && !slide.elements.some((el) => el.dirty)) continue
+        const xml = patchSlideXml(structuredClone(slide))
+        if (Buffer.byteLength(xml) > 1024 * 1024) unsupported()
+        parseXml(xml)
       }
-      return {
-        fileName: 'history.pptx',
-        bytes: dirty
-          ? await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
-          : bytes,
-      }
+      return { fileName: 'history.pptx', bytes: dirty ? await deckFile(opened) : bytes }
     },
   }
 }

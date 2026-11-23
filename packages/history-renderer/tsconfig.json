@@ -5,5 +5,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node", "vite/client"]
   },
-  "include": ["src", "tests", "index.d.ts", "../pptx-render/src/bidi-js.d.ts", "../ui/src/env.d.ts"]
+  "include": ["src", "tests", "index.d.ts", "../pdf2docx/src/bidi-js.d.ts"]
 }

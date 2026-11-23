@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { HistoryRequest, Json } from '@seuoffice/collab/client'
+import '@seuoffice/engine-wasm/node'
+import { createBlankPptx, getSlideNotes, openPptx, slideDurableId } from '@seuoffice/pptx-engine'
 import { render } from './render'
 import JSZip from 'jszip'
 import { SaxesParser } from 'saxes'
@@ -163,12 +165,12 @@ it('treats a later numeric alias of the same GUID as an overlap, including insid
   })
 })
 
-it('refuses valid but unsupported edits, unknown targets, and malformed wire records', async () => {
+it('refuses undo of a notes overwrite, unknown targets, and malformed wire records', async () => {
   const base = await deck()
   await expect(
     render(
       base,
-      request(base, [[{ id: 'notes', edit: { kind: 'notes', slide: 's_7', text: 'notes' } }]]),
+      request(base, [[{ id: 'notes', edit: { kind: 'notes', slide: 's_7', text: 'notes' } }]], 1),
     ),
   ).rejects.toMatchObject({ code: 'unsupported' })
   await expect(
@@ -179,14 +181,117 @@ it('refuses valid but unsupported edits, unknown targets, and malformed wire rec
   ).rejects.toMatchObject({ code: 'invalid_history' })
 })
 
-it('rejects ambiguous identities and does not flatten rich text or mint missing ids', async () => {
+it('rejects ambiguous identities, flattening edits, and references not in the deck', async () => {
   for (const [alter, code] of [
     [(s: string) => s.replace(subtitle, title), 'invalid_history'],
     [(s: string) => s.replace('</a:r>', '</a:r><a:r><a:t>other run</a:t></a:r>'), 'unsupported'],
-    [(s: string) => s.replace(/<a:extLst>.*?<\/a:extLst>/, ''), 'unsupported'],
+    [(s: string) => s.replace(/<a:extLst>.*?<\/a:extLst>/, ''), 'invalid_history'],
     [(s: string) => s.replace(a16, 'urn:not-the-drawing-namespace'), 'unsupported'],
   ] as const) {
     const base = await deck(alter)
     await expect(render(base, request(base, [[target]]))).rejects.toMatchObject({ code })
   }
+})
+
+const notes = (id: string, slide: string, text: string) => ({
+  id,
+  edit: { kind: 'notes', slide, text },
+})
+const blank = (id: string, slide: string, made: string, before = false) => ({
+  id,
+  edit: { kind: 'blankSlide', slide, made, before },
+})
+const remove = (id: string, ...slides: string[]) => ({ id, edit: { kind: 'deleteSlides', slides } })
+
+async function slidesAndNotes(bytes: Uint8Array) {
+  const { archive, deck } = await openPptx(bytes)
+  return deck.slides.map((slide) => [slideDurableId(slide), getSlideNotes(archive, slide.path)])
+}
+
+it('inserts before a source, duplicates without sharing its notes, then deletes the named slides', async () => {
+  const base = await createBlankPptx()
+  const changes: Json[][] = [
+    [notes('n1', 's_1', 'Original\n한글'), blank('add', 's_1', 's_2', true)],
+    [{ id: 'dup', edit: { kind: 'duplicateSlide', slide: 's_1', made: 's_3', clearText: false } }],
+  ]
+  const copy = await render(base, request(base, changes))
+  expect(await slidesAndNotes(copy.bytes)).toEqual([
+    ['s_2', ''],
+    ['s_1', 'Original\n한글'],
+    ['s_3', ''],
+  ])
+  const remaining = await render(
+    base,
+    request(base, [...changes, [notes('n3', 's_3', 'Peer <&>'), remove('delete', 's_2', 's_1')]]),
+  )
+  expect(await slidesAndNotes(remaining.bytes)).toEqual([['s_3', 'Peer <&>']])
+})
+
+it('uses the engine-assigned part id and refuses undo after a deleted id has been reused', async () => {
+  const base = await createBlankPptx()
+  await expect(render(base, request(base, [[blank('bad', 's_1', 's_3')]]))).rejects.toMatchObject({
+    code: 'invalid_history',
+  })
+  const changes = [
+    [blank('add', 's_1', 's_2')],
+    [remove('rm', 's_2'), blank('reuse', 's_1', 's_2')],
+  ]
+  await expect(render(base, request(base, changes, 1))).rejects.toMatchObject({ code: 'conflict' })
+})
+
+it('replays numeric text ids through the engine even before a box has a creation id', async () => {
+  const base = await deck((s) => s.replace(/<a:extLst>.*?<\/a:extLst>/, ''))
+  const changes = [[edit('type', 'e_11', 'Typed')]]
+  const result = await render(base, request(base, changes))
+  expect((await textOf(result.bytes)).words).toEqual(['Typed', 'Base subtitle'])
+  const again = await render(base, request(base, changes))
+  expect(again.bytes).toEqual(result.bytes)
+})
+
+it('undoes a duplicate with an ordinary deletion while preserving notes on the source', async () => {
+  const base = await deck()
+  const duplicate = {
+    id: 'copy',
+    edit: { kind: 'duplicateSlide', slide: 's_7', made: 's_8', clearText: true },
+  }
+  const result = await render(
+    base,
+    request(base, [[duplicate], [notes('peer', 's_7', 'Keep me')]], 1),
+  )
+  expect(result.compensation).toEqual([
+    { id: expect.any(String), edit: { kind: 'deleteSlides', slides: ['s_8'] } },
+  ])
+  expect(await slidesAndNotes(result.bytes)).toEqual([['s_7', 'Keep me']])
+})
+
+it('reopens an in-place, multi-run edit with the peer formatting intact', async () => {
+  const base = await deck((s) =>
+    s.replace('</a:r>', '</a:r><a:r><a:rPr i="1"/><a:t>extra</a:t></a:r>'),
+  )
+  const op: Json = {
+    id: 'words',
+    edit: {
+      kind: 'text',
+      at: target.edit.at,
+      paragraphs: [{ runs: [{ text: 'First', bold: true }, { text: 'Second' }] }],
+    },
+  }
+  const saved = await render(base, request(base, [[op]]))
+  const { deck: reopened } = await openPptx(saved.bytes)
+  const box = reopened.slides[0]!.elements[0]!
+  expect(
+    (box.type === 'text' || box.type === 'shape') && box.text?.paragraphs[0]?.runs,
+  ).toMatchObject([
+    { text: 'First', bold: true },
+    { text: 'Second', italic: true },
+  ])
+})
+
+it('refuses embedded archives even when the outer presentation fits the ZIP limits', async () => {
+  const zip = await JSZip.loadAsync(await createBlankPptx())
+  zip.file('ppt/embeddings/another.pptx', await createBlankPptx())
+  const base = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+  await expect(
+    render(base, request(base, [[notes('write', 's_1', 'Hello')]])),
+  ).rejects.toMatchObject({ code: 'unsupported' })
 })
