@@ -47,7 +47,12 @@ copyFileSync(
 )
 
 const guest = await build({
-  entryPoints: ['src/guest.mjs', 'src/stream-guest.mjs'],
+  entryPoints: [
+    'src/guest.mjs',
+    'src/byte-engine.mjs',
+    'src/stream-guest.mjs',
+    'src/mixed-guest.mjs',
+  ],
   outdir: 'dist',
   bundle: true,
   format: 'esm',
@@ -56,7 +61,7 @@ const guest = await build({
   target: 'es2022',
   loader: { '.md': 'text', '.otf': 'base64' },
   metafile: true,
-  external: ['./office-engine.js'],
+  external: ['./office-engine.js', './byte-engine.js'],
   inject: ['./src/globals.mjs'],
   plugins: [
     {
@@ -78,6 +83,7 @@ const allowed = new Set([
   'node:util',
   'node:zlib',
   './office-engine.js',
+  './byte-engine.js',
 ])
 const bundledInputs = new Set()
 for (const artifact of Object.values(guest.metafile.outputs)) {

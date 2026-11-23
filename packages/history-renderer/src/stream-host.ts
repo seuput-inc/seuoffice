@@ -106,7 +106,7 @@ function json(value: unknown, depth = 0): value is Json {
   )
 }
 
-function recipe(output: Buffer, length: number, digest: string | undefined) {
+function recipe(output: Buffer, length: number, digest: string | undefined, mixed: boolean) {
   let meta: unknown
   try {
     meta = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(output))
@@ -126,7 +126,9 @@ function recipe(output: Buffer, length: number, digest: string | undefined) {
   if (
     !digest ||
     meta.baseHash !== digest ||
-    meta.fileName !== 'history.pdf' ||
+    typeof meta.fileName !== 'string' ||
+    (meta.fileName !== 'history.pdf' &&
+      (!mixed || !['history.docx', 'history.xlsx', 'history.pptx'].includes(meta.fileName))) ||
     !Array.isArray(meta.parts) ||
     meta.parts.length > 8192
   )
@@ -170,7 +172,7 @@ function recipe(output: Buffer, length: number, digest: string | undefined) {
     }
   }
   if (outputSize <= 0 || outputSize > FILE_LIMIT) invalid('invalid output length')
-  return { parts, compensation }
+  return { fileName: meta.fileName, parts, compensation }
 }
 
 async function stageRecipe(
@@ -206,13 +208,14 @@ async function stageRecipe(
   return digest
 }
 
-/** Stage abort is idempotent and discards pending writes. Only the caller may publish the stage. */
-export async function renderStream(
+async function renderStaged(
+  mode: 'rgb' | 'mixed',
   source: Source,
   header: Uint8Array,
   changes: AsyncIterable<Uint8Array>,
   stage: Stage,
   signal?: AbortSignal,
+  compensationAuthor = '',
 ): Promise<{ fileName: string; compensation?: Json[] }> {
   try {
     signal?.throwIfAborted()
@@ -235,8 +238,19 @@ export async function renderStream(
     const head = frame(header)
     let digest: string | undefined
     const output = await launchStream(
+      mode,
       remainingMs,
       async (write, signal) => {
+        if (mode === 'mixed') {
+          if (
+            typeof compensationAuthor !== 'string' ||
+            compensationAuthor.length > 256 * 1024 ||
+            Buffer.byteLength(compensationAuthor) > 256 * 1024 ||
+            /[\uD800-\uDFFF]/u.test(compensationAuthor)
+          )
+            throw new HistoryError('unsupported', 'compensation author exceeds replay profile')
+          await write(frame(Buffer.from(compensationAuthor)))
+        }
         await write(head)
         const size = Buffer.allocUnsafe(4)
         size.writeUInt32LE(length)
@@ -260,7 +274,7 @@ export async function renderStream(
       signal,
     )
     signal?.throwIfAborted()
-    const { parts, compensation } = recipe(output, length, digest)
+    const { fileName, parts, compensation } = recipe(output, length, digest, mode === 'mixed')
     const controller = new AbortController()
     const staging = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
     try {
@@ -277,10 +291,13 @@ export async function renderStream(
     } finally {
       controller.abort()
     }
-    return compensation ? { fileName: 'history.pdf', compensation } : { fileName: 'history.pdf' }
+    return compensation ? { fileName, compensation } : { fileName }
   } catch (error) {
     await stage.abort()
     signal?.throwIfAborted()
     throw error
   }
 }
+
+export const renderStream = renderStaged.bind(null, 'rgb')
+export const renderHistory = renderStaged.bind(null, 'mixed')

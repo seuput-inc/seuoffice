@@ -74,6 +74,7 @@ export interface StreamHistoryOptions {
     changes: AsyncIterable<Uint8Array>,
     stage: HistoryStage,
     signal: AbortSignal,
+    compensationAuthor?: string,
   ): Promise<{ fileName: string; compensation?: Json[] }>
 }
 
@@ -145,6 +146,7 @@ export async function withStreamHistory<T>(
         abort: () => stage.abort(),
       },
       signal,
+      target ? p.userId : undefined,
     )
     signal.throwIfAborted()
     if (!complete || !written || typeof result?.fileName !== 'string' || !result.fileName)

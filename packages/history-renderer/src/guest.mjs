@@ -1,8 +1,5 @@
 import { Buffer } from 'node:buffer'
-import { initEngineSync } from '@seuoffice/engine-wasm'
-import { gunzipSync } from 'node:zlib'
-import engineGzip from './office-engine.js'
-import { render } from './replay'
+import { renderGuestBytes } from './byte-engine.js'
 
 const { Deno } = globalThis
 const input = Buffer.from(await new Response(Deno.stdin.readable).arrayBuffer())
@@ -13,9 +10,7 @@ try {
   if (end > input.length || input.length - end > 1024 * 1024) throw new Error('frame')
   const json = new TextDecoder('utf-8', { fatal: true }).decode(input.subarray(end))
   const request = JSON.parse(json)
-  if (request?.format?.name === 'docx' || request?.format?.name === 'pptx')
-    initEngineSync(gunzipSync(Buffer.from(engineGzip, 'base64')))
-  const file = await render(input.subarray(4, end), request)
+  const file = await renderGuestBytes(input.subarray(4, end), request)
   meta = { fileName: file.fileName, compensation: file.compensation }
   bytes = file.bytes
 } catch (error) {

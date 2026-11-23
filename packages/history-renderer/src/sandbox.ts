@@ -89,11 +89,13 @@ function sandboxFailure() {
 }
 
 export async function launchStream(
+  mode: 'rgb' | 'mixed',
   remainingMs: () => number,
   input: (write: (bytes: Uint8Array) => Promise<void>, signal: AbortSignal) => Promise<void>,
   signal?: AbortSignal,
 ): Promise<Buffer> {
-  return sandbox(new URL('stream-guest.js', import.meta.url), async (bin, args, options) => {
+  const program = new URL(mode === 'rgb' ? 'stream-guest.js' : 'mixed-guest.js', import.meta.url)
+  return sandbox(program, async (bin, args, options) => {
     signal?.throwIfAborted()
     const child = spawn(bin, args, {
       ...options,

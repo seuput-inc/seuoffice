@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { HistoryError, type HistoryRequest } from '@seuoffice/collab/client'
+import { HistoryError, type HistoryRequest, type HistoryResult } from '@seuoffice/collab/client'
 import { checkHistoryChange, checkHistoryHeader } from '../../collab/src/history'
 import { capturePdfInverse } from '../../../apps/pdf/src/web/collab-adapter'
 import {
@@ -19,7 +19,13 @@ function unsupported(detail: string): never {
   throw new HistoryError('unsupported', detail)
 }
 
-export async function streamPlan(input: AsyncIterable<Uint8Array>) {
+type SmallRender = (
+  bytes: Uint8Array,
+  history: HistoryRequest,
+  author: string,
+) => Promise<HistoryResult>
+
+export async function streamPlan(input: AsyncIterable<Uint8Array>, smallRender?: SmallRender) {
   const reader = input[Symbol.asyncIterator]()
   let pending: Uint8Array = new Uint8Array()
   async function fill() {
@@ -51,26 +57,39 @@ export async function streamPlan(input: AsyncIterable<Uint8Array>) {
   }
   const uint = async () => (await bytes(4)).readUInt32LE(0)
   const decoder = new TextDecoder('utf-8', { fatal: true })
+  let author = ''
+  if (smallRender) {
+    const length = await uint()
+    if (length > 256 * 1024) invalid('compensation author byte limit')
+    author = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await bytes(length))
+  }
+  let historyLimit = 32 * 1024 * 1024
   let historyBytes = ',"changes":[]'.length
   async function json(max: number) {
     const length = await uint()
-    if (!length || length > max || (historyBytes += length) > 32 * 1024 * 1024)
+    if (!length || length > max || (historyBytes += length) > historyLimit)
       invalid('streamed history byte limit')
     const value = JSON.parse(decoder.decode(await bytes(length)))
     checkJsonBudget(value)
     return value
   }
   const header: Omit<HistoryRequest, 'changes'> = await json(8192)
+  const headerBytes = historyBytes - ',"changes":[]'.length
   if (
     !header ||
     typeof header !== 'object' ||
     Object.keys(header).some((k) => !['epoch', 'version', 'format', 'baseHash', 'undo'].includes(k))
   )
     invalid('invalid history header')
-  checkHistoryHeader(header, { name: 'pdf', schema: 2 })
+  checkHistoryHeader(header, smallRender ? header.format : { name: 'pdf', schema: 2 })
+  if (smallRender && !!header.undo !== !!author) invalid('incorrect compensation author frame')
+  const name = header.format.name
+  if (smallRender && !['docx', 'xlsx', 'pptx', 'pdf'].includes(name)) unsupported('document format')
+  if (name === 'pdf' && header.format.schema !== 2) unsupported('PDF schema')
   if (header.version > 65536) unsupported('streamed history version limit')
   const length = await uint()
-  if (!length || length > 50 * 1024 * 1024) invalid('PDF byte limit')
+  if (!length || length > 50 * 1024 * 1024) invalid('source byte limit')
+  if (name !== 'pdf' && length > 2 * 1024 * 1024) unsupported('office source exceeds 2 MiB')
   const hash = createHash('sha256')
   async function* base() {
     for await (const b of take(length)) {
@@ -78,9 +97,83 @@ export async function streamPlan(input: AsyncIterable<Uint8Array>) {
       yield b
     }
   }
-  const document = await openStreamPdf(base(), length)
-  const baseHash = hash.digest('hex')
-  if (baseHash !== header.baseHash) invalid('incorrect PDF hash')
+  function authenticatedHash() {
+    const digest = hash.digest('hex')
+    if (digest !== header.baseHash) invalid('incorrect source hash')
+    return digest
+  }
+  function checkAppend(ops: readonly unknown[]) {
+    const v = header.version + 1
+    const next = { v, client: 'history:' + '0'.repeat(36), seq: 1, author, ops }
+    const frame = Buffer.byteLength(JSON.stringify(next))
+    const prefix = { ...header, version: v }
+    delete prefix.undo
+    const headerDelta = smallRender
+      ? Buffer.byteLength(JSON.stringify(prefix)) - headerBytes
+      : String(v).length - String(header.version).length
+    if (frame > 256 * 1024 || historyBytes + headerDelta + 1 + frame > historyLimit)
+      unsupported('compensated prefix exceeds replay limits')
+    checkJsonBudget(next)
+  }
+  let document
+  let baseHash: string
+  if (smallRender && (name !== 'pdf' || length <= 1024 * 1024)) {
+    const source = await bytes(length)
+    hash.update(source)
+    baseHash = authenticatedHash()
+    if (name === 'pdf') {
+      async function* buffered() {
+        yield source
+      }
+      try {
+        document = await openStreamPdf(buffered(), length)
+      } catch (error) {
+        if (!(error instanceof HistoryError && error.code === 'unsupported')) throw error
+      }
+    }
+    if (!document) {
+      historyLimit = 1024 * 1024
+      if (header.version > 128) invalid('small history version limit')
+      const changes: HistoryRequest['changes'] = []
+      for (let v = 1; v <= header.version; v++) {
+        if (v !== 1) historyBytes++
+        changes.push(await json(256 * 1024))
+      }
+      if (await fill()) invalid('extra bytes after requested prefix')
+      const file = await smallRender(source, { ...header, changes }, author)
+      if (file.compensation) checkAppend(file.compensation)
+      return {
+        fileName: `history.${name}`,
+        baseHash,
+        parts:
+          file.bytes === source
+            ? [{ offset: 0, length }]
+            : [
+                {
+                  data: Buffer.from(
+                    file.bytes.buffer,
+                    file.bytes.byteOffset,
+                    file.bytes.byteLength,
+                  ).toString('base64'),
+                },
+              ],
+        compensation: file.compensation,
+      }
+    }
+  } else {
+    const chunks = base()
+    try {
+      document = await openStreamPdf(chunks, length)
+    } catch (error) {
+      if (smallRender && error instanceof HistoryError && error.code === 'unsupported') {
+        // The parser may reject the syntax before it has requested the whole source.
+        while (!(await chunks.next()).done) continue
+        authenticatedHash()
+      }
+      throw error
+    }
+    baseHash = authenticatedHash()
+  }
   let state = emptySnapshot()
   const seen = new Map<string, Set<number>>()
   let captured: ((later: readonly PdfOp[]) => Put[] | null) | undefined
@@ -122,25 +215,9 @@ export async function streamPlan(input: AsyncIterable<Uint8Array>) {
   const inverse = captured?.([])
   const compensation = inverse ? [{ id: crypto.randomUUID(), puts: inverse }] : undefined
   if (inverse && compensation) {
-    const next = {
-      v: header.version + 1,
-      client: 'history:' + '0'.repeat(36),
-      seq: 1,
-      author: '',
-      ops: compensation,
-    }
-    const frameBytes = Buffer.byteLength(JSON.stringify(next))
-    // Reserve a fresh history client and the complete append, not just the inverse payload.
-    if (
-      next.v > 65536 ||
-      seen.size >= 256 ||
-      opCount + compensation.length > 131072 ||
-      frameBytes > 256 * 1024 ||
-      historyBytes + 1 + String(next.v).length - String(header.version).length + frameBytes >
-        32 * 1024 * 1024
-    )
+    if (header.version >= 65536 || seen.size >= 256 || opCount + compensation.length > 131072)
       unsupported('compensated prefix exceeds replay limits')
-    checkJsonBudget(next)
+    checkAppend(compensation)
     state = foldPeer(state, inverse, document.pageCount)
   }
   return { fileName: 'history.pdf', baseHash, parts: await document.produce(state), compensation }

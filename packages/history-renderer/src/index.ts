@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import { types } from 'node:util'
 import { HistoryError, type HistoryResult } from '@seuoffice/collab/client'
 import { launch } from './sandbox.js'
-export { renderStream } from './stream-host.js'
+export { renderHistory, renderStream } from './stream-host.js'
 
 /** A UTF-8 JSON HistoryRequest is opaque to the credentialed Node process. */
 export async function renderBytes(

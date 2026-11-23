@@ -40,7 +40,11 @@ async function replay<Op>(
   )
 }
 
-export async function render(bytes: Uint8Array, history: HistoryRequest): Promise<HistoryResult> {
+export async function render(
+  bytes: Uint8Array,
+  history: HistoryRequest,
+  compensationAuthor?: string,
+): Promise<HistoryResult> {
   try {
     if (!bytes.byteLength || bytes.byteLength > MAX_FILE) throw new HistoryError('invalid_history')
     checkBudget(history)
@@ -61,11 +65,16 @@ export async function render(bytes: Uint8Array, history: HistoryRequest): Promis
           v: history.version + 1,
           client: 'history:' + '0'.repeat(36),
           seq: 1,
-          author: '',
+          author: compensationAuthor ?? '',
           ops: result.compensation,
         }
         try {
-          checkBudget({ ...history, changes: [...history.changes, next] })
+          const prefix = { ...history, changes: [...history.changes, next] }
+          if (compensationAuthor !== undefined) {
+            delete prefix.undo
+            prefix.version = next.v
+          }
+          checkBudget(prefix)
         } catch {
           throw new HistoryError('unsupported', 'compensated prefix exceeds replay limits')
         }

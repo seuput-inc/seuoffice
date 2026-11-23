@@ -36,6 +36,25 @@ PDF 도장은 워터마크·머리말·꼬리말·쪽 번호를 최종 표시 �
 - OOXML은 단일 classic ZIP의 STORE/DEFLATE만 허용한다. ZIP 항목 256개, 항목당 해제 1 MiB, 전체 해제 4 MiB. 중앙·로컬 헤더, 이름·영역 중복, 실제 해제량, CRC를 확인한다. ZIP64·암호화·서명·추가 필드·주석은 받지 않는다. PDF 프로필은 1 MiB, 128페이지, 260객체 이하이다.
 - DOCX·PPTX는 빌드가 공식 `office_wasm.wasm`의 실제 import 목록을 검사한 뒤 바이트를 고정 JS 모듈에 담는다. 게스트가 이 모듈을 읽으므로 WASM 경로를 열 권한은 필요하지 않다. WASI 환경 개수는 0이고 파일 열기·프로세스 실행·소켓 import는 없다. 허용 함수는 난수, 시계, 빈 환경, 출력, 오류 종료, 엔진 호출 중의 콜백과 정렬 비교다. WASM 선형 메모리는 128 MiB, V8 old space는 96 MiB, 호출당 제한 시간은 15초, 표준 출력·오류는 각각 약 3 MiB다. 동시 호출 수·전체 RSS·사용자별 할당량은 호스트가 제한해야 한다.
 
+### 작은 문서와 큰 PDF를 같은 서버에서 처리하기
+
+```ts
+import { createHistoryServer } from '@seuoffice/collab/server'
+import { renderHistory } from '@seuoffice/history-renderer'
+
+const server = createHistoryServer({ store, renderStream: renderHistory })
+```
+
+문서 소유자는 이 인스턴스 하나로 소켓과 `exportHistory`, `restoreHistory`, `undoHistory`를 처리한다. 형식마다 저장소나 서버를 만들지 않는다. SDK는 보유 원본과 변경 프레임을 그대로 보내며, 선택 취소이면 보상 변경에 기록할 인증된 저자도 넘긴다. 게스트가 형식과 프로필을 정한 뒤 해당 편집기를 한 번 실행한다.
+
+| 보유 원본           | 게스트가 쓰는 편집기               | 한도                                   |
+| ------------------- | ---------------------------------- | -------------------------------------- |
+| DOCX·XLSX·PPTX      | `renderBytes`와 같은 바이트 편집기 | 원본·출력 2 MiB, 요청 1 MiB            |
+| 일반 PDF            | 바이트 PDF 편집기                  | 원본·출력 PDF 프로필 1 MiB, 요청 1 MiB |
+| 검증된 RGB 화상 PDF | 아래의 스트림 PDF 편집기           | 원본·출력 50 MiB, 요청 32 MiB          |
+
+1 MiB 이하 PDF도 실제 구조가 RGB 화상 프로필이면 스트림으로 처리한다. 파일명이나 본문의 단어만으로 사진으로 판정하지 않는다. 1 MiB보다 큰 일반 PDF는 지원하지 않는다. 단일 변경 프레임은 어느 경로든 256 KiB 이하다. 인증·해시·버전·편집 충돌·연산 거부가 발생하면 다른 편집기로 다시 시도하지 않는다. 어떤 편집기를 사용해도 공개·복원·보상은 같은 비공개 임시 저장과 권한 재검사·문서 큐·트랜잭션을 거친다.
+
 ### 큰 화상 PDF의 스트림 경로
 
 `renderStream(source, headerBytes, changeFrames, stage, signal?)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 기존 네 형식의 파일·해제·이력 상한을 올리지 않는다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
@@ -78,14 +97,14 @@ manifest의 Node 요구는 `>=22.12`이고 glibc 최소 버전은 선언하지 �
 # 기존 빌드를 재사용할 때만 두 파일의 경로를 지정한다.
 export SEUOFFICE_WASM=/path/to/office_wasm.wasm
 export SEUOFFICE_WASM_NOTICES=/path/to/THIRD-PARTY-NOTICES.txt
-node packages/history-renderer/pack-pair.mjs 0.12.52-rc.4 "$OUT"
+node packages/history-renderer/pack-pair.mjs 0.12.52-rc.5 "$OUT"
 # 별도 호스트에서 두 tarball 및 플랫폼용 npm 의존성을 미리 준비한 뒤 설치한다.
-npm install --offline --ignore-scripts "$OUT/seuoffice-collab-0.12.52-rc.4.tgz" "$OUT/seuoffice-history-renderer-0.12.52-rc.4.tgz"
+npm install --offline --ignore-scripts "$OUT/seuoffice-collab-0.12.52-rc.5.tgz" "$OUT/seuoffice-history-renderer-0.12.52-rc.5.tgz"
 npm ls @seuoffice/collab @seuoffice/history-renderer
 node node_modules/@seuoffice/history-renderer/examples/retained-host.mjs
 ```
 
-`0.12.52-rc.4`는 로컬 조합을 식별하는 번호이지 게시한 판이 아니다. 위 스트림 자원 측정표는 앞선 `rc.3`의 렌더러 단독 호출 결과이며 서버 저장 비용을 포함하지 않는다. [판 내기](../../docs/seuoffice/판-내기.md)의 공급 경로는 같은 태그·커밋에서 렌더러와 `collab`을 포장하고 GitHub Release의 자산 digest를 확인한다. 이 후보에 대해 태그 생성이나 배포를 실행하지 않았다.
+`0.12.52-rc.5`는 로컬 조합을 식별하는 번호이지 게시한 판이 아니다. 위 스트림 자원 측정표는 앞선 `rc.3`의 렌더러 단독 호출 결과이며 서버 저장 비용을 포함하지 않는다. [판 내기](../../docs/seuoffice/판-내기.md)의 공급 경로는 같은 태그·커밋에서 렌더러와 `collab`을 포장하고 GitHub Release의 자산 digest를 확인한다. 이 후보에 대해 태그 생성이나 배포를 실행하지 않았다.
 
 [호스트 예제](examples/retained-host.mjs)는 합성 DOCX와 독립된 두 편집을 보유하고, 첫 편집의 보상만 3번 버전에 기록한다. 같은 요청을 두 번 보내도 영수증이 같고 다시 연 문서에 두 번째 사람의 `Two?`가 남아야 한다. 예제의 메모리 저장소를 운영용으로 쓰라는 뜻은 아니다. 보유 범위, 인증·권한, 기대 epoch·버전에서의 원자적 추가, 중복 제거, 보상 저장은 기존 `createHistoryServer`와 호스트 저장소의 책임이다.
 
