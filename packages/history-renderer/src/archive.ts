@@ -82,7 +82,7 @@ export async function checkArchive(bytes: Uint8Array): Promise<void> {
     )
       invalid()
     if (
-      !/^[a-zA-Z0-9_.\[\]/-]+$/.test(name) ||
+      !/^[a-zA-Z0-9_.[\]/-]+$/.test(name) ||
       name
         .replace(/\/$/, '')
         .split('/')

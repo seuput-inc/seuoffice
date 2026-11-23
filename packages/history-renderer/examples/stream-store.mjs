@@ -68,7 +68,9 @@ export function createStreamStore(
         try {
           database.exec('ROLLBACK')
         } catch (rollback) {
-          throw new AggregateError([error, rollback], 'history transaction failed')
+          throw new AggregateError([error, rollback], 'history transaction failed', {
+            cause: rollback,
+          })
         }
       }
       throw error
