@@ -180,6 +180,15 @@ export async function readPdfEnvelope(bytes: Uint8Array): Promise<PdfEnvelope> {
   for (const [i, { id, offset }] of direct.entries()) {
     if (id === xrefId) continue
     const { body } = envelope(text.slice(offset, direct[i + 1]?.offset ?? xref), id)
+    // Form appearances stay raw. Only a markup's /AP /N may consume one; its nested
+    // resources, declared length and complete paint program are checked in that role.
+    const form = /^(<<[\x20-\x7e\t\r\n]{0,1024}?>>)\r?\nstream\r?\n/.exec(body)
+    if (form && compact(form[1]!).includes(' /Type /XObject ')) {
+      profile(body.length <= 3100 && body.length <= budget)
+      budget -= body.length
+      objects.set(id, body)
+      continue
+    }
     if (!/^<<[\x20-\x7e\t\r\n]{0,512}?>>\r?\nstream\r?\n/.test(body)) {
       profile(body.length <= 32768)
       objects.set(id, body)

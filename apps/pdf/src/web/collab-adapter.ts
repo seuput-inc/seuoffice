@@ -139,6 +139,46 @@ function sameBucket(a: unknown, b: unknown): boolean {
 const matches = (a: EditSnapshot, b: EditSnapshot): boolean =>
   (Object.keys(a) as (keyof EditSnapshot)[]).every((bucket) => sameBucket(a[bucket], b[bucket]))
 
+/** Capture the inverse against the retained before-image, without consulting the editor UI. */
+export function capturePdfInverse(confirmed: EditSnapshot, op: PdfOp, basePages: number) {
+  const values = new Set<string>()
+  let rotates = false
+  const markups = new Set<string>()
+  const pages = new Set<number>()
+  for (const put of op.puts) {
+    if (put.b === 'metadata' || put.b === 'stampCfg') values.add(put.b)
+    else if (put.b === 'rotations') {
+      rotates = true
+      pages.add(put.k)
+    } else if (put.b === 'markups' && put.v !== null) {
+      markups.add(put.id)
+    } else throw new HistoryError('unsupported')
+  }
+  const after = foldPeer(confirmed, op.puts, basePages)
+  if (markups.size) {
+    for (const state of [confirmed, after])
+      for (const m of state.markups) if (markups.has(m.id)) pages.add(m.pageIndex)
+  }
+  const inverse = diff(after, confirmed, basePages)
+  if (!inverse.length || !matches(foldPeer(after, inverse, basePages), confirmed))
+    throw new HistoryError('unsupported')
+  return (later: readonly PdfOp[]) => {
+    for (const change of later) {
+      for (const put of change.puts) {
+        if (
+          values.has(put.b) ||
+          (put.b === 'markups' && markups.has(put.id)) ||
+          ((put.b === 'deleted' || put.b === 'rotations') && pages.has(put.k)) ||
+          // A rotation also transforms picture stamps; a drawing removal carries no page.
+          (put.b === 'drawings' && rotates)
+        )
+          return null
+      }
+    }
+    return inverse
+  }
+}
+
 export function createPdfAdapter(options: PdfAdapterOptions): CollabAdapter<PdfOp> {
   const { host, basePages } = options
   let confirmed = options.base ?? emptySnapshot()
@@ -284,41 +324,10 @@ export function createPdfAdapter(options: PdfAdapterOptions): CollabAdapter<PdfO
     },
 
     captureUndo(op) {
-      const values = new Set<string>()
-      let rotates = false
-      const markups = new Set<string>()
-      const pages = new Set<number>()
-      for (const put of op.puts) {
-        if (put.b === 'metadata' || put.b === 'stampCfg') values.add(put.b)
-        else if (put.b === 'rotations') {
-          rotates = true
-          pages.add(put.k)
-        } else if (put.b === 'markups' && put.v !== null) {
-          markups.add(put.id)
-        } else throw new HistoryError('unsupported')
-      }
-      const after = foldPeer(confirmed, op.puts, basePages)
-      if (markups.size) {
-        for (const state of [confirmed, after])
-          for (const m of state.markups) if (markups.has(m.id)) pages.add(m.pageIndex)
-      }
-      const inverse = diff(after, confirmed, basePages)
-      if (!inverse.length || !matches(foldPeer(after, inverse, basePages), confirmed))
-        throw new HistoryError('unsupported')
+      const captured = capturePdfInverse(confirmed, op, basePages)
       return (later) => {
-        for (const change of later) {
-          for (const put of change.puts) {
-            if (
-              values.has(put.b) ||
-              (put.b === 'markups' && markups.has(put.id)) ||
-              ((put.b === 'deleted' || put.b === 'rotations') && pages.has(put.k)) ||
-              // A rotation also transforms picture stamps; a drawing removal carries no page.
-              (put.b === 'drawings' && rotates)
-            ) {
-              return null
-            }
-          }
-        }
+        const inverse = captured(later)
+        if (!inverse) return null
         const compensation = { id: options.newId(), puts: inverse }
         const wire = encode(compensation)
         if (unshareable(wire) || sizeOf(wire) > options.maxOpBytes)

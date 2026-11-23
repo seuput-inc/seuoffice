@@ -54,7 +54,7 @@ const guest = await build({
   platform: 'browser',
   conditions: ['seuoffice-source'],
   target: 'es2022',
-  loader: { '.md': 'text' },
+  loader: { '.md': 'text', '.otf': 'base64' },
   metafile: true,
   external: ['./office-engine.js'],
   inject: ['./src/globals.mjs'],
@@ -84,7 +84,9 @@ for (const dep of artifact.imports) {
   if (dep.kind !== 'import-statement' || !allowed.has(dep.path))
     throw new Error(`unexpected guest import: ${dep.path}`)
 }
-const notices = new Map()
+const notices = new Map([
+  ['Pretendard 1.309', readFileSync('../ui/template-fonts/Pretendard-OFL.txt', 'utf8')],
+])
 for (const [file, { bytesInOutput }] of Object.entries(artifact.inputs)) {
   if (!bytesInOutput || !file.includes('node_modules/')) continue
   const dir = /^.*node_modules\/(?:@[^/]+\/)?[^/]+/.exec(file)[0]

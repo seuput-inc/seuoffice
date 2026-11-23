@@ -4,6 +4,7 @@ import JSZip from 'jszip'
 import { Schema, Slice, type Mark, type Node } from 'prosemirror-model'
 import { AddMarkStep, Mapping, RemoveMarkStep, ReplaceStep, type Step } from 'prosemirror-transform'
 import { SaxesParser, type SaxesTagNS } from 'saxes'
+import { textHasComplexScript } from '../../docx-engine/src/xml-utils'
 import type { ByteHistoryAdapter } from './adapter'
 
 const WORD = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
@@ -15,12 +16,39 @@ const RELS = '_rels/.rels'
 const MAIN_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'
 const PART_LIMIT = 1024 * 1024
 const toggles = ['bold', 'italic', 'strike', 'underline'] as const
-const styleFields = ['rawRPr', 'color', 'sizeHalfPoints'] as const
+const fontName = /^[\p{L}\p{N}][\p{L}\p{M}\p{N} ._()-]{0,127}$/u
+const styleStrings: Readonly<Record<string, RegExp>> = {
+  color: /^(?:[0-9a-f]{6}|auto)$/i,
+  font: fontName,
+  fontAscii: fontName,
+  eastAsiaFont: fontName,
+  highlight:
+    /^(?:black|blue|cyan|green|magenta|red|yellow|white|darkBlue|darkCyan|darkGreen|darkMagenta|darkRed|darkYellow|darkGray|lightGray|none)$/,
+  shading: /^[0-9a-f]{6}$/i,
+  vertAlign: /^(?:superscript|subscript)$/,
+  em: /^(?:dot|comma|circle|underDot)$/,
+  caps: /^(?:all|small|none)$/,
+}
+const styleFields = [
+  'rawRPr',
+  'color',
+  'sizeHalfPoints',
+  'font',
+  'fontAscii',
+  'eastAsiaFont',
+  'highlight',
+  'shading',
+  'vertAlign',
+  'em',
+  'caps',
+  'dstrike',
+  'positionHalfPoints',
+  'charSpacingTwips',
+] as const
 const otherStyleFields = new Set(
   (
-    'font eaSlotEmpty fontAscii eastAsiaFont csFont charSpacingTwips charScaleEm charScaleX charScalePct ' +
-    'kern kernHalfPoints highlight shading shadingDisplay textOutline textEffect dstrike glow positionHalfPoints ' +
-    'bdr vertAlign em boldOff italicOff caps vanish vanishOwn eaLang cs rtl styleId themeRFonts themeColor ' +
+    'eaSlotEmpty csFont charScaleEm charScaleX charScalePct kern kernHalfPoints shadingDisplay ' +
+    'textOutline textEffect glow bdr boldOff italicOff vanish vanishOwn eaLang cs rtl styleId themeRFonts themeColor ' +
     'csSize csBold csItalic tblRun'
   ).split(' '),
 )
@@ -361,13 +389,39 @@ function paragraphs(xml: string, sides: ReadonlyMap<string, string>): Paragraph[
       hasRPr = true
     } else if (
       parent === 'rPr' &&
-      ['b', 'i', 'u', 'strike', 'color', 'sz'].includes(name) &&
-      attrs.every((k) => k === 'w:val') &&
+      [
+        'b',
+        'i',
+        'u',
+        'strike',
+        'color',
+        'sz',
+        'szCs',
+        'highlight',
+        'vertAlign',
+        'position',
+        'spacing',
+        'em',
+        'caps',
+        'smallCaps',
+        'dstrike',
+        'rFonts',
+        'shd',
+      ].includes(name) &&
+      attrs.every((k) =>
+        name === 'rFonts'
+          ? ['w:ascii', 'w:hAnsi', 'w:eastAsia', 'w:cs'].includes(k)
+          : name === 'shd'
+            ? ['w:val', 'w:color', 'w:fill'].includes(k)
+            : k === 'w:val',
+      ) &&
       !runProperties.has(name)
     ) {
-      const value = tag.attributes['w:val']?.value
-      if (value !== undefined && !/^[a-z0-9]{1,32}$/i.test(value))
-        unsupported('nonliteral DOCX run property')
+      for (const k of attrs) {
+        const value = tag.attributes[k]!.value
+        if (!(name === 'rFonts' ? fontName : /^-?[a-z0-9]{1,32}$/i).test(value))
+          unsupported('nonliteral DOCX run property')
+      }
       runProperties.add(name)
     } else if (parent === 'r' && name === 't' && attrs.every((k) => k === 'xml:space')) {
       const space = tag.attributes['xml:space']?.value
@@ -446,15 +500,24 @@ function readMark(json: Json | undefined, rawStyles: ReadonlySet<string>): Mark 
       if (key === 'rawRPr') {
         if (value !== null && (typeof value !== 'string' || !rawStyles.has(value)))
           unsupported('DOCX raw run properties not present in base')
-      } else if (key === 'color') {
-        if (value !== null && (typeof value !== 'string' || !/^(?:[0-9a-f]{6}|auto)$/i.test(value)))
-          unsupported('unsupported DOCX color')
+      } else if (Object.hasOwn(styleStrings, key)) {
+        if (value !== null && (typeof value !== 'string' || !styleStrings[key]!.test(value)))
+          unsupported('unsupported DOCX character style')
       } else if (key === 'sizeHalfPoints') {
         if (
           value !== null &&
           (typeof value !== 'number' || !Number.isInteger(value) || value < 2 || value > 3276)
         )
           unsupported('unsupported DOCX font size')
+      } else if (key === 'positionHalfPoints' || key === 'charSpacingTwips') {
+        if (
+          value !== null &&
+          (typeof value !== 'number' || !Number.isInteger(value) || Math.abs(value) > 31680)
+        )
+          unsupported('unsupported DOCX character spacing')
+      } else if (key === 'dstrike') {
+        if (value !== null && typeof value !== 'boolean')
+          unsupported('unsupported DOCX double strike')
       } else if (value !== null || !otherStyleFields.has(key))
         unsupported('unsupported DOCX text style')
     }
@@ -556,7 +619,14 @@ function apply(doc: Node, step: TextStep): Node {
   return step.apply(doc).doc ?? invalid('DOCX step failed')
 }
 
-const runFields = new Set<string>(['text', 'effective', ...styleFields, ...toggles])
+const runFields = new Set<string>([
+  'text',
+  'effective',
+  'fontCs',
+  'csFont',
+  ...styleFields,
+  ...toggles,
+])
 
 function textNode(run: Run, rawStyles: Set<string>): Node {
   if (
@@ -564,6 +634,7 @@ function textNode(run: Run, rawStyles: Set<string>): Node {
     !plainText(run.text) ||
     Object.keys(run).some((key) => !runFields.has(key)) ||
     run.effective?.cs ||
+    (run.csFont !== undefined && textHasComplexScript(run.text)) ||
     run.effective?.styleXor?.length ||
     toggles.some((key) => run[key] === false)
   )
@@ -582,9 +653,9 @@ function runProperties(marks: readonly Mark[]): string {
   const run: Run = { text: '' }
   for (const mark of marks) {
     if (mark.type.name === 'docTextStyle') {
-      if (mark.attrs.rawRPr != null) run.rawRPr = mark.attrs.rawRPr
-      if (mark.attrs.color != null) run.color = mark.attrs.color
-      if (mark.attrs.sizeHalfPoints != null) run.sizeHalfPoints = mark.attrs.sizeHalfPoints
+      for (const key of styleFields) {
+        if (mark.attrs[key] != null) Reflect.set(run, key, mark.attrs[key])
+      }
     } else {
       for (const key of toggles) if (mark.type.name === key) run[key] = true
     }

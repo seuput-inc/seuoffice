@@ -1,10 +1,18 @@
 import { HistoryError } from '@seuoffice/collab/client'
-import { degrees, ParseSpeeds, PDFDocument, PDFObjectCopier } from 'pdf-lib'
-import { diff, emptySnapshot, foldPeer, type PdfOp } from '../../../apps/pdf/src/web/collab-model'
+import { degrees, ParseSpeeds, PDFDict, PDFDocument, PDFName, PDFObjectCopier } from 'pdf-lib'
+import { capturePdfInverse } from '../../../apps/pdf/src/web/collab-adapter'
+import {
+  effectiveOrder,
+  emptySnapshot,
+  foldPeer,
+  type PdfOp,
+} from '../../../apps/pdf/src/web/collab-model'
 import { decodeOp } from '../../../apps/pdf/src/web/collab-wire'
 import type { ByteHistoryAdapter } from './adapter'
 import { classicPdf, profile, readPdfEnvelope } from './pdf-envelope'
+import { writeMarkups } from './pdf-markups'
 import { checkPages } from './pdf-pages'
+import { writeStamps } from './pdf-stamps'
 
 export async function openPdf(base: Uint8Array): Promise<ByteHistoryAdapter<PdfOp>> {
   const envelope = await readPdfEnvelope(base)
@@ -23,6 +31,8 @@ export async function openPdf(base: Uint8Array): Promise<ByteHistoryAdapter<PdfO
         if (
           p.b !== 'rotations' &&
           p.b !== 'metadata' &&
+          p.b !== 'stampCfg' &&
+          p.b !== 'markups' &&
           p.b !== 'blankPages' &&
           p.b !== 'order' &&
           p.b !== 'deleted'
@@ -46,29 +56,23 @@ export async function openPdf(base: Uint8Array): Promise<ByteHistoryAdapter<PdfO
       return []
     },
     captureUndo(op) {
-      const pages = new Set<number>()
-      let metadata = false
-      for (const p of op.puts) {
-        if (p.b === 'rotations') pages.add(p.k)
-        else if (p.b === 'metadata') metadata = true
-        else throw new HistoryError('unsupported', 'this PDF edit has no selective inverse')
+      const captured = capturePdfInverse(confirmed, op, count)
+      return (later) => {
+        const inverse = captured(later)
+        return inverse && [{ id: crypto.randomUUID(), puts: inverse }]
       }
-      const inverse = diff(foldPeer(confirmed, op.puts, count), confirmed, count)
-      if (!inverse.length) throw new HistoryError('unsupported', 'PDF edit did not change state')
-      return (later) =>
-        later.some((change) =>
-          change.puts.some(
-            (p) =>
-              (p.b === 'metadata' && metadata) ||
-              ((p.b === 'rotations' || p.b === 'deleted') && pages.has(p.k)),
-          ),
-        )
-          ? null
-          : [{ id: crypto.randomUUID(), puts: inverse }]
     },
     async produceFile() {
-      const { rotations, metadata, blankPages, deleted, order } = confirmed
-      if (!rotations.size && !metadata && !blankPages.length && !deleted.size && !order)
+      const { rotations, metadata, blankPages, deleted, order, markups, stampCfg } = confirmed
+      if (
+        !rotations.size &&
+        !metadata &&
+        !blankPages.length &&
+        !deleted.size &&
+        !order &&
+        !markups.length &&
+        !stampCfg
+      )
         return { fileName: 'history.pdf', bytes: base }
       for (const { input } of blankPages) doc.addPage([input.width, input.height])
       const pages = doc.getPages()
@@ -88,6 +92,9 @@ export async function openPdf(base: Uint8Array): Promise<ByteHistoryAdapter<PdfO
             .map((word) => word.trim())
             .filter(Boolean),
         )
+      const visible = effectiveOrder(confirmed, count).filter((i) => !deleted.has(i))
+      if (markups.length) writeMarkups(doc, markups, visible)
+      if (stampCfg) await writeStamps(doc, stampCfg, visible)
       let result = doc
       if (deleted.size) {
         // removePage leaves the old page and its streams in the file. Copy only the visible graph;
@@ -98,8 +105,24 @@ export async function openPdf(base: Uint8Array): Promise<ByteHistoryAdapter<PdfO
           result.context.trailerInfo.Info = PDFObjectCopier.for(doc.context, result.context).copy(
             info,
           )
-        const visible = (order ?? pages.map((_, i) => i)).filter((i) => !deleted.has(i))
-        for (const page of await result.copyPages(doc, visible)) result.addPage(page)
+        // A markup's optional /P points back to its page. Copying that cycle would also copy
+        // a second, hidden page. Rebind only the back-references the original actually had.
+        const parent = PDFName.of('P')
+        const parents = visible.map((i) =>
+          (pages[i]!.node.Annots()?.asArray() ?? []).map((ref) => {
+            const annot = doc.context.lookup(ref, PDFDict)
+            const hasParent = annot.has(parent)
+            if (hasParent) annot.delete(parent)
+            return hasParent
+          }),
+        )
+        for (const [i, page] of (await result.copyPages(doc, visible)).entries()) {
+          result.addPage(page)
+          const annots = page.node.Annots()
+          parents[i]!.forEach((hasParent, j) => {
+            if (hasParent) annots!.lookup(j, PDFDict).set(parent, page.ref)
+          })
+        }
       } else if (order) {
         const kids = doc.catalog.Pages().Kids()
         order.forEach((k, i) => kids.set(i, pages[k]!.ref))

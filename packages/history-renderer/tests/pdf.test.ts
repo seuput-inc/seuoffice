@@ -123,7 +123,7 @@ describe('PDF history', () => {
     }
     const mixed: Json = {
       id: 'mixed',
-      puts: [rotation(0, 0, 90), { b: 'stampCfg', v: null }],
+      puts: [rotation(0, 0, 90), { b: 'formEdits', k: 'field', v: null }],
     }
     await expect(render(base, request(base, [[mixed]]))).rejects.toMatchObject({
       code: 'unsupported',

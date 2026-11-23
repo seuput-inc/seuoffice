@@ -215,6 +215,68 @@ describe('DOCX schema 4 body text', () => {
     ).rejects.toMatchObject({ code: 'conflict' })
   })
 
+  it('forks an ordinary font, highlight and subscript change and restores the independent peer text', async () => {
+    const base = await buildDocx({ bodyXml: '<w:p><w:r><w:t>AB</w:t></w:r></w:p>' })
+    const style: Json = {
+      kind: 'steps',
+      steps: [
+        {
+          stepType: 'addMark',
+          from: 1,
+          to: 3,
+          mark: {
+            type: 'docTextStyle',
+            attrs: { font: 'Gowun Dodum', highlight: 'yellow', vertAlign: 'subscript' },
+          },
+        },
+      ],
+    }
+    const version = await render(base, request(base, [[style]]))
+    expect((await parseDocx(version.bytes)).blocks[0]!.runs).toMatchObject([
+      { text: 'AB', font: 'Gowun Dodum', highlight: 'yellow', vertAlign: 'subscript' },
+    ])
+    const next = await render(version.bytes, request(version.bytes, [[replace(3, 3, 'Z')]]))
+    expect((await parseDocx(next.bytes)).blocks[0]!.runs?.map((r) => r.text).join('')).toBe('ABZ')
+    const batches = [[style], [replace(3, 3, 'X')]]
+    const compensated = await render(base, request(base, batches, undo))
+    for (const bytes of [
+      compensated.bytes,
+      (await render(base, request(base, [...batches, compensated.compensation!]))).bytes,
+    ]) {
+      const runs = (await parseDocx(bytes)).blocks[0]!.runs!
+      expect(runs.map((r) => [r.text, r.font, r.highlight, r.vertAlign])).toEqual([
+        ['ABX', undefined, undefined, undefined],
+      ])
+    }
+  })
+
+  it('reopens a removeMark fork and restores its formatting without removing a peer insertion', async () => {
+    const base = await buildDocx({
+      bodyXml: '<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>AB</w:t></w:r></w:p>',
+    })
+    const mark: Json = {
+      kind: 'steps',
+      steps: [{ stepType: 'removeMark', from: 1, to: 3, mark: { type: 'bold' } }],
+    }
+    const styles = async (bytes: Uint8Array) =>
+      (await parseDocx(bytes)).blocks[0]!.runs!.map((r) => [r.text, !!r.bold])
+    const fork = await render(base, request(base, [[mark]]))
+    const batches = [[mark], [replace(3, 3, '!')]]
+    const restored = await render(base, request(base, batches, undo))
+    expect(await styles(fork.bytes)).toEqual([['AB', false]])
+    expect(await styles(restored.bytes)).toEqual([
+      ['AB', true],
+      ['!', false],
+    ])
+    expect(
+      await styles((await render(base, request(base, [...batches, restored.compensation!]))).bytes),
+    ).toEqual(await styles(restored.bytes))
+    await expect(
+      render(base, request(base, [[mark], [replace(2, 2, 'X')]], undo)),
+    ).rejects.toMatchObject({ code: 'conflict' })
+    expect(await styles(base)).toEqual([['AB', true]])
+  })
+
   it('accepts marked text but does not feed picture numbering to the engine', async () => {
     const op: Json = {
       kind: 'steps',
