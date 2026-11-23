@@ -47,8 +47,8 @@ copyFileSync(
 )
 
 const guest = await build({
-  entryPoints: ['src/guest.mjs'],
-  outfile: 'dist/guest.js',
+  entryPoints: ['src/guest.mjs', 'src/stream-guest.mjs'],
+  outdir: 'dist',
   bundle: true,
   format: 'esm',
   platform: 'browser',
@@ -71,7 +71,6 @@ const guest = await build({
     },
   ],
 })
-const artifact = guest.metafile.outputs['dist/guest.js']
 const allowed = new Set([
   'node:buffer',
   'node:crypto',
@@ -80,15 +79,19 @@ const allowed = new Set([
   'node:zlib',
   './office-engine.js',
 ])
-for (const dep of artifact.imports) {
-  if (dep.kind !== 'import-statement' || !allowed.has(dep.path))
-    throw new Error(`unexpected guest import: ${dep.path}`)
+const bundledInputs = new Set()
+for (const artifact of Object.values(guest.metafile.outputs)) {
+  for (const dep of artifact.imports) {
+    if (dep.kind !== 'import-statement' || !allowed.has(dep.path))
+      throw new Error(`unexpected guest import: ${dep.path}`)
+  }
+  for (const [file, { bytesInOutput }] of Object.entries(artifact.inputs))
+    if (bytesInOutput && file.includes('node_modules/')) bundledInputs.add(file)
 }
 const notices = new Map([
   ['Pretendard 1.309', readFileSync('../ui/template-fonts/Pretendard-OFL.txt', 'utf8')],
 ])
-for (const [file, { bytesInOutput }] of Object.entries(artifact.inputs)) {
-  if (!bytesInOutput || !file.includes('node_modules/')) continue
+for (const file of bundledInputs) {
   const dir = /^.*node_modules\/(?:@[^/]+\/)?[^/]+/.exec(file)[0]
   const { name, version } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
   if (notices.has(name + '@' + version)) continue

@@ -90,7 +90,7 @@ export function assertHistoryResult(value: unknown, undo: boolean): asserts valu
   } else if (compensation !== undefined) invalid('unexpected compensation')
 }
 
-export function checkPrefix(request: HistoryRequest, format: Format): void {
+export function checkHistoryHeader(request: Omit<HistoryRequest, 'changes'>, format: Format): void {
   if (
     !request ||
     !id(request.epoch) ||
@@ -99,30 +99,11 @@ export function checkPrefix(request: HistoryRequest, format: Format): void {
     !id(request.format.name) ||
     !count(request.format.schema) ||
     typeof request.baseHash !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(request.baseHash) ||
-    !Array.isArray(request.changes) ||
-    request.changes.length !== request.version
+    !/^[0-9a-f]{64}$/.test(request.baseHash)
   )
     invalid('incomplete history prefix')
   if (request.format.name !== format.name || request.format.schema !== format.schema)
     throw new HistoryError('unsupported', 'history format or schema differs from the editor')
-  const seen = new Map<string, Set<number>>()
-  for (let i = 0; i < request.changes.length; i++) {
-    const change = request.changes[i]
-    if (
-      !change ||
-      change.v !== i + 1 ||
-      !id(change.client) ||
-      !count(change.seq) ||
-      typeof change.author !== 'string'
-    )
-      invalid('invalid change in prefix')
-    let seqs = seen.get(change.client)
-    if (!seqs) seen.set(change.client, (seqs = new Set()))
-    if (seqs.has(change.seq)) invalid('duplicate change in prefix')
-    seqs.add(change.seq)
-    checkOps(change.ops)
-  }
   const target = request.undo
   if (
     target !== undefined &&
@@ -131,10 +112,40 @@ export function checkPrefix(request: HistoryRequest, format: Format): void {
       !count(target.v) ||
       target.v < 1 ||
       target.v > request.version ||
-      !count(target.index) ||
-      target.index >= request.changes[target.v - 1]!.ops.length)
+      !count(target.index))
   )
     invalid('op not in this prefix')
+}
+
+export function checkHistoryChange(
+  change: Change,
+  version: number,
+  seen: Map<string, Set<number>>,
+  target?: HistoryOpId,
+): void {
+  if (
+    !change ||
+    change.v !== version ||
+    !id(change.client) ||
+    !count(change.seq) ||
+    typeof change.author !== 'string'
+  )
+    invalid('invalid change in prefix')
+  let seqs = seen.get(change.client)
+  if (!seqs) seen.set(change.client, (seqs = new Set()))
+  if (seqs.has(change.seq)) invalid('duplicate change in prefix')
+  seqs.add(change.seq)
+  checkOps(change.ops)
+  if (target?.v === version && target.index >= change.ops.length) invalid('op not in this prefix')
+}
+
+export function checkPrefix(request: HistoryRequest, format: Format): void {
+  if (!Array.isArray(request?.changes) || request.changes.length !== request.version)
+    invalid('incomplete history prefix')
+  checkHistoryHeader(request, format)
+  const seen = new Map<string, Set<number>>()
+  for (let i = 0; i < request.changes.length; i++)
+    checkHistoryChange(request.changes[i]!, i + 1, seen, request.undo)
 }
 
 /** The caller owns a fresh editor displaying these base bytes and disposes it even on failure. */

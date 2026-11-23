@@ -1,6 +1,6 @@
 {
   "name": "@seuoffice/history-renderer",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "private": true,
   "description": "Render retained office document history from bytes in Node.js",
   "license": "FSL-1.1-ALv2",

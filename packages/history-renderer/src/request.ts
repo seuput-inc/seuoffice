@@ -4,7 +4,7 @@ function invalid(): never {
   throw new HistoryError('invalid_history', 'expected a bounded JSON history prefix')
 }
 
-export function checkBudget(request: HistoryRequest): void {
+export function checkJsonBudget(value: unknown): void {
   let nodes = 16_384
   let text = 256 * 1024
   function charge(s: string) {
@@ -26,7 +26,11 @@ export function checkBudget(request: HistoryRequest): void {
       }
     }
   }
-  visit(request, 0)
+  visit(value, 0)
+}
+
+export function checkBudget(request: HistoryRequest): void {
+  checkJsonBudget(request)
   if (!Array.isArray(request?.changes) || request.changes.length > 128) invalid()
   let ops = 0
   for (const change of request.changes) {
