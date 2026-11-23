@@ -52,6 +52,10 @@ on:
         description: Publish the next version as a pre-release (main only)
         type: boolean
         default: false
+      preserve_old_releases:
+        description: Keep all past releases and their assets (preview pruning only)
+        type: boolean
+        default: false
 
 # Every publishing run (release runs and v* tags) shares one queue, so two runs
 # never pick or write the same version at once; a build-only run keeps its ref's.
@@ -860,4 +864,11 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Prune old releases
         if: success()
-        run: scripts/release-prune.sh
+        env:
+          PRESERVE_OLD_RELEASES: ${{ inputs.preserve_old_releases }}
+        run: |
+          case "$PRESERVE_OLD_RELEASES" in
+            true) scripts/release-prune.sh --dry-run ;;
+            false|'') scripts/release-prune.sh ;;
+            *) echo "::error::invalid preserve_old_releases input"; exit 1 ;;
+          esac
