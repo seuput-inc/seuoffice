@@ -1814,6 +1814,22 @@ button.check-item:hover {
   margin-top: 4px;
 }
 
+/* notices that stay until each is closed, one under the other */
+.sheet-notices {
+  position: absolute;
+  z-index: 20;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sheet-notices .csv-empty-notice {
+  position: static;
+}
+
 .csv-empty-notice {
   position: absolute;
   z-index: 20;

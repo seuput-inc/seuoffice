@@ -699,6 +699,25 @@ test('an edit that arrives under an unconfirmed row insert of this page says so 
   expect(cells.get('H11'), shown).toBe('below')
 })
 
+test('entries cancelled one after another each keep their notice', async ({ browser }) => {
+  const documentId = freshDocument()
+  const writer = await open(browser, documentId, 'writer')
+  const typist = await open(browser, documentId, 'typist')
+  await typeInto(typist, 'H8', 'ready')
+  await settled([writer, typist])
+  const editor = typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')
+  for (const text of ['first', 'second']) {
+    await select(typist, 'H12')
+    await expect(editor).toBeFocused()
+    await typist.page.keyboard.type(text)
+    await onRow(writer, 12, '행 삭제')
+    await settled([writer, typist])
+  }
+  const first = typist.frame.getByRole('status').filter({ hasText: 'first' })
+  await expect(first).toBeVisible()
+  await expect(typist.frame.getByRole('status').filter({ hasText: 'second' })).toBeVisible()
+})
+
 test('a cell that moves or goes away while this page types in it is never written over', async ({
   browser,
 }) => {

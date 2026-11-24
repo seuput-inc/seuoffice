@@ -368,9 +368,9 @@ interface ExcelShellProps {
   readonly odsNotice?: OdsConversionNotice | null
   readonly onOpenWorkbook: () => void
   readonly onDismissEmptyCsvNotice: () => void
-  /// A notice that stays until it is closed, with an optional button that copies `copy`.
-  readonly notice?: NoticeData | null
-  readonly onDismissNotice?: () => void
+  /// Notices that stay until each is closed, with an optional button that copies `copy`.
+  readonly notices?: readonly NoticeData[]
+  readonly onDismissNotice?: (notice: NoticeData) => void
   /// Zoom of the active sheet in percent, echoed by the status-bar slider.
   readonly zoomPercent: number
   /// Aggregates ticked in the status bar's right-click menu (Excel parity).
@@ -639,7 +639,7 @@ export function ExcelShell({
   odsNotice,
   onOpenWorkbook,
   onDismissEmptyCsvNotice,
-  notice,
+  notices = [],
   onDismissNotice,
   zoomPercent,
   statusBarFuncs,
@@ -1243,18 +1243,24 @@ export function ExcelShell({
                 </button>
               </div>
             )}
-            {notice && (
-              <div className="csv-empty-notice" role="status">
-                <span>{notice.text}</span>
-                {notice.copy !== undefined && <CopyButton key={notice.copy} text={notice.copy} />}
-                <button
-                  type="button"
-                  className="csv-empty-notice-close"
-                  aria-label={t('appClose')}
-                  onClick={onDismissNotice}
-                >
-                  ×
-                </button>
+            {notices.length > 0 && (
+              <div className="sheet-notices">
+                {notices.map((notice, index) => (
+                  <div key={index} className="csv-empty-notice" role="status">
+                    <span>{notice.text}</span>
+                    {notice.copy !== undefined && (
+                      <CopyButton key={notice.copy} text={notice.copy} />
+                    )}
+                    <button
+                      type="button"
+                      className="csv-empty-notice-close"
+                      aria-label={t('appClose')}
+                      onClick={() => onDismissNotice?.(notice)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </section>

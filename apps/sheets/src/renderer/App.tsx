@@ -1062,16 +1062,18 @@ export function App({
       stopWriteNow?.()
     }
   }, [])
-  /// A notice that stays until it is closed: main says once per tab that a password workbook
+  /// Notices that stay until each is closed: main says once per tab that a password workbook
   /// keeps no recovery copy, and co-editing says when it cancelled an entry (web/collab-join.ts).
-  const [notice, setNotice] = useState<NoticeData | null>(null)
-  useEffect(
-    () => window.desktopApi?.onRecoveryNotice?.((text) => setNotice({ text })) ?? undefined,
-    [],
-  )
+  /// Each cancelled entry keeps its own notice, so the text of none is lost.
+  const [notices, setNotices] = useState<readonly NoticeData[]>([])
   useEffect(() => {
-    setNoticeEmitter(setNotice)
-    return () => setNoticeEmitter(null)
+    const add = (notice: NoticeData) => setNotices((shown) => [...shown, notice])
+    setNoticeEmitter(add)
+    const unsubscribe = window.desktopApi?.onRecoveryNotice?.((text) => add({ text }))
+    return () => {
+      setNoticeEmitter(null)
+      unsubscribe?.()
+    }
   }, [])
   /// Streaming-mode filter gate: the filter panel builds
   /// value counts from whatever happens to be loaded and the apply command is
@@ -6759,8 +6761,8 @@ export function App({
         odsNotice={odsNotice}
         onOpenWorkbook={() => void handleInspectWorkbook()}
         onDismissEmptyCsvNotice={() => setEmptyCsvNotice(false)}
-        notice={notice}
-        onDismissNotice={() => setNotice(null)}
+        notices={notices}
+        onDismissNotice={(closed) => setNotices((shown) => shown.filter((n) => n !== closed))}
         aiBusy={aiBusy}
         {...(sessionUsage !== undefined ? { sessionUsage } : {})}
         aiSubscription={{
