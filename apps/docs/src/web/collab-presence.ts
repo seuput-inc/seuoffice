@@ -52,10 +52,10 @@ export function docsPresence({ editor }: { editor: Editor }, publish: () => void
   const schedule = () => {
     if (carets.length && !frame) frame = requestAnimationFrame(place)
   }
-  const resize = new ResizeObserver(schedule)
-  resize.observe(editor.view.dom)
+  const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+  resize?.observe(editor.view.dom)
   doc.addEventListener('scroll', schedule, true)
-  doc.fonts.addEventListener('loadingdone', schedule)
+  doc.fonts?.addEventListener('loadingdone', schedule)
   editor.on('transaction', ({ transaction, appendedTransactions }) => {
     for (const caret of carets) {
       caret.head = transaction.mapping.map(caret.head, -1)
@@ -83,8 +83,8 @@ export function docsPresence({ editor }: { editor: Editor }, publish: () => void
     unsubscribe()
     doc.removeEventListener('selectionchange', viewerSelectionChanged)
     doc.removeEventListener('scroll', schedule, true)
-    doc.fonts.removeEventListener('loadingdone', schedule)
-    resize.disconnect()
+    doc.fonts?.removeEventListener('loadingdone', schedule)
+    resize?.disconnect()
     cancelAnimationFrame(frame)
     layer.remove()
   })
