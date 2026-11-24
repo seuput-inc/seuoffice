@@ -1,0 +1,374 @@
+diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
+--- a/src/diagnostics/ir_field_sweep.rs
++++ b/src/diagnostics/ir_field_sweep.rs
+@@ -661,6 +661,7 @@
+         numbering_restart,
+         // 저장 LineSeg의 편집 후 provenance — 내용 비교는 line_segs가 담당한다.
+         stored_text_partition_dirty: _,
++        editor_created_empty: _,
+         // [#4677] 조판 전용 보강 줄 표식 — 파일에 실리지 않으므로 IR 비교 대상 아님.
+         layout_only_fill_lines: _,
+         cell_format_vpos_dirty: _,
+diff --git a/src/document_core/commands/object_ops/table.rs b/src/document_core/commands/object_ops/table.rs
+--- a/src/document_core/commands/object_ops/table.rs
++++ b/src/document_core/commands/object_ops/table.rs
+@@ -591,6 +591,7 @@
+                                                                                   // 셀 문단 보정: char_count_msb, raw_header_extra, para/char shape
+                 for cp in &mut cell.paragraphs {
+                     cp.char_count_msb = true;
++                    cp.editor_created_empty = true;
+                     cp.para_shape_id = para_shape_ids[usize::from(c)];
+                     // Cell::new_empty() 의 문단은 char_shapes 가 비어 있고, 저장기는 그것을
+                     // charPrIDRef="0" 으로 쓴다. 아래 raw_header_extra 가 n_char_shapes=1 을
+@@ -998,6 +999,7 @@
+                 cell.vertical_align = crate::model::table::VerticalAlign::Center;
+                 for cp in &mut cell.paragraphs {
+                     cp.char_count_msb = true;
++                    cp.editor_created_empty = true;
+                     cp.para_shape_id = default_para_shape_id;
+                     // create_table_native 와 동일 — 빈 char_shapes 는 charPrIDRef="0" 이 된다.
+                     // default_char_shape_id 는 여기서 쓰라고 계산된 값이었으나 누락돼 있었다.
+diff --git a/src/document_core/commands/text_editing.rs b/src/document_core/commands/text_editing.rs
+--- a/src/document_core/commands/text_editing.rs
++++ b/src/document_core/commands/text_editing.rs
+@@ -4386,6 +4386,8 @@
+         // 문단 분리
+         let mut new_para =
+             self.document.sections[section_idx].paragraphs[para_idx].split_at(char_offset);
++        new_para.editor_created_empty =
++            restore_meta.is_none() && new_para.text.is_empty() && new_para.controls.is_empty();
+         if let Some(meta) = restore_meta {
+             restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+         }
+diff --git a/src/document_core/queries/collab_text_undo.rs b/src/document_core/queries/collab_text_undo.rs
+new file mode 100644
+--- /dev/null
++++ b/src/document_core/queries/collab_text_undo.rs
+@@ -0,0 +1,258 @@
++//! Plain-text compensation within one existing paragraph. This is not a document fingerprint,
++//! a certificate for paragraph breaks, or permission to restore a snapshot over a peer's edits.
++
++use crate::document_core::DocumentCore;
++use crate::model::control::Control;
++use crate::model::paragraph::{ColumnBreakType, Paragraph};
++use crate::parser::FileFormat;
++use serde::{Deserialize, Serialize};
++use serde_json::value::RawValue;
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++struct CellStep {
++    control_index: u32,
++    cell_index: u32,
++    cell_para_index: u32,
++}
++
++#[derive(Serialize)]
++#[serde(rename_all = "camelCase")]
++struct TextContext<'a> {
++    ok: bool,
++    text: &'a str,
++    char_shape_id: u32,
++}
++
++impl DocumentCore {
++    /// Call again on the current head before applying a same-paragraph text inverse.
++    pub fn get_collab_text_undo_context_native(&self, section: usize, paragraph: usize, path_json: &str) -> String {
++        self.collab_text_context(section, paragraph, path_json)
++            .and_then(|context| serde_json::to_string(&context).ok())
++            .unwrap_or_else(|| r#"{"ok":false}"#.to_owned())
++    }
++
++    fn collab_text_context(&self, section: usize, paragraph: usize, path_json: &str) -> Option<TextContext<'_>> {
++        let doc = &self.document;
++        if !matches!(self.source_format, FileFormat::Hwp | FileFormat::Hwpx)
++            || doc.layout_profile().hwp3_layout() || doc.header.encrypted || doc.header.distribution
++            || self.active_field.is_some() || path_json.len() > 4096 || path_json.contains('\\')
++        {
++            return None;
++        }
++        let section = doc.sections.get(section)?;
++        // Text commands discard the live HWP stream, which can be the only copy of an unknown
++        // record. Its seal alone contains hashes, not records, and is never discarded by typing.
++        if section.raw_stream.is_some() || section.trailing_lists.is_some() {
++            return None;
++        }
++        let steps: Vec<&RawValue> = serde_json::from_str(path_json).ok()?;
++        if steps.len() > 16 { return None; }
++        let mut budget = 32_768usize;
++        let mut para = paragraph_outside_fields(&section.paragraphs, paragraph, &mut budget)?;
++        for raw in steps {
++            // Serde structs also accept positional arrays, unlike the mutation API.
++            if !raw.get().starts_with('{') { return None; }
++            let s: CellStep = serde_json::from_str(raw.get()).ok()?;
++            if s.cell_index >= 65534 { return None; } // Reserved caption addresses.
++            let Control::Table(table) = para.controls.get(s.control_index as usize)? else { return None };
++            let cell = table.cells.get(s.cell_index as usize)?;
++            if table.raw_ctrl_seal.is_some() || cell.cell_protect() || cell.field_name.is_some()
++                || !cell.raw_list_extra.is_empty() { return None; }
++            para = paragraph_outside_fields(&cell.paragraphs, s.cell_para_index as usize, &mut budget)?;
++        }
++        plain_text_context(para, doc.doc_info.char_shapes.len())
++    }
++}
++
++// A middle paragraph in a multi-paragraph field needn't have a marker itself.
++fn paragraph_outside_fields<'a>(list: &'a [Paragraph], at: usize, budget: &mut usize) -> Option<&'a Paragraph> {
++    let target = list.get(at)?;
++    *budget = budget.checked_sub(list.len())?;
++    for p in list {
++        *budget = budget.checked_sub(p.controls.len())?;
++        if !p.field_ranges.is_empty() || !p.orphan_field_ends.is_empty()
++            || p.controls.iter().any(|c| matches!(c, Control::Field(_) | Control::Hyperlink(_))) {
++            return None;
++        }
++    }
++    Some(target)
++}
++
++fn plain_text_context(p: &Paragraph, shape_count: usize) -> Option<TextContext<'_>> {
++    // Exhaustive: classify a new model channel before certifying text in its presence.
++    let Paragraph {
++        char_count, control_mask, para_shape_id: _, style_id: _, column_type, raw_break_type,
++        page_break_synthesized, text, char_offsets, literal_figure_spaces, nb_space_control_indices,
++        char_shapes, line_segs: _, hwp3_saved_space_corrections, layout_space_metrics: _,
++        layout_object_projection, layout_float_band, layout_field_values, hwpx_axis_shift,
++        layout_only_fill_lines, source_line_seg_vertical_pos, editor_created_empty,
++        layout_rebased_body_axis, layout_cell_grid, range_tags, field_ranges, orphan_field_ends,
++        controls, ctrl_data_records, char_count_msb: _, raw_header_extra, has_para_text,
++        tab_extended, title_marks, markpen_marks, numbering_restart,
++        stored_text_partition_dirty: _, cell_format_vpos_dirty: _, cell_vpos_reset,
++        stored_flow_shifted, numbering_marker: _,
++    } = p;
++    // Imported paragraphs (even ones with synthetic-looking tags) may have original line
++    // partitions, raw records or an empty PARA_TEXT. Accept only known editor-created text.
++    if !*editor_created_empty || *control_mask != 0 || *column_type != ColumnBreakType::None
++        || *raw_break_type != 0 || *page_break_synthesized || *has_para_text
++        || !literal_figure_spaces.is_empty() || nb_space_control_indices.as_ref().is_some_and(|v| !v.is_empty())
++        || !hwp3_saved_space_corrections.is_empty() || *layout_object_projection || *layout_float_band
++        || !layout_field_values.is_empty() || *hwpx_axis_shift != 0 || *layout_only_fill_lines != 0
++        || source_line_seg_vertical_pos.is_some() || *layout_rebased_body_axis || layout_cell_grid.is_some()
++        || !range_tags.is_empty() || !field_ranges.is_empty() || !orphan_field_ends.is_empty()
++        || !controls.is_empty() || !ctrl_data_records.is_empty() || !tab_extended.is_empty()
++        || !title_marks.is_empty() || !markpen_marks.is_empty() || numbering_restart.is_some()
++        || *cell_vpos_reset == Some(true) || *stored_flow_shifted
++    {
++        return None;
++    }
++    // First six header bytes are counts recomputed at save; no nonzero ID or change suffix.
++    if !raw_header_extra.is_empty() && (!matches!(raw_header_extra.len(), 10 | 12)
++        || raw_header_extra[6..].iter().any(|b| *b != 0)) { return None; }
++    let [shape] = char_shapes.as_slice() else { return None };
++    if shape.start_pos != 0 || shape.char_shape_id as usize >= shape_count
++        || *char_count > 256 * 1024 + 1 || char_offsets.len() > 256 * 1024 { return None; }
++    let mut chars = text.chars();
++    let mut pos = 0u32;
++    for offset in char_offsets {
++        let ch = chars.next()?;
++        if *offset != pos || ch.is_control() || matches!(ch, '\u{00a0}' | '\u{2007}' | '\u{2028}' | '\u{2029}' | '\u{fffc}') {
++            return None;
++        }
++        pos += ch.len_utf16() as u32;
++    }
++    if chars.next().is_some() || pos + 1 != *char_count { return None; }
++    Some(TextContext { ok: true, text, char_shape_id: shape.char_shape_id })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::model::paragraph::{CharShapeRef, TitleMark};
++    use serde_json::{json, Value};
++
++    fn body() -> DocumentCore {
++        let mut doc = DocumentCore::new_empty();
++        doc.create_blank_document_native().unwrap();
++        let at = doc.get_paragraph_length_native(0, 0).unwrap();
++        doc.split_paragraph_native(0, 0, at, None).unwrap();
++        doc
++    }
++
++    fn context(doc: &DocumentCore, paragraph: usize, path: &str) -> Value {
++        serde_json::from_str(&doc.get_collab_text_undo_context_native(0, paragraph, path)).unwrap()
++    }
++
++    #[test]
++    fn body_certifies_the_actual_shape_at_both_ends_and_after_deleting_every_character() {
++        let mut doc = body();
++        assert_eq!(context(&doc, 1, "[]")["text"], "");
++        doc.insert_text_native(0, 1, 0, "한🙂").unwrap();
++        doc.apply_char_format_native(0, 1, 0, 2, r#"{"bold":true,"fontSize":1800}"#).unwrap();
++        let before = context(&doc, 1, "[]");
++        let id = before["charShapeId"].as_u64().unwrap() as u32;
++        assert_eq!(before, json!({"ok":true, "text":"한🙂", "charShapeId":id}));
++        doc.delete_range_native(0, 1, 0, 1, 2, None).unwrap();
++        assert_eq!(context(&doc, 1, "[]"), json!({"ok":true, "text":"", "charShapeId":id}));
++        doc.insert_text_native(0, 1, 0, "한").unwrap();
++        doc.insert_text_native(0, 1, 1, "🙂").unwrap();
++        doc.insert_text_native(0, 1, 0, "앞").unwrap();
++        let p = &doc.document.sections[0].paragraphs[1];
++        assert_eq!(p.text, "앞한🙂");
++        assert!((0..=3).all(|at| p.char_shape_id_at(at) == Some(id)));
++        assert_eq!(p.char_offsets, [0, 1, 2]);
++    }
++
++    #[test]
++    fn nested_table_reinsertion_inherits_the_certified_inner_shape_without_touching_the_body() {
++        let mut doc = body();
++        doc.insert_text_native(0, 1, 0, "본문").unwrap();
++        let outer: Value = serde_json::from_str(&doc.create_table_native(0, 1, 2, 1, 1).unwrap()).unwrap();
++        let parent = outer["paraIdx"].as_u64().unwrap() as usize;
++        let ctrl = outer["controlIdx"].as_u64().unwrap() as usize;
++        let inner: Value = serde_json::from_str(&doc.create_table_in_cell_by_path_native(
++            0, parent, &[(ctrl, 0, 0)], 0, 1, 1, None, None, true,
++        ).unwrap()).unwrap();
++        let path = inner["cellPath"].to_string();
++        let entries = DocumentCore::parse_cell_path(&path).unwrap();
++        assert_eq!(entries.len(), 2);
++        doc.insert_text_in_cell_by_path(0, parent, &entries, 0, "가🙂나").unwrap();
++        doc.apply_char_format_in_cell_by_path(0, parent, &entries, 0, 3, r#"{"bold":true}"#).unwrap();
++        let before = context(&doc, parent, &path);
++        let id = before["charShapeId"].as_u64().unwrap() as u32;
++        assert_eq!(before["text"], "가🙂나");
++        doc.delete_range_in_cell_by_path(0, parent, &entries, 0, 1, 0, 2).unwrap();
++        assert_eq!(context(&doc, parent, &path), json!({"ok":true, "text":"가나", "charShapeId":id}));
++        doc.insert_text_in_cell_by_path(0, parent, &entries, 1, "🙂").unwrap();
++        let cell = doc.get_cell_paragraph_mut_by_path(0, parent, &entries).unwrap();
++        assert_eq!(cell.text, "가🙂나");
++        assert_eq!(cell.char_offsets, [0, 1, 3]);
++        assert_eq!(cell.char_shape_id_at(1), Some(id));
++        assert_eq!(doc.document.sections[0].paragraphs[1].text, "본문");
++    }
++
++    #[test]
++    fn rejects_metadata_even_when_visible_text_and_all_visible_runs_look_identical() {
++        let mut doc = body();
++        doc.insert_text_native(0, 1, 0, "가🙂").unwrap();
++        let baseline = doc.document.sections[0].paragraphs[1].clone();
++        let changes: &[fn(&mut Paragraph)] = &[
++            |p| p.editor_created_empty = false,
++            |p| p.raw_header_extra = vec![1; 12],
++            |p| p.source_line_seg_vertical_pos = Some(vec![1]),
++            |p| p.has_para_text = true,
++            |p| p.control_mask = 1,
++            |p| p.controls.push(Control::Bookmark(Default::default())),
++            |p| p.ctrl_data_records.push(Some(vec![9])),
++            |p| p.field_ranges.push(Default::default()),
++            |p| p.orphan_field_ends.push(Default::default()),
++            |p| p.range_tags.push(Default::default()),
++            |p| p.tab_extended.push([42; 7]),
++            |p| p.title_marks.push(TitleMark { char_idx: 1, ignore: true }),
++            |p| p.markpen_marks.push(Default::default()),
++            |p| p.literal_figure_spaces.push(1),
++            |p| p.nb_space_control_indices = Some(vec![1]),
++            |p| p.char_offsets[1] += 8,
++            |p| p.char_count += 8,
++            |p| p.char_shapes.clear(),
++            |p| p.char_shapes[0].start_pos = 1,
++            |p| p.char_shapes[0].char_shape_id = u32::MAX,
++            |p| p.char_shapes.push(CharShapeRef { start_pos: 3, char_shape_id: 0 }),
++        ];
++        for change in changes {
++            let p = &mut doc.document.sections[0].paragraphs[1];
++            *p = baseline.clone();
++            change(p);
++            assert_eq!(context(&doc, 1, "[]"), json!({"ok":false}));
++        }
++        doc.document.sections[0].paragraphs[1] = baseline;
++        for c in ['\t', '\n', '\u{0001}', '\u{0085}', '\u{00a0}', '\u{2007}', '\u{2028}', '\u{2029}', '\u{fffc}'] {
++            let mut p = doc.document.sections[0].paragraphs[1].clone();
++            p.insert_text_at(0, &c.to_string());
++            assert!(plain_text_context(&p, doc.document.doc_info.char_shapes.len()).is_none());
++        }
++        doc.document.sections[0].paragraphs[0].orphan_field_ends.push(Default::default());
++        assert_eq!(context(&doc, 1, "[]"), json!({"ok":false}));
++        doc.document.sections[0].paragraphs[0].orphan_field_ends.clear();
++        doc.document.sections[0].raw_stream = Some(vec![0x42]);
++        assert_eq!(context(&doc, 1, "[]"), json!({"ok":false}));
++    }
++
++    #[test]
++    fn malformed_paths_never_fall_back_to_the_body_or_first_container() {
++        let doc = body();
++        for bad in ["", "null", "{}", "[0]", "[[0,0,0]]", "[{}]", "[{]",
++            r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0}]"#,
++            r#"[{"controlIndex":0,"cellIndex":0,"cellParaIndex":0,"extra":0}]"#,
++            r#"[{"controlIndex":0,"cellIndex":0,"cellIndex":1,"cellParaIndex":0}]"#,
++            r#"[{"controlIndex":0,"cellIndex":65534,"cellParaIndex":0}]"#,
++            r#"[{"controlIndex":0,"cellIndex":-1,"cellParaIndex":0}]"#,
++        ] {
++            assert_eq!(context(&doc, 1, bad), json!({"ok":false}), "{bad}");
++        }
++        assert_eq!(context(&doc, usize::MAX, "[]"), json!({"ok":false}));
++        assert_eq!(context(&doc, 0, "[]"), json!({"ok":false}));
++    }
++}
+diff --git a/src/document_core/queries/mod.rs b/src/document_core/queries/mod.rs
+--- a/src/document_core/queries/mod.rs
++++ b/src/document_core/queries/mod.rs
+@@ -1,5 +1,6 @@
+ mod body_page_fields;
+ mod bookmark_query;
++mod collab_text_undo;
+ mod cursor_nav;
+ mod cursor_rect;
+ pub(crate) mod doc_tree_nav;
+diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
+--- a/src/model/paragraph.rs
++++ b/src/model/paragraph.rs
+@@ -133,6 +133,10 @@
+     /// (`serde(skip)` — IR dump/ir-sweep 축의 필드 집합을 바꾸지 않는다.)
+     #[serde(skip_serializing)]
+     pub source_line_seg_vertical_pos: Option<Vec<i32>>,
++    /// 편집기가 빈 문단으로 만들었고 원본 레코드를 병합하지 않았다. 저장 줄의
++    /// tag는 새 문단도 상속하므로, tag만으로 원본 줄과 편집용 줄을 구분할 수 없다.
++    #[serde(skip)]
++    pub editor_created_empty: bool,
+     /// 단 정의 부재로 본문 세로 축을 재구성했는지 나타내는 조판 전용 출처다.
+     /// 문자 분할의 유효성과 별개이며 원본 파일이나 IR로 직렬화하지 않는다.
+     #[serde(skip_serializing)]
+@@ -2048,6 +2052,7 @@
+ 
+     /// 캡처한 메타데이터를 되돌린다 — 병합 undo 의 `split_at` 직후에 호출한다.
+     pub fn apply_meta(&mut self, meta: ParaMeta) {
++        self.editor_created_empty = false;
+         self.para_shape_id = meta.para_shape_id;
+         self.style_id = meta.style_id;
+         self.column_type = meta.column_type;
+@@ -2445,6 +2450,7 @@
+         }
+ 
+         let mut new_para = Paragraph {
++            editor_created_empty: false,
+             text: new_text,
+             char_offsets: new_char_offsets,
+             literal_figure_spaces: new_literal_figure_spaces,
+@@ -2521,6 +2527,7 @@
+         if other.text.is_empty() && other.controls.is_empty() {
+             return Ok(self.text.chars().count());
+         }
++        self.editor_created_empty = false;
+         let self_text_len = self.text.chars().count();
+         let mut nb_spaces = self.materialized_nb_space_controls();
+         nb_spaces.extend(
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -2129,6 +2129,17 @@
+     }
+ 
+     // ─── 중첩 표 path 기반 편집 API ──────────────────────────
++
++    #[wasm_bindgen(js_name = getCollabTextUndoContext)]
++    pub fn get_collab_text_undo_context(
++        &self,
++        section: u32,
++        paragraph: u32,
++        path_json: &str,
++    ) -> String {
++        self.core
++            .get_collab_text_undo_context_native(section as usize, paragraph as usize, path_json)
++    }
+ 
+     #[wasm_bindgen(js_name = insertTextInCellByPath)]
+     pub fn insert_text_in_cell_by_path_api(
