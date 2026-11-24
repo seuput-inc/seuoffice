@@ -35,6 +35,7 @@ import {
 import { notifySubEditorState } from '../renderer/editor/active-editor'
 import type { DesktopApi } from '../shared/ipc'
 import type { DocsOp } from './collab-adapter'
+import { docsPresence } from './collab-presence'
 import type { DocsCollabHandles } from './collab-side'
 import { WEB_RENDERER, openDecryptedDocx, openDocxFromBytes } from './open-docx'
 
@@ -142,6 +143,7 @@ async function joinDocsCollab(doc: WebDocument): Promise<void> {
     // opens as another document than under 3. 3: header and footer table rows are cell nodes,
     // text inserted then deleted is two revisions, and the room shares track changes.
     format: { name: 'docx', schema: 4 },
+    presence: docsPresence,
     status: ({ canEdit }) => {
       setViewOnly(!canEdit)
       onSessionStatus()
