@@ -17,6 +17,7 @@
   "devDependencies": {
     "@seuoffice/agent-core": "*",
     "@seuoffice/ai-provider": "*",
+    "@seuoffice/collab": "*",
     "@seuoffice/compound-file": "*",
     "@seuoffice/doc-rules": "*",
     "@seuoffice/electron-utils": "*",
@@ -24,6 +25,7 @@
     "@seuoffice/i18n": "*",
     "@seuoffice/project-store": "*",
     "@seuoffice/ui": "*",
+    "@seuoffice/web-platform": "*",
     "@noble/hashes": "^2.2.0",
     "@rhwp/core": "file:../../vendor/rhwp-core",
     "@rhwp/editor": "0.8.7",
