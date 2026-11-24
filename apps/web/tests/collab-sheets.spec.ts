@@ -629,8 +629,17 @@ test('a cell that moves or goes away while this page types in it is never writte
   await settled([writer, typist])
   await expect(typist.frame.locator('.app-toast.error')).toBeVisible()
   await typist.page.keyboard.press('Enter')
-  const version = await settled([writer, typist])
+  await settled([writer, typist])
   expect(await typist.page.evaluate(() => navigator.clipboard.readText())).toBe('gone')
+
+  // the row just above removed: the text goes one row up, H15 to H14
+  await select(typist, 'H15')
+  await expect(editor).toBeFocused()
+  await typist.page.keyboard.type('up')
+  await onRow(writer, 14, '행 삭제')
+  await settled([writer, typist])
+  await edited(typist, () => typist.page.keyboard.press('Enter'))
+  const version = await settled([writer, typist])
 
   await writer.page.locator('#save').click()
   const saved = await savedBook(writer)
@@ -641,6 +650,7 @@ test('a cell that moves or goes away while this page types in it is never writte
   expect(cells.get('H11'), shown).toBe('h10')
   // H12 then H13 after the insert, back at H12 after the removal
   expect(cells.get('H12'), shown).toBe('h12')
+  expect(cells.get('H14'), shown).toBe('up')
   expect([...cells.values()], shown).not.toContain('gone')
 })
 
