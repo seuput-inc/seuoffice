@@ -406,38 +406,30 @@ describe('Studio collaboration input', () => {
     expect(e.caretLost).not.toHaveBeenCalled()
   })
 
-  it.each([
-    ['a click on the page', 'pointerdown', '#scroll-content'],
-    ['a navigation key', 'ArrowRight', 'textarea'],
-  ])(
-    'locks input with a notice when a replay removes the caret place, until %s',
-    (_case, unlock, target) => {
-      const e = editor()
-      e.controls.setEditable(true)
-      e.controls.replay(
-        (doc) => doc.insertText(0, 0, 0, 'x'),
-        () => null,
-      )
-      expect(e.caretLost).toHaveBeenCalledOnce()
-      expect(e.session.locked).toBe(true)
-      expect(() => e.doc.insertText(0, 0, 0, '!')).toThrow(/read-only/)
-      const send = (selector: string, event: Event) =>
-        e.frame.document.querySelector(selector)!.dispatchEvent(event)
-      // Opening a menu or pressing a command key leaves the caret at the document start: still locked.
-      send('#menu-bar', new e.parent.Event('pointerdown', { bubbles: true }))
-      send('textarea', new e.parent.KeyboardEvent('keydown', { key: 'b', bubbles: true }))
-      expect(e.session.locked).toBe(true)
-      send(
-        target,
-        unlock === 'pointerdown'
-          ? new e.parent.Event('pointerdown', { bubbles: true })
-          : new e.parent.KeyboardEvent('keydown', { key: unlock, bubbles: true }),
-      )
-      expect(e.session.locked).toBe(false)
-      e.input('!')
-      expect(e.text()).toBe('!xAB')
-    },
-  )
+  it('keeps a stranded caret where it was and unlocks only on a click on the page', () => {
+    const e = editor()
+    e.controls.setEditable(true)
+    e.controls.replay(
+      (doc) => doc.insertText(0, 0, 0, 'x'),
+      () => null,
+    )
+    expect(e.caretLost).toHaveBeenCalledOnce()
+    expect(e.cursor.getPosition().charOffset).toBe(1)
+    expect(e.session.locked).toBe(true)
+    expect(() => e.doc.insertText(0, 0, 0, '!')).toThrow(/read-only/)
+    const send = (selector: string, event: Event) =>
+      e.frame.document.querySelector(selector)!.dispatchEvent(event)
+    // A menu, a key or the scrollbar does not place the caret: input stays locked.
+    send('#menu-bar', new e.parent.Event('pointerdown', { bubbles: true }))
+    send('#scroll-container', new e.parent.Event('pointerdown', { bubbles: true }))
+    for (const key of ['ArrowRight', 'Home', 'b'])
+      send('textarea', new e.parent.KeyboardEvent('keydown', { key, bubbles: true }))
+    expect(e.session.locked).toBe(true)
+    send('#scroll-content', new e.parent.Event('pointerdown', { bubbles: true }))
+    expect(e.session.locked).toBe(false)
+    e.input('!')
+    expect(e.text()).toBe('x!AB')
+  })
 
   it('rebuilds both ends in the inner table without confusing the owner paragraph with the cell paragraph', () => {
     const e = editor({ nested: true })

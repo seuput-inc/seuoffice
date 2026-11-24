@@ -147,7 +147,7 @@ export function createStudioCollab(win) {
                 callbacks?.onCaretLost?.()
               }
             }
-            restoreSelection(handler, mapped)
+            restoreSelection(handler, mapped ?? stay(doc, before, handler.cursor))
           } finally {
             replaying = false
           }
@@ -164,18 +164,11 @@ export function createStudioCollab(win) {
     win.removeEventListener('pagehide', shutdown)
   }
   win.addEventListener('pagehide', shutdown)
-  // Only placing the caret on the page, by pointer or a navigation key, unlocks; menus do not.
+  // Only a click on the page itself places the caret and unlocks; menus, keys and the scrollbar do not.
   win.document.addEventListener(
     'pointerdown',
     (event) => {
-      if (event.target?.closest?.('#scroll-container')) stranded = false
-    },
-    true,
-  )
-  win.document.addEventListener(
-    'keydown',
-    (event) => {
-      if (caretKeys.has(event.key)) stranded = false
+      if (event.target?.closest?.('#scroll-content')) stranded = false
     },
     true,
   )
@@ -259,16 +252,30 @@ export function createStudioCollab(win) {
   }
 }
 
-const caretKeys = new Set([
-  'ArrowLeft',
-  'ArrowRight',
-  'ArrowUp',
-  'ArrowDown',
-  'Home',
-  'End',
-  'PageUp',
-  'PageDown',
-])
+/**
+ * Where the caret stays when a replay removed its place: the same coordinates when they still
+ * exist, else the nearest body position. Input stays locked until the user clicks the page.
+ */
+function stay(doc, before, cursor) {
+  const head = before?.head
+  if (head) {
+    const same = validateHwpSelection(doc, { anchor: head, head })
+    if (same) return same
+  }
+  const raw = head ?? {
+    section: cursor.getPosition().sectionIndex,
+    paragraph: cursor.getPosition().parentParaIndex ?? cursor.getPosition().paragraphIndex,
+    path: [],
+    offset: 0,
+  }
+  const section = Math.max(0, Math.min(raw.section, doc.getSectionCount() - 1))
+  const paragraph = Math.max(0, Math.min(raw.paragraph, doc.getParagraphCount(section) - 1))
+  const offset = raw.path.length
+    ? 0
+    : Math.min(raw.offset, doc.getLogicalLength(section, paragraph))
+  const at = { section, paragraph, path: [], offset }
+  return { anchor: at, head: at }
+}
 
 function toCursor({ section, paragraph, path, offset }) {
   const pos = { sectionIndex: section, paragraphIndex: paragraph, charOffset: offset }
@@ -287,16 +294,12 @@ function restoreSelection(ih, mapped) {
   ih.resetDerivedStateAfterHistoryJump()
   ih.removeFormOverlay()
   ih.cursor.invalidateFocusedCellCursorGeometry()
-  const anchor = mapped
-    ? toCursor(mapped.anchor)
-    : { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 }
-  ih.restoreEditContextAfterHistory(null, anchor)
+  ih.restoreEditContextAfterHistory(null, toCursor(mapped.anchor))
   if (
-    mapped &&
-    (mapped.anchor.section !== mapped.head.section ||
-      mapped.anchor.paragraph !== mapped.head.paragraph ||
-      mapped.anchor.offset !== mapped.head.offset ||
-      mapped.anchor.path.at(-1)?.cellParaIndex !== mapped.head.path.at(-1)?.cellParaIndex)
+    mapped.anchor.section !== mapped.head.section ||
+    mapped.anchor.paragraph !== mapped.head.paragraph ||
+    mapped.anchor.offset !== mapped.head.offset ||
+    mapped.anchor.path.at(-1)?.cellParaIndex !== mapped.head.path.at(-1)?.cellParaIndex
   ) {
     ih.cursor.setAnchor()
     ih.cursor.moveTo(toCursor(mapped.head))

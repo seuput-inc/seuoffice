@@ -10,7 +10,7 @@ export const en = {
   collabKeptTarget:
     'Someone added content here first, so your deletion was not applied. Copy what you meant to delete:',
   collabCaretLost:
-    'Another edit removed the place your cursor was in. Click where you want to keep editing, or move the cursor with the arrow keys.',
+    'Another edit removed the place your cursor was in. Typing is paused until you click where you want to keep editing.',
   collabHistoryStopped:
     'Co-editing stopped: the server could not add this change to the edit history (it could not make a history checkpoint, or could not replay the history). Download keeps what you see now on this computer.',
   collabAdapterStopped:
