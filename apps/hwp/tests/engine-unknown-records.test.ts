@@ -234,4 +234,10 @@ it('gives the back paragraph its foreign markup back when a merge is undone', as
   const owner = notes[0].closest('p')
   expect(owner?.textContent).toBe('back')
   expect(owner?.getAttributeNS('urn:b', 'flag')).toBe('1')
+  // the front paragraph is as it was before the merge: none of the back one's markup
+  const front = [...out.getElementsByTagNameNS('*', 'p')].find((p) => p.textContent === 'front')
+  const declared = [...(front?.attributes ?? [])].filter(
+    (a) => a.value === 'urn:b' || a.namespaceURI === 'urn:b',
+  )
+  expect(declared.map((a) => a.name)).toEqual([])
 })
