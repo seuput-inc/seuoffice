@@ -291,7 +291,7 @@ describe.each<Kind>(['bytes', 'stream'])(
       }
     })
 
-    it('stores no checkpoint for an undo whose commit is refused', async () => {
+    it('leaves the history replayable when an undo commit is refused after its checkpoint', async () => {
       const t = await setup(kind, { failCommit: true })
       try {
         await t.type(256)
@@ -302,18 +302,27 @@ describe.each<Kind>(['bytes', 'stream'])(
             target: { epoch: t.epoch, v: 130, index: 0 },
           }),
         ).rejects.toThrow(/stale history head/)
-        expect((await t.store.readHwpCheckpoint!(p.documentId, t.epoch, 256))?.version).toBe(128)
+        expect((await t.store.load(p.documentId))!.head).toBe(256)
+        // The confirmed version 129 may stay as a checkpoint; it is a correct file either way.
+        const bob = await t.open('bob')
+        bob.receive({ t: 'submit', seq: 1, base: 256, ops: [{ t: 'b' }] })
+        expect(await bob.next('ack')).toMatchObject({ v: 257 })
+        expect(await t.exported(257)).toBe('base:' + 'x'.repeat(256) + 'b')
       } finally {
         await t.close()
       }
     })
 
-    it('keeps a committed undo when its checkpoint cannot be stored and stops at the next overflow', async () => {
+    it('refuses an undo whose checkpoint cannot be stored and leaves everyone editing', async () => {
       const t = await setup(kind)
       try {
         await t.type(256)
-        t.store.writeHwpCheckpoint = vi.fn(async () => {
-          throw new Error('disk full')
+        const store = t.store
+        const original = store.writeHwpCheckpoint!.bind(store)
+        let failures = 2
+        store.writeHwpCheckpoint = vi.fn(async (...args: Parameters<typeof original>) => {
+          if (failures-- > 0) throw new Error('disk full')
+          return original(...args)
         })
         await expect(
           t.server.undoHistory(p, {
@@ -321,11 +330,19 @@ describe.each<Kind>(['bytes', 'stream'])(
             expected: { epoch: t.epoch, version: 256 },
             target: { epoch: t.epoch, v: 130, index: 0 },
           }),
-        ).resolves.toEqual({ kind: 'undone', version: 257 })
-        expect(await t.alice.next('change')).toMatchObject({ v: 257 })
-        t.alice.receive({ t: 'submit', seq: t.next(), base: 257, ops: [{ t: 'y' }] })
-        expect(await t.alice.next('error')).toEqual({ t: 'error', code: 'too_large' })
-        expect((await t.store.load(p.documentId))!.head).toBe(257)
+        ).rejects.toThrow(/could not be stored; nothing was changed/)
+        expect((await store.load(p.documentId))!.head).toBe(256)
+        expect((await store.readHwpCheckpoint!(p.documentId, t.epoch, 256))?.version).toBe(128)
+        const bob = await t.open('bob')
+        bob.receive({ t: 'submit', seq: 1, base: 256, ops: [{ t: 'b' }] })
+        expect(await bob.next('ack')).toMatchObject({ v: 257 })
+        expect(await t.exported(257)).toBe('base:' + 'x'.repeat(256) + 'b')
+        const { revisionId } = await t.server.restoreHistory(p, {
+          requestId: 'restore-head',
+          source: { epoch: t.epoch, version: 257 },
+          expected: { epoch: t.epoch, version: 257 },
+        })
+        expect(revisionId).toBeTruthy()
       } finally {
         await t.close()
       }

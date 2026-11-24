@@ -233,15 +233,15 @@ export function createHistoryServer(
     }
     const undo = command.kind === 'undo' ? command.target : undefined
     const source = command.kind === 'restore' ? command.source : command.expected
-    // An undo that replayed from an unstored checkpoint keeps it right after its commit, inside the
-    // document queue, so no submit is admitted before it exists. The undo is committed either way:
-    // without the checkpoint, the next submit that overflows the window ends with a reason.
+    // An undo that replayed from an unstored checkpoint stores it first, inside the document queue:
+    // the committed head must always be replayable from a stored checkpoint. When it cannot be
+    // stored the undo is refused and nothing changes. The checkpoint is a confirmed version, so
+    // it stays a correct file even if the commit is then refused.
     let keep: (() => Promise<void>) | undefined
     const committed = (commit: () => Promise<HistoryReceipt>) =>
       server.commitHistory(p.documentId, command.expected.epoch, async () => {
-        const receipt = await commit()
-        await keep?.().catch(() => {})
-        return receipt
+        await keep?.()
+        return commit()
       })
     if ('renderStream' in options) {
       return track(

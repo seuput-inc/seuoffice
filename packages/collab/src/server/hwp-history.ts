@@ -89,6 +89,7 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 /** Whether the renderer accepts `request`: the same counts, node, depth and text budget it checks. */
 export function fitsHwpReplay(request: HistoryRequest): boolean {
   if (request.changes.length > HWP_REPLAY.changes) return false
+  if (utf8Length(JSON.stringify(request)) > HWP_REPLAY.requestBytes) return false
   let ops = 0
   for (const change of request.changes) {
     if ((ops += change.ops.length) > HWP_REPLAY.ops) return false
@@ -302,8 +303,8 @@ export function createHwpHistory({
   /**
    * Export, restore or undo at `point` from the newest checkpoint at or below it. An undo whose
    * window is too full to hold its compensation replays from a file just before its target.
-   * `keep` stores that file; call it only after the undo is committed, inside the document queue,
-   * so a refused undo leaves earlier targets undoable and the next submit replays from it.
+   * `keep` stores that file; call it inside the document queue before the undo commits and do
+   * not commit when it throws, so the committed head always replays from a stored checkpoint.
    */
   async function artifact(
     p: Principal,
@@ -352,7 +353,7 @@ export function createHwpHistory({
         for (let attempt = 0; attempt < 2; attempt++) if (typeof (await keep()) !== 'string') return
         throw new HistoryError(
           'unsupported',
-          'The edit was undone, but its saved history point could not be kept; the next edit may stop co-editing',
+          'This edit could not be undone because the saved history point it needs could not be stored; nothing was changed',
         )
       },
     }

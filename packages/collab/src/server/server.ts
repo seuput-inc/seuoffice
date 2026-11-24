@@ -120,6 +120,8 @@ export const HWP_REPLAY = {
   depth: 32,
   /** UTF-8 bytes of every string and object key */
   textBytes: 256 * 1024,
+  /** The whole request as JSON; the stream renderer counts its header and change frames */
+  requestBytes: 1024 * 1024,
 }
 
 const hwpRefusalReasons: Record<HwpHistoryRefusal, string> = {
