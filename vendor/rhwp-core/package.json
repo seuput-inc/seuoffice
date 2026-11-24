@@ -52,7 +52,7 @@
       "0043-batch-lays-out-format-edits-once.patch",
       "0044-cmap-range-entries-across-lines.patch",
       "0045-memo-date-local-offset-hook.patch",
-      "0047-keep-unmodelled-paragraph-records.patch"
+      "0046-memo-authored-time.patch"
     ],
     "wasmPack": "0.15.0",
     "wasmSha256": "930fa4ef2f7c5bd5099b56b0497dc016692e307aec59514409f696d3221b3136"
