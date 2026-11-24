@@ -68,6 +68,6 @@
       "0059-save-keeps-widths-ids-strikeout.patch"
     ],
     "wasmPack": "0.15.0",
-    "wasmSha256": "dde95314dda41dd9f603ae68f9314257f672b59178511673b10788c551c666cd"
+    "wasmSha256": "9992ab1ee94ccdde7ac22783c1da3003fefd72c8c63b047c5a5e2c93a3a2a884"
   }
 }
