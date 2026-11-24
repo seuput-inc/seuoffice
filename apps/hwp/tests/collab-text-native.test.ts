@@ -204,6 +204,10 @@ it('accepts the exact metadata returned by merge and rejects extra methods, meta
     }
     expect(restored).toMatchObject({ unknown_records: [], foreign_xml: null, merge_front: front })
     expect(parseHwpRichText({ ...op, meta: { ...restored, merge_front: null } })).not.toBeNull()
+    // an operation recorded by an engine before ieum.35 has no source-id flag
+    const { hwpx_id_from_source: flag, ...older } = restored
+    expect(flag).toBe(false)
+    expect(parseHwpRichText({ ...op, meta: older })).not.toBeNull()
     const record = { after: 'Header', depth: 1, tag_id: 0x3fe, data: [1] }
     const markup = { namespaces: [['x', 'urn:x']], attributes: [['x:y', '1']], p_children: [] }
     for (const injected of [
@@ -211,6 +215,7 @@ it('accepts the exact metadata returned by merge and rejects extra methods, meta
       { foreign_xml: { ...markup, run_children: ['<x:z xmlns:x="urn:x"/>'] } },
       { merge_front: { ...front, run_children: 1 } },
       { merge_front: { ...front, extra: 0 } },
+      { hwpx_id_from_source: 1 },
     ]) {
       expect(parseHwpRichText({ ...op, meta: { ...restored, ...injected } })).toBeNull()
     }
