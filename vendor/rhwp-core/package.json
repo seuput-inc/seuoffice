@@ -1,6 +1,6 @@
 {
   "name": "@rhwp/core",
-  "version": "0.9.0-ieum.34",
+  "version": "0.9.0-ieum.37",
   "description": "rhwp v0.9.0 HWP/HWPX engine (WebAssembly) rebuilt with the patches in ./patches",
   "private": true,
   "type": "module",
@@ -63,9 +63,11 @@
       "0054-collab-commands.patch",
       "0055-collab-text-undo.patch",
       "0056-collab-control-relocation.patch",
-      "0057-collab-trailing-slots.patch"
+      "0057-collab-trailing-slots.patch",
+      "0058-lenient-reader-keeps-streams.patch",
+      "0059-save-keeps-widths-ids-strikeout.patch"
     ],
     "wasmPack": "0.15.0",
-    "wasmSha256": "7ca7961486c3bea1cc629b7f04941f5dc33c4a792fce7a1aad809f9407a35576"
+    "wasmSha256": "b5219d3251e7ae5addb2aa80a44a135c8bcc675f78d6931e154a11702be66e38"
   }
 }

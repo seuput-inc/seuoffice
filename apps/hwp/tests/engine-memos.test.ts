@@ -1021,6 +1021,8 @@ describe('the engine writes Hancom memo identity', () => {
   // HWPX. A later engine that changes how these documents save updates them on purpose.
   // HWPX is pinned by its parts' content, minus hh:paraPr@textDir: patch 0047 keeps that
   // attribute from the source (checked below) and changed nothing else in these saves.
+  // Patch 0059 changed only the HWPX of the .hwpx source: its two paragraphs keep the ids
+  // the file gave them (3121190098 and 0) instead of being renumbered 0 and 1.
   const before: Record<string, Record<string, string>> = {
     'format-copy-table.hwp': {
       hwp: 'd90a4045fa4a1cb72fdb287580721a681ad73753519ff4eaa6b0816485b7a6df',
@@ -1030,9 +1032,9 @@ describe('the engine writes Hancom memo identity', () => {
     },
     'hancom-page-number-no-dash.hwpx': {
       hwp: 'c3e3c463c70d787ddf5e2a568bbb83da12df18d0284e373eb1799a6449578b96',
-      hwpx: '8d54248f82b7cb25472fcef85984c72562397020b5eabfbf17454128daed9960',
+      hwpx: '38ddaed9c993e911103a9dcfcb6f163c5be12d1d80d7f76959134b5ec6301122',
       editedHwp: '63a6d970a15095b535a882f4e87219f386716b0beb7c04a120cead28da4def5d',
-      editedHwpx: '2b28a56d5ad33395bd93f7ac799df20e45ab6a8ca106a9977e21a9e2153af71d',
+      editedHwpx: '00722c09f45d2ce6440ae5602e35bac62afd9837cce5ffe126a5402256a9f9f2',
     },
   }
 

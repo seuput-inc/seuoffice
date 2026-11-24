@@ -21,6 +21,8 @@ type ParaMeta = {
   unknown_records: []
   foreign_xml: null
   merge_front: null | Record<(typeof mergeFront)[number], 0>
+  /** whether raw_header_extra carries the HWPX file's paragraph id; absent before ieum.35 */
+  hwpx_id_from_source?: boolean
 }
 
 type RichAction =
@@ -94,21 +96,24 @@ const mergeFront = [
   'p_children',
   'run_children',
 ] as const
+const metaKeys = [
+  'para_shape_id',
+  'style_id',
+  'column_type',
+  'raw_break_type',
+  'numbering_restart',
+  'raw_header_extra',
+  'tab_extended',
+  'unknown_records',
+  'foreign_xml',
+  'merge_front',
+]
 function meta(v: unknown): v is ParaMeta {
   if (
     !record(v) ||
-    !keys(v, [
-      'para_shape_id',
-      'style_id',
-      'column_type',
-      'raw_break_type',
-      'numbering_restart',
-      'raw_header_extra',
-      'tab_extended',
-      'unknown_records',
-      'foreign_xml',
-      'merge_front',
-    ])
+    !(Object.hasOwn(v, 'hwpx_id_from_source')
+      ? typeof v.hwpx_id_from_source === 'boolean' && keys(v, [...metaKeys, 'hwpx_id_from_source'])
+      : keys(v, metaKeys))
   )
     return false
   const restart = v.numbering_restart

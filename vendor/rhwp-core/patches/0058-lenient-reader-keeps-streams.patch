@@ -1,0 +1,302 @@
+diff --git a/src/parser/cfb_reader.rs b/src/parser/cfb_reader.rs
+index 0a25aaf9a..e21bebf55 100644
+--- a/src/parser/cfb_reader.rs
++++ b/src/parser/cfb_reader.rs
+@@ -358,30 +358,7 @@ impl CfbReader {
+             return None;
+         }
+ 
+-        let data = self.read_stream_raw("/PrvText").ok()?;
+-
+-        // UTF-16LE 디코딩
+-        if data.len() < 2 {
+-            return None;
+-        }
+-
+-        let text: String = data
+-            .chunks(2)
+-            .filter_map(|chunk| {
+-                if chunk.len() == 2 {
+-                    let code = u16::from_le_bytes([chunk[0], chunk[1]]);
+-                    char::from_u32(code as u32)
+-                } else {
+-                    None
+-                }
+-            })
+-            .collect();
+-
+-        if text.is_empty() {
+-            None
+-        } else {
+-            Some(text)
+-        }
++        decode_preview_text(&self.read_stream_raw("/PrvText").ok()?)
+     }
+ 
+     /// [Task #1001] HWP3 → HWP5 변환본 식별 (휴리스틱).
+@@ -409,6 +386,31 @@ impl CfbReader {
+     }
+ }
+ 
++/// The text of a PrvText stream (UTF-16LE), or None when it holds none.
++pub(crate) fn decode_preview_text(data: &[u8]) -> Option<String> {
++    if data.len() < 2 {
++        return None;
++    }
++
++    let text: String = data
++        .chunks(2)
++        .filter_map(|chunk| {
++            if chunk.len() == 2 {
++                let code = u16::from_le_bytes([chunk[0], chunk[1]]);
++                char::from_u32(code as u32)
++            } else {
++                None
++            }
++        })
++        .collect();
++
++    if text.is_empty() {
++        None
++    } else {
++        Some(text)
++    }
++}
++
+ /// Lenient CFB 리더 (FAT 검증 무시)
+ ///
+ /// HWP 프로그램이 생성하는 일부 CFB 파일은 표준 cfb 크레이트의
+@@ -956,6 +958,61 @@ impl LenientCfbReader {
+         self.find_entry_id(path).is_some()
+     }
+ 
++    /// Every stream under the root storage as a `/Storage/Name` path, found by following
++    /// the directory tree down from the root entry, as `CfbReader::list_streams` gives them.
++    pub fn list_streams(&self) -> Vec<String> {
++        let mut paths = Vec::new();
++        let Some(root) = self
++            .directory_entries
++            .iter()
++            .position(|entry| entry.obj_type == 5)
++        else {
++            return paths;
++        };
++        let mut visited = std::collections::HashSet::new();
++        visited.insert(root);
++        let mut pending = vec![(self.directory_entries[root].child, String::new())];
++        while let Some((entry_id, parent)) = pending.pop() {
++            if entry_id == Self::END_OF_CHAIN || entry_id == Self::FREE_SECT {
++                continue;
++            }
++            let entry_id = entry_id as usize;
++            if !visited.insert(entry_id) {
++                continue;
++            }
++            let Some(entry) = self.directory_entries.get(entry_id) else {
++                continue;
++            };
++            pending.push((entry.left_sibling, parent.clone()));
++            pending.push((entry.right_sibling, parent.clone()));
++            let path = format!("{}/{}", parent, entry.name);
++            match entry.obj_type {
++                1 => pending.push((entry.child, path)),
++                2 => paths.push(path),
++                _ => {}
++            }
++        }
++        paths
++    }
++
++    /// `CfbReader::read_preview_image_limited`: the picture only when the directory declares
++    /// 1..=`max_bytes` bytes for it and the chain holds all of them.
++    pub fn read_preview_image_limited(&self, max_bytes: usize) -> Option<Vec<u8>> {
++        let entry_id = self.find_entry_id("/PrvImage")?;
++        let declared_size = usize::try_from(self.directory_entries.get(entry_id)?.size).ok()?;
++        if declared_size == 0 || declared_size > max_bytes {
++            return None;
++        }
++        let data = self
++            .read_directory_stream_limited(entry_id, "/PrvImage", max_bytes)
++            .ok()?;
++        (data.len() == declared_size).then_some(data)
++    }
++
++    pub fn read_preview_text(&self) -> Option<String> {
++        decode_preview_text(&self.read_stream("/PrvText").ok()?)
++    }
++
+     pub fn read_doc_info(&self, compressed: bool) -> Result<Vec<u8>, CfbError> {
+         decode_stream(self.read_stream("DocInfo")?, compressed)
+     }
+diff --git a/src/parser/mod.rs b/src/parser/mod.rs
+index 598f1de46..44b77a231 100644
+--- a/src/parser/mod.rs
++++ b/src/parser/mod.rs
+@@ -498,7 +498,10 @@ fn parse_hwp_with_cfb(
+     // 5-7. 미리보기, BinData, 추가 스트림
+     // Preview is optional document metadata.  A malformed or disproportionately
+     // large thumbnail must not prevent the actual document from opening.
+-    let preview = extract_preview(&mut cfb, MAX_THUMBNAIL_BYTES);
++    let preview = extract_preview(
++        cfb.read_preview_image_limited(MAX_THUMBNAIL_BYTES),
++        cfb.read_preview_text(),
++    );
+     let bin_data_content = load_bin_data_content(
+         &mut cfb,
+         raw_data,
+@@ -508,7 +511,8 @@ fn parse_hwp_with_cfb(
+         password,
+     );
+     let extra_streams = collect_extra_streams(
+-        &mut cfb,
++        cfb.list_streams(),
++        |path| cfb.read_stream_raw(path).ok(),
+         &doc_info.bin_data_list,
+         &bin_data_content,
+         encrypted,
+@@ -599,13 +603,20 @@ fn parse_hwp_with_cfb(
+     // 저장 LineSeg의 원점은 문단 간격을 포함한 실제 저장 결과다.
+     // 계보에 맞춰 좌표를 다시 쓰지 않고 소비 단계에서 같은 저장 프레임을 사용한다.
+ 
++    decode_rhwp_streams(&mut doc);
++    Ok(doc)
++}
++
++/// Takes the streams rhwp writes for what HWP 5 has no record of out of `extra_streams`
++/// and into the model; the serializer writes them again from the model.
++fn decode_rhwp_streams(doc: &mut Document) {
+     if let Some(idx) = doc
+         .extra_streams
+         .iter()
+         .position(|(p, _)| p == crate::model::border_paint::HWP_STREAM)
+     {
+         let (_, bytes) = doc.extra_streams.remove(idx);
+-        crate::model::border_paint::decode(&mut doc, &bytes);
++        crate::model::border_paint::decode(doc, &bytes);
+     }
+     if let Some(idx) = doc
+         .extra_streams
+@@ -613,7 +624,7 @@ fn parse_hwp_with_cfb(
+         .position(|(p, _)| p == crate::model::text_clip::HWP_STREAM)
+     {
+         let (_, bytes) = doc.extra_streams.remove(idx);
+-        crate::model::text_clip::decode(&mut doc, &bytes);
++        crate::model::text_clip::decode(doc, &bytes);
+     }
+     if let Some(idx) = doc
+         .extra_streams
+@@ -621,7 +632,7 @@ fn parse_hwp_with_cfb(
+         .position(|(p, _)| p == crate::model::text_paint::HWP_STREAM)
+     {
+         let (_, bytes) = doc.extra_streams.remove(idx);
+-        crate::model::text_paint::decode(&mut doc, &bytes);
++        crate::model::text_paint::decode(doc, &bytes);
+     }
+     if let Some(idx) = doc
+         .extra_streams
+@@ -630,10 +641,9 @@ fn parse_hwp_with_cfb(
+     {
+         let (_, bytes) = doc.extra_streams.remove(idx);
+         if bytes.len() <= 16 * 1024 * 1024 {
+-            crate::model::hyperlink_format::decode(&mut doc, &bytes);
++            crate::model::hyperlink_format::decode(doc, &bytes);
+         }
+     }
+-    Ok(doc)
+ }
+ 
+ /// [Task #554] HWP3 → HWP5/HWPX 변환본 식별 휴리스틱 + 페이지 여백 보정
+@@ -1054,7 +1064,26 @@ fn parse_hwp_with_lenient(
+         password,
+     );
+ 
+-    // Document 조립 (preview, extra_streams는 lenient에서 생략)
++    // Preview and the streams the model does not hold, as the strict reader keeps them:
++    // the serializer writes `extra_streams` back, so a file this reader opens keeps its
++    // summary, scripts and other storages through a save.
++    let preview = extract_preview(
++        lenient.read_preview_image_limited(MAX_THUMBNAIL_BYTES),
++        lenient.read_preview_text(),
++    );
++    let extra_streams = collect_extra_streams(
++        lenient.list_streams(),
++        |path| lenient.read_stream(path).ok(),
++        &doc_info.bin_data_list,
++        &bin_data_content,
++        encrypted,
++        password,
++    );
++    let is_hwpx_variant = extra_streams
++        .iter()
++        .any(|(p, _)| p == crate::model::document::HWPX_ORIGIN_STREAM_PATH);
++
++    // Document 조립
+     let model_header = ModelFileHeader {
+         version: ModelHwpVersion {
+             major: file_header.version.major,
+@@ -1074,16 +1103,16 @@ fn parse_hwp_with_lenient(
+         doc_properties,
+         doc_info,
+         sections,
+-        preview: None,
++        preview,
+         bin_data_content,
+-        extra_streams: Vec::new(),
+-        is_hwpx_variant: false,
++        extra_streams,
++        is_hwpx_variant,
+         hwpx_aux_entries: Vec::new(),
+         is_hwp3_variant: false,
+         provenance: crate::model::provenance::SourceProvenance {
+             format: crate::model::provenance::SourceFormat::Hwp5,
+             hwp3_lineage: false,
+-            hwpx_lineage: false,
++            hwpx_lineage: is_hwpx_variant,
+             hft_ascii_halfwidth_witnessed: false,
+             stored_rows_before_hancom_2020: false,
+         },
+@@ -1112,6 +1141,7 @@ fn parse_hwp_with_lenient(
+     // 저장 LineSeg의 원점은 문단 간격을 포함한 실제 저장 결과다.
+     // 계보에 맞춰 좌표를 다시 쓰지 않고 소비 단계에서 같은 저장 프레임을 사용한다.
+ 
++    decode_rhwp_streams(&mut doc);
+     Ok(doc)
+ }
+ 
+@@ -1586,10 +1616,7 @@ fn drm_format_name(data: &[u8]) -> &'static str {
+ }
+ 
+ /// 미리보기 데이터 추출 (PrvImage, PrvText)
+-fn extract_preview(cfb: &mut cfb_reader::CfbReader, max_thumbnail_bytes: usize) -> Option<Preview> {
+-    let image_data = cfb.read_preview_image_limited(max_thumbnail_bytes);
+-    let text = cfb.read_preview_text();
+-
++fn extract_preview(image_data: Option<Vec<u8>>, text: Option<String>) -> Option<Preview> {
+     // 둘 다 없으면 None 반환
+     if image_data.is_none() && text.is_none() {
+         return None;
+@@ -1747,13 +1774,13 @@ fn detect_image_format(data: &[u8]) -> PreviewImageFormat {
+ /// FileHeader, DocInfo, BodyText/Section*, BinData/*, PrvImage, PrvText는
+ /// 이미 별도로 파싱되므로 제외한다.
+ fn collect_extra_streams(
+-    cfb: &mut cfb_reader::CfbReader,
++    all_streams: Vec<String>,
++    mut read_stream_raw: impl FnMut(&str) -> Option<Vec<u8>>,
+     bin_data_list: &[crate::model::bin_data::BinData],
+     bin_data_content: &[BinDataContent],
+     encrypted: bool,
+     password: Option<&[u8]>,
+ ) -> Vec<(String, Vec<u8>)> {
+-    let all_streams = cfb.list_streams();
+     let mut extra = Vec::new();
+ 
+     // [Task #1554] 직렬화기(`cfb_writer`)가 `bin_data_content` 로부터 재생성할
+@@ -1790,7 +1817,7 @@ fn collect_extra_streams(
+         // 비밀번호 암호화 대상 중 모델링하지 않는 스트림은 평문 raw 상태로 보존한다.
+         // 직렬화기는 암호화 플래그를 제거하므로 암호문을 그대로 보존하면 Scripts와
+         // 고아 BinData가 읽을 수 없는 상태로 저장된다.
+-        if let Ok(mut data) = cfb.read_stream_raw(path) {
++        if let Some(mut data) = read_stream_raw(path) {
+             if encrypted && (path.starts_with("/Scripts/") || path.starts_with("/BinData/")) {
+                 if let Some(password) = password {
+                     data = crypto::decrypt_password_stream(&data, password);
