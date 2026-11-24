@@ -14,6 +14,7 @@ import {
 } from '../renderer/univer-state'
 import { type BlockReason, type SheetOp, sheetsCollabAdapter } from './collab-adapter'
 import { journalMark, structuralOpsRefusal } from './collab-journal'
+import { sheetsPresence } from './collab-presence'
 import { refusalIsSilent, sharedWhileCoEditing } from './collab-refusals'
 
 /** What the renderer hands over (`window.seuCollab.attach`) once the opened workbook is on screen */
@@ -69,6 +70,7 @@ export function joinSheetsCollab(
     format: FORMAT,
     fileName,
     bytes,
+    presence: sheetsPresence,
     adapter({ runtime, state, redactionStates }) {
       // A streamed workbook holds only the cells on screen, so it cannot replay or save the log;
       // throwing here makes the page report collab_unavailable and the host reopen under its lock.
