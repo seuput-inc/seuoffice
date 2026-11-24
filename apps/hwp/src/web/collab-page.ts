@@ -9,6 +9,7 @@ import {
 import type { HwpStudioControls } from '../../studio-plugin/collab-input.mjs'
 import type { HwpPresence } from '../../studio-plugin/collab-presence.mjs'
 import { mountHwpRecovery, type HwpRecovery } from '../renderer/collab-recovery'
+import { t } from '../renderer/i18n/locale'
 import { hwpFormatOfPath } from '../shared/ipc'
 import {
   createHwpCollabAdapter,
@@ -27,6 +28,17 @@ interface StudioMount {
   binding?: HwpCollabBinding
   presence?: HwpPresence
   buffered: boolean
+}
+
+/** Save what this editor shows on this computer, the way left once the session stopped. */
+async function downloadLocal(binding: HwpCollabBinding): Promise<void> {
+  const { fileName, bytes } = await binding.adapter.produceFile()
+  const url = URL.createObjectURL(new Blob([bytes as BlobPart]))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 /** A host's bytes must pass admission before they can seed an epoch. A late joiner validates the epoch base too. */
@@ -197,6 +209,16 @@ export async function openHwpCollabPage(
         const { adapter } = active.binding
         // A view-mode embed may have an edit-capable server credential. Replay still needs the raw document.
         return editing ? adapter : { ...adapter, setEditable: () => adapter.setEditable(false) }
+      },
+      status(next) {
+        const active = activeMount()
+        const binding = active?.binding
+        if (next.phase !== 'failed' || !binding) return
+        // The server answers a history it cannot extend with too_large (adapter) or schema_mismatch.
+        const history = next.failure === 'adapter' || next.failure === 'schema_mismatch'
+        active.recovery.stopped(t(history ? 'collabHistoryStopped' : 'collabStopped'), () =>
+          downloadLocal(binding),
+        )
       },
       presence: (_token, publish) => {
         const active = activeMount()

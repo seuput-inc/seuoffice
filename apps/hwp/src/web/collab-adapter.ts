@@ -93,6 +93,20 @@ export interface HwpCollabBinding {
   dispose(): void
 }
 
+/** Room one op may take: a replay request carries at most 256 KiB of strings, header included. */
+export const MAX_HWP_OP_BYTES = 192 * 1024
+
+/** Why an op cannot join the retained history, said to the user, or null when it can. */
+function refusal(format: Format, op: HwpOp): string | null {
+  const picture =
+    op.kind === 'insertCellPicture' || (op.kind === 'command' && op.action === 'image') ? op : null
+  // HWP source admission keeps only PNG, JPEG, GIF and BMP pictures.
+  if (format === 'hwp' && picture?.extension === 'webp') return t('collabWebpInHwp')
+  if (new TextEncoder().encode(JSON.stringify(encodeHwpOp(op))).byteLength > MAX_HWP_OP_BYTES)
+    return t('collabOpTooLarge', { limit: `${Math.floor((MAX_HWP_OP_BYTES * 3) / 4 / 1024)} KB` })
+  return null
+}
+
 type Removal = { section: number; paragraph: number; control: number; col: boolean; index: number }
 function removal(op: HwpOp): Removal | 'paragraph' | null {
   if (op.kind === 'deleteParagraph') return 'paragraph'
@@ -370,6 +384,8 @@ export function createHwpCollabAdapter({
           captureHwpText(doc, method, args) ??
           captureHwpCommand(doc, method, args)
         if (!op) throw new Error(t('collabUnsupportedEdit'))
+        const refused = refusal(file.format, op)
+        if (refused) throw new Error(refused)
         return transaction(doc, () => {
           mutated = true
           const result = memo

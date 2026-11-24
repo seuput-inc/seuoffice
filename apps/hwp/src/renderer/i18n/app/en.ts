@@ -11,6 +11,15 @@ export const en = {
     'Someone added content here first, so your deletion was not applied. Copy what you meant to delete:',
   collabCaretLost:
     'Another edit removed the place your cursor was in. Click where you want to keep editing.',
+  collabHistoryStopped:
+    'Co-editing stopped: the server could not add this change to the edit history (it could not make a history checkpoint, or the history reached its limit). Download keeps what you see now on this computer.',
+  collabStopped: 'Co-editing ended. Download keeps what you see now on this computer.',
+  collabDownload: 'Download',
+  collabDownloadFailed: 'The file could not be made.',
+  collabWebpInHwp:
+    'WebP pictures cannot be added to an HWP document while co-editing. Convert it to PNG or JPEG first.',
+  collabOpTooLarge:
+    'One co-editing change, such as a picture, can be at most {limit}. Make it smaller and try again.',
   collabNotApplied:
     'Another edit changed or removed the target. Your change was not applied: {action}.',
   collabFormatAction: 'formatting',

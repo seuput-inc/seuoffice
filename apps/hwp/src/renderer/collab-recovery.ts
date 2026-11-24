@@ -14,6 +14,8 @@ export interface HwpRecovery {
     reinsert: ((content: F) => boolean | Promise<boolean>) | null,
     reason?: 'deleted' | 'changed' | 'composition' | 'kept',
   ): void
+  /** The session ended: say why once and offer the file this editor shows. */
+  stopped(message: string, download: () => Promise<void>): void
   destroy(): void
 }
 
@@ -106,6 +108,32 @@ export function mountHwpRecovery(host: HTMLElement): HwpRecovery {
         })
       button(t('collabDiscard'), remove)
       item.append(feedback)
+      list.prepend(item)
+      list.scrollTop = 0
+    },
+    stopped(message, download) {
+      if (!list.parentNode || list.querySelector('.hwp-collab-stopped')) return
+      const item = doc.createElement('fieldset')
+      item.className = 'hwp-collab-stopped'
+      const title = doc.createElement('legend')
+      title.textContent = message
+      const feedback = doc.createElement('div')
+      const control = doc.createElement('button')
+      control.type = 'button'
+      control.className = 'hwp-topbar-button'
+      control.textContent = t('collabDownload')
+      control.addEventListener('click', async () => {
+        item.disabled = true
+        try {
+          await download()
+          feedback.textContent = ''
+        } catch {
+          feedback.textContent = t('collabDownloadFailed')
+        } finally {
+          item.disabled = false
+        }
+      })
+      item.append(title, control, feedback)
       list.prepend(item)
       list.scrollTop = 0
     },

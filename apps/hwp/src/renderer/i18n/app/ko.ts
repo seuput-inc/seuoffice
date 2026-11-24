@@ -12,6 +12,16 @@ export const ko = {
   collabKeptTarget:
     '다른 사람이 먼저 이곳에 내용을 넣어 삭제하지 않았습니다. 지우려던 내용은 복사할 수 있습니다.',
   collabCaretLost: '다른 편집으로 커서가 있던 곳이 사라졌습니다. 이어서 쓸 곳을 클릭하세요.',
+  collabHistoryStopped:
+    '서버가 이 변경을 편집 기록에 이어 저장하지 못해(기록 저장 지점을 만들지 못했거나 기록 한도에 닿음) 공동 편집을 멈췄습니다. 지금 화면의 내용은 내려받기로 이 컴퓨터에 보존할 수 있습니다.',
+  collabStopped:
+    '공동 편집이 끝났습니다. 지금 화면의 내용은 내려받기로 이 컴퓨터에 보존할 수 있습니다.',
+  collabDownload: '내려받기',
+  collabDownloadFailed: '파일을 만들지 못했습니다.',
+  collabWebpInHwp:
+    'HWP 문서에는 공동 편집 중 WebP 그림을 넣을 수 없습니다. PNG나 JPEG로 바꿔 넣으세요.',
+  collabOpTooLarge:
+    '공동 편집에서 한 번에 넣는 내용(그림 등)은 {limit}까지입니다. 더 작게 줄여 다시 넣으세요.',
   collabNotApplied:
     '다른 편집으로 대상이 바뀌거나 삭제되어 다음 변경을 반영하지 못했습니다: {action}.',
   collabFormatAction: '서식 변경',

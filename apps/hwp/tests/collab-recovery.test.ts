@@ -138,3 +138,24 @@ describe('a local insertion that lost its target', () => {
     },
   )
 })
+
+describe('a session that stopped', () => {
+  it('says why once and keeps offering the download after a failed attempt', async () => {
+    const { host, notices } = editor({})
+    let fails = true
+    const download = vi.fn(async () => {
+      if (fails) throw new Error('no file')
+    })
+    notices.stopped(en.collabHistoryStopped, download)
+    notices.stopped(en.collabStopped, download)
+    const items = host.querySelectorAll('fieldset')
+    expect(items).toHaveLength(1)
+    expect(items[0]!.querySelector('legend')!.textContent).toBe(en.collabHistoryStopped)
+    button(items[0]!, en.collabDownload).click()
+    await vi.waitFor(() => expect(items[0]!.textContent).toContain(en.collabDownloadFailed))
+    fails = false
+    button(items[0]!, en.collabDownload).click()
+    await vi.waitFor(() => expect(items[0]!.textContent).not.toContain(en.collabDownloadFailed))
+    expect(download).toHaveBeenCalledTimes(2)
+  })
+})
