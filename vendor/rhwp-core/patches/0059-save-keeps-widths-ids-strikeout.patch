@@ -142,8 +142,24 @@ index 68c0eb656..6bbcefc05 100644
  record!(Header { apply_to, raw_attr, list_attr, text_width, text_height, text_ref, num_ref } bytes
      { raw_ctrl_extra } nested { paragraphs });
  record!(Footer { apply_to, raw_attr, list_attr, text_width, text_height, text_ref, num_ref } bytes
+diff --git a/src/model/style.rs b/src/model/style.rs
+index e154b4ed3..ca3d2270f 100644
+--- a/src/model/style.rs
++++ b/src/model/style.rs
+@@ -1082,6 +1082,11 @@ impl CharShapeMods {
+         if let Some(v) = self.strike_shape {
+             cs.strike_shape = v;
+         }
++        // Turned on over Hangul's no-strikeout placeholder (line kind 15, HWPX "3D"), the
++        // strikeout takes the solid line Hangul draws; kind 15 would save it as none again.
++        if cs.strikethrough && cs.strike_shape > 12 {
++            cs.strike_shape = 0;
++        }
+         if let Some(v) = self.kerning {
+             cs.kerning = v;
+         }
 diff --git a/src/model/table.rs b/src/model/table.rs
-index a35a56319..cb9708d29 100644
+index a35a56319..a57f8033e 100644
 --- a/src/model/table.rs
 +++ b/src/model/table.rs
 @@ -196,6 +196,11 @@ pub struct Cell {
@@ -173,15 +189,18 @@ index a35a56319..cb9708d29 100644
      pub fn set_apply_inner_margin(&mut self, value: bool) {
          self.apply_inner_margin = value;
          self.set_list_header_flag(CELL_FLAG_HAS_MARGIN, value);
-@@ -580,6 +593,7 @@ impl Cell {
+@@ -580,6 +593,10 @@ impl Cell {
              raw_list_extra: template.raw_list_extra.clone(),
              field_name: None,
              dirty_flag: false,
-+            stored_width: None,
++            // a copy of a widened cell at the widened width is saved like it, at the stored one
++            stored_width: template
++                .stored_width
++                .filter(|&(_, widened)| widened == width),
              paragraphs: vec![para],
          }
      }
-@@ -752,6 +766,7 @@ impl Table {
+@@ -752,6 +769,7 @@ impl Table {
              let delta = i64::from(width) - i64::from(cell.width);
              if delta > 0 {
                  cell.shift_text_area_width(delta);
@@ -217,7 +236,7 @@ index c2f0a872a..840b13fb2 100644
      Ok((para, sec_def))
  }
 diff --git a/src/serializer/control.rs b/src/serializer/control.rs
-index f3951a26b..928d2fb5b 100644
+index f3951a26b..40ce47fc9 100644
 --- a/src/serializer/control.rs
 +++ b/src/serializer/control.rs
 @@ -1023,7 +1023,7 @@ fn write_cell_list<W: std::io::Write>(cell: &Cell, w: &mut ByteWriter<W>) -> std
@@ -229,18 +248,13 @@ index f3951a26b..928d2fb5b 100644
      w.write_u32(cell.height)?;
      w.write_i16(cell.padding.left)?;
      w.write_i16(cell.padding.right)?;
-@@ -1036,7 +1036,17 @@ fn write_cell_list<W: std::io::Write>(cell: &Cell, w: &mut ByteWriter<W>) -> std
+@@ -1036,7 +1036,12 @@ fn write_cell_list<W: std::io::Write>(cell: &Cell, w: &mut ByteWriter<W>) -> std
      // [#1808] 모델의 field_name 과 raw_list_extra 인코딩이 일치하면 원본 보존,
      // 불일치(HWPX 출처 셀 필드, 편집기 변경)면 한컴 계약대로 재구성한다.
      if !cell.raw_list_extra.is_empty() && raw_cell_field_name_matches(cell) {
 -        w.write_bytes(&cell.raw_list_extra)?;
-+        // The text area width moved with layout's widening of the cell and goes back with it.
-+        let widening = i64::from(cell.width) - i64::from(cell.saved_width());
-+        if widening > 0 && cell.raw_list_extra.len() >= 2 {
-+            let text_width =
-+                i64::from(u16::from_le_bytes([cell.raw_list_extra[0], cell.raw_list_extra[1]]));
-+            let stored = u16::try_from((text_width - widening).max(0)).unwrap_or(u16::MAX);
-+            w.write_bytes(&stored.to_le_bytes())?;
++        if let Some(prefix) = stored_text_area_width(cell) {
++            w.write_bytes(&prefix)?;
 +            w.write_bytes(&cell.raw_list_extra[2..])?;
 +        } else {
 +            w.write_bytes(&cell.raw_list_extra)?;
@@ -248,9 +262,39 @@ index f3951a26b..928d2fb5b 100644
      } else {
          write_cell_list_extra(cell, w)?;
      }
-@@ -1079,7 +1089,7 @@ fn write_cell_list_extra<W: std::io::Write>(
+@@ -1044,6 +1049,22 @@ fn write_cell_list<W: std::io::Write>(cell: &Cell, w: &mut ByteWriter<W>) -> std
+     Ok(())
+ }
+ 
++/// The text area width at the head of `raw_list_extra` as the file stored it, when layout's
++/// widening of the cell moved it (`Cell::shift_text_area_width`): it goes back with the width.
++fn stored_text_area_width(cell: &Cell) -> Option<[u8; 2]> {
++    let widening = i64::from(cell.width) - i64::from(cell.saved_width());
++    if widening <= 0 || cell.raw_list_extra.len() < 2 {
++        return None;
++    }
++    let text_width =
++        i64::from(u16::from_le_bytes([cell.raw_list_extra[0], cell.raw_list_extra[1]]));
++    Some(
++        u16::try_from((text_width - widening).max(0))
++            .unwrap_or(u16::MAX)
++            .to_le_bytes(),
++    )
++}
++
+ /// Compare the parser's lossy UTF-16 surface without creating a temporary String.
+ fn raw_cell_field_name_matches(cell: &Cell) -> bool {
+     let Some(units) = crate::parser::control::cell_field_name_units(&cell.raw_list_extra) else {
+@@ -1077,9 +1098,13 @@ fn write_cell_list_extra<W: std::io::Write>(
+     w: &mut ByteWriter<W>,
+ ) -> std::io::Result<()> {
      let width_bytes: [u8; 4] = if cell.raw_list_extra.len() >= 4 {
-         cell.raw_list_extra[0..4].try_into().unwrap()
+-        cell.raw_list_extra[0..4].try_into().unwrap()
++        let mut bytes: [u8; 4] = cell.raw_list_extra[0..4].try_into().unwrap();
++        if let Some(prefix) = stored_text_area_width(cell) {
++            bytes[..2].copy_from_slice(&prefix);
++        }
++        bytes
      } else {
 -        cell.width.to_le_bytes()
 +        cell.saved_width().to_le_bytes()
