@@ -561,6 +561,36 @@ test('a save before anyone has edited stores the workbook as it is', async ({ br
   expect(firstSheet(second).get('H2')).toBe('after-the-save')
 })
 
+test('a cell someone else changes while this page types in it keeps what this page typed, and says so', async ({
+  browser,
+}) => {
+  const documentId = freshDocument()
+  const writer = await open(browser, documentId, 'writer')
+  const typist = await open(browser, documentId, 'typist')
+  // a page that just went live drops keys at first: one committed edit makes sure it takes them
+  await typeInto(typist, 'H8', 'ready')
+  await settled([writer, typist])
+  await select(typist, 'H9')
+  await expect(typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')).toBeFocused()
+  await typist.page.keyboard.type('mine')
+
+  // the other edit to the same cell reaches the typist while its cell editor is open
+  await typeInto(writer, 'H9', 'theirs')
+  await settled([writer, typist])
+  await expect(typist.frame.locator('.app-toast.error')).toBeVisible()
+
+  // the typist's commit is the later edit: everyone ends with what the typist typed
+  const before = await ownEdits(typist)
+  await typist.page.keyboard.press('Enter')
+  await expect.poll(() => ownEdits(typist)).toBeGreaterThan(before)
+  const version = await settled([writer, typist])
+  await writer.page.locator('#save').click()
+  const saved = await savedBook(writer)
+  expect(saved.version).toBe(version)
+  expect(firstSheet(saved).get('H8')).toBe('ready')
+  expect(firstSheet(saved).get('H9')).toBe('mine')
+})
+
 const QUIET: Array<{ label: string; file: string }> = [
   { label: 'a plain workbook', file: BASIC },
   { label: 'formulas and edits', file: fixture('compatibility-edit.xlsx') },

@@ -3,6 +3,7 @@
  * declares, and the adapter it builds once the renderer shows the workbook.
  */
 import { joinPageCollab, webLanguage, type PageCollab } from '@seuoffice/web-platform'
+import { IEditorBridgeService } from '@univerjs/sheets-ui'
 import type { SheetRedactionState } from '@seuoffice/xlsx-gateway/gateway/xlsx-redaction'
 import { handleSave } from '../renderer/save-actions'
 import { setEditRefusalRule } from '../renderer/sheet-protection'
@@ -12,7 +13,13 @@ import {
   modelResidency,
   type UniverRuntime,
 } from '../renderer/univer-state'
-import { type BlockReason, type SheetOp, sheetsCollabAdapter } from './collab-adapter'
+import {
+  type BlockReason,
+  type SheetOp,
+  type SheetsCollabAdapter,
+  sheetsCollabAdapter,
+} from './collab-adapter'
+import { SET_RANGE_VALUES } from './collab-mutations'
 import { journalMark, structuralOpsRefusal } from './collab-journal'
 import { sheetsPresence } from './collab-presence'
 import { refusalIsSilent, sharedWhileCoEditing } from './collab-refusals'
@@ -60,6 +67,47 @@ function refused(id: string, reason: BlockReason = 'unshared'): void {
   if (Date.now() - lastRefusal < 1_000) return
   lastRefusal = Date.now()
   showToast(refusalText(reason), 'error')
+}
+
+const DRAFT_OVERWRITTEN = {
+  ko: '다른 사람이 지금 입력 중인 칸을 바꿨습니다. 입력을 마치면 내 내용으로 바뀝니다.',
+  en: 'Someone else changed the cell you are typing in. Finishing your entry replaces their change.',
+}
+
+/**
+ * Univer reloads the open cell editor from its cell whenever a mutation writes that cell. During
+ * `integrate` that is someone else's change, or this page's unconfirmed edits taken back and run
+ * again, and the reload would throw away what the person is typing. The draft stays instead: its
+ * commit is a later edit than the one that came in, and the person is told when someone else
+ * wrote that cell.
+ */
+function keepingCellDraft(
+  runtime: UniverRuntime,
+  integrate: SheetsCollabAdapter['integrate'],
+): SheetsCollabAdapter['integrate'] {
+  const bridge = runtime.univer.__getInjector().get(IEditorBridgeService)
+  return (remote, local) => {
+    const draft = bridge.isVisible().visible ? bridge.getEditLocation() : null
+    if (!draft) return integrate(remote, local)
+    const refresh = bridge.refreshEditCellState
+    bridge.refreshEditCellState = noop
+    let rebuilt: SheetOp[]
+    try {
+      rebuilt = integrate(remote, local)
+    } finally {
+      bridge.refreshEditCellState = refresh
+    }
+    const written = remote.some((op) =>
+      op.mutations.some((mutation) => {
+        if (mutation.id !== SET_RANGE_VALUES || mutation.params.subUnitId !== draft.sheetId)
+          return false
+        const rows = mutation.params.cellValue as Record<number, Record<number, unknown>> | null
+        return rows?.[draft.row]?.[draft.column] !== undefined
+      }),
+    )
+    if (written) showToast(DRAFT_OVERWRITTEN[webLanguage() === 'ko' ? 'ko' : 'en'], 'error')
+    return rebuilt
+  }
 }
 
 export function joinSheetsCollab(
@@ -125,7 +173,7 @@ export function joinSheetsCollab(
         if (!refusalIsSilent(kind)) refused(kind)
         return refusalText()
       })
-      return adapter
+      return { ...adapter, integrate: keepingCellDraft(runtime, adapter.integrate) }
     },
   })
 }
