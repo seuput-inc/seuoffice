@@ -5,7 +5,13 @@ import { crc32, deflateRawSync } from 'node:zlib'
 import JSZip from 'jszip'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import init, { DocumentExport, HwpDocument } from '../../../../vendor/rhwp-core/rhwp.js'
-import { openHwp, SECTION, streamOf, writeContainer } from '../../../../apps/hwp/src/main/hwp5-file'
+import {
+  openHwp,
+  pathsOf,
+  SECTION,
+  streamOf,
+  writeContainer,
+} from '../../../../apps/hwp/src/main/hwp5-file'
 import { newTabsOf } from '../../../../apps/hwp/src/main/tab-widths'
 import { openHwpFile } from '../../src/hwp-file'
 
@@ -231,6 +237,57 @@ describe('HWP history file boundary', () => {
       }
     } finally {
       opened.doc.free()
+    }
+  })
+
+  it('keeps the streams the edit did not touch in the co-editing HWP export', async () => {
+    // The unused sector-table slots read "end of chain", as some writers leave them: the
+    // engine opens such a file with its lenient compound-file reader.
+    const lenient = writeContainer(openHwp(blank)!.cfb)
+    const fat = 512 + lenient.readUInt32LE(76) * 512
+    for (let at = fat; at < fat + 512; at += 4)
+      if (lenient.readUInt32LE(at) === 0xffffffff) lenient.writeUInt32LE(0xfffffffe, at)
+    const hwp = await openHwpFile('hwp', lenient, HwpDocument)
+    try {
+      hwp.doc.insertText(0, 0, 0, '추가 ')
+      const before = openHwp(lenient)!
+      const after = openHwp(await hwp.produce())!
+      expect(pathsOf(after).sort()).toEqual(pathsOf(before).sort())
+      // the engine rebuilds these; blank.hwp's empty preview text is filled from the body
+      const rebuilt = ['/DocInfo', '/BodyText/Section0', '/PrvText']
+      const bytes = ({ cfb }: typeof before, path: string) =>
+        Buffer.from(cfb.FileIndex[cfb.FullPaths.indexOf(path)]!.content as Uint8Array)
+      for (const path of pathsOf(before)) {
+        if (path.endsWith('/') || rebuilt.some((name) => path.endsWith(name))) continue
+        expect(bytes(after, path).equals(bytes(before, path)), path).toBe(true)
+      }
+    } finally {
+      hwp.doc.free()
+    }
+  })
+
+  it('keeps cell widths, character shapes and paragraph ids in the co-editing HWPX export', async () => {
+    // a Hangul HWPX, repacked as the history store's ZIP profile admits it
+    const zip = await JSZip.loadAsync(fixture('para-float-tail-table.hwpx'))
+    const source = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+    const facts = async (bytes: Uint8Array) => {
+      const saved = await JSZip.loadAsync(bytes)
+      const section = await saved.file('Contents/section0.xml')!.async('string')
+      const header = await saved.file('Contents/header.xml')!.async('string')
+      const all = (xml: string, re: RegExp) => [...xml.matchAll(re)].map((m) => m[1])
+      return [
+        all(section, /<hp:cellSz width="(\d+)"/g),
+        all(header, /<hh:strikeout shape="([^"]+)"/g),
+        all(section, /<hp:p id="(\d+)"/g),
+      ]
+    }
+    const hwpx = await openHwpFile('hwpx', source, HwpDocument)
+    try {
+      const last = hwpx.doc.getParagraphCount(0) - 1
+      hwpx.doc.insertText(0, last, hwpx.doc.getParagraphLength(0, last), 'SEUEDIT')
+      expect(await facts(await hwpx.produce())).toEqual(await facts(source))
+    } finally {
+      hwpx.doc.free()
     }
   })
 
