@@ -15,9 +15,10 @@ import { flushSync } from 'react-dom'
 import type { PageSize } from '../renderer/view-config'
 import type { PdfHost, Refusal } from './collab-adapter'
 import type { PdfOp } from './collab-model'
+import { pdfPresence, type PdfPresenceHost } from './collab-presence'
 
 /** What the renderer hands over (`window.seuCollab.attach`) once the opened document is on screen */
-export interface PdfCollabHandles extends PdfHost {
+export interface PdfCollabHandles extends PdfHost, PdfPresenceHost {
   /** the opened file's pages, unrotated */
   pageSizes: readonly PageSize[]
   historySourceReady: boolean
@@ -104,6 +105,7 @@ export const sessionUnsaved = (status: CollabStatus): boolean =>
 export function joinPdfCollab(doc: WebDocument): Promise<PageCollab<PdfCollabHandles> | null> {
   let app: PdfCollabHandles | null = null
   return joinPageCollab<PdfCollabHandles, PdfOp>({
+    presence: pdfPresence,
     status: (status) => app?.unsaved(sessionUnsaved(status)),
     // the host's save takes what the person is still typing, as the App's own save does
     hostSave: async (save) => {

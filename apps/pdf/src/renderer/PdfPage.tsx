@@ -65,11 +65,18 @@ export function PdfPage({
   useEffect(() => {
     const holder = holderRef.current
     if (!holder) return
+    const notifyTextLayer = () => {
+      if (window.seuCollab)
+        holder.dispatchEvent(new Event('pdf-text-layer-change', { bubbles: true }))
+    }
     // Offscreen pages still release their bitmap. For an in-place rerender (save
     // reload, zoom, rotation), keep the previous canvas visible until its replacement
     // is fully rendered so the page never flashes white between document instances.
     if (!visible) {
-      holder.replaceChildren()
+      if (holder.firstChild) {
+        holder.replaceChildren()
+        notifyTextLayer()
+      }
       // A page captured by the post-save barrier may scroll out before its replacement
       // renders. Its overlays are no longer mounted, so treat the cleared offscreen page
       // as settled instead of making the whole document wait for the timeout.
@@ -114,6 +121,7 @@ export function PdfPage({
       const textDiv = document.createElement('div')
       textDiv.className = 'textLayer'
       holder.replaceChildren(canvas, textDiv)
+      notifyTextLayer()
       // Notify after the bitmap swap, but before the browser paints. A post-save
       // reload uses this to remove the matching edit previews in the same frame.
       onRenderState(doc, pageNo, false)
@@ -124,6 +132,10 @@ export function PdfPage({
       })
       try {
         await textLayer.render()
+        if (!cancelled && window.seuCollab) {
+          textDiv.dataset.presenceReady = ''
+          notifyTextLayer()
+        }
       } catch {
         /* cancelled */
       }

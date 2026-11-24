@@ -553,6 +553,7 @@ export function DrawLayer({
           d.input.kind === 'note' ? null : (
             <g
               key={d.id}
+              data-pdf-annotation={`drawing:${d.id}`}
               className={`pdf-draw-shape${d.id === selectedId ? ' pdf-draw-selected' : ''}`}
               transform={
                 drag?.id === d.id
@@ -663,6 +664,7 @@ export function DrawLayer({
         return (
           <button
             key={pin.key}
+            data-pdf-annotation={`note:${pin.key}`}
             className={`pdf-note-pin${pin.key === activeNoteKey ? ' pdf-note-pin-selected' : ''}`}
             style={{ left: vx, top: vy - 20, background: cssRgb(pin.color) }}
             data-tip={tip}

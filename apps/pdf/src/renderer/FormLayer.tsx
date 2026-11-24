@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactElement } fr
 import { Dropdown } from '@seuoffice/ui'
 import { pdfRectToCss } from './annotations'
 import type { PageGeom } from './annotations'
+import { widgetDesignId } from './FormDesignLayer'
 import type { FormValueInput } from '../shared/ipc'
 import type { FormWidget } from './form-catalog'
 import {
@@ -219,6 +220,19 @@ export function FormLayer({
           />
         )
       })}
+      {globalThis.window?.seuCollab &&
+        widgets
+          .filter((w) => readOnly || w.readOnly)
+          .map((w) => (
+            <button
+              key={w.id}
+              type="button"
+              aria-label={w.fieldName}
+              className="pdf-form-view-selection"
+              data-field-id={widgetDesignId(w.id)}
+              style={pdfRectToCss(geom, w.rect, scale)}
+            />
+          ))}
     </div>
   )
 }

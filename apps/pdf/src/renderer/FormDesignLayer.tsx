@@ -258,7 +258,7 @@ export function FormDesignLayer({
     a.top + a.height > b.top
 
   const down = (e: ReactPointerEvent<HTMLElement>) => {
-    if (e.button !== 0) return
+    if (!designing || e.button !== 0) return
     e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
     const start = {
@@ -402,7 +402,9 @@ export function FormDesignLayer({
         {fields
           .filter((f) => !f.existing)
           .map((f) => (
-            <PreviewControl key={f.id} field={f} style={pdfRectToCss(geom, f.rect, scale)} />
+            <div key={f.id} data-field-id={f.id} style={{ display: 'contents' }}>
+              <PreviewControl field={f} style={pdfRectToCss(geom, f.rect, scale)} />
+            </div>
           ))}
       </div>
     )
@@ -421,6 +423,7 @@ export function FormDesignLayer({
       onPointerUp={up}
       onPointerCancel={cancel}
       onContextMenu={(e) => {
+        if (!designing) return
         e.preventDefault()
         onContextMenu(e, null)
       }}
@@ -444,6 +447,7 @@ export function FormDesignLayer({
             onPointerUp={fieldUp}
             onPointerCancel={fieldUp}
             onContextMenu={(e) => {
+              if (!designing) return
               e.preventDefault()
               e.stopPropagation()
               if (!selectedIds.has(f.id)) onSelect([f.id], 'replace')

@@ -43,6 +43,7 @@ import {
   selectionQuadsByPage,
   viewToPdf,
 } from './annotations'
+import type { PdfObject, PdfPresenceHost } from '../web/collab-presence'
 import type { LocalMarkup, PageGeom } from './annotations'
 import { groupLineSpans } from './text-line'
 import { DRAW_COLORS, DrawLayer, cssRgb } from './DrawLayer'
@@ -2755,8 +2756,13 @@ export default function App() {
   const activeFormIndex = formWidgets.findIndex((widget) => widget.id === activeFormWidgetId)
 
   const registerFormControl = (id: string, element: HTMLElement | null) => {
-    if (element) formControlRefs.current.set(id, element)
-    else formControlRefs.current.delete(id)
+    if (element) {
+      if (window.seuCollab) {
+        const box = element.closest<HTMLElement>('.pdf-form-select') ?? element
+        box.dataset.fieldId = widgetDesignId(id)
+      }
+      formControlRefs.current.set(id, element)
+    } else formControlRefs.current.delete(id)
   }
 
   const focusFormWidget = (widget: FormWidget) => {
@@ -3162,6 +3168,52 @@ export default function App() {
 
   // web co-editing: the session takes the edits once the document is on screen (absent on the
   // desktop). It keeps the first handles it gets, so they call this render's functions through a ref.
+  const presenceLayout = useRef<(() => void) | null>(null)
+  useLayoutEffect(() => {
+    presenceLayout.current?.()
+  }, [
+    selected,
+    activeNote,
+    textDraft,
+    selectedDesignFields,
+    formDesignPreview,
+    ribbonTab,
+    markups,
+    savedMarkups,
+    drawings,
+    designFieldsByPage,
+    visibleRows,
+    rows,
+    scale,
+    pageGeom,
+  ])
+  const presenceModel: Pick<PdfPresenceHost, 'selectedObject' | 'rectsFor'> = {
+    selectedObject: (): PdfObject | null => {
+      if (ribbonTab === 'formDesign' && !formDesignPreview && selectedDesignFields.length)
+        return { kind: 'fields', ids: selectedDesignFields.map((f) => f.id) }
+      if (selected?.kind === 'drawing') return { kind: 'annotation', id: `drawing:${selected.id}` }
+      if (selected?.kind === 'markup') return { kind: 'markup', id: selected.id }
+      if (selected?.kind === 'savedMarkup')
+        return { kind: 'savedMarkup', page: selected.annot.pageIndex, id: selected.annot.objNum }
+      if (activeNote) return { kind: 'annotation', id: `note:${activeNote.rootKey}` }
+      return null
+    },
+    rectsFor: (at) => {
+      if (at.kind === 'fields') {
+        const ids = new Set(at.ids)
+        return [...designFieldsByPage.values()].flatMap((fields) =>
+          fields.filter((f) => ids.has(f.id)).map((f) => ({ page: f.pageIndex, rect: f.rect })),
+        )
+      }
+      const m =
+        at.kind === 'markup'
+          ? markups.find((item) => item.id === at.id)
+          : savedMarkups.get(at.page)?.find((item) => item.objNum === at.id)
+      return m?.quads.map((q) => ({ page: m.pageIndex, rect: quadToRect(q) })) ?? []
+    },
+  }
+  const presenceModelRef = useRef(presenceModel)
+  presenceModelRef.current = presenceModel
   const collabAppRef = useRef({ snapshot, applySnapshot, commitDrafts: () => {} })
   collabAppRef.current = {
     snapshot,
@@ -3179,6 +3231,11 @@ export default function App() {
     if (status !== 'ready' || !doc) return
     void window.seuCollab?.attach({
       link: collabRef,
+      presenceLayout,
+      pageGeom: (i: number) => pageGeomRef.current(i),
+      selectedObject: () => presenceModelRef.current.selectedObject(),
+      rectsFor: (at: Parameters<PdfPresenceHost['rectsFor']>[0]) =>
+        presenceModelRef.current.rectsFor(at),
       snapshot: () => collabAppRef.current.snapshot(),
       show: (s: EditSnapshot) => {
         stampRef.current = s.stampCfg
@@ -4044,7 +4101,7 @@ export default function App() {
       const m = onPage[i]!
       if (hitQuads(m.quads)) return select({ kind: 'markup', id: m.id, ...at })
     }
-    if (readOnly) return
+    if (readOnly && !window.seuCollab) return
     // Markup annotations already saved in the file (skipping ones pending deletion)
     const pendingDeleted = new Set(annotDeletes.map((d) => d.annot.objNum))
     const saved = savedMarkups.get(origIdx) ?? []
@@ -5525,7 +5582,7 @@ export default function App() {
 
   const deleteSelected = () => {
     const sel = selected
-    if (!sel) return
+    if (!sel || readOnly) return
     const op: Op =
       sel.kind === 'markup'
         ? { op: 'removeMarkup', id: sel.id }
@@ -11827,6 +11884,7 @@ export default function App() {
             )}
             <div
               ref={scrollRef}
+              data-pdf-collab={window.seuCollab ? (readOnly ? 'view' : 'edit') : undefined}
               className={`pdf-scroll${drawTool ? ' pdf-drawing' : ''}${handTool ? ' pdf-hand' : ''}${nightMode ? ' pdf-night' : ''}`}
               onScroll={() => {
                 handleScroll()
@@ -13472,7 +13530,7 @@ export default function App() {
                 onClose={() => setAskPop(null)}
               />
             )}
-            {selected && !markupMenu && (
+            {selected && !readOnly && !markupMenu && (
               <div
                 ref={delPopupRef}
                 className="pdf-del-popup"
