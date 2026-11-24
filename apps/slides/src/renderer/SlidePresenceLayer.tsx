@@ -1,4 +1,11 @@
-import React, { useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import React, {
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { createPortal } from 'react-dom'
 import type { RenderNode, RenderSlide, ShapeRenderNode } from '@seuoffice/pptx-render'
 import { presenceLabel } from '@seuoffice/web-platform/presence'
@@ -142,7 +149,8 @@ export function SlidePresenceLayer({
 }) {
   const peers = useSyncExternalStore(presence.subscribe, presence.snapshot)
   const reader = readerScale !== undefined
-  const [viewIds, setViewIds] = useState<string[]>([])
+  const owner = useId()
+  const viewIds = useSyncExternalStore(presence.subscribe, () => presence.readerIds(owner))
   const [draft, setDraft] = useState<number | null>(null)
   const layer = useRef<HTMLDivElement>(null)
   const group =
@@ -153,24 +161,27 @@ export function SlidePresenceLayer({
   const ownIds = reader ? viewIds : selectedIds
   const editingId = reader ? (viewIds.length === 1 ? viewIds[0] : undefined) : editing
   useLayoutEffect(() => {
-    presence.shownSlide = slide.partPath
+    if (reader && !ownIds.length) return
     const editor = () =>
       reader
         ? (layer.current?.querySelector<HTMLElement>('.slide-reader-text') ?? null)
         : (layer.current?.parentElement?.querySelector<HTMLElement>('.slide-text-editor') ?? null)
-    presence.read = () => {
-      if (!slide.partPath) return null
-      const selected = editingId ? [editingId] : ownIds
-      const ids = nodes
-        .filter((n) => !n.decoration && selected.includes(n.sourceId) && n.durableId)
-        .map((n) => n.durableId!)
-      if (!ids.length || (group && !group.durableId)) return null
-      return {
-        slide: slide.partPath,
-        ids,
-        group: group?.durableId ?? null,
-        text: editingId ? textSelection(editor()) : null,
-      }
+    presence.local = {
+      slide: slide.partPath,
+      read: () => {
+        if (!slide.partPath) return null
+        const selected = editingId ? [editingId] : ownIds
+        const ids = nodes
+          .filter((n) => !n.decoration && selected.includes(n.sourceId) && n.durableId)
+          .map((n) => n.durableId!)
+        if (!ids.length || (group && !group.durableId)) return null
+        return {
+          slide: slide.partPath,
+          ids,
+          group: group?.durableId ?? null,
+          text: editingId ? textSelection(editor()) : null,
+        }
+      },
     }
     const changed = () => {
       const root = !reader && editingId && editor()
@@ -183,11 +194,18 @@ export function SlidePresenceLayer({
     return () => {
       document.removeEventListener('selectionchange', changed)
       document.removeEventListener('input', changed)
-      presence.shownSlide = undefined
-      presence.read = () => null
-      presence.publish()
     }
   }, [presence, reader, slide, nodes, group, ownIds, editingId])
+  useLayoutEffect(
+    () => () => {
+      if (reader) presence.selectReader(owner, [])
+      else {
+        presence.local = undefined
+        presence.publish()
+      }
+    },
+    [presence, reader, owner],
+  )
 
   return (
     <div
@@ -205,7 +223,7 @@ export function SlidePresenceLayer({
       }}
       onClick={(e) => {
         if (reader && e.target === e.currentTarget) {
-          setViewIds([])
+          presence.selectReader(owner, [])
           e.stopPropagation()
         }
       }}
@@ -228,13 +246,14 @@ export function SlidePresenceLayer({
                   const toggle =
                     e.shiftKey &&
                     !(e.target instanceof Element && e.target.closest('.slide-reader-text'))
-                  setViewIds((prev) =>
+                  presence.selectReader(
+                    owner,
                     toggle
-                      ? prev.includes(n.sourceId)
-                        ? prev.filter((id) => id !== n.sourceId)
-                        : [...prev, n.sourceId]
-                      : prev.length === 1 && prev[0] === n.sourceId
-                        ? prev
+                      ? viewIds.includes(n.sourceId)
+                        ? viewIds.filter((id) => id !== n.sourceId)
+                        : [...viewIds, n.sourceId]
+                      : viewIds.length === 1 && viewIds[0] === n.sourceId
+                        ? viewIds
                         : [n.sourceId],
                   )
                 }}

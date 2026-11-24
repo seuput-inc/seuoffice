@@ -1079,7 +1079,7 @@ export function App() {
     () =>
       window.slidesApi.onDeckChanged?.(({ slides: all, order, replaced = [], rebuild }) => {
         // A new confirmed version may publish before React paints its replacement slide.
-        const shown = presence?.shownSlide
+        const shown = presence?.local?.slide
         if (
           presence &&
           shown &&
@@ -1087,7 +1087,7 @@ export function App() {
             all.some((s) => s.partPath === shown) ||
             replaced.includes(shown))
         ) {
-          presence.read = () => null
+          presence.local = undefined
         }
         // an edit was refused after the canvas showed it (a border or a handle where it was dragged)
         if (rebuild) setCanvasEpoch((n) => n + 1)

@@ -39,13 +39,25 @@ function parse(at: Json): Location | null {
   return { slide, group, ids, text: { start, end, body } }
 }
 
-/** Only the currently displayed slide owns read(); the page can draw before the slide mounts. */
+const noIds: readonly string[] = []
+
 export class SlidePresence {
   constructor(readonly publish: () => void) {}
-  shownSlide?: string
-  read: () => Location | null = () => null
+  local?: { slide: string | undefined; read: () => Location | null }
+  read = () => this.local?.read() ?? null
+  private reader?: { owner: string; ids: readonly string[] }
   private peers: SlidePeer[] = []
   private listeners = new Set<() => void>()
+  readerIds(owner: string) {
+    return this.reader?.owner === owner ? this.reader.ids : noIds
+  }
+  selectReader(owner: string, ids: readonly string[]) {
+    if (ids === this.reader?.ids || (!ids.length && this.reader?.owner !== owner)) return
+    this.reader = ids.length ? { owner, ids } : undefined
+    this.local = undefined
+    if (!this.reader) this.publish()
+    this.notify()
+  }
   snapshot = () => this.peers
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
@@ -58,6 +70,9 @@ export class SlidePresence {
       const at = parse(p.at)
       return at ? [{ ...p, at }] : []
     })
+    this.notify()
+  }
+  private notify() {
     for (const notify of this.listeners) notify()
   }
 }
