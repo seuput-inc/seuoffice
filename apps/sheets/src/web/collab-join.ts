@@ -24,6 +24,8 @@ import {
   sheetsCollabAdapter,
 } from './collab-adapter'
 import {
+  INSERT_COL,
+  INSERT_ROW,
   MOVE_RANGE,
   type Mutation,
   REMOVE_COL,
@@ -105,16 +107,48 @@ function writesCell(mutation: Mutation, sheetId: string, row: number, column: nu
   return sheet === sheetId && cells?.[row]?.[column] !== undefined
 }
 
+type Axis = 'row' | 'column'
+
+const AXIS_OF: Record<string, { axis: Axis; inserts: boolean }> = {
+  [INSERT_ROW]: { axis: 'row', inserts: true },
+  [INSERT_COL]: { axis: 'column', inserts: true },
+  [REMOVE_ROWS]: { axis: 'row', inserts: false },
+  [REMOVE_COL]: { axis: 'column', inserts: false },
+}
+
+const lines = (range: IRange, axis: Axis): [number, number] =>
+  axis === 'row' ? [range.startRow, range.endRow] : [range.startColumn, range.endColumn]
+
+/** What one `integrate` learns about the cell draft while it runs */
+interface DraftWatch {
+  written: boolean
+  removed: boolean
+  /** the id of the mutation of someone else's about to run */
+  remoteNext: string | null
+  /**
+   * The draft's row or column taken back with an unconfirmed insert of this page's: where the
+   * lines would come back (`anchor`), how many, and where in them the draft sits
+   */
+  parked: { axis: Axis; anchor: number; count: number; offset: number } | null
+  /** where the draft goes once Univer has moved it along the lines that came back, by `id` */
+  back: { id: string; axis: Axis; line: number } | null
+}
+
 /**
  * Univer reloads the open cell editor from its cell whenever a mutation writes that cell. During
  * `integrate` that is someone else's change, or this page's unconfirmed edits taken back and run
  * again, and the reload would throw away what the person is typing. The draft stays instead: its
  * commit is a later edit than the one that came in, and the person is told when someone else
  * wrote that cell. Univer moves the edit location along inserted and removed rows and columns,
- * except when its own row or column goes: the commit would then write over the cell that moved
- * into its place, so the entry is cancelled and a notice that stays shows its text to copy.
- * `beforeRemote` goes to the adapter: each edit of someone else's is compared with where the
- * draft is at the moment it runs, between this page's edits taken back and run again.
+ * except when its own row or column goes: when someone else removes it, the commit would write
+ * over the cell that moved into its place, so the entry is cancelled and a notice that stays
+ * shows its text to copy. `beforeRemote` goes to the adapter: each edit of someone else's is
+ * compared with where the draft is at the moment it runs.
+ *
+ * The draft may sit in lines this page inserted and has not had confirmed: taking that insert
+ * back removes them until it runs again. The draft is then parked where they come back, out of
+ * reach of the edits that arrive meanwhile, and put back into them; lines that do not come back
+ * where expected cancel the entry as a removal would.
  */
 function keepingCellDraft(runtime: UniverRuntime): {
   beforeRemote: (mutation: Mutation) => void
@@ -124,44 +158,79 @@ function keepingCellDraft(runtime: UniverRuntime): {
   const bridge = injector.get(IEditorBridgeService)
   const commands = injector.get(ICommandService)
   // null outside an `integrate` that keeps a draft
-  let written: boolean | null = null
+  let watch: DraftWatch | null = null
+
   const beforeRemote = (mutation: Mutation): void => {
-    if (written !== false) return
-    const at = bridge.getEditLocation()
-    if (at && writesCell(mutation, at.sheetId, at.row, at.column)) written = true
+    const at = watch && bridge.getEditLocation()
+    if (!watch || !at) return
+    watch.remoteNext = mutation.id
+    if (watch.parked) return
+    if (writesCell(mutation, at.sheetId, at.row, at.column)) watch.written = true
   }
+
+  // before each line change runs: Univer moves the location along it afterwards
+  const beforeLines = (id: string, params: Mutation['params']): void => {
+    const remote = watch!.remoteNext === id
+    watch!.remoteNext = null
+    const kind = AXIS_OF[id]
+    const at = bridge.getEditLocation()
+    if (!kind || !at || params.subUnitId !== at.sheetId) return
+    const { axis, inserts } = kind
+    const [start, end] = lines(params.range as IRange, axis)
+    const count = end - start + 1
+    const parked = watch!.parked
+    if (parked?.axis === axis) {
+      if (inserts && !remote && start === parked.anchor && count === parked.count) {
+        watch!.back = { id, axis, line: start + parked.offset }
+        watch!.parked = null
+      } else if (inserts && start < parked.anchor) parked.anchor += count
+      else if (!inserts && end < parked.anchor) parked.anchor -= count
+      else if (!inserts && start < parked.anchor) parked.anchor = start
+      return
+    }
+    if (inserts) return
+    const line = axis === 'row' ? at.row : at.column
+    if (line < start || line > end) return
+    if (remote || parked) watch!.removed = true
+    else watch!.parked = { axis, anchor: start, count, offset: line - start }
+  }
+
   const around =
     (integrate: SheetsCollabAdapter['integrate']): SheetsCollabAdapter['integrate'] =>
     (remote, local) => {
       const draft = bridge.isVisible().visible ? bridge.getEditLocation() : null
       if (!draft) return integrate(remote, local)
       const { unitId } = draft
-      let removed = false
-      // before each removal runs: Univer moves the location along a removal above it afterwards
-      const watch = commands.beforeCommandExecuted(({ id, params }) => {
-        if (id !== REMOVE_ROWS && id !== REMOVE_COL) return
-        const at = bridge.getEditLocation()
-        const { subUnitId, range } = params as { subUnitId: string; range: IRange }
-        if (!at || subUnitId !== at.sheetId) return
-        const [line, start, end] =
-          id === REMOVE_ROWS
-            ? [at.row, range.startRow, range.endRow]
-            : [at.column, range.startColumn, range.endColumn]
-        if (line >= start && line <= end) removed = true
+      const found: DraftWatch = (watch = {
+        written: false,
+        removed: false,
+        remoteNext: null,
+        parked: null,
+        back: null,
+      })
+      const before = commands.beforeCommandExecuted(({ id, params }) =>
+        beforeLines(id, (params ?? {}) as Mutation['params']),
+      )
+      const after = commands.onCommandExecuted(({ id }) => {
+        const back = found.back
+        const at = back?.id === id && bridge.getEditLocation()
+        if (!back || !at) return
+        found.back = null
+        if (back.axis === 'row') bridge.updateEditLocation(back.line, at.column)
+        else bridge.updateEditLocation(at.row, back.line)
       })
       const refresh = bridge.refreshEditCellState
       bridge.refreshEditCellState = noop
-      written = false
       let rebuilt: SheetOp[]
       try {
         rebuilt = integrate(remote, local)
       } finally {
         bridge.refreshEditCellState = refresh
-        watch.dispose()
+        before.dispose()
+        after.dispose()
+        watch = null
       }
-      const overwritten = written
-      written = null
-      if (removed) {
+      if (found.removed || found.parked) {
         const text = (
           injector.get(IEditorService).getEditor(DOCS_NORMAL_EDITOR_UNIT_ID_KEY)?.getDocumentData()
             .body?.dataStream ?? ''
@@ -176,7 +245,7 @@ function keepingCellDraft(runtime: UniverRuntime): {
         showNotice({ text: say(draftRemoved(text)), copy: text })
         return rebuilt
       }
-      if (overwritten) showToast(say(DRAFT_OVERWRITTEN), 'error')
+      if (found.written) showToast(say(DRAFT_OVERWRITTEN), 'error')
       return rebuilt
     }
   return { beforeRemote, around }
