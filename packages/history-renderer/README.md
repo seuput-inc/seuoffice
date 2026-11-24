@@ -1,6 +1,6 @@
 # 브라우저 없는 이력 렌더러
 
-`@seuoffice/history-renderer`는 **미게시 로컬 후보**다. 입력은 보유한 원본과 그 원본에서 시작하는 `HistoryRequest`의 UTF-8 JSON 바이트다. 현재 파일에서 과거를 추정하지 않는다. 네 형식 모두 아래에 적은 편집만 처리하며 브라우저 편집기 전체를 대체하지 않는다.
+`@seuoffice/history-renderer`는 **미게시 로컬 후보**다. 입력은 보유한 원본과 그 원본에서 시작하는 `HistoryRequest`의 UTF-8 JSON 바이트다. 현재 파일에서 과거를 추정하지 않는다. 아래에 적은 편집만 처리하며 브라우저 편집기 전체를 대체하지 않는다.
 
 ```ts
 import { renderBytes } from '@seuoffice/history-renderer'
@@ -8,7 +8,7 @@ import { renderBytes } from '@seuoffice/history-renderer'
 const { bytes, fileName, compensation } = await renderBytes(baseBytes, requestJsonBytes)
 ```
 
-`renderBytes(base: Uint8Array, requestJson: Uint8Array): Promise<HistoryResult>`는 네 형식의 작은 문서를 처리한다. 호스트에서 신뢰되지 않은 요청을 먼저 `JSON.parse`하지 않는다. 결과의 `bytes`는 다시 열 수 있는 파일이다. `undo`를 주면 지정한 연산만 상쇄하는 wire 연산도 반환한다. 호스트가 아직 기록하지 않은 결과이며, 전체 버전을 롤백하지 않는다. `invalid_history`는 잘못된 입력·원본 해시·로그·대상을, `unsupported`는 처리할 수 없는 문서·연산·실행 환경을, `conflict`는 후속 편집을 보존하면서 취소할 수 없음을 뜻한다.
+`renderBytes(base: Uint8Array, requestJson: Uint8Array): Promise<HistoryResult>`는 DOCX, XLSX, PPTX, PDF, HWP, HWPX의 작은 문서를 처리한다. 호스트에서 신뢰되지 않은 요청을 먼저 `JSON.parse`하지 않는다. 결과의 `bytes`는 다시 열 수 있는 파일이다. `undo`를 주면 지정한 연산만 상쇄하는 wire 연산도 반환한다. 호스트가 아직 기록하지 않은 결과이며, 전체 버전을 롤백하지 않는다. `invalid_history`는 잘못된 입력·원본 해시·로그·대상을, `unsupported`는 처리할 수 없는 문서·연산·실행 환경을, `conflict`는 후속 편집을 보존하면서 취소할 수 없음을 뜻한다.
 
 ## 브라우저와의 차이
 
@@ -20,6 +20,8 @@ const { bytes, fileName, compensation } = await renderBytes(baseBytes, requestJs
 | XLSX, 스키마 3 | `sheet.mutation.set-range-values`로 A1:Z1000 안의 여러 칸에 숫자·문자열을 쓰거나 비운다. 보기의 눈금선과 오른쪽에서 왼쪽 쓰기도 재생한다. 셀 보상은 원본 타입과 서식을 보존하고 후속 쓰기가 겹치면 충돌한다.                                                     | `planCellEditsToXlsx`는 수식 재계산·참조 이동 엔진이 아니다. 수식·병합·스타일 편집, 행열 삽입·이동·크기, 탭·이름·보기의 나머지 [허용 목록](../../apps/sheets/src/web/collab-mutations.ts)은 지원하지 않는다. 브라우저의 단일 리터럴 셀 취소와 달리 안전하게 되돌릴 수 있는 여러 칸도 허용한다.                       |
 | PPTX, 스키마 3 | 실제 `openDeck`·`applyOp`·`deckFile`로 `blankSlide`, `duplicateSlide`, `deleteSlides`, `notes`, `text`를 재생한다. 생성 취소는 그 슬라이드만 삭제하며 동료가 남긴 메모가 있으면 충돌한다. 같은 문단·런 배치를 유지하는 도형 텍스트도 복원한다.                   | 그룹·자동 맞춤·런 배치가 변하는 텍스트는 서식을 보장할 수 없다. 차트 내장 통합문서·OLE·압축 글꼴·SVG·EMF 등 중첩 입력은 열지 않는다. 메모·삭제 자체의 선택 취소는 제공하지 않는다. [브라우저 모델](../../apps/slides/src/web/collab-adapter.ts)                                                                      |
 | PDF, 스키마 2  | 메타데이터·회전·`stampCfg`·미저장 `markups`를 기록하며, 브라우저와 같은 `capturePdfInverse`로 대상 편집을 선택 취소한다. 빈 페이지·순서·삭제도 재생한다. 고전 xref와 pdf-lib의 압축 xref·객체 스트림을 검증한다.                                                 | `noteEdits`, `drawings`, `formFields`, `formEdits`, `formWidgetEdits`는 지원하지 않는다. 브라우저도 `annotDeletes`, `textEdits`, `textInserts`, `imageEdits`는 거부한다. 일반 사진·내장 글꼴·임의의 주석·XMP·암호화·증분 갱신·중첩 페이지 트리는 받지 않는다. [브라우저 wire](../../apps/pdf/src/web/collab-wire.ts) |
+
+HWP와 HWPX(스키마 1)는 격리된 rhwp에서 [편집기와 같은 연산](../../apps/hwp/src/shared/collab-editor-ops.ts)을 적용하고 원래 형식으로 저장한다. 문단 또는 중첩 셀 안의 일반 글자 편집은 나중 편집과 서식을 남기는 보상 연산을 증명할 수 있을 때만 선택 취소한다. 보존할 수 없는 원본은 버전 0에서도 거절한다. 원본과 결과는 각각 2 MiB 이하여야 한다. [한글 이력의 입장 조건과 한도](../collab/README.md)를 함께 본다.
 
 PDF 도장은 워터마크·머리말·꼬리말·쪽 번호를 최종 표시 순서의 페이지에 기록한다. DOM 비트맵 대신 WinAnsi 텍스트(Helvetica) 또는 완성형 한글과 ASCII가 섞인 줄의 고정 Pretendard 윤곽을 사용한다. 호스트 글꼴과 픽셀 일치, 윤곽의 검색·복사는 보장하지 않는다. 한글 윤곽 줄은 128자, WinAnsi 줄은 1,024자 이하이며 페이지당 스트림 16개, 스트림당 2,048바이트 제한도 적용된다. 이모지·결합형·지원하지 않는 글꼴 대체는 추정하지 않는다.
 
@@ -47,11 +49,11 @@ const server = createHistoryServer({ store, renderStream: renderHistory })
 
 문서 소유자는 이 인스턴스 하나로 소켓과 `exportHistory`, `restoreHistory`, `undoHistory`를 처리한다. 형식마다 저장소나 서버를 만들지 않는다. SDK는 보유 원본과 변경 프레임을 그대로 보내며, 선택 취소이면 보상 변경에 기록할 인증된 저자도 넘긴다. 게스트가 형식과 프로필을 정한 뒤 해당 편집기를 한 번 실행한다.
 
-| 보유 원본           | 게스트가 쓰는 편집기               | 한도                                   |
-| ------------------- | ---------------------------------- | -------------------------------------- |
-| DOCX·XLSX·PPTX      | `renderBytes`와 같은 바이트 편집기 | 원본·출력 2 MiB, 요청 1 MiB            |
-| 일반 PDF            | 바이트 PDF 편집기                  | 원본·출력 PDF 프로필 1 MiB, 요청 1 MiB |
-| 검증된 RGB 화상 PDF | 아래의 스트림 PDF 편집기           | 원본·출력 50 MiB, 요청 32 MiB          |
+| 보유 원본               | 게스트가 쓰는 편집기               | 한도                                   |
+| ----------------------- | ---------------------------------- | -------------------------------------- |
+| DOCX·XLSX·PPTX·HWP·HWPX | `renderBytes`와 같은 바이트 편집기 | 원본·출력 2 MiB, 요청 1 MiB            |
+| 일반 PDF                | 바이트 PDF 편집기                  | 원본·출력 PDF 프로필 1 MiB, 요청 1 MiB |
+| 검증된 RGB 화상 PDF     | 아래의 스트림 PDF 편집기           | 원본·출력 50 MiB, 요청 32 MiB          |
 
 1 MiB 이하 PDF도 실제 구조가 RGB 화상 프로필이면 스트림으로 처리한다. 파일명이나 본문의 단어만으로 사진으로 판정하지 않는다. 1 MiB보다 큰 일반 PDF는 지원하지 않는다. 단일 변경 프레임은 어느 경로든 256 KiB 이하다. 인증·해시·버전·편집 충돌·연산 거부가 발생하면 다른 편집기로 다시 시도하지 않는다. 어떤 편집기를 사용해도 공개·복원·보상은 같은 비공개 임시 저장과 권한 재검사·문서 큐·트랜잭션을 거친다.
 

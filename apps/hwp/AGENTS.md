@@ -14,6 +14,7 @@
 - 메인 프로세스(`src/main/hwp-main.ts`): 파일 읽기, 저장 대상 정하기와 쓰기, 저장 전 원본 보관(`save-plan.ts`), `.hwp`를 저장할 때 엔진이 빠뜨린 바탕쪽과 메모를 다시 붙이기(`section-tails.ts`), 새 탭의 폭과 필드의 종류를 바로잡기(`tab-widths.ts`, `field-kinds.ts`), 변경 추적 문서를 지금의 내용으로 열기(`tracked-changes.ts`), 닫기 전 확인, 저장·인쇄 단축키, PDF 만들기와 인쇄(`print-document.ts`), 열린 탭의 지금 글자를 편집기 밖에 내주기(`hwpReadText`), AI 창의 첨부 파일 받기와 읽기(`attachments-ipc.ts`), 메모 저장 손실 확인(`memos.ts`, 결정 0072), 그림 찾기·만들기와 문서 그림 읽기(`ai-image.ts`).
 - IPC 계약 `src/shared/ipc.ts`(`HWP_CHANNELS`).
 - 편집기 빌드(`scripts/build-studio.mjs`)와 빌드 때 rhwp 소스에 거는 패치(`scripts/rhwp-patches.mjs`).
+- 공동 편집(결정 0037): `studio-plugin/collab-input.mjs`는 등록된 웹 편집기 안에서만 포커스·조합·선택을 다룬다. `src/shared/collab-*`의 연산은 브라우저와 이력 작업자가 함께 읽으므로, 새 편집 호출은 피연산자 검증·재생·재정렬 가능성을 확인한 뒤 연결한다. 문서 전체나 문단 전체를 동시 편집의 대체 값으로 보내지 않는다.
 - 한글 탭의 단축키(`studio-plugin/hancom-keys.mjs`, 결정 0060): 한컴 한글 2024의 기본 키 표, Ctrl+N·K·Q·M·G 연속키, 편집기에 없던 명령(한 줄 지우기, 글자색 여덟, 스타일 열, 보통 모양, 날짜 문자열, 거꾸로 찾기, 표의 쉬운 계산식, 쪽 번호 매기기, 한자로 바꾸기, 문서 정보)과 그 메뉴 항목.
 - 문서 정보(`studio-plugin/document-info.mjs`, 결정 0084): 파일 메뉴·Ctrl+Q,I로 여는 한컴식 문서 통계 대화상자. 글자(공백 포함·제외), 한자, 낱말, 줄, 문단, 쪽, 원고지, 표·그림·글상자를 엔진 호출로 센다.
 - 상태 표시줄의 글자 수(`studio-plugin/char-count.mjs`, 이슈 #295): 왼쪽 아래 삽입/수정 표시 옆에 블록의 글자 수와 문서 전체 글자 수(공백 포함, 풍선 도움말에 공백 제외)를 보인다.
