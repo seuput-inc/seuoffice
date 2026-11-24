@@ -21,6 +21,7 @@ import {
   type Limits,
   type Principal,
 } from './server.js'
+import { sha256 } from '../sha256.js'
 import type { CollabStore } from './store.js'
 
 export interface HistoryByteSource {
@@ -92,14 +93,18 @@ const MAX_FRAME = 256 * 1024
 const encoder = new TextEncoder()
 const encode = (value: unknown) => encoder.encode(JSON.stringify(value))
 
-/** Render the unpublished candidate. Count/discard its output; never create an export or revision. */
+/**
+ * Render the unpublished candidate. Count/discard its output; never create an export or revision.
+ * Without `action` it admits a socket submit: like byte mode it reads the epoch's own log, so an
+ * editor needs no history grant. With `action` it reads the retained history under that grant.
+ */
 export async function admitHwpStream(
   options: StreamHistoryOptions,
   p: Principal,
   candidate: HwpHistoryCandidate,
   header: Omit<HistoryRequest, 'changes'>,
   signal: AbortSignal,
-  action: HistoryAction = 'export',
+  action?: HistoryAction,
 ): Promise<HwpHistoryRefusal | undefined> {
   const seed = 'base' in candidate ? candidate.base : undefined
   const next = 'next' in candidate ? candidate.next : undefined
@@ -114,6 +119,25 @@ export async function admitHwpStream(
         yield seed
       },
     }
+  } else if (!action) {
+    const { store } = options
+    const base = await store.readBase(p.documentId, header.epoch)
+    if (base.byteLength > HWP_REPLAY.fileBytes) return 'too_large'
+    if ((await sha256(base)) !== header.baseHash) return 'schema_mismatch'
+    source = {
+      byteLength: base.byteLength,
+      async *open() {
+        yield base
+      },
+    }
+    prefix = (async function* () {
+      for (let v = 1; v < header.version; v++) {
+        const [change] = await store.read(p.documentId, header.epoch, v - 1, 1)
+        if (change?.v !== v)
+          throw new HistoryError('invalid_history', 'invalid HWP retained prefix')
+        yield encode(change)
+      }
+    })()
   } else {
     const point = { epoch: header.epoch, version: header.version - 1 }
     const retained = await options.store
