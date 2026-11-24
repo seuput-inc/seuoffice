@@ -98,7 +98,10 @@ class Socket implements ServerSocket {
 
 type Kind = 'bytes' | 'stream'
 
-async function setup(kind: Kind, options: { reopen?: boolean; failWrite?: boolean } = {}) {
+async function setup(
+  kind: Kind,
+  options: { reopen?: boolean; failWrite?: boolean; failCommit?: boolean } = {},
+) {
   const { calls, render, renderStream } = renderer(options.reopen ?? true)
   const db = kind === 'stream' ? new DatabaseSync(':memory:') : null
   const stream: { store: StreamHistoryStore } | null = db
@@ -116,6 +119,11 @@ async function setup(kind: Kind, options: { reopen?: boolean; failWrite?: boolea
         throw new Error('disk full')
       })
     : write
+  const refuse = vi.fn(async () => {
+    throw new Error('stale history head')
+  })
+  if (options.failCommit && stream) stream.store.commitHistoryStream = refuse
+  if (options.failCommit && memory) memory.commitHistory = refuse
   const server = stream
     ? createHistoryServer({ store: stream.store, renderStream })
     : createHistoryServer({ store: memory!, render })
@@ -274,6 +282,27 @@ describe.each<Kind>(['bytes', 'stream'])(
         ).resolves.toEqual({ kind: 'undone', version: 257 })
         expect((await t.store.readHwpCheckpoint!(p.documentId, t.epoch, 257))?.version).toBe(129)
         expect(await t.exported(257)).toBe('base:' + 'x'.repeat(256) + '~')
+        // The next submit replays from that checkpoint instead of overflowing from 128.
+        await t.type(1)
+        expect(t.alice.closed).toBeUndefined()
+        expect(await t.exported(258)).toBe('base:' + 'x'.repeat(256) + '~x')
+      } finally {
+        await t.close()
+      }
+    })
+
+    it('stores no checkpoint for an undo whose commit is refused', async () => {
+      const t = await setup(kind, { failCommit: true })
+      try {
+        await t.type(256)
+        await expect(
+          t.server.undoHistory(p, {
+            requestId: 'full',
+            expected: { epoch: t.epoch, version: 256 },
+            target: { epoch: t.epoch, v: 130, index: 0 },
+          }),
+        ).rejects.toThrow(/stale history head/)
+        expect((await t.store.readHwpCheckpoint!(p.documentId, t.epoch, 256))?.version).toBe(128)
       } finally {
         await t.close()
       }

@@ -62,6 +62,12 @@ export type HwpRender = (
   author?: string,
 ) => Promise<HistoryResult>
 
+/** A history file, the compensation of an undo, and the checkpoint an undo needs once committed. */
+export interface HwpArtifact {
+  file: HistoryResult
+  change?: Change
+  keep?: () => Promise<void>
+}
 /** Where a replay starts: the epoch base (start 0) or a checkpoint, with changes already read. */
 interface Window {
   base: Uint8Array
@@ -295,14 +301,16 @@ export function createHwpHistory({
 
   /**
    * Export, restore or undo at `point` from the newest checkpoint at or below it. An undo whose
-   * window is too full to hold its compensation first moves the window to just before its target.
+   * window is too full to hold its compensation replays from a file just before its target.
+   * `keep` stores that file; call it only after the undo is committed, inside the document queue,
+   * so a refused undo leaves earlier targets undoable and the next submit replays from it.
    */
   async function artifact(
     p: Principal,
     point: { epoch: string; version: number },
     retained: HwpRetained,
     undo?: HistoryOpId,
-  ): Promise<{ file: HistoryResult; change?: Change }> {
+  ): Promise<HwpArtifact> {
     const { format } = retained
     const sliced = (from: Window) => ({ ...from, changes: retained.changes.slice(from.start) })
     const checkpoint = await latest(p.documentId, point.epoch, point.version)
@@ -332,15 +340,22 @@ export function createHwpHistory({
       author: p.userId,
       ops: file.compensation!,
     }
-    if (narrowed) {
-      const kept = await narrowed()
-      if (typeof kept === 'string')
-        throw new HistoryError('unsupported', `HWP history point could not be kept (${kept})`)
-    }
     const refused = await admit(p, { ...candidate, next: change }, window)
     if (refused)
       throw new HistoryError('unsupported', `HWP compensation cannot be replayed (${refused})`)
-    return { file, change }
+    if (!narrowed) return { file, change }
+    const keep = narrowed
+    return {
+      file,
+      change,
+      async keep() {
+        for (let attempt = 0; attempt < 2; attempt++) if (typeof (await keep()) !== 'string') return
+        throw new HistoryError(
+          'unsupported',
+          'The edit was undone, but its saved history point could not be kept; the next edit may stop co-editing',
+        )
+      },
+    }
   }
 
   return { admit, artifact }

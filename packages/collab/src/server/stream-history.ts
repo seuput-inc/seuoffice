@@ -14,7 +14,7 @@ import type {
   HistoryReceipt,
   RetainedHistoryStore,
 } from './history.js'
-import type { HwpCheckpointStore, HwpRetained } from './hwp-history.js'
+import type { HwpArtifact, HwpCheckpointStore, HwpRetained } from './hwp-history.js'
 import { HWP_REPLAY, isHwpHistory, type Limits, type Principal } from './server.js'
 import type { CollabStore } from './store.js'
 
@@ -185,7 +185,7 @@ export async function withStreamHistory<T>(
   action: HistoryAction,
   target: HistoryOpId | undefined,
   signal: AbortSignal,
-  hwp: (retained: HwpRetained) => Promise<{ file: HistoryResult; change?: Change }>,
+  hwp: (retained: HwpRetained) => Promise<HwpArtifact>,
   use: (stage: HistoryStage, fileName: string, change: Change | undefined) => Promise<T>,
 ): Promise<T> {
   const { store } = options

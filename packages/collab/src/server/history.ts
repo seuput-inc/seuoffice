@@ -8,7 +8,7 @@ import {
 } from '../history.js'
 import type { Change, Json } from '../model.js'
 import { sha256 } from '../sha256.js'
-import { createHwpHistory, type HwpCheckpointStore } from './hwp-history.js'
+import { createHwpHistory, type HwpArtifact, type HwpCheckpointStore } from './hwp-history.js'
 import {
   createServerCore,
   isHwpHistory,
@@ -180,7 +180,7 @@ export function createHistoryServer(
     source: HistoryPoint,
     action: HistoryAction,
     undo?: UndoRequest['target'],
-  ): Promise<{ file: HistoryResult; change?: Change }> {
+  ): Promise<HwpArtifact> {
     const { baseBytes, request } = await bytes.store.readHistory(p, source, action)
     if (
       request.epoch !== source.epoch ||
@@ -233,6 +233,22 @@ export function createHistoryServer(
     }
     const undo = command.kind === 'undo' ? command.target : undefined
     const source = command.kind === 'restore' ? command.source : command.expected
+    // An undo that replayed from an unstored checkpoint keeps it right after its commit, inside the
+    // document queue, so no submit is admitted before it exists. A failure is reported after the
+    // receipt is broadcast: the undo itself stays applied.
+    let keep: (() => Promise<void>) | undefined
+    let unkept: unknown
+    const committed = async (commit: () => Promise<HistoryReceipt>) => {
+      const receipt = await server.commitHistory(p.documentId, command.expected.epoch, async () => {
+        const receipt = await commit()
+        await keep?.().catch((error: unknown) => {
+          unkept = error
+        })
+        return receipt
+      })
+      if (unkept) throw unkept
+      return receipt
+    }
     if ('renderStream' in options) {
       return track(
         withStreamHistory(
@@ -242,7 +258,11 @@ export function createHistoryServer(
           command.kind,
           undo,
           signal,
-          (retained) => hwp.artifact(p, source, retained, undo),
+          async (retained) => {
+            const result = await hwp.artifact(p, source, retained, undo)
+            keep = result.keep
+            return result
+          },
           (stage, fileName, change) => {
             let write: StreamHistoryWrite
             if (command.kind === 'restore') write = { command, stage, fileName }
@@ -251,7 +271,7 @@ export function createHistoryServer(
               checkSubmit(command.expected.version, change.ops)
               write = { command, change }
             }
-            return server.commitHistory(p.documentId, command.expected.epoch, () => {
+            return committed(() => {
               signal.throwIfAborted()
               return options.store.commitHistoryStream(p, write, signal)
             })
@@ -259,7 +279,9 @@ export function createHistoryServer(
         ),
       )
     }
-    const { file, change } = await artifact(options, p, source, command.kind, undo)
+    const result = await artifact(options, p, source, command.kind, undo)
+    const { file, change } = result
+    keep = result.keep
     let write: HistoryWrite
     if (command.kind === 'restore') write = { command, artifact: file }
     else {
@@ -267,9 +289,7 @@ export function createHistoryServer(
       checkSubmit(command.expected.version, compensation)
       write = change ? { command, compensation, change } : { command, compensation }
     }
-    return server.commitHistory(p.documentId, command.expected.epoch, () =>
-      options.store.commitHistory(p, write),
-    )
+    return committed(() => options.store.commitHistory(p, write))
   }
 
   return {
