@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib'
+import JSZip from 'jszip'
 import { beforeAll, describe, expect, it } from 'vitest'
 import init, { HwpDocument } from '@rhwp/core'
 import { fieldKindsOf, restoreFieldKinds } from '../src/main/field-kinds'
@@ -1018,37 +1019,64 @@ describe('the engine writes Hancom memo identity', () => {
   // What this engine (rhwp v0.9.0, whose memo support is upstream's #8269, with the
   // patches) writes for these memo-free documents, unedited and after typing, as HWP and
   // HWPX. A later engine that changes how these documents save updates them on purpose.
+  // HWPX is pinned by its parts' content, minus hh:paraPr@textDir: patch 0047 keeps that
+  // attribute from the source (checked below) and changed nothing else in these saves.
   const before: Record<string, Record<string, string>> = {
     'format-copy-table.hwp': {
       hwp: 'd90a4045fa4a1cb72fdb287580721a681ad73753519ff4eaa6b0816485b7a6df',
-      hwpx: 'e54b6b604b2610b41ed581bbd0dfd662954f8f61b5971165b717deb79726a0a1',
+      hwpx: 'fd609de6eb7029ba067921e4bdb61ae984dd6d5e2cd218dc1ec6f8873c3833fe',
       editedHwp: '78e031ac0f9c84936a696deb75b8dbf9e00d2e3c8b3052356d31a99b8ae666ab',
-      editedHwpx: 'a617c26bbe31e6534d9a50b04db49a876be4bbdc51c9d0659c0ea684b66b866c',
+      editedHwpx: 'd9ff2c5f2864868e5b301d280674222ff7c9753a34b744c3be034056bfd67315',
     },
     'hancom-page-number-no-dash.hwpx': {
       hwp: 'c3e3c463c70d787ddf5e2a568bbb83da12df18d0284e373eb1799a6449578b96',
-      hwpx: 'bc3fb577f4836ad12c7d9878c0bcc3eff1a5042be0a98cf668ddbb058a728c90',
+      hwpx: 'ac5beb7f6aef8be99a73078250080f9c61bac821dac7b6d2d6d2c00ed16d8eef',
       editedHwp: '63a6d970a15095b535a882f4e87219f386716b0beb7c04a120cead28da4def5d',
-      editedHwpx: 'a27eadf418310de4d9685dc073207c6ee0ed0a75f70cfb3b7513601d79e58eb3',
+      editedHwpx: '7f04038cce8f8eab25bf35b70a940a7a2cc5e52e21fb362f4989281d617885e0',
     },
   }
 
+  const header = async (bytes: Uint8Array) =>
+    (await JSZip.loadAsync(bytes)).files['Contents/header.xml'].async('string')
+  /** Each hh:paraPr id with its textDir, in order. */
+  const textDirs = (xml: string) =>
+    [...xml.matchAll(/<hh:paraPr ([^>]*)>/g)].map(
+      ([, attrs]) => `${/\bid="(\d+)"/.exec(attrs)?.[1]}:${/textDir="([^"]*)"/.exec(attrs)?.[1]}`,
+    )
+
   it.each(Object.keys(before))(
     'saves %s, edited or not, as it did when this engine was pinned',
-    (name) => {
+    async (name) => {
       const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
+      const contentSha = async (bytes: Uint8Array) => {
+        const zip = await JSZip.loadAsync(bytes)
+        const hash = createHash('sha256')
+        for (const part of Object.keys(zip.files).sort()) {
+          let data = await zip.files[part].async('string')
+          if (part === 'Contents/header.xml') {
+            data = data.replace(/(<hh:paraPr [^>]*?) textDir="[^"]*"/g, '$1')
+          }
+          hash.update(part).update('\0').update(data).update('\0')
+        }
+        return hash.digest('hex')
+      }
       const edited = () => {
         const doc = open(name)
         doc.insertText(0, 0, 0, '메모 없음 ')
         return doc
       }
       expect(open(name).getMemoList()).toBe('[]')
+      const hwpx = open(name).exportHwpx()
       expect({
         hwp: sha(open(name).exportHwp()),
-        hwpx: sha(open(name).exportHwpx()),
+        hwpx: await contentSha(hwpx),
         editedHwp: sha(edited().exportHwp()),
-        editedHwpx: sha(edited().exportHwpx()),
+        editedHwpx: await contentSha(edited().exportHwpx()),
       }).toEqual(before[name])
+      if (name.endsWith('.hwpx')) {
+        const source = new Uint8Array(readFileSync(join(FIXTURES, name)))
+        expect(textDirs(await header(hwpx))).toEqual(textDirs(await header(source)))
+      }
     },
   )
 })
