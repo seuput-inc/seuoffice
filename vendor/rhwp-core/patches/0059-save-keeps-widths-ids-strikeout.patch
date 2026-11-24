@@ -143,23 +143,38 @@ index 68c0eb656..6bbcefc05 100644
      { raw_ctrl_extra } nested { paragraphs });
  record!(Footer { apply_to, raw_attr, list_attr, text_width, text_height, text_ref, num_ref } bytes
 diff --git a/src/model/style.rs b/src/model/style.rs
-index e154b4ed3..ca3d2270f 100644
+index e154b4ed3..6641a2827 100644
 --- a/src/model/style.rs
 +++ b/src/model/style.rs
-@@ -1082,6 +1082,11 @@ impl CharShapeMods {
+@@ -1082,6 +1082,7 @@ impl CharShapeMods {
          if let Some(v) = self.strike_shape {
              cs.strike_shape = v;
          }
-+        // Turned on over Hangul's no-strikeout placeholder (line kind 15, HWPX "3D"), the
-+        // strikeout takes the solid line Hangul draws; kind 15 would save it as none again.
-+        if cs.strikethrough && cs.strike_shape > 12 {
-+            cs.strike_shape = 0;
-+        }
++        cs.settle_strike_shape();
          if let Some(v) = self.kerning {
              cs.kerning = v;
          }
+@@ -1301,8 +1302,18 @@ impl CharShape {
+                 0x0F << 26,
+             ],
+         );
++        out.settle_strike_shape();
+         out
+     }
++
++    /// A strikeout turned on over Hangul's no-strikeout placeholder (line kind 15, HWPX
++    /// "3D") takes the solid line Hangul draws: kind 15 would save it as no strikeout again.
++    fn settle_strike_shape(&mut self) {
++        if self.strikethrough && self.strike_shape > 12 {
++            self.strike_shape = 0;
++            self.attr &= !(0x0F << 26);
++        }
++    }
+ }
+ 
+ impl ParaShape {
 diff --git a/src/model/table.rs b/src/model/table.rs
-index a35a56319..a57f8033e 100644
+index a35a56319..42b3b825a 100644
 --- a/src/model/table.rs
 +++ b/src/model/table.rs
 @@ -196,6 +196,11 @@ pub struct Cell {
@@ -174,7 +189,7 @@ index a35a56319..a57f8033e 100644
  }
  
  /// 표 셀 행/열 바꿈 복사 데이터.
-@@ -243,6 +248,14 @@ pub enum VerticalAlign {
+@@ -243,6 +248,21 @@ pub enum VerticalAlign {
  }
  
  impl Cell {
@@ -186,21 +201,25 @@ index a35a56319..a57f8033e 100644
 +        }
 +    }
 +
++    /// Sets the width layout uses and the one a save writes, which a table edit derives
++    /// from the saved widths of the cells or columns it replaces.
++    pub(crate) fn set_widths(&mut self, width: HwpUnit, saved: HwpUnit) {
++        self.width = width;
++        self.stored_width = (saved != width).then_some((saved, width));
++    }
++
      pub fn set_apply_inner_margin(&mut self, value: bool) {
          self.apply_inner_margin = value;
          self.set_list_header_flag(CELL_FLAG_HAS_MARGIN, value);
-@@ -580,6 +593,10 @@ impl Cell {
+@@ -580,6 +600,7 @@ impl Cell {
              raw_list_extra: template.raw_list_extra.clone(),
              field_name: None,
              dirty_flag: false,
-+            // a copy of a widened cell at the widened width is saved like it, at the stored one
-+            stored_width: template
-+                .stored_width
-+                .filter(|&(_, widened)| widened == width),
++            stored_width: None,
              paragraphs: vec![para],
          }
      }
-@@ -752,6 +769,7 @@ impl Table {
+@@ -752,6 +773,7 @@ impl Table {
              let delta = i64::from(width) - i64::from(cell.width);
              if delta > 0 {
                  cell.shift_text_area_width(delta);
@@ -208,6 +227,227 @@ index a35a56319..a57f8033e 100644
                  cell.width = width;
              }
          }
+@@ -1397,6 +1419,7 @@ impl Table {
+                 cell.row_span = 1;
+                 cell.col_span = 1;
+                 cell.width = target_widths[target_col as usize];
++                cell.stored_width = None;
+                 cell.height = row_height;
+                 if cell.paragraphs.is_empty() {
+                     cell.paragraphs.push(Paragraph::new_empty());
+@@ -1590,6 +1613,24 @@ impl Table {
+         })
+     }
+ 
++    /// For each column of [`Self::get_column_widths`], the width a save writes for it: the
++    /// saved width of the cell that gives the column its width.
++    pub(crate) fn saved_column_widths(&self) -> Vec<HwpUnit> {
++        let mut widths = vec![(0u32, 0u32); self.col_count as usize];
++        for cell in &self.cells {
++            if cell.col_span == 1 && (cell.col as usize) < widths.len() {
++                let column = &mut widths[cell.col as usize];
++                if cell.width > column.0 {
++                    *column = (cell.width, cell.saved_width());
++                }
++            }
++        }
++        widths
++            .into_iter()
++            .map(|(width, saved)| if width == 0 { 1800 } else { saved })
++            .collect()
++    }
++
+     /// Base grid column widths.
+     ///
+     /// Independent persisted row boundaries are consumed by layout directly;
+@@ -1776,6 +1817,7 @@ impl Table {
+             .and_then(|heights| heights.get(row_idx as usize).copied());
+         let original_height = self.authored_height();
+         let col_widths = self.get_column_widths();
++        let saved_cols = self.saved_column_widths();
+ 
+         // 셀 height용
+         let row_heights = self.get_row_heights();
+@@ -1840,7 +1882,9 @@ impl Table {
+                     // 만드느니 표의 아무 셀이나 템플릿으로 쓴다 (주석의 "아무 셀").
+                     .or_else(|| self.cells.first());
+                 let new_cell = if let Some(tpl) = template {
+-                    let cell = Cell::new_from_template(c, target_row, width, new_cell_height, tpl);
++                    let mut cell =
++                        Cell::new_from_template(c, target_row, width, new_cell_height, tpl);
++                    cell.set_widths(width, saved_cols[c as usize]);
+                     inherit(&cell, tpl);
+                     cell
+                 } else {
+@@ -1913,6 +1957,7 @@ impl Table {
+         let col_widths = self.get_column_widths();
+         let row_heights = self.get_row_heights();
+         let new_col_width = col_widths[col_idx as usize];
++        let saved_new_col = self.saved_column_widths()[col_idx as usize];
+ 
+         // 병합 셀 확장 + 기존 셀 시프트
+         let mut covered_rows = vec![false; self.row_count as usize];
+@@ -1925,7 +1970,8 @@ impl Table {
+                 && checked_table_span_end(cell.col, cell.col_span, "열")? > target_col
+             {
+                 cell.col_span = checked_table_u16_add(cell.col_span, 1, "셀 열 span")?;
+-                cell.width += new_col_width;
++                let saved = cell.saved_width() + saved_new_col;
++                cell.set_widths(cell.width + new_col_width, saved);
+                 // 이 셀이 커버하는 행 표시
+                 for r in cell.row..cell.row.saturating_add(cell.row_span).min(self.row_count) {
+                     covered_rows[r as usize] = true;
+@@ -1968,7 +2014,9 @@ impl Table {
+                     // 만드느니 표의 아무 셀이나 템플릿으로 쓴다 (주석의 "아무 셀").
+                     .or_else(|| self.cells.first());
+                 let new_cell = if let Some(tpl) = template {
+-                    let cell = Cell::new_from_template(target_col, r, new_col_width, height, tpl);
++                    let mut cell =
++                        Cell::new_from_template(target_col, r, new_col_width, height, tpl);
++                    cell.set_widths(new_col_width, saved_new_col);
+                     inherit(&cell, tpl);
+                     cell
+                 } else {
+@@ -2089,6 +2137,7 @@ impl Table {
+         // 삭제 열의 폭 (셀 width 축소용)
+         let col_widths = self.get_column_widths();
+         let deleted_width = col_widths[col_idx as usize];
++        let saved_deleted = self.saved_column_widths()[col_idx as usize];
+ 
+         // 삭제 열을 걸치는 병합 셀: col_span 축소, width 축소
+         // [#4264] col/col_span은 파일에서 그대로 온 u16이라 saturating_add 없이
+@@ -2097,7 +2146,8 @@ impl Table {
+             if cell.col < col_idx && cell.col.saturating_add(cell.col_span) > col_idx {
+                 cell.col_span -= 1;
+                 if cell.width >= deleted_width {
+-                    cell.width -= deleted_width;
++                    let saved = cell.saved_width().saturating_sub(saved_deleted);
++                    cell.set_widths(cell.width - deleted_width, saved);
+                 }
+             }
+         }
+@@ -2111,7 +2161,8 @@ impl Table {
+             if cell.col == col_idx && cell.col_span > 1 {
+                 cell.col_span -= 1;
+                 if cell.width >= deleted_width {
+-                    cell.width -= deleted_width;
++                    let saved = cell.saved_width().saturating_sub(saved_deleted);
++                    cell.set_widths(cell.width - deleted_width, saved);
+                 }
+             }
+         }
+@@ -2210,10 +2261,14 @@ impl Table {
+ 
+         // 열폭/행높이 합산 (원본 값 보존: 0은 fallback 없이 그대로 유지)
+         let col_widths = self.get_column_widths();
++        let saved_cols = self.saved_column_widths();
+         let raw_row_heights = self.get_raw_row_heights();
+         let new_width: HwpUnit = (start_col..=end_col)
+             .map(|c| col_widths.get(c as usize).copied().unwrap_or(0))
+             .sum();
++        let new_saved: HwpUnit = (start_col..=end_col)
++            .map(|c| saved_cols.get(c as usize).copied().unwrap_or(0))
++            .sum();
+         let new_height: HwpUnit = (start_row..=end_row)
+             .map(|r| raw_row_heights.get(r as usize).copied().unwrap_or(0))
+             .sum();
+@@ -2260,7 +2315,7 @@ impl Table {
+                 primary.raw_list_extra[0..4].copy_from_slice(&new_width.to_le_bytes());
+             }
+         }
+-        primary.width = new_width;
++        primary.set_widths(new_width, new_saved);
+         primary.height = new_height;
+ 
+         // 옮긴 문단 추가
+@@ -2318,7 +2373,9 @@ impl Table {
+ 
+         // 열폭 계산: 다른 행의 col_span==1 셀에서 실제 폭 추출, 없으면 균등 분배
+         let col_widths = self.get_column_widths();
+-        let split_col_widths: Vec<HwpUnit> = {
++        let saved_cols = self.saved_column_widths();
++        let orig_saved = self.cells[cell_idx].saved_width();
++        let (split_col_widths, split_saved): (Vec<HwpUnit>, Vec<HwpUnit>) = {
+             let has_real = (target_col..col_end).all(|c| {
+                 self.cells.iter().any(|cell| {
+                     cell.col == c
+@@ -2328,11 +2385,15 @@ impl Table {
+             });
+             if has_real {
+                 (target_col..col_end)
+-                    .map(|c| col_widths[c as usize])
+-                    .collect()
++                    .map(|c| (col_widths[c as usize], saved_cols[c as usize]))
++                    .unzip()
+             } else {
+                 let each = orig_width / orig_col_span as u32;
+-                vec![each; orig_col_span as usize]
++                let saved = orig_saved / orig_col_span as u32;
++                (
++                    vec![each; orig_col_span as usize],
++                    vec![saved; orig_col_span as usize],
++                )
+             }
+         };
+ 
+@@ -2367,7 +2428,7 @@ impl Table {
+                 primary.raw_list_extra[0..4].copy_from_slice(&new_width.to_le_bytes());
+             }
+         }
+-        primary.width = new_width;
++        primary.set_widths(new_width, split_saved[0]);
+         primary.height = split_row_heights[0];
+ 
+         // 새 셀 생성: 범위 내 (target_col, target_row) 제외한 모든 위치
+@@ -2380,7 +2441,8 @@ impl Table {
+                 }
+                 let w = split_col_widths[ci as usize];
+                 let h = split_row_heights[ri as usize];
+-                let new_cell = Cell::new_from_template(c, r, w, h, &self.cells[cell_idx]);
++                let mut new_cell = Cell::new_from_template(c, r, w, h, &self.cells[cell_idx]);
++                new_cell.set_widths(w, split_saved[ci as usize]);
+                 self.cells.push(new_cell);
+             }
+         }
+@@ -2492,11 +2554,16 @@ impl Table {
+         }
+ 
+         // 폭 분배: 균등 분배 (나머지는 첫 셀에 가산)
+-        let base_w = target_width / m_cols as u32;
+-        let remainder_w = target_width - base_w * m_cols as u32;
+-        let sub_widths: Vec<HwpUnit> = (0..m_cols)
+-            .map(|i| base_w + if i == 0 { remainder_w } else { 0 })
+-            .collect();
++        let shares = |total: HwpUnit| -> Vec<HwpUnit> {
++            let base = total / m_cols as u32;
++            let remainder = total - base * m_cols as u32;
++            (0..m_cols)
++                .map(|i| base + if i == 0 { remainder } else { 0 })
++                .collect()
++        };
++        let sub_widths = shares(target_width);
++        // what a save writes is shared the same way
++        let sub_saved = shares(self.cells[cell_idx].saved_width());
+ 
+         // 높이 분배
+         let sub_heights: Vec<HwpUnit> = if equal_row_height || n_rows > 1 {
+@@ -2572,7 +2639,7 @@ impl Table {
+         // 주 셀(0,0) 축소
+         let template = self.cells[cell_idx].clone();
+         let primary = &mut self.cells[cell_idx];
+-        primary.width = sub_widths[0];
++        primary.set_widths(sub_widths[0], sub_saved[0]);
+         primary.height = sub_heights[0];
+         primary.col_span = sub_cspans[0];
+         primary.row_span = sub_rspans[0];
+@@ -2599,6 +2666,7 @@ impl Table {
+                 let w = sub_widths[ci as usize];
+                 let h = sub_heights[ri as usize];
+                 let mut new_cell = Cell::new_from_template(c, r, w, h, &template);
++                new_cell.set_widths(w, sub_saved[ci as usize]);
+                 new_cell.col_span = sub_cspans[ci as usize];
+                 new_cell.row_span = sub_rspans[ri as usize];
+                 if new_cell.raw_list_extra.len() >= 4 {
 diff --git a/src/parser/hwpx/header.rs b/src/parser/hwpx/header.rs
 index 4c90f13c7..fb92fa580 100644
 --- a/src/parser/hwpx/header.rs
