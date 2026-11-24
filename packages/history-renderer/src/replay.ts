@@ -8,6 +8,7 @@ import {
 import type { ByteHistoryAdapter } from './adapter'
 import { checkArchive } from './archive'
 import { openDocx } from './docx'
+import { openHwpHistory } from './hwp'
 import { openPdf } from './pdf'
 import { openPptx } from './pptx'
 import { checkBudget } from './request'
@@ -49,6 +50,7 @@ export async function render(
     if (!bytes.byteLength || bytes.byteLength > MAX_FILE) throw new HistoryError('invalid_history')
     checkBudget(history)
     const { name, schema } = history.format
+    const officeArchive = name === 'docx' || name === 'pptx' || name === 'xlsx'
     if (createHash('sha256').update(bytes).digest('hex') !== history.baseHash)
       throw new HistoryError('invalid_history', 'base file does not match its epoch')
     async function run<Op>(
@@ -56,8 +58,9 @@ export async function render(
       open: (b: Uint8Array) => Promise<ByteHistoryAdapter<Op>>,
     ) {
       if (schema !== version) throw new HistoryError('unsupported', 'unsupported history schema')
-      if (name !== 'pdf') await checkArchive(bytes)
-      const result = await replay(await open(bytes), bytes, history)
+      if (officeArchive) await checkArchive(bytes)
+      const adapter = await open(bytes)
+      const result = await replay(adapter, bytes, history).finally(() => adapter.dispose?.())
       if (result.bytes.byteLength > MAX_FILE)
         throw new HistoryError('unsupported', 'output exceeds 2 MiB')
       if (result.compensation) {
@@ -79,7 +82,7 @@ export async function render(
           throw new HistoryError('unsupported', 'compensated prefix exceeds replay limits')
         }
       }
-      if (name !== 'pdf' && history.version > 0) await checkArchive(result.bytes)
+      if (officeArchive && history.version > 0) await checkArchive(result.bytes)
       return result
     }
     switch (name) {
@@ -91,6 +94,9 @@ export async function render(
         return await run(3, openPptx)
       case 'pdf':
         return await run(2, openPdf)
+      case 'hwp':
+      case 'hwpx':
+        return await run(1, (source) => openHwpHistory(name, source))
       default:
         throw new HistoryError('unsupported', 'unsupported document format')
     }

@@ -84,7 +84,8 @@ export async function streamPlan(input: AsyncIterable<Uint8Array>, smallRender?:
   checkHistoryHeader(header, smallRender ? header.format : { name: 'pdf', schema: 2 })
   if (smallRender && !!header.undo !== !!author) invalid('incorrect compensation author frame')
   const name = header.format.name
-  if (smallRender && !['docx', 'xlsx', 'pptx', 'pdf'].includes(name)) unsupported('document format')
+  if (smallRender && !['docx', 'xlsx', 'pptx', 'pdf', 'hwp', 'hwpx'].includes(name))
+    unsupported('document format')
   if (name === 'pdf' && header.format.schema !== 2) unsupported('PDF schema')
   if (header.version > 65536) unsupported('streamed history version limit')
   const length = await uint()
