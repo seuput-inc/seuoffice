@@ -792,6 +792,44 @@ test('an entry in the second of two rows this page inserted goes back to that ro
   ).toHaveLength(1)
 })
 
+test('an entry in a row this page inserted follows the row when the others insert one at the same place first', async ({
+  browser,
+}) => {
+  const documentId = freshDocument()
+  const writer = await open(browser, documentId, 'writer')
+  const typist = await open(browser, documentId, 'typist')
+  await typeInto(typist, 'H8', 'ready')
+  await settled([writer, typist])
+
+  await holdOutgoing(typist, true)
+  await insertRowAbove(typist, 5)
+  await select(typist, 'H5')
+  await expect(typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')).toBeFocused()
+  await typist.page.keyboard.type('new')
+  // the writer's row above 5 is confirmed first, so the typist's row goes under it, at 6
+  const before = (await typist.status()).version
+  await insertRowAbove(writer, 5)
+  await expect.poll(async () => (await typist.status()).version).toBeGreaterThan(before)
+  // the notice would show a frame after the edit runs
+  await typist.page.waitForTimeout(500)
+  await expect(typist.frame.getByRole('status').filter({ hasText: 'new' })).toHaveCount(0)
+
+  await holdOutgoing(typist, false)
+  await edited(typist, () => typist.page.keyboard.press('Enter'))
+  const version = await settled([writer, typist])
+  await writer.page.locator('#save').click()
+  const saved = await savedBook(writer)
+  expect(saved.version).toBe(version)
+  const cells = firstSheet(saved)
+  const shown = JSON.stringify([...cells])
+  expect(cells.get('H6'), shown).toBe('new')
+  expect(cells.get('H10'), shown).toBe('ready')
+  expect(
+    [...cells.values()].filter((text) => text === 'new'),
+    shown,
+  ).toHaveLength(1)
+})
+
 test('entries cancelled one after another each keep their notice, copied even where the async clipboard is missing', async ({
   browser,
 }) => {
