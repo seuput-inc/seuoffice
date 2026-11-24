@@ -6,6 +6,7 @@
  * from the package; hosts relay frames without reading them.
  */
 
+import { MAX_PRESENCE_BYTES } from './limits.js'
 import type { Change, Format, Json, Peer } from './model.js'
 
 export type ErrorCode =
@@ -27,6 +28,7 @@ export interface Resume {
 export interface HelloFrame {
   t: 'hello'
   p: 1
+  presence?: true
   format: Format
   fileHash: string
   resume?: Resume
@@ -39,8 +41,18 @@ export interface SubmitFrame {
   ops: Json[]
 }
 
+export interface PresenceFrame {
+  t: 'presence'
+  v: number
+  at: Json
+}
+
 export type ClientFrame =
-  HelloFrame | SubmitFrame | { t: 'fingerprint'; v: number; fp: string } | { t: 'saved'; v: number }
+  | HelloFrame
+  | SubmitFrame
+  | PresenceFrame
+  | { t: 'fingerprint'; v: number; fp: string }
+  | { t: 'saved'; v: number }
 
 export type ServerFrame =
   | { t: 'need_base' }
@@ -56,12 +68,14 @@ export type ServerFrame =
       saved: number
       canEdit: boolean
       peers: Peer[]
+      presence?: true
     }
   | ({ t: 'change' } & Change)
   | { t: 'ack'; v: number; seq: number }
   | { t: 'stale'; seq: number; base: number; head: number }
   | { t: 'saved'; v: number }
   | { t: 'peers'; peers: Peer[] }
+  | (PresenceFrame & { client: string })
   | { t: 'diverged'; v: number }
   | { t: 'error'; code: ErrorCode }
 
@@ -130,6 +144,39 @@ function ops(value: unknown): Json[] {
   return value as Json[]
 }
 
+function presence(f: Fields): PresenceFrame {
+  if (!Object.hasOwn(f, 'at')) invalid()
+  return { t: 'presence', v: count(f.v), at: f.at as Json }
+}
+
+// Status notifications embed the selection in another object that the host must serialize safely.
+function shallowPresence(at: Json, depth = 0): boolean {
+  if (at === null || typeof at !== 'object') return true
+  return depth < 64 && Object.values(at).every((part: Json) => shallowPresence(part, depth + 1))
+}
+
+function withinBytes(text: string, max: number): boolean {
+  return text.length <= max && (text.length * 3 <= max || utf8Length(text) <= max)
+}
+
+/** Cap the complete received and canonical frames. Only the server may add `,"client":<id>`. */
+export function encodePresence(
+  frame: PresenceFrame & { client?: string },
+  raw?: string | Uint8Array,
+): string | undefined {
+  const extra =
+    frame.client === undefined ? 0 : ',"client":'.length + utf8Length(JSON.stringify(frame.client))
+  const max = MAX_PRESENCE_BYTES + extra
+  if (raw !== undefined && (typeof raw !== 'string' || !withinBytes(raw, max))) return undefined
+  try {
+    const text = JSON.stringify(frame)
+    if (withinBytes(text, max) && shallowPresence(frame.at)) return text
+  } catch {
+    // A selection from editor glue can exceed JSON's nesting limit.
+  }
+  return undefined
+}
+
 function hash(value: unknown): string {
   if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) invalid()
   return value
@@ -156,6 +203,7 @@ export function parseClientFrame(raw: string | Uint8Array): ClientFrame | BytesF
         p: 1,
         format: format(f.format),
         fileHash: hash(f.fileHash),
+        ...(f.presence === true ? { presence: true } : {}),
       }
       if (f.resume !== undefined) {
         const r = fields(f.resume)
@@ -170,6 +218,8 @@ export function parseClientFrame(raw: string | Uint8Array): ClientFrame | BytesF
     }
     case 'submit':
       return { t: 'submit', seq: count(f.seq), base: count(f.base), ops: ops(f.ops) }
+    case 'presence':
+      return presence(f)
     case 'fingerprint':
       return { t: 'fingerprint', v: count(f.v), fp: id(f.fp) }
     case 'saved':
@@ -198,6 +248,7 @@ export function parseServerFrame(raw: string | Uint8Array): ServerFrame | BytesF
         saved: count(f.saved),
         canEdit: flag(f.canEdit),
         peers: peers(f.peers),
+        ...(f.presence === true ? { presence: true } : {}),
       }
     case 'change':
       return {
@@ -216,6 +267,8 @@ export function parseServerFrame(raw: string | Uint8Array): ServerFrame | BytesF
       return { t: 'saved', v: count(f.v) }
     case 'peers':
       return { t: 'peers', peers: peers(f.peers) }
+    case 'presence':
+      return { ...presence(f), client: id(f.client) }
     case 'diverged':
       return { t: 'diverged', v: count(f.v) }
     case 'error':
@@ -233,9 +286,12 @@ export function utf8Length(value: string): number {
     const code = value.charCodeAt(i)
     if (code < 0x80) size += 1
     else if (code < 0x800) size += 2
-    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length) {
-      size += 4
-      i += 1
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1)
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        size += 4
+        i += 1
+      } else size += 3
     } else size += 3
   }
   return size

@@ -12,3 +12,7 @@ export const SUBMIT_CHUNK_BYTES = 64 * 1024
 
 /** Room a submit frame needs around its ops */
 export const SUBMIT_FRAME_BYTES = 128
+
+/** Ephemeral selections have a small budget independent of the edit log. */
+export const MAX_PRESENCE_BYTES = 4096
+export const PRESENCE_INTERVAL_MS = 100

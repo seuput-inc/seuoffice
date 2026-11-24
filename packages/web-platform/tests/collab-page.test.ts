@@ -302,6 +302,37 @@ describe('joining a co-edited page', () => {
     expect(heard).toEqual(statuses())
   })
 
+  it('publishes the current selection after a version change and hides older anchors', async () => {
+    playHost({ canEdit: true })
+    await open(true)
+    const file = { format: toyMap.format, bytes: toyMap.file() }
+    const other = await joinCollab(directLink('Other'), file)
+    const remoteEditor = toyMap.open(other.baseBytes)
+    const remote = other.attach(remoteEditor)
+    const draw = vi.fn()
+    let caret = 3
+    const collab = (await page.joinPageCollab<null, MapOp>({
+      ...file,
+      fileName: 'memo.toy',
+      adapter: () => toyMap.open(file.bytes),
+      presence: () => ({ read: () => caret, draw }),
+    }))!
+    await collab.attach(null)
+    const client = collab.self()!.client
+    await vi.waitFor(() => expect(remote.status().presences[client]).toEqual({ v: 0, at: 3 }))
+    remote.setPresence({ anchor: 1 })
+    await vi.waitFor(() =>
+      expect(draw).toHaveBeenLastCalledWith([
+        { ...remote.status().self, color: expect.any(String), at: { anchor: 1 } },
+      ]),
+    )
+    caret = 4
+    remoteEditor.perform({ id: 'a', key: 'a', value: 1 })
+    await vi.waitFor(() => expect(remote.status().presences[client]).toEqual({ v: 1, at: 4 }))
+    expect(draw).toHaveBeenLastCalledWith([])
+    remote.close()
+  })
+
   it('refuses a host save before the renderer attached', async () => {
     playHost({ canEdit: true })
     await open(true)

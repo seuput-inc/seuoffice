@@ -19,7 +19,12 @@
  * behind every edit the earlier effects caused.
  */
 
-import { MAX_CHANGE_BYTES, SUBMIT_CHUNK_BYTES, SUBMIT_FRAME_BYTES } from '../limits.js'
+import {
+  MAX_CHANGE_BYTES,
+  PRESENCE_INTERVAL_MS,
+  SUBMIT_CHUNK_BYTES,
+  SUBMIT_FRAME_BYTES,
+} from '../limits.js'
 import type { Change, Format, Json, Peer } from '../model.js'
 import {
   utf8Length,
@@ -39,7 +44,7 @@ const PROTOCOL_STRIKES = 3
 /** `hello`: sent, waiting for welcome; `catching_up`: welcomed, changes up to its head still coming */
 type Connection = 'down' | 'connecting' | 'hello' | 'catching_up' | 'live'
 
-export type TimerName = 'reconnect' | 'fingerprint' | 'save'
+export type TimerName = 'reconnect' | 'fingerprint' | 'save' | 'presence'
 
 export type Purpose = 'save' | 'export'
 
@@ -80,6 +85,12 @@ export interface EngineState<Op> {
   canEdit: boolean
   saved: number
   peers: Peer[]
+  presences: CollabStatus['presences']
+  presenceEnabled: boolean
+  /** The version the editor actually showed when the selection was read. */
+  localPresence: { v: number; text: string } | null
+  presenceSent: boolean
+  nextPresenceAt: number
   /** this page's display name, as the last welcome gave it */
   name: string | null
   /** the head named by the last welcome */
@@ -116,6 +127,7 @@ export type EngineEvent<Op> =
   | { type: 'bad_frame' }
   | { type: 'attach' }
   | { type: 'local'; ops: Op[] }
+  | { type: 'presence'; v: number; text: string }
   | { type: 'integrated'; local: Op[] }
   | { type: 'fingerprint_now'; v: number }
   | { type: 'fingerprinted'; v: number; fp: string }
@@ -132,7 +144,7 @@ export type EngineEvent<Op> =
 export type EngineEffect<Op> =
   | { type: 'open' }
   | { type: 'close' }
-  | { type: 'send'; frame: ClientFrame }
+  | { type: 'send'; frame: ClientFrame | string }
   | { type: 'send_file' }
   | { type: 'timer'; name: TimerName; delay: number }
   | { type: 'cancel_timers' }
@@ -169,6 +181,8 @@ interface Ctx<Op> {
   integrate: { remote: Json[][]; local: Op[] } | null
 }
 
+const EMPTY_PRESENCES: CollabStatus['presences'] = Object.freeze(Object.create(null))
+
 export function initialState<Op>(
   format: Format,
   fileHash: string,
@@ -193,6 +207,11 @@ export function initialState<Op>(
     canEdit: false,
     saved: 0,
     peers: [],
+    presences: EMPTY_PRESENCES,
+    presenceEnabled: false,
+    localPresence: null,
+    presenceSent: false,
+    nextPresenceAt: -Infinity,
     name: null,
     target: 0,
     confirmed: 0,
@@ -225,6 +244,7 @@ export function statusOf<Op>(s: EngineState<Op>): CollabStatus {
     saved: s.saved,
     unconfirmed: (s.inflight && !s.inflight.doomed ? s.inflight.ops.length : 0) + s.pending.length,
     peers: s.peers,
+    presences: s.connection === 'live' && cleanView(s) ? s.presences : EMPTY_PRESENCES,
     self: s.client !== null && s.name !== null ? { client: s.client, name: s.name } : null,
   }
   if (s.failure) status.failure = s.failure
@@ -246,6 +266,7 @@ export function reduce<Op>(
   const c: Ctx<Op> = { s: { ...state }, fx: [], env, integrate: null }
   if (state.failure) afterFailure(c, event)
   else handle(c, event)
+  if (top(c.s) !== top(state) || c.s.connection === 'down') c.s.presences = EMPTY_PRESENCES
   if (c.integrate) c.fx.push({ type: 'integrate', ...c.integrate })
   else if (!c.s.failure && !c.s.closed) settle(c)
   return { state: c.s, effects: c.fx }
@@ -282,6 +303,7 @@ function handle<Op>(c: Ctx<Op>, event: EngineEvent<Op>): void {
     case 'open':
       if (s.connection !== 'connecting') return
       s.connection = 'hello'
+      s.presenceEnabled = false
       s.progressed = false
       s.opened += 1
       c.fx.push({
@@ -289,6 +311,7 @@ function handle<Op>(c: Ctx<Op>, event: EngineEvent<Op>): void {
         frame: {
           t: 'hello',
           p: 1,
+          presence: true,
           format: s.format,
           fileHash: s.fileHash,
           ...(s.joined
@@ -321,6 +344,12 @@ function handle<Op>(c: Ctx<Op>, event: EngineEvent<Op>): void {
       s.attached = true
       c.fx.push({ type: 'editable', value: editable(s) })
       if (s.held.length > 0) release(c)
+      return
+    case 'presence':
+      if (!cleanView(s) || event.v !== s.confirmed) return
+      if (s.localPresence?.v === event.v && s.localPresence.text === event.text) return
+      s.localPresence = { v: event.v, text: event.text }
+      s.presenceSent = false
       return
     case 'local':
       // The editor no longer shows the document, and the server would refuse the edit
@@ -423,9 +452,28 @@ function frame<Op>(c: Ctx<Op>, f: ServerFrame | BytesFrame): void {
     case 'saved':
       s.saved = Math.max(s.saved, f.v)
       return
-    case 'peers':
+    case 'peers': {
       s.peers = f.peers
+      if (s.presences !== EMPTY_PRESENCES) {
+        const kept: CollabStatus['presences'] = Object.create(null)
+        for (const { client } of f.peers) {
+          const position = s.presences[client]
+          if (position) kept[client] = position
+        }
+        s.presences = kept
+      }
       return
+    }
+    case 'presence': {
+      if (!s.presenceEnabled || f.client === s.client || f.v !== top(s)) return
+      if (!s.peers.some((peer) => peer.client === f.client)) return
+      if (f.at === null && !Object.hasOwn(s.presences, f.client)) return
+      const next: CollabStatus['presences'] = Object.assign(Object.create(null), s.presences)
+      if (f.at === null) delete next[f.client]
+      else next[f.client] = { v: f.v, at: f.at }
+      s.presences = next
+      return
+    }
     case 'diverged':
       return fail(c, 'diverged')
     case 'error':
@@ -457,6 +505,10 @@ function welcome<Op>(c: Ctx<Op>, w: Extract<ServerFrame, { t: 'welcome' }>): voi
     c.fx.push({ type: 'joined', baseBytes: s.serverBase })
   }
   s.canEdit = w.canEdit
+  s.presenceEnabled = w.presence === true
+  s.presences = EMPTY_PRESENCES
+  s.presenceSent = false
+  s.nextPresenceAt = -Infinity
   s.name = w.name
   s.saved = Math.max(s.saved, w.saved)
   s.peers = w.peers
@@ -572,6 +624,7 @@ function settle<Op>(c: Ctx<Op>): void {
     s.save = 'settling'
     c.fx.push({ type: 'then', event: { type: 'settled' } })
   }
+  publishPresence(c)
   fingerprint(c)
 }
 
@@ -600,6 +653,24 @@ function submit<Op>(c: Ctx<Op>): void {
   s.inflight = { seq: s.nextSeq, base: s.confirmed, ops, json, doomed: false }
   s.pending = s.pending.slice(ops.length)
   c.fx.push({ type: 'send', frame: { t: 'submit', seq: s.nextSeq, base: s.confirmed, ops: json } })
+}
+
+function cleanView<Op>(s: EngineState<Op>): boolean {
+  return s.attached && !(s.inflight && !s.inflight.doomed) && !s.pending.length && !s.held.length
+}
+
+function publishPresence<Op>(c: Ctx<Op>): void {
+  const s = c.s
+  if (!s.presenceEnabled || s.connection !== 'live' || !cleanView(s) || s.presenceSent) return
+  const position = s.localPresence
+  if (!position || position.v !== s.confirmed) return
+  if (s.nextPresenceAt > c.env.now) {
+    c.fx.push({ type: 'timer', name: 'presence', delay: s.nextPresenceAt - c.env.now })
+    return
+  }
+  s.presenceSent = true
+  s.nextPresenceAt = c.env.now + PRESENCE_INTERVAL_MS
+  c.fx.push({ type: 'send', frame: position.text })
 }
 
 /** The editor shows exactly version `confirmed`, and nothing will move it while a step runs */

@@ -80,6 +80,11 @@ export interface CollabSession {
    * version and the server never hears of it: a way to keep work a failed or offline session holds.
    */
   exportLocal(): Promise<{ fileName: string; bytes: Uint8Array }>
+  /**
+   * Publish a selection in the confirmed view (viewers included). Null or an oversized selection
+   * clears an earlier mark. After the version changes, read the selection from the editor again.
+   */
+  setPresence(at: Json): void
   status(): CollabStatus
   subscribe(handler: (status: CollabStatus) => void): () => void
   close(): void
@@ -98,6 +103,8 @@ export type CollabStatus = {
   saved: number
   unconfirmed: number
   peers: { client: string; name: string }[]
+  /** Remote selections in the current confirmed view, keyed by client id. */
+  presences: Record<string, { v: number; at: Json }>
   /** this page as the others see it among `peers`; null before the first welcome */
   self: { client: string; name: string } | null
 }

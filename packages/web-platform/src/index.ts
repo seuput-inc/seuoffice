@@ -33,4 +33,5 @@ export {
   type CollabStatus,
 } from './collab-link'
 export { joinPageCollab, type PageCollab } from './collab-page'
+export { presenceLabel, type PresenceMark } from './presence'
 export { createAiStreamBridge, hostOffersAi, webAiSettings, type AiStreamBridge } from './ai-relay'

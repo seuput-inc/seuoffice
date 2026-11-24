@@ -81,6 +81,7 @@ describe('without co-editing from the host', () => {
       saved: 0,
       unconfirmed: 0,
       peers: [],
+      presences: {},
       self: null,
     })
     void channel.saveToHost('memo.hwpx', new Uint8Array([1]), 'user')
@@ -170,6 +171,7 @@ describe('the co-editing link', () => {
       saved: 7,
       unconfirmed: 0,
       peers: [],
+      presences: {},
       self: null,
     })
     expect(messages()[0]).toMatchObject({ type: 'save', collabVersion: 7 })

@@ -13,16 +13,18 @@
 
 import { systemClock, type Clock } from '../clock.js'
 import { deferred } from '../deferred.js'
-import { MAX_CHANGE_BYTES } from '../limits.js'
+import { MAX_CHANGE_BYTES, PRESENCE_INTERVAL_MS } from '../limits.js'
 import type { Change, Peer } from '../model.js'
 import { sha256 } from '../sha256.js'
 import {
+  encodePresence,
   parseClientFrame,
   utf8Length,
   type BytesFrame,
   type ClientFrame,
   type ErrorCode,
   type HelloFrame,
+  type PresenceFrame,
   type ServerFrame,
   type SubmitFrame,
 } from '../wire.js'
@@ -133,6 +135,10 @@ interface Conn {
   epoch: string | null
   /** the highest version this socket received; a change goes out only as `sent + 1` (invariant 4) */
   sent: number
+  presence: (PresenceFrame & { client: string }) | null
+  presenceScheduled: boolean
+  presenceTimer: unknown
+  nextPresenceAt: number
   /** frames received and not yet handled */
   inbox: number
   /** size of those frames, in string length or bytes */
@@ -253,7 +259,34 @@ export function createServerCore({
 
   function broadcast(doc: Doc, frame: ServerFrame, except?: Conn): void {
     const text = JSON.stringify(frame)
-    for (const conn of live(doc)) if (conn !== except) send(conn, text)
+    for (const conn of live(doc)) {
+      if (conn !== except && (frame.t !== 'presence' || conn.hello?.presence)) send(conn, text)
+    }
+  }
+
+  function receivePresence(
+    doc: Doc,
+    conn: Conn,
+    frame: PresenceFrame,
+    raw: string | Uint8Array,
+  ): void {
+    if (conn.stage !== 'live' || !conn.hello?.presence || frame.v !== conn.sent) return
+    if (encodePresence(frame, raw) === undefined) return
+    conn.presence = { ...frame, client: conn.client! }
+    if (conn.presenceScheduled) return
+    conn.presenceScheduled = true
+    const flush = () => {
+      void enqueue(doc, conn, async () => {
+        conn.presenceScheduled = false
+        const latest = conn.presence
+        if (conn.stage !== 'live' || conn.refused || !latest || latest.v !== conn.sent) return
+        conn.nextPresenceAt = clock.now() + PRESENCE_INTERVAL_MS
+        broadcast(doc, latest, conn)
+      })
+    }
+    const delay = conn.nextPresenceAt - clock.now()
+    if (delay > 0) conn.presenceTimer = clock.setTimeout(flush, delay)
+    else flush()
   }
 
   function changeFrame({ v, client, seq, author, ops }: Change): string {
@@ -301,6 +334,7 @@ export function createServerCore({
     for (const conn of conns) {
       send(conn, text)
       conn.socket.close(4000, reason)
+      clock.clearTimeout(conn.presenceTimer)
       conn.stage = 'closed'
       doc.conns.delete(conn)
     }
@@ -334,9 +368,14 @@ export function createServerCore({
     if (conn.stage === 'closed') return
     const wasLive = conn.stage === 'live'
     conn.stage = 'closed'
+    clock.clearTimeout(conn.presenceTimer)
     doc.conns.delete(conn)
     doc.waiting = doc.waiting.filter((other) => other !== conn)
-    if (wasLive) broadcast(doc, { t: 'peers', peers: peersOf(doc) })
+    if (wasLive) {
+      if (conn.hello?.presence)
+        broadcast(doc, { t: 'presence', client: conn.client!, v: conn.sent, at: null })
+      broadcast(doc, { t: 'peers', peers: peersOf(doc) })
+    }
     if (doc.seeder === conn) {
       endSeeding(doc)
       await answerWaiting(doc)
@@ -430,8 +469,16 @@ export function createServerCore({
       saved: state.saved,
       canEdit: conn.principal.canEdit,
       peers: peersOf(doc),
+      ...(conn.hello?.presence ? { presence: true } : {}),
     })
     await catchUp(doc, conn, epoch.head)
+    if (conn.hello?.presence) {
+      for (const other of live(doc)) {
+        const latest = other.presence
+        if (other !== conn && latest && latest.at !== null && latest.v === conn.sent)
+          send(conn, latest)
+      }
+    }
     broadcast(doc, { t: 'peers', peers: peersOf(doc) }, conn)
   }
 
@@ -555,14 +602,13 @@ export function createServerCore({
     return raw.length * 3 > max && utf8Length(raw) > max
   }
 
-  async function onFrame(doc: Doc, conn: Conn, raw: string | Uint8Array): Promise<void> {
+  async function onFrame(
+    doc: Doc,
+    conn: Conn,
+    frame: Exclude<ClientFrame, PresenceFrame> | BytesFrame | null,
+  ): Promise<void> {
     if (conn.stage === 'closed' || conn.refused) return
-    let frame: ClientFrame | BytesFrame
-    try {
-      frame = parseClientFrame(raw)
-    } catch {
-      return reject(doc, conn, 'bad_frame')
-    }
+    if (!frame) return reject(doc, conn, 'bad_frame')
     switch (frame.t) {
       case 'hello':
         if (conn.stage !== 'new') return reject(doc, conn, 'bad_frame')
@@ -608,6 +654,10 @@ export function createServerCore({
         client: null,
         epoch: null,
         sent: 0,
+        presence: null,
+        presenceScheduled: false,
+        presenceTimer: null,
+        nextPresenceAt: -Infinity,
         inbox: 0,
         inboxBytes: 0,
         sentBinary: false,
@@ -622,6 +672,15 @@ export function createServerCore({
           conn.refused = true
           void enqueue(doc, conn, () => reject(doc, conn, 'too_large'))
         } else {
+          let parsed: ClientFrame | BytesFrame | null
+          try {
+            parsed = parseClientFrame(frame)
+          } catch {
+            parsed = null
+          }
+          // Pointer motion takes one slot, never the queue or byte budget of a document edit.
+          if (parsed?.t === 'presence') return receivePresence(doc, conn, parsed, frame)
+          const queued = parsed
           // A string's length bounds its memory to within a factor of two; no need to encode it
           const counted =
             typeof frame === 'string' ? frame.length : conn.sentBinary ? frame.byteLength : 0
@@ -640,7 +699,7 @@ export function createServerCore({
           void enqueue(doc, conn, () => {
             conn.inbox -= 1
             conn.inboxBytes -= counted
-            return onFrame(doc, conn, frame)
+            return onFrame(doc, conn, queued)
           })
         }
       })

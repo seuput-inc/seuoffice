@@ -15,6 +15,8 @@ export interface CollabLink {
 export type CollabLinkEvent =
   { type: 'open' } | { type: 'close' } | { type: 'frame'; frame: string | Uint8Array }
 
+type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
+
 /** Structurally identical to `CollabStatus` of `@seuoffice/collab/client`, which owns it */
 export type CollabStatus = {
   phase: 'joining' | 'live' | 'offline' | 'failed'
@@ -24,6 +26,7 @@ export type CollabStatus = {
   saved: number
   unconfirmed: number
   peers: { client: string; name: string }[]
+  presences: Record<string, { v: number; at: Json }>
   /** this page as the others see it among `peers`; null before the first welcome */
   self: { client: string; name: string } | null
 }

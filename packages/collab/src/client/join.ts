@@ -8,7 +8,7 @@ import { systemClock, type Clock } from '../clock.js'
 import { deferred, type Deferred } from '../deferred.js'
 import type { Json } from '../model.js'
 import { sha256 } from '../sha256.js'
-import { parseServerFrame } from '../wire.js'
+import { encodePresence, parseServerFrame } from '../wire.js'
 import {
   CollabError,
   type CollabAdapter,
@@ -69,6 +69,7 @@ export function startEngine(
   const outstanding = new Set<Promise<unknown>>()
   const statusHandlers = new Set<(status: CollabStatus) => void>()
   let lastStatus = ''
+  let lastPresences: CollabStatus['presences'] | undefined
   let save: Deferred<SavedVersion> | null = null
   let exporting: Deferred<ProducedFile> | null = null
   let unlisten: (() => void) | null = null
@@ -95,8 +96,10 @@ export function startEngine(
     }
     if (!adapter || !state) return
     const status = statusOf(state)
-    const text = JSON.stringify(status)
-    if (text === lastStatus) return
+    const { presences, ...header } = status
+    const text = JSON.stringify(header)
+    if (text === lastStatus && presences === lastPresences) return
+    lastPresences = presences
     lastStatus = text
     for (const handler of statusHandlers) handler(status)
   }
@@ -133,12 +136,15 @@ export function startEngine(
       case 'close':
         return link.close()
       case 'send':
-        return link.send(JSON.stringify(effect.frame))
+        return link.send(
+          typeof effect.frame === 'string' ? effect.frame : JSON.stringify(effect.frame),
+        )
       case 'send_file':
         return link.send(file.bytes)
       case 'timer': {
-        clock.clearTimeout(timers.get(effect.name))
         const name = effect.name
+        if (name === 'presence' && timers.has(name)) return
+        clock.clearTimeout(timers.get(name))
         const handle = clock.setTimeout(() => {
           timers.delete(name)
           dispatch({ type: 'timer', name })
@@ -271,6 +277,17 @@ export function startEngine(
     reportSaved(version) {
       dispatch({ type: 'report_saved', v: version })
     },
+    setPresence(at) {
+      if (!state || integrating || state.closed || state.failure) return
+      const v = state.confirmed
+      const text = encodePresence({ t: 'presence', v, at })
+      if (text === undefined && state.localPresence?.v !== v) return
+      dispatch({
+        type: 'presence',
+        v,
+        text: text ?? JSON.stringify({ t: 'presence', v, at: null }),
+      })
+    },
     status() {
       return statusOf(state!)
     },
@@ -308,6 +325,7 @@ export function startEngine(
     } catch {
       return dispatch({ type: 'bad_frame' })
     }
+    if (frame.t === 'presence' && encodePresence(frame, event.frame) === undefined) return
     dispatch({ type: 'frame', frame })
   }
 

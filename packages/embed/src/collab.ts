@@ -52,6 +52,7 @@ export type CollabStatus = {
   saved: number
   unconfirmed: number
   peers: { client: string; name: string }[]
+  presences: Record<string, { v: number; at: HistoryJson }>
   /** this page as the others see it among `peers`; null before the first welcome */
   self: { client: string; name: string } | null
 }

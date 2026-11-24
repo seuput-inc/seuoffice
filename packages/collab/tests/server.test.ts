@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { VirtualClock } from '../src/conformance/network'
 import { sha256 } from '../src/sha256'
 import { createServerCore, type Principal, type ServerSocket } from '../src/server/server'
-import { memoryStore } from '../src/server/store'
+import { memoryHistoryStore, memoryStore } from '../src/server/store'
 
 const FORMAT = { name: 'toy', schema: 1 }
 const BASE = new TextEncoder().encode('base file')
@@ -43,6 +43,10 @@ class FakeSocket implements ServerSocket {
     return this.sent.filter((frame) => typeof frame === 'string').map((frame) => JSON.parse(frame))
   }
 
+  presences(): Record<string, unknown>[] {
+    return this.frames().filter((frame) => frame.t === 'presence')
+  }
+
   /** the client and epoch this socket was welcomed with */
   welcomed(): { client: string; epoch: string } {
     const welcome = this.frames().find((frame) => frame.t === 'welcome')
@@ -56,17 +60,21 @@ function principal(userId: string, canEdit = true): Principal {
   return { documentId: 'doc', userId, name: userId, canEdit }
 }
 
-async function setup(limits = {}) {
-  const store = memoryStore()
+async function setup(limits = {}, store = memoryStore()) {
   const clock = new VirtualClock()
   const server = createServerCore({ store, limits, clock })
   const fileHash = await sha256(BASE)
   const hello = { t: 'hello', p: 1, format: FORMAT, fileHash }
 
-  async function open(user = 'a', canEdit = true): Promise<FakeSocket> {
+  async function open(
+    user = 'a',
+    canEdit = true,
+    documentId = 'doc',
+    presence = true,
+  ): Promise<FakeSocket> {
     const socket = new FakeSocket()
-    server.accept(socket, principal(user, canEdit))
-    socket.receive(hello)
+    server.accept(socket, { ...principal(user, canEdit), documentId })
+    socket.receive(presence ? { ...hello, presence: true } : hello)
     await server.idle()
     if (socket.frames().at(-1)?.t === 'need_base') {
       socket.receive(BASE)
@@ -281,6 +289,145 @@ describe('the server', () => {
     const late = new FakeSocket()
     server.accept(late, principal('c'))
     expect(late.closed).toBe(true)
+  })
+})
+
+describe('live selections', () => {
+  it('relays a viewer to other negotiated sockets in its document, including late joiners, without touching the log', async () => {
+    const history = memoryHistoryStore(() => true)
+    const { server, store, clock, open } = await setup({}, history)
+    const editor = await open('editor')
+    const legacy = await open('old editor', true, 'doc', false)
+    const elsewhere = await open('elsewhere', true, 'another')
+    const viewer = await open('viewer', false)
+    const { client, epoch } = viewer.welcomed()
+    const before = await store.load('doc')
+    const point = { epoch, version: 0 }
+    const prefix = await history.readHistory(principal('editor'), point, 'export')
+    const at = { from: 2, to: 4 }
+    viewer.receive({ t: 'presence', client: 'spoof', v: 0, at })
+    await server.idle()
+    const mark = { t: 'presence', client, v: 0, at }
+    expect(editor.presences()).toEqual([mark])
+    const late = await open('late', false)
+    expect(late.frames()[0]).toMatchObject({ t: 'welcome', presence: true })
+    expect(late.presences()).toEqual([mark])
+    expect((await open('late legacy', false, 'doc', false)).presences()).toEqual([])
+    expect(legacy.frames()[0]).not.toHaveProperty('presence')
+    legacy.receive({ t: 'presence', v: 0, at: 'not negotiated' })
+    viewer.receive({ t: 'presence', v: 0, at: null })
+    await server.idle()
+    expect(clock.fire()).toBe(true)
+    await server.idle()
+    expect(editor.presences()).toEqual([mark, { ...mark, at: null }])
+    expect((await open('after clear')).presences()).toEqual([])
+    for (const socket of [viewer, legacy, elsewhere]) expect(socket.presences()).toEqual([])
+    expect(await store.load('doc')).toEqual(before)
+    expect(await store.read('doc', epoch, 0, 10)).toEqual([])
+    expect(await store.readBase('doc', epoch)).toEqual(BASE)
+    expect(await history.readHistory(principal('editor'), point, 'export')).toEqual(prefix)
+    legacy.receive({ t: 'submit', seq: 1, base: 0, ops: ['still editable'] })
+    await server.idle()
+    expect(legacy.frames().at(-1)).toEqual({ t: 'ack', seq: 1, v: 1 })
+  })
+
+  it('keeps the latest motion per socket for each 100 ms and does not use the edit inbox budget', async () => {
+    const { server, clock, open } = await setup({ maxQueuedFrames: 2 })
+    const a = await open('a')
+    const b = await open('b', false)
+    const witness = await open('witness')
+    const { client } = a.welcomed()
+    const first = { t: 'presence', v: 0, at: 0 }
+    a.receive(first)
+    await server.idle()
+    for (let at = 1; at <= 300; at++) a.receive({ ...first, at })
+    b.receive({ ...first, at: 'independent' })
+    await server.idle()
+    const leading = [
+      { ...first, client },
+      { ...first, client: b.welcomed().client, at: 'independent' },
+    ]
+    expect(witness.presences()).toEqual(leading)
+    expect((await open('mid-burst')).presences()).toContainEqual({ ...first, client, at: 300 })
+    expect(clock.fire()).toBe(true)
+    await server.idle()
+    expect(clock.now()).toBe(100)
+    expect(witness.presences()).toEqual([...leading, { ...first, client, at: 300 }])
+    expect(a.closed).toBe(false)
+  })
+
+  it('drops oversize UTF-8, deep, future and stale positions without disconnecting or relabeling them', async () => {
+    const { server, clock, open } = await setup()
+    const a = await open('a')
+    const witness = await open('witness')
+    const room = 4096 - JSON.stringify({ t: 'presence', v: 0, at: '' }).length
+    const max = 'é'.repeat(Math.floor(room / 2)) + 'x'.repeat(room % 2)
+    a.receive({ t: 'presence', v: 0, at: max })
+    await server.idle()
+    a.receive({ t: 'presence', v: 0, at: max + 'x' })
+    a.receive({ t: 'presence', v: 0, at: 0, extra: ' '.repeat(4096) })
+    a.receive(' '.repeat(4096) + '{"t":"presence","v":0,"at":0}')
+    a.receive(`{"t":"presence","v":0,"at":0,"extra":"${'\ud800é'.repeat(900)}"}`)
+    a.receive(`{"t":"presence","v":0,"at":${'['.repeat(1500)}0${']'.repeat(1500)}}`)
+    a.receive({ t: 'presence', v: 1, at: 'future' })
+    expect(clock.fire()).toBe(false)
+    a.receive({ t: 'presence', v: 0, at: 'queued at zero' })
+    a.receive({ t: 'submit', seq: 1, base: 0, ops: [1] })
+    await server.idle()
+    a.receive({ t: 'presence', v: 0, at: 'stale' })
+    expect(clock.fire()).toBe(true)
+    await server.idle()
+    expect(witness.presences().map((f) => f.at)).toEqual([max])
+    expect((await open('late')).presences()).toEqual([])
+    a.receive({ t: 'presence', v: 1, at: 7 })
+    await server.idle()
+    expect(witness.presences().at(-1)).toEqual({
+      t: 'presence',
+      v: 1,
+      client: a.welcomed().client,
+      at: 7,
+    })
+    expect(a.closed).toBe(false)
+  })
+
+  it('clears each departing socket once and its delayed messages cannot erase its replacement', async () => {
+    const { server, hello, clock, open } = await setup()
+    const old = await open('a')
+    const witness = await open('witness')
+    const { client, epoch } = old.welcomed()
+    const frame = { t: 'presence', v: 0, at: 'old' }
+    old.receive(frame)
+    await server.idle()
+    old.receive({ ...frame, at: 'queued' })
+    const replacement = new FakeSocket()
+    server.accept(replacement, principal('a'))
+    replacement.receive({ ...hello, presence: true, resume: { client, epoch, v: 0, attempt: 2 } })
+    await server.idle()
+    replacement.receive({ ...frame, at: 'new' })
+    old.hangUp()
+    old.receive({ ...frame, at: 'lost socket' })
+    await server.idle()
+    expect(witness.presences().map((f) => f.at)).toEqual(['old', null, 'new'])
+    expect((await open('late')).presences()).toEqual([{ ...frame, client, at: 'new' }])
+    replacement.receive({ ...frame, at: 'queued' })
+    replacement.hangUp()
+    replacement.hangUp()
+    await server.idle()
+    expect(clock.fire()).toBe(false)
+    expect(witness.presences().map((f) => f.at)).toEqual(['old', null, 'new', null])
+    expect((await open('after leave')).presences()).toEqual([])
+  })
+
+  it('delivers one last clear to the remaining socket when the server closes', async () => {
+    const { server, open } = await setup()
+    const first = await open()
+    const last = await open('last')
+    first.receive({ t: 'presence', v: 0, at: 1 })
+    await server.idle()
+    await server.close()
+    first.hangUp()
+    await server.idle()
+    expect(last.presences().map((f) => f.at)).toEqual([1, null])
   })
 })
 

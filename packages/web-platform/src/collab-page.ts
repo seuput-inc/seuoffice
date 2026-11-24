@@ -1,4 +1,4 @@
-import type { CollabAdapter, CollabSession, CollabStatus } from '@seuoffice/collab/client'
+import type { CollabAdapter, CollabSession, CollabStatus, Json } from '@seuoffice/collab/client'
 import { collabLink, reportCollabStatus } from './collab-link'
 import { editMode } from './document-store'
 import {
@@ -12,6 +12,7 @@ import {
   saveToHost,
   type SaveReason,
 } from './embed-channel'
+import { presenceMarks, type PresenceMark } from './presence'
 
 export interface PageCollab<Handles> {
   /** the bytes the editor must open: the epoch base, which may be a peer's file rather than the host's */
@@ -76,6 +77,14 @@ export async function joinPageCollab<Handles, Op>(options: {
   adapter(handles: Handles): CollabAdapter<Op> | Promise<CollabAdapter<Op>>
   /** hears the session's status once the editor attached and on every change, for an editor that shows it */
   status?(status: CollabStatus): void
+  /** Attach selection listeners only to a live editor, never to a history replay. */
+  presence?(
+    handles: Handles,
+    publish: () => void,
+  ): {
+    read(): Json
+    draw(peers: readonly PresenceMark[]): void
+  }
   /**
    * How a host save request runs; `save` is the session's save. An editor passes its own flow
    * here so that what a person still has open (a text box, a comment being typed) is committed
@@ -222,11 +231,31 @@ export async function joinPageCollab<Handles, Op>(options: {
       const joined = join.attach(adapter)
       session = joined
       releaseInput()
+      let displayedVersion: number | null = null
+      let queued = false
+      // Selection events can fire inside integrate(), before the engine confirms the edit.
+      const publish = (): void => {
+        if (queued) return
+        queued = true
+        queueMicrotask(() => {
+          queued = false
+          const status = joined.status()
+          if (presence && status.phase === 'live' && !status.unconfirmed)
+            joined.setPresence(presence.read())
+        })
+      }
+      const presence = options.presence?.(handles, publish)
       const report = (status: CollabStatus): void => {
         reportCollabStatus(status)
         // unsaved means the log holds edits no stored file has
         reportDirty(status.version > status.saved)
         options.status?.(status)
+        if (presence) {
+          const version = status.phase === 'live' && !status.unconfirmed ? status.version : null
+          if (version !== null && version !== displayedVersion) publish()
+          displayedVersion = version
+          presence.draw(presenceMarks(status))
+        }
       }
       joined.subscribe(report)
       // opened first: a host that sets its title on opened must not overwrite the dirty state
