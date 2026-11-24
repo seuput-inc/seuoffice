@@ -4,11 +4,22 @@ Uses the existing framed binary digest encoding. Peers compare this digest only
 after verifying the same original file and engine. Preserve both native table
 height fields across layout projection; they can disagree in the source.
 
+diff --git a/src/model/raw_provenance.rs b/src/model/raw_provenance.rs
+--- a/src/model/raw_provenance.rs
++++ b/src/model/raw_provenance.rs
+@@ -41,6 +41,7 @@
+ //! Section(`raw_stream`)·본문 컨트롤 raw 레코드의 같은 계약은 #4488·#4495 가
+ //! 별도로 다룬다 — 스트림·소유자가 다르다.
+ 
++mod authored;
+ mod digest_encoding;
+ 
+ use serde::Serialize;
 diff --git a/src/model/raw_provenance/authored.rs b/src/model/raw_provenance/authored.rs
 new file mode 100644
 --- /dev/null
 +++ b/src/model/raw_provenance/authored.rs
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,279 @@
 +//! The live editing model, not the editor's measured lines or its source-stream caches.
 +//! The session admits original file bytes separately. Never substitute them for live state.
 +
@@ -288,120 +299,10 @@ new file mode 100644
 +        Ok(blake3::Hash::from_bytes(out.finish()).to_hex().to_string())
 +    }
 +}
-+
-+#[cfg(test)]
-+mod tests {
-+    use super::*;
-+    use crate::model::{control::FormObject, paragraph::LineSeg};
-+
-+    fn document(control: Control) -> Document {
-+        Document { sections: vec![Section { paragraphs: vec![Paragraph {
-+            controls: vec![control], ..Default::default()
-+        }], ..Default::default() }], ..Default::default() }
-+    }
-+
-+    fn printed(doc: &Document) -> String { doc.collab_fingerprint().unwrap() }
-+    fn table(doc: &mut Document) -> &mut Table {
-+        let Control::Table(t) = &mut doc.sections[0].paragraphs[0].controls[0] else { panic!() };
-+        t
-+    }
-+
-+    #[test]
-+    fn collab_fingerprint_ignores_local_measurement_but_distinguishes_both_height_owners() {
-+        let mut t = Table { raw_ctrl_data: vec![0; 24], ..Default::default() };
-+        t.set_authored_height(1200);
-+        t.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&1250u32.to_le_bytes());
-+        let mut doc = document(Control::Table(Box::new(t)));
-+        let before = printed(&doc);
-+        for measured in [3000, 4000, 1200] {
-+            table(&mut doc).project_layout_height(measured);
-+            doc.sections[0].paragraphs[0].line_segs.push(LineSeg {
-+                vertical_pos: measured as i32, ..Default::default()
-+            });
-+            doc.doc_properties.caret_char_pos += 1;
-+            doc.sections[0].raw_stream = Some(vec![measured as u8]);
-+            assert_eq!(printed(&doc), before);
-+        }
-+        let mut other = doc.clone();
-+        table(&mut other).set_authored_height(1200);
-+        assert_ne!(printed(&other), before, "the original raw height was not 1200");
-+        table(&mut doc).set_authored_height(1900);
-+        assert_ne!(printed(&doc), printed(&other));
-+        let width = printed(&doc);
-+        table(&mut doc).common.width += 1;
-+        assert_ne!(printed(&doc), width);
-+    }
-+
-+    #[test]
-+    fn collab_fingerprint_sees_nested_skipped_bytes_and_xml_and_typed_parameters() {
-+        let mut picture = Picture::default();
-+        picture.shape_attr.ctrl_data = Some(vec![0xab]);
-+        let mut nested = Paragraph::default();
-+        nested.controls.push(Control::Shape(Box::new(ShapeObject::Picture(Box::new(picture)))));
-+        let mut doc = document(Control::Field(Field { memo_paragraphs: vec![nested],
-+            raw_parameters_xml: Some("<hp:parameters/>".into()), ..Default::default() }));
-+        let a = printed(&doc);
-+        fn body(d: &mut Document) -> &mut Field {
-+            let Control::Field(f) = &mut d.sections[0].paragraphs[0].controls[0] else { panic!() };
-+            f
-+        }
-+        let f = body(&mut doc);
-+        let Control::Shape(s) = &mut f.memo_paragraphs[0].controls[0] else { panic!() };
-+        let ShapeObject::Picture(p) = &mut **s else { panic!() };
-+        p.shape_attr.ctrl_data.as_mut().unwrap()[0] ^= 1;
-+        let b = printed(&doc);
-+        assert_ne!(a, b);
-+        body(&mut doc).raw_parameters_xml = Some("<hp:parameters foo='x'/>".into());
-+        let c = printed(&doc);
-+        assert_ne!(b, c);
-+        body(&mut doc).parameters.name = Some("named".into());
-+        assert_ne!(c, printed(&doc), "raw XML must not shadow the editable parameter tree");
-+    }
-+
-+    #[test]
-+    fn collab_fingerprint_hashes_resource_contents_not_map_order_or_resolver_identity() {
-+        fn sample(reverse: bool) -> Document {
-+            let mut f = FormObject::default();
-+            let mut keys = ["alpha", "beta"];
-+            if reverse { keys.reverse(); }
-+            for k in keys { f.properties.insert(k.into(), k.into()); }
-+            let mut d = document(Control::Form(Box::new(f)));
-+            for k in keys { d.extra_streams.push((k.into(), k.as_bytes().to_vec())); }
-+            d.bin_data_content.push(BinDataContent { id: 1, extension: "png".into(),
-+                data: if reverse { BinDataBytes::from_shared(vec![1,2,3]) }
-+                    else { vec![1,2,3].into() } });
-+            d
-+        }
-+        let mut d = sample(false);
-+        let original = printed(&d);
-+        assert_eq!(original, printed(&sample(true)));
-+        d.bin_data_content[0].data = vec![3,2,1].into();
-+        assert_ne!(original, printed(&d));
-+    }
-+
-+    #[test]
-+    fn collab_fingerprint_denies_unreadable_binary_instead_of_hashing_an_empty_placeholder() {
-+        use crate::model::bin_data::BinDataResolver;
-+        #[derive(Debug)]
-+        struct Unreadable;
-+        impl BinDataResolver for Unreadable {
-+            fn resolve(&self, _: &str) -> Vec<u8> { panic!("unbounded materialization") }
-+        }
-+        let mut doc = Document::default();
-+        doc.bin_data_content.push(BinDataContent {
-+            id: 1,
-+            extension: "ole".into(),
-+            data: BinDataBytes::Lazy {
-+                resolver: std::sync::Arc::new(Unreadable), key: "object".into(),
-+            },
-+        });
-+        assert!(doc.collab_fingerprint().is_err());
-+    }
-+}
 diff --git a/src/model/raw_provenance/digest_encoding.rs b/src/model/raw_provenance/digest_encoding.rs
 --- a/src/model/raw_provenance/digest_encoding.rs
 +++ b/src/model/raw_provenance/digest_encoding.rs
-@@ -37,6 +37,12 @@
+@@ -37,6 +37,12 @@ impl DigestWriter {
      }
  
      fn write(&mut self, bytes: &[u8]) {
@@ -414,21 +315,10 @@ diff --git a/src/model/raw_provenance/digest_encoding.rs b/src/model/raw_provena
          self.buffer.extend_from_slice(bytes);
          if self.buffer.len() >= FLUSH_AT {
              self.hasher.update(&self.buffer);
-diff --git a/src/model/raw_provenance.rs b/src/model/raw_provenance.rs
---- a/src/model/raw_provenance.rs
-+++ b/src/model/raw_provenance.rs
-@@ -41,6 +41,7 @@
- //! Section(`raw_stream`)·본문 컨트롤 raw 레코드의 같은 계약은 #4488·#4495 가
- //! 별도로 다룬다 — 스트림·소유자가 다르다.
- 
-+mod authored;
- mod digest_encoding;
- 
- use serde::Serialize;
 diff --git a/src/model/table.rs b/src/model/table.rs
 --- a/src/model/table.rs
 +++ b/src/model/table.rs
-@@ -100,6 +100,7 @@
+@@ -103,6 +103,7 @@ pub struct Table {
  #[derive(Debug, Clone, Copy)]
  pub struct TableHeightProjection {
      authored: HwpUnit,
@@ -436,7 +326,7 @@ diff --git a/src/model/table.rs b/src/model/table.rs
      projected: HwpUnit,
  }
  
-@@ -1455,6 +1456,15 @@
+@@ -1458,15 +1459,26 @@ impl Table {
              .map_or(self.common.height, |p| p.authored)
      }
  
@@ -452,9 +342,11 @@ diff --git a/src/model/table.rs b/src/model/table.rs
      pub fn set_authored_height(&mut self, height: HwpUnit) {
          self.height_projection = None;
          self.write_ctrl_height(height);
-@@ -1462,8 +1472,9 @@
+     }
  
-     pub(crate) fn project_layout_height(&mut self, projected: HwpUnit) {
+-    pub(crate) fn project_layout_height(&mut self, projected: HwpUnit) {
++    #[doc(hidden)]
++    pub fn project_layout_height(&mut self, projected: HwpUnit) {
          let authored = self.authored_height();
 -        self.height_projection = (authored != projected)
 -            .then_some(TableHeightProjection { authored, projected });
@@ -467,15 +359,178 @@ diff --git a/src/model/table.rs b/src/model/table.rs
 diff --git a/src/wasm_api.rs b/src/wasm_api.rs
 --- a/src/wasm_api.rs
 +++ b/src/wasm_api.rs
-@@ -1672,6 +1672,11 @@
-     #[wasm_bindgen(js_name = getDocumentInfo)]
-     pub fn get_document_info(&self) -> String {
+@@ -1674,6 +1674,11 @@ impl HwpDocument {
          self.core.get_document_info()
-+    }
-+
+     }
+ 
 +    #[wasm_bindgen(js_name = getCollabFingerprint)]
 +    pub fn get_collab_fingerprint(&self) -> Result<String, JsValue> {
 +        self.document().collab_fingerprint().map_err(JsValue::from_str)
-     }
- 
++    }
++
      /// 특정 페이지의 텍스트 레이아웃 정보를 JSON 문자열로 반환한다.
+     ///
+     /// 각 TextRun의 위치, 모델 `text`, 모델 경계 `charX`와 `charStart`를 포함한다.
+diff --git a/tests/cases/collab_fingerprint.rs b/tests/cases/collab_fingerprint.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/cases/collab_fingerprint.rs
+@@ -0,0 +1,158 @@
++//! Co-editing peers compare a digest of what the authors made, not of what this engine measured
++//! or cached, so two editors of the same edits agree and any authored difference shows.
++
++use std::sync::Arc;
++
++use rhwp::model::bin_data::{BinDataBytes, BinDataContent, BinDataResolver};
++use rhwp::model::control::{Control, Field, FormObject};
++use rhwp::model::document::{Document, Section};
++use rhwp::model::image::Picture;
++use rhwp::model::paragraph::{LineSeg, Paragraph};
++use rhwp::model::shape::ShapeObject;
++use rhwp::model::table::Table;
++
++fn document(control: Control) -> Document {
++    Document {
++        sections: vec![Section {
++            paragraphs: vec![Paragraph {
++                controls: vec![control],
++                ..Default::default()
++            }],
++            ..Default::default()
++        }],
++        ..Default::default()
++    }
++}
++
++fn printed(doc: &Document) -> String {
++    doc.collab_fingerprint().unwrap()
++}
++
++fn table(doc: &mut Document) -> &mut Table {
++    let Control::Table(t) = &mut doc.sections[0].paragraphs[0].controls[0] else {
++        panic!()
++    };
++    t
++}
++
++#[test]
++fn collab_fingerprint_ignores_local_measurement_but_distinguishes_both_height_owners() {
++    let mut t = Table {
++        raw_ctrl_data: vec![0; 24],
++        ..Default::default()
++    };
++    // The file stores 1250 in the raw record while the model's height is 1200.
++    t.set_authored_height(1250);
++    t.common.height = 1200;
++    let mut doc = document(Control::Table(Box::new(t)));
++    let before = printed(&doc);
++    for measured in [3000, 4000, 1200] {
++        table(&mut doc).project_layout_height(measured);
++        doc.sections[0].paragraphs[0].line_segs.push(LineSeg {
++            vertical_pos: measured as i32,
++            ..Default::default()
++        });
++        doc.doc_properties.caret_char_pos += 1;
++        doc.sections[0].raw_stream = Some(vec![measured as u8]);
++        assert_eq!(printed(&doc), before);
++    }
++    let mut other = doc.clone();
++    table(&mut other).set_authored_height(1200);
++    assert_ne!(printed(&other), before, "the original raw height was not 1200");
++    table(&mut doc).set_authored_height(1900);
++    assert_ne!(printed(&doc), printed(&other));
++    let width = printed(&doc);
++    table(&mut doc).common.width += 1;
++    assert_ne!(printed(&doc), width);
++}
++
++#[test]
++fn collab_fingerprint_sees_nested_skipped_bytes_and_xml_and_typed_parameters() {
++    fn field(d: &mut Document) -> &mut Field {
++        let Control::Field(f) = &mut d.sections[0].paragraphs[0].controls[0] else {
++            panic!()
++        };
++        f
++    }
++    let mut picture = Picture::default();
++    picture.shape_attr.ctrl_data = Some(vec![0xab]);
++    let mut nested = Paragraph::default();
++    nested
++        .controls
++        .push(Control::Shape(Box::new(ShapeObject::Picture(Box::new(picture)))));
++    let mut doc = document(Control::Field(Field {
++        memo_paragraphs: vec![nested],
++        raw_parameters_xml: Some("<hp:parameters/>".into()),
++        ..Default::default()
++    }));
++    let a = printed(&doc);
++    let f = field(&mut doc);
++    let Control::Shape(s) = &mut f.memo_paragraphs[0].controls[0] else {
++        panic!()
++    };
++    let ShapeObject::Picture(p) = &mut **s else {
++        panic!()
++    };
++    p.shape_attr.ctrl_data.as_mut().unwrap()[0] ^= 1;
++    let b = printed(&doc);
++    assert_ne!(a, b);
++    field(&mut doc).raw_parameters_xml = Some("<hp:parameters foo='x'/>".into());
++    let c = printed(&doc);
++    assert_ne!(b, c);
++    field(&mut doc).parameters.name = Some("named".into());
++    assert_ne!(c, printed(&doc), "raw XML must not shadow the editable parameter tree");
++}
++
++#[test]
++fn collab_fingerprint_hashes_resource_contents_not_map_order_or_resolver_identity() {
++    fn sample(reverse: bool) -> Document {
++        let mut f = FormObject::default();
++        let mut keys = ["alpha", "beta"];
++        if reverse {
++            keys.reverse();
++        }
++        for k in keys {
++            f.properties.insert(k.into(), k.into());
++        }
++        let mut d = document(Control::Form(Box::new(f)));
++        for k in keys {
++            d.extra_streams.push((k.into(), k.as_bytes().to_vec()));
++        }
++        d.bin_data_content.push(BinDataContent {
++            id: 1,
++            extension: "png".into(),
++            data: if reverse {
++                BinDataBytes::from_shared(vec![1, 2, 3])
++            } else {
++                vec![1, 2, 3].into()
++            },
++        });
++        d
++    }
++    let mut d = sample(false);
++    let original = printed(&d);
++    assert_eq!(original, printed(&sample(true)));
++    d.bin_data_content[0].data = vec![3, 2, 1].into();
++    assert_ne!(original, printed(&d));
++}
++
++#[test]
++fn collab_fingerprint_denies_unreadable_binary_instead_of_hashing_an_empty_placeholder() {
++    #[derive(Debug)]
++    struct Unreadable;
++    impl BinDataResolver for Unreadable {
++        fn resolve(&self, _: &str) -> Vec<u8> {
++            panic!("unbounded materialization")
++        }
++    }
++    let mut doc = Document::default();
++    doc.bin_data_content.push(BinDataContent {
++        id: 1,
++        extension: "ole".into(),
++        data: BinDataBytes::Lazy {
++            resolver: Arc::new(Unreadable),
++            key: "object".into(),
++        },
++    });
++    assert!(doc.collab_fingerprint().is_err());
++}
