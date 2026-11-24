@@ -32,13 +32,13 @@ hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
 ---
  src/diagnostics/ir_field_sweep.rs               |   6 +
  src/document_core/commands/clipboard.rs         |   4 +
- src/document_core/commands/footnote_ops.rs      |  11 +-
- src/document_core/commands/header_footer_ops.rs |   1 +
+ src/document_core/commands/footnote_ops.rs      |  21 +-
+ src/document_core/commands/header_footer_ops.rs |   5 +-
  src/document_core/commands/object_ops/table.rs  |   2 +
- src/document_core/commands/text_editing.rs      |   5 +
+ src/document_core/commands/text_editing.rs      |  22 +-
  src/document_core/html_table_import.rs          |   1 +
  src/model/document.rs                           |   2 +
- src/model/paragraph.rs                          | 192 +++++++++++++
+ src/model/paragraph.rs                          | 193 +++++++++++++
  src/model/style.rs                              |   3 +
  src/model/table.rs                              |   3 +
  src/parser/body_text.rs                         |  26 +-
@@ -56,7 +56,7 @@ hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
  src/serializer/hwpx/table.rs                    |   4 +
  tests/cases/unknown_paragraph_records.rs        | 295 +++++++++++++++++++
  tests/cases/unknown_paragraph_xml.rs            | 363 ++++++++++++++++++++++++
- 26 files changed, 1429 insertions(+), 31 deletions(-)
+ 26 files changed, 1449 insertions(+), 43 deletions(-)
 
 diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
 index 73e938d4d..d4b140a0b 100644
@@ -112,7 +112,7 @@ index 1245903c1..7e9701016 100644
          .controls
          .iter()
 diff --git a/src/document_core/commands/footnote_ops.rs b/src/document_core/commands/footnote_ops.rs
-index 026f5c878..852a6d263 100644
+index 026f5c878..08ffd6b2e 100644
 --- a/src/document_core/commands/footnote_ops.rs
 +++ b/src/document_core/commands/footnote_ops.rs
 @@ -595,7 +595,7 @@ impl DocumentCore {
@@ -154,8 +154,32 @@ index 026f5c878..852a6d263 100644
          };
          if let Some(meta) = restore_meta {
              restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+@@ -692,8 +697,9 @@ impl DocumentCore {
+                     }
+                     merge_offset = f.paragraphs[fn_para_idx - 1].text.chars().count();
+                     let removed = f.paragraphs.remove(fn_para_idx);
+-                    removed_meta =
+-                        super::super::helpers::removed_para_meta_field(&removed.capture_meta());
++                    removed_meta = super::super::helpers::removed_para_meta_field(
++                        &removed.capture_merge_meta(&f.paragraphs[fn_para_idx - 1]),
++                    );
+                     f.paragraphs[fn_para_idx - 1].merge_from(&removed);
+                 }
+                 Control::Endnote(e) => {
+@@ -705,8 +711,9 @@ impl DocumentCore {
+                     }
+                     merge_offset = e.paragraphs[fn_para_idx - 1].text.chars().count();
+                     let removed = e.paragraphs.remove(fn_para_idx);
+-                    removed_meta =
+-                        super::super::helpers::removed_para_meta_field(&removed.capture_meta());
++                    removed_meta = super::super::helpers::removed_para_meta_field(
++                        &removed.capture_merge_meta(&e.paragraphs[fn_para_idx - 1]),
++                    );
+                     e.paragraphs[fn_para_idx - 1].merge_from(&removed);
+                 }
+                 _ => {
 diff --git a/src/document_core/commands/header_footer_ops.rs b/src/document_core/commands/header_footer_ops.rs
-index 788c2d716..e01bce131 100644
+index 788c2d716..853425c1d 100644
 --- a/src/document_core/commands/header_footer_ops.rs
 +++ b/src/document_core/commands/header_footer_ops.rs
 @@ -430,6 +430,7 @@ impl DocumentCore {
@@ -166,6 +190,17 @@ index 788c2d716..e01bce131 100644
                  restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
              }
              new_para
+@@ -512,7 +513,9 @@ impl DocumentCore {
+             }
+             merge_offset = paragraphs[hf_para_idx - 1].text.chars().count();
+             let removed = paragraphs.remove(hf_para_idx);
+-            removed_meta = super::super::helpers::removed_para_meta_field(&removed.capture_meta());
++            removed_meta = super::super::helpers::removed_para_meta_field(
++                &removed.capture_merge_meta(&paragraphs[hf_para_idx - 1]),
++            );
+             paragraphs[hf_para_idx - 1].merge_from(&removed);
+         }
+ 
 diff --git a/src/document_core/commands/object_ops/table.rs b/src/document_core/commands/object_ops/table.rs
 index c1c2f9c5c..89fb7afda 100644
 --- a/src/document_core/commands/object_ops/table.rs
@@ -187,7 +222,7 @@ index c1c2f9c5c..89fb7afda 100644
          };
          table.rebuild_grid();
 diff --git a/src/document_core/commands/text_editing.rs b/src/document_core/commands/text_editing.rs
-index 38c083494..cf2deecad 100644
+index 38c083494..ae8a65de2 100644
 --- a/src/document_core/commands/text_editing.rs
 +++ b/src/document_core/commands/text_editing.rs
 @@ -4241,6 +4241,7 @@ impl DocumentCore {
@@ -214,7 +249,20 @@ index 38c083494..cf2deecad 100644
              restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
          }
  
-@@ -5204,6 +5207,7 @@ impl DocumentCore {
+@@ -4859,8 +4862,10 @@ impl DocumentCore {
+         let current_para = self.document.sections[section_idx]
+             .paragraphs
+             .remove(para_idx);
+-        let removed_meta =
+-            super::super::helpers::removed_para_meta_field(&current_para.capture_meta());
++        let removed_meta = super::super::helpers::removed_para_meta_field(
++            &current_para
++                .capture_merge_meta(&self.document.sections[section_idx].paragraphs[prev_idx]),
++        );
+         let merge_point =
+             self.document.sections[section_idx].paragraphs[prev_idx].merge_from(&current_para);
+         self.inherit_text_reflowed_table_controls(
+@@ -5204,6 +5209,7 @@ impl DocumentCore {
          let original_vpos = cell_para.line_segs.first().map(|seg| seg.vertical_pos);
          let mut new_para = cell_para.split_at(char_offset);
          if let Some(meta) = restore_meta {
@@ -222,7 +270,39 @@ index 38c083494..cf2deecad 100644
              restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
          }
  
-@@ -6691,6 +6695,7 @@ impl DocumentCore {
+@@ -5351,18 +5357,19 @@ impl DocumentCore {
+                         HwpError::RenderError("지정된 표 컨트롤에 캡션이 없습니다".to_string())
+                     })?;
+                     let removed = cap.paragraphs.remove(cell_para_idx);
+-                    removed_meta = removed.capture_meta();
++                    removed_meta = removed.capture_merge_meta(&cap.paragraphs[prev_idx]);
+                     merge_point = cap.paragraphs[prev_idx].merge_from(&removed);
+                 } else {
+                     let removed = table.cells[cell_idx].paragraphs.remove(cell_para_idx);
+-                    removed_meta = removed.capture_meta();
++                    removed_meta =
++                        removed.capture_merge_meta(&table.cells[cell_idx].paragraphs[prev_idx]);
+                     merge_point = table.cells[cell_idx].paragraphs[prev_idx].merge_from(&removed);
+                 }
+             }
+             Some(Control::Shape(shape)) => {
+                 if let Some(tb) = super::super::helpers::get_textbox_at_mut(shape, cell_idx) {
+                     let removed = tb.paragraphs.remove(cell_para_idx);
+-                    removed_meta = removed.capture_meta();
++                    removed_meta = removed.capture_merge_meta(&tb.paragraphs[prev_idx]);
+                     merge_point = tb.paragraphs[prev_idx].merge_from(&removed);
+                 } else {
+                     return Err(HwpError::RenderError(
+@@ -5373,7 +5380,7 @@ impl DocumentCore {
+             Some(Control::Picture(pic)) => {
+                 if let Some(ref mut cap) = pic.caption {
+                     let removed = cap.paragraphs.remove(cell_para_idx);
+-                    removed_meta = removed.capture_meta();
++                    removed_meta = removed.capture_merge_meta(&cap.paragraphs[prev_idx]);
+                     merge_point = cap.paragraphs[prev_idx].merge_from(&removed);
+                 } else {
+                     return Err(HwpError::RenderError(
+@@ -6691,6 +6698,7 @@ impl DocumentCore {
                      .map(|seg| seg.vertical_pos);
                  let mut new_para = cell.paragraphs[cell_para_idx].split_at(char_offset);
                  if let Some(meta) = restore_meta {
@@ -230,6 +310,15 @@ index 38c083494..cf2deecad 100644
                      restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
                  }
                  cell.paragraphs.insert(cell_para_idx + 1, new_para);
+@@ -6806,7 +6814,7 @@ impl DocumentCore {
+                     .first()
+                     .map(|seg| seg.vertical_pos);
+                 let removed = cell.paragraphs.remove(cell_para_idx);
+-                removed_meta = Some(removed.capture_meta());
++                removed_meta = Some(removed.capture_merge_meta(&cell.paragraphs[prev_idx]));
+                 let prev = &mut cell.paragraphs[prev_idx];
+                 merge_point = prev.text.chars().count();
+                 prev.merge_from(&removed);
 diff --git a/src/document_core/html_table_import.rs b/src/document_core/html_table_import.rs
 index 5987eff1f..36267d1d7 100644
 --- a/src/document_core/html_table_import.rs
@@ -256,10 +345,10 @@ index c41025c52..5a8275506 100644
      pub raw_ctrl_extra: Vec<u8>,
      /// 추가 쪽 테두리/배경 (2번째, 3번째 등)
 diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
-index c8444900d..8507a32c0 100644
+index c8444900d..0ad21142d 100644
 --- a/src/model/paragraph.rs
 +++ b/src/model/paragraph.rs
-@@ -17,6 +17,137 @@ pub fn normalize_text_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+@@ -17,6 +17,129 @@ pub fn normalize_text_newlines(text: &str) -> std::borrow::Cow<'_, str> {
      }
  }
  
@@ -366,38 +455,30 @@ index c8444900d..8507a32c0 100644
 +        self.run_children.extend(back.run_children.iter().cloned());
 +    }
 +
-+    /// The front paragraph's markup before [`Self::absorb`] took in `back`, or `None` when
-+    /// this is no such merge result. Absorbing only appends, so the front's namespaces and
-+    /// attributes are prefixes of these; the longest prefixes that absorb back into exactly
-+    /// this are taken.
-+    pub fn before_absorbing(&self, back: &ForeignXml) -> Option<ForeignXml> {
-+        let p_children = self.p_children.strip_suffix(back.p_children.as_slice())?;
-+        let run_children = self
-+            .run_children
-+            .strip_suffix(back.run_children.as_slice())?;
-+        for namespaces in (0..=self.namespaces.len()).rev() {
-+            for attributes in (0..=self.attributes.len()).rev() {
-+                let front = ForeignXml {
-+                    namespaces: self.namespaces[..namespaces].to_vec(),
-+                    attributes: self.attributes[..attributes].to_vec(),
-+                    p_children: p_children.to_vec(),
-+                    run_children: run_children.to_vec(),
-+                };
-+                let mut merged = front.clone();
-+                merged.absorb(back);
-+                if merged == *self {
-+                    return Some(front);
-+                }
-+            }
-+        }
-+        None
++    /// Cuts this back to the lengths it had before a merge appended to it.
++    fn truncate_to(&mut self, kept: &MergeFront) {
++        self.namespaces.truncate(kept.namespaces);
++        self.attributes.truncate(kept.attributes);
++        self.p_children.truncate(kept.p_children);
++        self.run_children.truncate(kept.run_children);
 +    }
++}
++
++/// How much unmodelled content the front paragraph of a merge had of its own. A merge only
++/// appends the back paragraph's to it, so cutting to these lengths undoes that exactly.
++#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
++pub struct MergeFront {
++    pub unknown_records: usize,
++    pub namespaces: usize,
++    pub attributes: usize,
++    pub p_children: usize,
++    pub run_children: usize,
 +}
 +
  /// 문자 offset 단위의 글자 모양 복원 구간. IR의 UTF-16 위치와 구분한다.
  #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
  #[serde(rename_all = "camelCase", deny_unknown_fields)]
-@@ -152,6 +283,10 @@ pub struct Paragraph {
+@@ -152,6 +275,10 @@ pub struct Paragraph {
      /// 각 컨트롤에 대응하는 CTRL_DATA 레코드 (라운드트립 보존용)
      /// controls[i]에 대응하는 CTRL_DATA가 있으면 ctrl_data_records[i] = Some(data)
      pub ctrl_data_records: Vec<Option<Vec<u8>>>,
@@ -408,7 +489,7 @@ index c8444900d..8507a32c0 100644
      /// char_count의 최상위 비트 (bit 31) 파싱값.
      /// HWP5 저장기는 현재 list scope의 마지막 문단 여부로 bit 31을 재생성한다.
      pub char_count_msb: bool,
-@@ -284,6 +419,12 @@ pub struct ParaMeta {
+@@ -284,6 +411,16 @@ pub struct ParaMeta {
      pub raw_header_extra: Vec<u8>,
      /// TAB 확장 데이터 — 문단 전체가 통째로 이동하므로 분할 없이 그대로 옮긴다.
      pub tab_extended: Vec<[u16; 7]>,
@@ -418,19 +499,39 @@ index c8444900d..8507a32c0 100644
 +    pub unknown_records: Vec<UnknownRecord>,
 +    #[serde(default)]
 +    pub foreign_xml: Option<Box<ForeignXml>>,
++    /// The merged-into paragraph's own share before the merge, which the undo cuts it back
++    /// to. `None` (JSON of an older engine): the undo leaves it as it is.
++    #[serde(default)]
++    pub merge_front: Option<MergeFront>,
  }
  
  /// 문단 번호 시작 방식
-@@ -2043,6 +2184,8 @@ impl Paragraph {
+@@ -2043,6 +2180,24 @@ impl Paragraph {
              numbering_restart: self.numbering_restart,
              raw_header_extra: self.raw_header_extra.clone(),
              tab_extended: self.tab_extended.clone(),
 +            unknown_records: self.unknown_records.clone(),
 +            foreign_xml: self.foreign_xml.clone(),
++            merge_front: None,
++        }
++    }
++
++    /// [`Self::capture_meta`] of this paragraph as it is about to be merged into `front`.
++    pub fn capture_merge_meta(&self, front: &Paragraph) -> ParaMeta {
++        let foreign = front.foreign_xml.as_deref();
++        ParaMeta {
++            merge_front: Some(MergeFront {
++                unknown_records: front.unknown_records.len(),
++                namespaces: foreign.map_or(0, |f| f.namespaces.len()),
++                attributes: foreign.map_or(0, |f| f.attributes.len()),
++                p_children: foreign.map_or(0, |f| f.p_children.len()),
++                run_children: foreign.map_or(0, |f| f.run_children.len()),
++            }),
++            ..self.capture_meta()
          }
      }
  
-@@ -2055,6 +2198,35 @@ impl Paragraph {
+@@ -2055,6 +2210,24 @@ impl Paragraph {
          self.numbering_restart = meta.numbering_restart;
          self.raw_header_extra = meta.raw_header_extra;
          self.tab_extended = meta.tab_extended;
@@ -438,35 +539,24 @@ index c8444900d..8507a32c0 100644
 +        self.foreign_xml = meta.foreign_xml;
 +    }
 +
-+    /// On a merge undo, takes back out of this (front) paragraph what the merge appended
-+    /// from the removed paragraph `meta` describes, before [`Self::apply_meta`] gives it to
-+    /// the restored one. Leaves this paragraph alone when its tail no longer is that.
++    /// On a merge undo, cuts this (front) paragraph's unmodelled content back to what it
++    /// had before the merge described by `meta`, before [`Self::apply_meta`] gives the
++    /// removed paragraph its own back.
 +    pub fn release_merged(&mut self, meta: &ParaMeta) {
-+        let own = self.unknown_records.len();
-+        let back = meta.unknown_records.len();
-+        let tail_matches = own >= back
-+            && self.unknown_records[own - back..]
-+                .iter()
-+                .zip(&meta.unknown_records)
-+                .all(|(a, b)| a.depth == b.depth && a.tag_id == b.tag_id && a.data == b.data);
-+        if tail_matches {
-+            self.unknown_records.truncate(own - back);
-+        }
-+        let released = match (&self.foreign_xml, &meta.foreign_xml) {
-+            (Some(merged), Some(back)) => merged.before_absorbing(back),
-+            _ => None,
++        let Some(kept) = &meta.merge_front else {
++            return;
 +        };
-+        if let Some(front) = released {
-+            self.foreign_xml = if front == ForeignXml::default() {
-+                None
-+            } else {
-+                Some(Box::new(front))
-+            };
++        self.unknown_records.truncate(kept.unknown_records);
++        if let Some(foreign) = &mut self.foreign_xml {
++            foreign.truncate_to(kept);
++            if **foreign == ForeignXml::default() {
++                self.foreign_xml = None;
++            }
 +        }
      }
  
      /// char_offset 위치에서 문단을 분할한다.
-@@ -2479,6 +2651,8 @@ impl Paragraph {
+@@ -2479,6 +2652,8 @@ impl Paragraph {
              control_mask: new_control_mask,
              controls: new_controls,
              ctrl_data_records: new_ctrl_data_records,
@@ -475,7 +565,7 @@ index c8444900d..8507a32c0 100644
              char_count_msb: false,
              raw_header_extra: new_raw_header_extra,
              has_para_text: new_has_para_text,
-@@ -2517,6 +2691,24 @@ impl Paragraph {
+@@ -2517,6 +2692,24 @@ impl Paragraph {
          other: &Paragraph,
          storage: &S,
      ) -> Result<usize, S::Error> {
