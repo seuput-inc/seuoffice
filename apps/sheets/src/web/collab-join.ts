@@ -119,17 +119,23 @@ const AXIS_OF: Record<string, { axis: Axis; inserts: boolean }> = {
 const lines = (range: IRange, axis: Axis): [number, number] =>
   axis === 'row' ? [range.startRow, range.endRow] : [range.startColumn, range.endColumn]
 
+type LocalStep = { step: 'revert' | 'replay'; index: number }
+
 /** What one `integrate` learns about the cell draft while it runs */
 interface DraftWatch {
   written: boolean
   removed: boolean
   /** the id of the mutation of someone else's about to run */
   remoteNext: string | null
+  /** the unconfirmed op of this page's being taken back or run again, by its place in `local` */
+  local: LocalStep | null
   /**
-   * The draft's row or column taken back with an unconfirmed insert of this page's: where the
-   * lines would come back (`anchor`), how many, and where in them the draft sits
+   * The draft's row or column taken back with the unconfirmed insert of op `op` of this page's:
+   * how many lines it took, and where in them the draft sits
    */
-  parked: { axis: Axis; anchor: number; count: number; offset: number } | null
+  parked: { op: number; axis: Axis; count: number; offset: number } | null
+  /** the op whose insert put the draft's lines back; it may not move those lines again */
+  returned: { op: number; axis: Axis } | null
   /** where the draft goes once Univer has moved it along the lines that came back, by `id` */
   back: { id: string; axis: Axis; line: number } | null
 }
@@ -142,16 +148,19 @@ interface DraftWatch {
  * wrote that cell. Univer moves the edit location along inserted and removed rows and columns,
  * except when its own row or column goes: when someone else removes it, the commit would write
  * over the cell that moved into its place, so the entry is cancelled and a notice that stays
- * shows its text to copy. `beforeRemote` goes to the adapter: each edit of someone else's is
- * compared with where the draft is at the moment it runs.
+ * shows its text to copy. `beforeRemote` and `beforeLocal` go to the adapter: each edit of
+ * someone else's is compared with where the draft is at the moment it runs.
  *
- * The draft may sit in lines this page inserted and has not had confirmed: taking that insert
- * back removes them until it runs again. The draft is then parked where they come back, out of
- * reach of the edits that arrive meanwhile, and put back into them; lines that do not come back
- * where expected cancel the entry as a removal would.
+ * The draft may sit in lines an unconfirmed insert of this page's added: taking that op back
+ * removes them until it runs again. The draft is parked with that op, out of reach of the edits
+ * that run meanwhile, and put back where the op's insert runs again: the adapter has already
+ * moved the insert along everything that ran before it. Anything else from that op on those
+ * lines, or an op that does not put them back, cancels the entry as a removal would: the commit
+ * never goes to a cell it is not sure of.
  */
 function keepingCellDraft(runtime: UniverRuntime): {
   beforeRemote: (mutation: Mutation) => void
+  beforeLocal: (step: LocalStep['step'], index: number) => void
   around: (integrate: SheetsCollabAdapter['integrate']) => SheetsCollabAdapter['integrate']
 } {
   // looked up when an edit first arrives: joining the session touches none of Univer's editor
@@ -160,8 +169,13 @@ function keepingCellDraft(runtime: UniverRuntime): {
   // null outside an `integrate` that keeps a draft
   let watch: DraftWatch | null = null
 
+  const beforeLocal = (step: LocalStep['step'], index: number): void => {
+    if (watch) watch.local = { step, index }
+  }
+
   const beforeRemote = (mutation: Mutation): void => {
     if (!watch) return
+    watch.local = null
     const at = use().bridge.getEditLocation()
     if (!at) return
     watch.remoteNext = mutation.id
@@ -171,30 +185,36 @@ function keepingCellDraft(runtime: UniverRuntime): {
 
   // before each line change runs: Univer moves the location along it afterwards
   const beforeLines = (id: string, params: Mutation['params']): void => {
-    const { bridge } = use()
-    const remote = watch!.remoteNext === id
-    watch!.remoteNext = null
+    const w = watch!
+    const remote = w.remoteNext === id
+    w.remoteNext = null
     const kind = AXIS_OF[id]
-    const at = bridge.getEditLocation()
+    const at = use().bridge.getEditLocation()
     if (!kind || !at || params.subUnitId !== at.sheetId) return
     const { axis, inserts } = kind
     const [start, end] = lines(params.range as IRange, axis)
     const count = end - start + 1
-    const parked = watch!.parked
+    const replaying = (op: number) => !remote && w.local?.step === 'replay' && w.local.index === op
+    const parked = w.parked
     if (parked?.axis === axis) {
-      if (inserts && !remote && start === parked.anchor && count === parked.count) {
-        watch!.back = { id, axis, line: start + parked.offset }
-        watch!.parked = null
-      } else if (inserts && start < parked.anchor) parked.anchor += count
-      else if (!inserts && end < parked.anchor) parked.anchor -= count
-      else if (!inserts && start < parked.anchor) parked.anchor = start
+      if (!replaying(parked.op)) return
+      if (inserts && count === parked.count) {
+        w.back = { id, axis, line: start + parked.offset }
+        w.returned = { op: parked.op, axis }
+        w.parked = null
+      } else w.removed = true
+      return
+    }
+    if (w.returned?.axis === axis && replaying(w.returned.op)) {
+      w.removed = true
       return
     }
     if (inserts) return
     const line = axis === 'row' ? at.row : at.column
     if (line < start || line > end) return
-    if (remote || parked) watch!.removed = true
-    else watch!.parked = { axis, anchor: start, count, offset: line - start }
+    if (!remote && !parked && w.local?.step === 'revert')
+      w.parked = { op: w.local.index, axis, count, offset: line - start }
+    else w.removed = true
   }
 
   const around =
@@ -208,7 +228,9 @@ function keepingCellDraft(runtime: UniverRuntime): {
         written: false,
         removed: false,
         remoteNext: null,
+        local: null,
         parked: null,
+        returned: null,
         back: null,
       })
       const before = commands.beforeCommandExecuted(({ id, params }) =>
@@ -251,7 +273,7 @@ function keepingCellDraft(runtime: UniverRuntime): {
       if (found.written) showToast(say(DRAFT_OVERWRITTEN), 'error')
       return rebuilt
     }
-  return { beforeRemote, around }
+  return { beforeRemote, beforeLocal, around }
 }
 
 function editorServices(runtime: UniverRuntime) {
@@ -319,7 +341,7 @@ export function joinSheetsCollab(
           journalMark: (mutation) => journalMark(state.editJournal, mutation),
           refusalOf: (mutation) => structuralOpsRefusal(state.editJournal, mutation),
         },
-        { onBlocked: refused, beforeRemote: draft.beforeRemote },
+        { onBlocked: refused, beforeRemote: draft.beforeRemote, beforeLocal: draft.beforeLocal },
       )
       // From here on the renderer refuses what would stay on this page (collab-refusals.ts)
       setEditRefusalRule((kind) => {

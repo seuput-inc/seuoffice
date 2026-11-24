@@ -242,6 +242,12 @@ export interface SheetsCollabOptions {
    * form), after this page's unconfirmed edits are taken back and before they run again.
    */
   readonly beforeRemote?: (mutation: Mutation) => void
+  /**
+   * Called during `integrate` just before each of this page's unconfirmed ops is taken back
+   * (`'revert'`, newest first) and just before it runs again (`'replay'`, oldest first). `index`
+   * is the op's place in `local`, oldest first; the edit in progress, if any, comes last.
+   */
+  readonly beforeLocal?: (step: 'revert' | 'replay', index: number) => void
 }
 
 /** What takes local mutations back: `undo` runs in order, then `journal` in order (newest mark first) */
@@ -508,8 +514,11 @@ export function sheetsCollabAdapter(
    * runs before the first journal step, so each step finds the journal as the
    * mutations after its own left it.
    */
-  function revert(reverts: readonly Revert[]): boolean {
-    for (const { undo } of reverts) if (!run(undo)) return false
+  function revert(reverts: readonly Revert[], before?: (at: number) => void): boolean {
+    for (const [at, { undo }] of reverts.entries()) {
+      before?.(at)
+      if (!run(undo)) return false
+    }
     for (const { journal } of reverts) for (const step of journal) step()
     return true
   }
@@ -1045,7 +1054,10 @@ export function sheetsCollabAdapter(
         reverts.push(taken)
         undoOf.delete(op)
       }
-      if (!revert(reverts)) throw new Error('co-editing could not revert its unconfirmed edits')
+      // `reverts` holds the edit in progress first, then `local` newest first
+      const step = (at: number) => options.beforeLocal?.('revert', reverts.length - 1 - at)
+      if (!revert(reverts, step))
+        throw new Error('co-editing could not revert its unconfirmed edits')
 
       const changes: Change[] = []
       for (const op of remote) {
@@ -1090,6 +1102,7 @@ export function sheetsCollabAdapter(
       const rebased = rebaseMutations(queued, changes, names)
       const rebuilt: SheetOp[] = []
       rebased.forEach((wires, index) => {
+        options.beforeLocal?.('replay', index)
         const replayed = replayOp(wires)
         if (index < local.length) {
           const op: SheetOp = { id: local[index]!.id, mutations: replayed.mutations }

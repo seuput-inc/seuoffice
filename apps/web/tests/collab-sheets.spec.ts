@@ -744,6 +744,54 @@ test('an entry in a row this page inserted and the others have not confirmed sur
   ).toHaveLength(1)
 })
 
+test('an entry in the second of two rows this page inserted goes back to that row, not the first', async ({
+  browser,
+}) => {
+  const documentId = freshDocument()
+  const writer = await open(browser, documentId, 'writer')
+  const typist = await open(browser, documentId, 'typist')
+  await typeInto(typist, 'H8', 'ready')
+  await settled([writer, typist])
+
+  // two unconfirmed inserts, the first row 5, the second row 6 right under it: each edit that
+  // arrives takes both back and runs the first again before the second
+  await holdOutgoing(typist, true)
+  await insertRowAbove(typist, 5)
+  await insertRowAbove(typist, 6)
+  await select(typist, 'H6')
+  await expect(typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')).toBeFocused()
+  await typist.page.keyboard.type('new')
+  const notice = typist.frame.getByRole('status').filter({ hasText: 'new' })
+  const received = async (act: () => Promise<void>) => {
+    const before = (await typist.status()).version
+    await act()
+    await expect.poll(async () => (await typist.status()).version).toBeGreaterThan(before)
+    // the notice would show a frame after the edit runs
+    await typist.page.waitForTimeout(500)
+    await expect(notice).toHaveCount(0)
+  }
+  await received(() => typeInto(writer, 'B2', 'other'))
+  // a row the writer inserts above its row 6, under both of the typist's rows once they are in
+  await received(() => insertRowAbove(writer, 6))
+
+  await holdOutgoing(typist, false)
+  await edited(typist, () => typist.page.keyboard.press('Enter'))
+  const version = await settled([writer, typist])
+  await writer.page.locator('#save').click()
+  const saved = await savedBook(writer)
+  expect(saved.version).toBe(version)
+  const cells = firstSheet(saved)
+  const shown = JSON.stringify([...cells])
+  expect(cells.get('H6'), shown).toBe('new')
+  expect(cells.get('H5'), shown).toBeUndefined()
+  expect(cells.get('H11'), shown).toBe('ready')
+  expect(cells.get('B2'), shown).toBe('other')
+  expect(
+    [...cells.values()].filter((text) => text === 'new'),
+    shown,
+  ).toHaveLength(1)
+})
+
 test('entries cancelled one after another each keep their notice, copied even where the async clipboard is missing', async ({
   browser,
 }) => {
