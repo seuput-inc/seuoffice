@@ -26,31 +26,37 @@ hp:p, hp:run 아래 요소를 ForeignXml로 원문 그대로 갖고 쓴다. 요�
 hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
 
 문단을 지우면 함께 지워지고, 나누면 앞 문단에 남고, 합치면 뒤 문단의 것이 합친
-문단에 이어 붙는다.
+문단에 이어 붙는다. 합치기를 되돌리면(ParaMeta에 실어 보낸 뒤 문단 몫) 되살아난
+문단으로 돌아간다. 클립보드로 복사한 문단에는 싣지 않아 붙여 넣어도 두 벌이 되지
+않는다.
 ---
- src/diagnostics/ir_field_sweep.rs              |   6 +
- src/document_core/commands/object_ops/table.rs |   2 +
- src/document_core/html_table_import.rs         |   1 +
- src/model/document.rs                          |   2 +
- src/model/paragraph.rs                         | 128 +++++++++
- src/model/style.rs                             |   3 +
- src/model/table.rs                             |   3 +
- src/parser/body_text.rs                        |  26 +-
- src/parser/doc_info.rs                         |   1 +
- src/parser/hwpx/foreign.rs                     | 349 +++++++++++++++++++++++++
- src/parser/hwpx/header.rs                      |   1 +
- src/parser/hwpx/mod.rs                         |   1 +
- src/parser/hwpx/section.rs                     |  58 +++-
- src/parser/hwpx/utils.rs                       |   2 +-
- src/scaffold/builder.rs                        |   1 +
- src/serializer/body_text.rs                    |  46 +++-
- src/serializer/doc_info/tests.rs               |   2 +
- src/serializer/hwpx/header.rs                  |  29 +-
- src/serializer/hwpx/section.rs                 |  52 +++-
- src/serializer/hwpx/table.rs                   |   4 +
- tests/cases/unknown_paragraph_records.rs       | 244 +++++++++++++++++
- tests/cases/unknown_paragraph_xml.rs           | 315 ++++++++++++++++++++++
- 22 files changed, 1248 insertions(+), 28 deletions(-)
+ src/diagnostics/ir_field_sweep.rs               |   6 +
+ src/document_core/commands/clipboard.rs         |   4 +
+ src/document_core/commands/footnote_ops.rs      |  11 +-
+ src/document_core/commands/header_footer_ops.rs |   1 +
+ src/document_core/commands/object_ops/table.rs  |   2 +
+ src/document_core/commands/text_editing.rs      |   5 +
+ src/document_core/html_table_import.rs          |   1 +
+ src/model/document.rs                           |   2 +
+ src/model/paragraph.rs                          | 192 +++++++++++++
+ src/model/style.rs                              |   3 +
+ src/model/table.rs                              |   3 +
+ src/parser/body_text.rs                         |  26 +-
+ src/parser/doc_info.rs                          |   1 +
+ src/parser/hwpx/foreign.rs                      | 349 +++++++++++++++++++++++
+ src/parser/hwpx/header.rs                       |   1 +
+ src/parser/hwpx/mod.rs                          |   1 +
+ src/parser/hwpx/section.rs                      |  58 +++-
+ src/parser/hwpx/utils.rs                        |   2 +-
+ src/scaffold/builder.rs                         |   1 +
+ src/serializer/body_text.rs                     |  46 ++-
+ src/serializer/doc_info/tests.rs                |   2 +
+ src/serializer/hwpx/header.rs                   |  29 +-
+ src/serializer/hwpx/section.rs                  |  52 +++-
+ src/serializer/hwpx/table.rs                    |   4 +
+ tests/cases/unknown_paragraph_records.rs        | 295 +++++++++++++++++++
+ tests/cases/unknown_paragraph_xml.rs            | 363 ++++++++++++++++++++++++
+ 26 files changed, 1429 insertions(+), 31 deletions(-)
 
 diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
 index 73e938d4d..d4b140a0b 100644
@@ -90,6 +96,76 @@ index 73e938d4d..d4b140a0b 100644
  
      // 캡션: 속성은 문단을 뺀 사본으로, 문단은 재귀로.
      {
+diff --git a/src/document_core/commands/clipboard.rs b/src/document_core/commands/clipboard.rs
+index 1245903c1..7e9701016 100644
+--- a/src/document_core/commands/clipboard.rs
++++ b/src/document_core/commands/clipboard.rs
+@@ -148,6 +148,10 @@ pub(super) fn strip_structural_controls_for_text_clipboard(para: &mut Paragraph)
+     // 스플라이스되어 렌더 입력이 될 수 있다 — 컨트롤 제거로 compose 입력이
+     // 바뀌므로 단일줄 과밀 memo 를 무효화한다.
+     para.invalidate_layout_inputs();
++    // Markup the editor does not model stays with the paragraph it came from: a paste
++    // would otherwise write a second copy of it.
++    para.unknown_records.clear();
++    para.foreign_xml = None;
+     let leading_defs = para
+         .controls
+         .iter()
+diff --git a/src/document_core/commands/footnote_ops.rs b/src/document_core/commands/footnote_ops.rs
+index 026f5c878..852a6d263 100644
+--- a/src/document_core/commands/footnote_ops.rs
++++ b/src/document_core/commands/footnote_ops.rs
+@@ -595,7 +595,7 @@ impl DocumentCore {
+             let ctrl = para.controls.get_mut(control_idx).ok_or_else(|| {
+                 HwpError::RenderError(format!("컨트롤 인덱스 {} 범위 초과", control_idx))
+             })?;
+-            match ctrl {
++            let paragraphs = match ctrl {
+                 Control::Footnote(f) => {
+                     if fn_para_idx >= f.paragraphs.len() {
+                         return Err(HwpError::RenderError(format!(
+@@ -603,7 +603,7 @@ impl DocumentCore {
+                             fn_para_idx
+                         )));
+                     }
+-                    f.paragraphs[fn_para_idx].split_at(char_offset)
++                    &mut f.paragraphs
+                 }
+                 Control::Endnote(e) => {
+                     if fn_para_idx >= e.paragraphs.len() {
+@@ -612,14 +612,19 @@ impl DocumentCore {
+                             fn_para_idx
+                         )));
+                     }
+-                    e.paragraphs[fn_para_idx].split_at(char_offset)
++                    &mut e.paragraphs
+                 }
+                 _ => {
+                     return Err(HwpError::RenderError(
+                         "컨트롤이 각주/미주가 아닙니다".to_string(),
+                     ))
+                 }
++            };
++            let new_para = paragraphs[fn_para_idx].split_at(char_offset);
++            if let Some(meta) = &restore_meta {
++                paragraphs[fn_para_idx].release_merged(meta);
+             }
++            new_para
+         };
+         if let Some(meta) = restore_meta {
+             restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+diff --git a/src/document_core/commands/header_footer_ops.rs b/src/document_core/commands/header_footer_ops.rs
+index 788c2d716..e01bce131 100644
+--- a/src/document_core/commands/header_footer_ops.rs
++++ b/src/document_core/commands/header_footer_ops.rs
+@@ -430,6 +430,7 @@ impl DocumentCore {
+             }
+             let mut new_para = paragraphs[hf_para_idx].split_at(char_offset);
+             if let Some(meta) = restore_meta {
++                paragraphs[hf_para_idx].release_merged(&meta);
+                 restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+             }
+             new_para
 diff --git a/src/document_core/commands/object_ops/table.rs b/src/document_core/commands/object_ops/table.rs
 index c1c2f9c5c..89fb7afda 100644
 --- a/src/document_core/commands/object_ops/table.rs
@@ -110,6 +186,50 @@ index c1c2f9c5c..89fb7afda 100644
              layout_page_break_cache: Default::default(),
          };
          table.rebuild_grid();
+diff --git a/src/document_core/commands/text_editing.rs b/src/document_core/commands/text_editing.rs
+index 38c083494..cf2deecad 100644
+--- a/src/document_core/commands/text_editing.rs
++++ b/src/document_core/commands/text_editing.rs
+@@ -4241,6 +4241,7 @@ impl DocumentCore {
+                 &self.document.sections[section_idx].paragraphs[para_idx],
+             );
+             if let Some(meta) = restore_meta {
++                self.document.sections[section_idx].paragraphs[para_idx].release_merged(&meta);
+                 restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+             }
+             self.document.sections[section_idx]
+@@ -4347,6 +4348,7 @@ impl DocumentCore {
+             // 기본 상속은 유지하되, merge undo가 준 원래 문단 메타는 모든 생성 분기에서
+             // 동일하게 적용해야 한다 (Task #2342 review).
+             if let Some(meta) = restore_meta {
++                self.document.sections[section_idx].paragraphs[para_idx].release_merged(&meta);
+                 restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+             }
+             self.document.sections[section_idx]
+@@ -4387,6 +4389,7 @@ impl DocumentCore {
+         let mut new_para =
+             self.document.sections[section_idx].paragraphs[para_idx].split_at(char_offset);
+         if let Some(meta) = restore_meta {
++            self.document.sections[section_idx].paragraphs[para_idx].release_merged(&meta);
+             restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+         }
+ 
+@@ -5204,6 +5207,7 @@ impl DocumentCore {
+         let original_vpos = cell_para.line_segs.first().map(|seg| seg.vertical_pos);
+         let mut new_para = cell_para.split_at(char_offset);
+         if let Some(meta) = restore_meta {
++            cell_para.release_merged(&meta);
+             restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+         }
+ 
+@@ -6691,6 +6695,7 @@ impl DocumentCore {
+                     .map(|seg| seg.vertical_pos);
+                 let mut new_para = cell.paragraphs[cell_para_idx].split_at(char_offset);
+                 if let Some(meta) = restore_meta {
++                    cell.paragraphs[cell_para_idx].release_merged(&meta);
+                     restore_para_meta(&mut new_para, meta, &self.document.doc_info.para_shapes);
+                 }
+                 cell.paragraphs.insert(cell_para_idx + 1, new_para);
 diff --git a/src/document_core/html_table_import.rs b/src/document_core/html_table_import.rs
 index 5987eff1f..36267d1d7 100644
 --- a/src/document_core/html_table_import.rs
@@ -136,10 +256,10 @@ index c41025c52..5a8275506 100644
      pub raw_ctrl_extra: Vec<u8>,
      /// 추가 쪽 테두리/배경 (2번째, 3번째 등)
 diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
-index c8444900d..46265eb53 100644
+index c8444900d..8507a32c0 100644
 --- a/src/model/paragraph.rs
 +++ b/src/model/paragraph.rs
-@@ -17,6 +17,110 @@ pub fn normalize_text_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+@@ -17,6 +17,137 @@ pub fn normalize_text_newlines(text: &str) -> std::borrow::Cow<'_, str> {
      }
  }
  
@@ -149,7 +269,7 @@ index c8444900d..46265eb53 100644
 +/// belong to the paragraph: deleting it drops them, splitting it leaves them in the front
 +/// part (the one keeping the paragraph's instance id), merging carries the back part's
 +/// records into the merged paragraph after the front part's own.
-+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 +pub struct UnknownRecord {
 +    pub after: RecordAnchor,
 +    /// Levels below the paragraph header (1 = direct child): the record keeps its place
@@ -160,7 +280,7 @@ index c8444900d..46265eb53 100644
 +}
 +
 +/// The modelled paragraph child an [`UnknownRecord`] follows.
-+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 +pub enum RecordAnchor {
 +    /// Right after PARA_HEADER, before any other child.
 +    Header,
@@ -178,7 +298,7 @@ index c8444900d..46265eb53 100644
 +/// expanded name. Elements keep their parent kind but not their place among the runs: the
 +/// ones under `<hp:run>` are written in one run after the paragraph's text, the ones under
 +/// `<hp:p>` after the runs.
-+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
++#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 +pub struct ForeignXml {
 +    /// `(prefix, uri)` declarations of the attributes' prefixes, written on `<hp:p>`; one
 +    /// binding per prefix.
@@ -245,12 +365,39 @@ index c8444900d..46265eb53 100644
 +        self.p_children.extend(back.p_children.iter().cloned());
 +        self.run_children.extend(back.run_children.iter().cloned());
 +    }
++
++    /// The front paragraph's markup before [`Self::absorb`] took in `back`, or `None` when
++    /// this is no such merge result. Absorbing only appends, so the front's namespaces and
++    /// attributes are prefixes of these; the longest prefixes that absorb back into exactly
++    /// this are taken.
++    pub fn before_absorbing(&self, back: &ForeignXml) -> Option<ForeignXml> {
++        let p_children = self.p_children.strip_suffix(back.p_children.as_slice())?;
++        let run_children = self
++            .run_children
++            .strip_suffix(back.run_children.as_slice())?;
++        for namespaces in (0..=self.namespaces.len()).rev() {
++            for attributes in (0..=self.attributes.len()).rev() {
++                let front = ForeignXml {
++                    namespaces: self.namespaces[..namespaces].to_vec(),
++                    attributes: self.attributes[..attributes].to_vec(),
++                    p_children: p_children.to_vec(),
++                    run_children: run_children.to_vec(),
++                };
++                let mut merged = front.clone();
++                merged.absorb(back);
++                if merged == *self {
++                    return Some(front);
++                }
++            }
++        }
++        None
++    }
 +}
 +
  /// 문자 offset 단위의 글자 모양 복원 구간. IR의 UTF-16 위치와 구분한다.
  #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
  #[serde(rename_all = "camelCase", deny_unknown_fields)]
-@@ -152,6 +256,10 @@ pub struct Paragraph {
+@@ -152,6 +283,10 @@ pub struct Paragraph {
      /// 각 컨트롤에 대응하는 CTRL_DATA 레코드 (라운드트립 보존용)
      /// controls[i]에 대응하는 CTRL_DATA가 있으면 ctrl_data_records[i] = Some(data)
      pub ctrl_data_records: Vec<Option<Vec<u8>>>,
@@ -261,7 +408,65 @@ index c8444900d..46265eb53 100644
      /// char_count의 최상위 비트 (bit 31) 파싱값.
      /// HWP5 저장기는 현재 list scope의 마지막 문단 여부로 bit 31을 재생성한다.
      pub char_count_msb: bool,
-@@ -2479,6 +2587,8 @@ impl Paragraph {
+@@ -284,6 +419,12 @@ pub struct ParaMeta {
+     pub raw_header_extra: Vec<u8>,
+     /// TAB 확장 데이터 — 문단 전체가 통째로 이동하므로 분할 없이 그대로 옮긴다.
+     pub tab_extended: Vec<[u16; 7]>,
++    /// The removed paragraph's own unmodelled records and foreign HWPX markup: the undo
++    /// gives them back to it and takes them out of the paragraph it was merged into.
++    #[serde(default)]
++    pub unknown_records: Vec<UnknownRecord>,
++    #[serde(default)]
++    pub foreign_xml: Option<Box<ForeignXml>>,
+ }
+ 
+ /// 문단 번호 시작 방식
+@@ -2043,6 +2184,8 @@ impl Paragraph {
+             numbering_restart: self.numbering_restart,
+             raw_header_extra: self.raw_header_extra.clone(),
+             tab_extended: self.tab_extended.clone(),
++            unknown_records: self.unknown_records.clone(),
++            foreign_xml: self.foreign_xml.clone(),
+         }
+     }
+ 
+@@ -2055,6 +2198,35 @@ impl Paragraph {
+         self.numbering_restart = meta.numbering_restart;
+         self.raw_header_extra = meta.raw_header_extra;
+         self.tab_extended = meta.tab_extended;
++        self.unknown_records = meta.unknown_records;
++        self.foreign_xml = meta.foreign_xml;
++    }
++
++    /// On a merge undo, takes back out of this (front) paragraph what the merge appended
++    /// from the removed paragraph `meta` describes, before [`Self::apply_meta`] gives it to
++    /// the restored one. Leaves this paragraph alone when its tail no longer is that.
++    pub fn release_merged(&mut self, meta: &ParaMeta) {
++        let own = self.unknown_records.len();
++        let back = meta.unknown_records.len();
++        let tail_matches = own >= back
++            && self.unknown_records[own - back..]
++                .iter()
++                .zip(&meta.unknown_records)
++                .all(|(a, b)| a.depth == b.depth && a.tag_id == b.tag_id && a.data == b.data);
++        if tail_matches {
++            self.unknown_records.truncate(own - back);
++        }
++        let released = match (&self.foreign_xml, &meta.foreign_xml) {
++            (Some(merged), Some(back)) => merged.before_absorbing(back),
++            _ => None,
++        };
++        if let Some(front) = released {
++            self.foreign_xml = if front == ForeignXml::default() {
++                None
++            } else {
++                Some(Box::new(front))
++            };
++        }
+     }
+ 
+     /// char_offset 위치에서 문단을 분할한다.
+@@ -2479,6 +2651,8 @@ impl Paragraph {
              control_mask: new_control_mask,
              controls: new_controls,
              ctrl_data_records: new_ctrl_data_records,
@@ -270,7 +475,7 @@ index c8444900d..46265eb53 100644
              char_count_msb: false,
              raw_header_extra: new_raw_header_extra,
              has_para_text: new_has_para_text,
-@@ -2517,6 +2627,24 @@ impl Paragraph {
+@@ -2517,6 +2691,24 @@ impl Paragraph {
          other: &Paragraph,
          storage: &S,
      ) -> Result<usize, S::Error> {
@@ -1247,10 +1452,10 @@ index 40caeeb45..597250630 100644
      Ok(())
 diff --git a/tests/cases/unknown_paragraph_records.rs b/tests/cases/unknown_paragraph_records.rs
 new file mode 100644
-index 000000000..e8f3a5eda
+index 000000000..93c5bb409
 --- /dev/null
 +++ b/tests/cases/unknown_paragraph_records.rs
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,295 @@
 +//! Records the parser does not model stay with the paragraph that owns them: an edit
 +//! elsewhere rebuilds the section from the model and must still write them back unchanged.
 +
@@ -1495,12 +1700,63 @@ index 000000000..e8f3a5eda
 +    let merged = children(&records, paras[0]);
 +    assert!(same(merged.last().unwrap(), &record), "{merged:?}");
 +}
++
++fn opaque_count(bytes: &[u8]) -> usize {
++    section_records(bytes)
++        .iter()
++        .filter(|r| r.tag_id == OPAQUE_TAG)
++        .count()
++}
++
++#[test]
++fn copy_and_paste_does_not_duplicate_the_records() {
++    for start in [0, 3] {
++        let (mut core, _) = body_fixture();
++        core.copy_selection_native(0, 0, start, 1, 6).unwrap();
++        core.paste_internal_native(0, 1, 6).unwrap();
++        let (bytes, _) = reopen(&core);
++        assert_eq!(opaque_count(&bytes), 3, "copy from offset {start}");
++    }
++}
++
++#[test]
++fn undoing_a_merge_gives_the_back_paragraph_its_records_back() {
++    let base = two_paragraphs().export_hwp_native().unwrap();
++    let records = section_records(&base);
++    let front = opaque(1, b"front-paragraph");
++    let back = opaque(1, b"back-paragraph");
++    let second_end = subtree_end(&records, paragraphs(&records, 0)[1]) - 1;
++    let (base, _) = insert_after(&base, second_end, std::slice::from_ref(&back));
++    let records = section_records(&base);
++    let first_end = subtree_end(&records, paragraphs(&records, 0)[0]) - 1;
++    let (_, mut core) = insert_after(&base, first_end, std::slice::from_ref(&front));
++
++    let merged: serde_json::Value =
++        serde_json::from_str(&core.merge_paragraph_native(0, 1).unwrap()).unwrap();
++    let offset = merged["charOffset"].as_u64().unwrap() as usize;
++    let meta = serde_json::from_value(merged["removedParaMeta"].clone()).unwrap();
++    core.split_paragraph_native(0, 0, offset, Some(meta))
++        .unwrap();
++    let (bytes, _) = reopen(&core);
++
++    let records = section_records(&bytes);
++    let paras = paragraphs(&records, 0);
++    let owned = |i: usize| -> Vec<Vec<u8>> {
++        children(&records, paras[i])
++            .iter()
++            .filter(|r| r.tag_id == OPAQUE_TAG)
++            .map(|r| r.data.clone())
++            .collect()
++    };
++    assert_eq!(owned(0), vec![front.data.clone()]);
++    assert_eq!(owned(1), vec![back.data.clone()]);
++}
 diff --git a/tests/cases/unknown_paragraph_xml.rs b/tests/cases/unknown_paragraph_xml.rs
 new file mode 100644
-index 000000000..b74987df9
+index 000000000..a3476f866
 --- /dev/null
 +++ b/tests/cases/unknown_paragraph_xml.rs
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,363 @@
 +//! HWPX markup outside the OWPML namespaces in a paragraph (attributes of `<hp:p>`,
 +//! elements under `<hp:p>` or `<hp:run>`) stays with that paragraph through edits elsewhere,
 +//! save and reopen. Text inside such an element is not paragraph text.
@@ -1815,6 +2071,54 @@ index 000000000..b74987df9
 +        "{out}"
 +    );
 +    assert!(!out.contains("<hp:t>cellleak</hp:t>"), "{out}");
++}
++
++/// Paragraphs "first paragraph" binding `ext` to urn:a and "second paragraph" binding it
++/// to urn:b, each with an `ext` attribute and an `ext` run child.
++fn differently_bound_paragraphs() -> DocumentCore {
++    let bytes = two_paragraphs().export_hwpx_native().unwrap();
++    let mut xml = section_xml(&bytes);
++    bind_on_paragraph(&mut xml, "first paragraph", "urn:a", "mark", "noteA");
++    bind_on_paragraph(&mut xml, "second paragraph", "urn:b", "flag", "noteB");
++    DocumentCore::from_bytes(&with_section_xml(&bytes, &xml)).unwrap()
++}
++
++#[test]
++fn undoing_a_merge_gives_the_back_paragraph_its_foreign_markup_back() {
++    let mut core = differently_bound_paragraphs();
++    let (before, _) = saved(&core);
++
++    let merged: serde_json::Value =
++        serde_json::from_str(&core.merge_paragraph_native(0, 1).unwrap()).unwrap();
++    let offset = merged["charOffset"].as_u64().unwrap() as usize;
++    let meta = serde_json::from_value(merged["removedParaMeta"].clone()).unwrap();
++    core.split_paragraph_native(0, 0, offset, Some(meta))
++        .unwrap();
++    let (after, _) = saved(&core);
++
++    for n in [0, 1] {
++        let open = |xml: &str| {
++            let p = body_paragraph(xml, n);
++            p[..p.find('>').unwrap()].to_string()
++        };
++        assert_eq!(open(&after), open(&before), "paragraph {n}");
++    }
++    let first = body_paragraph(&after, 0);
++    let second = body_paragraph(&after, 1);
++    assert!(first.contains("noteA") && !first.contains("noteB"), "{first}");
++    assert!(second.contains("noteB") && !second.contains("noteA"), "{second}");
++}
++
++#[test]
++fn copy_and_paste_does_not_duplicate_foreign_markup() {
++    let mut core = differently_bound_paragraphs();
++    core.copy_selection_native(0, 0, 0, 1, 6).unwrap();
++    core.paste_internal_native(0, 1, 6).unwrap();
++    let (xml, _) = saved(&core);
++
++    assert_eq!(xml.matches("noteA").count(), 1, "{xml}");
++    assert_eq!(xml.matches("noteB").count(), 1, "{xml}");
++    assert_eq!(xml.matches(r#"mark="1""#).count(), 1, "{xml}");
 +}
 -- 
 2.50.1
