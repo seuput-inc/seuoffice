@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { VirtualClock } from '../src/conformance/network'
 import { sha256 } from '../src/sha256'
 import { createServerCore, type Principal, type ServerSocket } from '../src/server/server'
@@ -356,7 +356,7 @@ describe('live selections', () => {
     expect(a.closed).toBe(false)
   })
 
-  it('drops oversize UTF-8, deep, future and stale positions without disconnecting or relabeling them', async () => {
+  it('drops deep, future and stale positions without disconnecting or relabeling them', async () => {
     const { server, clock, open } = await setup()
     const a = await open('a')
     const witness = await open('witness')
@@ -364,10 +364,6 @@ describe('live selections', () => {
     const max = 'é'.repeat(Math.floor(room / 2)) + 'x'.repeat(room % 2)
     a.receive({ t: 'presence', v: 0, at: max })
     await server.idle()
-    a.receive({ t: 'presence', v: 0, at: max + 'x' })
-    a.receive({ t: 'presence', v: 0, at: 0, extra: ' '.repeat(4096) })
-    a.receive(' '.repeat(4096) + '{"t":"presence","v":0,"at":0}')
-    a.receive(`{"t":"presence","v":0,"at":0,"extra":"${'\ud800é'.repeat(900)}"}`)
     a.receive(`{"t":"presence","v":0,"at":${'['.repeat(1500)}0${']'.repeat(1500)}}`)
     a.receive({ t: 'presence', v: 1, at: 'future' })
     expect(clock.fire()).toBe(false)
@@ -388,6 +384,18 @@ describe('live selections', () => {
       at: 7,
     })
     expect(a.closed).toBe(false)
+  })
+
+  it('refuses a wire position one byte over the UTF-8 limit, without forwarding it', async () => {
+    const { server, open } = await setup()
+    const editor = await open()
+    const viewer = await open('viewer', false)
+    const frame = JSON.stringify({ t: 'presence', v: 0, at: 'é' })
+    viewer.receive(frame.padEnd(4096))
+    await server.idle()
+    expect(viewer.frames().at(-1)).toEqual({ t: 'error', code: 'bad_frame' })
+    expect(viewer.closed).toBe(true)
+    expect(editor.presences().every((position) => position.at === null)).toBe(true)
   })
 
   it('clears each departing socket once and its delayed messages cannot erase its replacement', async () => {
@@ -548,6 +556,21 @@ describe('a failing store', () => {
 })
 
 describe('inbound frames', () => {
+  it('keeps waiting edits encoded until their queue slot runs', async () => {
+    const { server, open } = await setup()
+    const socket = await open()
+    const raw = JSON.stringify({ t: 'submit', seq: 1, base: 0, ops: ['a short edit'] }).padEnd(4100)
+    const parse = vi.spyOn(JSON, 'parse')
+    try {
+      socket.receive(raw)
+      expect(parse.mock.calls.filter(([input]) => input === raw)).toHaveLength(0)
+      await server.idle()
+      expect(socket.frames().at(-1)).toEqual({ t: 'ack', seq: 1, v: 1 })
+    } finally {
+      parse.mockRestore()
+    }
+  })
+
   it('closes a socket with more than 256 frames waiting', async () => {
     const { server, open } = await setup()
     const socket = await open('a')

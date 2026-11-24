@@ -155,7 +155,7 @@ function shallowPresence(at: Json, depth = 0): boolean {
   return depth < 64 && Object.values(at).every((part: Json) => shallowPresence(part, depth + 1))
 }
 
-function withinBytes(text: string, max: number): boolean {
+export function withinBytes(text: string, max: number): boolean {
   return text.length <= max && (text.length * 3 <= max || utf8Length(text) <= max)
 }
 

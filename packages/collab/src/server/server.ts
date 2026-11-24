@@ -13,13 +13,13 @@
 
 import { systemClock, type Clock } from '../clock.js'
 import { deferred } from '../deferred.js'
-import { MAX_CHANGE_BYTES, PRESENCE_INTERVAL_MS } from '../limits.js'
+import { MAX_CHANGE_BYTES, MAX_PRESENCE_BYTES, PRESENCE_INTERVAL_MS } from '../limits.js'
 import type { Change, Peer } from '../model.js'
 import { sha256 } from '../sha256.js'
 import {
   encodePresence,
   parseClientFrame,
-  utf8Length,
+  withinBytes,
   type BytesFrame,
   type ClientFrame,
   type ErrorCode,
@@ -264,14 +264,9 @@ export function createServerCore({
     }
   }
 
-  function receivePresence(
-    doc: Doc,
-    conn: Conn,
-    frame: PresenceFrame,
-    raw: string | Uint8Array,
-  ): void {
+  function receivePresence(doc: Doc, conn: Conn, frame: PresenceFrame): void {
     if (conn.stage !== 'live' || !conn.hello?.presence || frame.v !== conn.sent) return
-    if (encodePresence(frame, raw) === undefined) return
+    if (encodePresence(frame) === undefined) return
     conn.presence = { ...frame, client: conn.client! }
     if (conn.presenceScheduled) return
     conn.presenceScheduled = true
@@ -597,19 +592,21 @@ export function createServerCore({
 
   function tooLarge(raw: string | Uint8Array): boolean {
     if (raw instanceof Uint8Array) return raw.byteLength > limits.maxBaseBytes
-    const max = limits.maxChangeBytes
-    if (raw.length > max) return true
-    return raw.length * 3 > max && utf8Length(raw) > max
+    return !withinBytes(raw, limits.maxChangeBytes)
   }
 
-  async function onFrame(
-    doc: Doc,
-    conn: Conn,
-    frame: Exclude<ClientFrame, PresenceFrame> | BytesFrame | null,
-  ): Promise<void> {
+  async function onFrame(doc: Doc, conn: Conn, raw: string | Uint8Array): Promise<void> {
     if (conn.stage === 'closed' || conn.refused) return
-    if (!frame) return reject(doc, conn, 'bad_frame')
+    let frame: ClientFrame | BytesFrame
+    try {
+      frame = parseClientFrame(raw)
+    } catch {
+      return reject(doc, conn, 'bad_frame')
+    }
     switch (frame.t) {
+      case 'presence':
+        // In-budget presence bypasses the inbox, so this frame exceeded its wire limit.
+        return reject(doc, conn, 'bad_frame')
       case 'hello':
         if (conn.stage !== 'new') return reject(doc, conn, 'bad_frame')
         conn.hello = frame
@@ -672,15 +669,19 @@ export function createServerCore({
           conn.refused = true
           void enqueue(doc, conn, () => reject(doc, conn, 'too_large'))
         } else {
-          let parsed: ClientFrame | BytesFrame | null
-          try {
-            parsed = parseClientFrame(frame)
-          } catch {
-            parsed = null
+          // Only a bounded selection may bypass the inbox. Keep queued edits in their wire form.
+          if (
+            typeof frame === 'string' &&
+            withinBytes(frame, MAX_PRESENCE_BYTES) &&
+            (frame.includes('presence') || frame.includes('\\u'))
+          ) {
+            try {
+              const candidate = parseClientFrame(frame)
+              if (candidate.t === 'presence') return receivePresence(doc, conn, candidate)
+            } catch {
+              // The queue handles invalid frames in arrival order.
+            }
           }
-          // Pointer motion takes one slot, never the queue or byte budget of a document edit.
-          if (parsed?.t === 'presence') return receivePresence(doc, conn, parsed, frame)
-          const queued = parsed
           // A string's length bounds its memory to within a factor of two; no need to encode it
           const counted =
             typeof frame === 'string' ? frame.length : conn.sentBinary ? frame.byteLength : 0
@@ -699,7 +700,7 @@ export function createServerCore({
           void enqueue(doc, conn, () => {
             conn.inbox -= 1
             conn.inboxBytes -= counted
-            return onFrame(doc, conn, queued)
+            return onFrame(doc, conn, frame)
           })
         }
       })
