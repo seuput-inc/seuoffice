@@ -25,6 +25,80 @@ export function createStudioCollab(win) {
   let editable = false
   let closed = false
   let replaying = false
+  let command
+  function run(action) {
+    try {
+      if (command.failure) throw command.failure.error
+      const result = action()
+      if (command.failure) throw command.failure.error
+      if (command.writes && typeof result?.then === 'function')
+        throw new Error('A Studio edit cannot commit across an await')
+      return result
+    } catch (error) {
+      // Studio catches some native failures and tries a fallback. Neither path can commit.
+      command.failure ??= { error }
+      throw command.failure.error
+    }
+  }
+  function transaction(bridge, action) {
+    if (bridge !== primary || locked() || input?.buffering()) return action()
+    if (command) return run(action)
+    const doc = raw.get(bridge.borrowDocumentHandle())
+    if (!doc) return action()
+    const cursor = handler?.cursor.recoveryCheckpoint()
+    const editing = handler && {
+      pendingCharShape: handler.pendingCharShape,
+      pendingCharShapeAnchor: handler.pendingCharShapeAnchor,
+      fieldStartExitKey: handler.fieldStartExitKey,
+      fieldEndExitKey: handler.fieldEndExitKey,
+      pastedFieldEndOutsidePending: handler.pastedFieldEndOutsidePending,
+    }
+    const events = []
+    const state = { events, writes: false }
+    let result
+    try {
+      result = callbacks.transaction(doc, () => {
+        command = state
+        try {
+          const value = run(action)
+          if (
+            state.writes &&
+            (locked() || input?.buffering() || raw.get(bridge.borrowDocumentHandle()) !== doc)
+          )
+            throw new Error('The Studio edit lost its document before commit')
+          return value
+        } finally {
+          command = undefined
+        }
+      })
+    } catch (error) {
+      // The owner has already restored the model. No command or undo handle may refer to its old state.
+      if (cursor && handler && raw.get(bridge.borrowDocumentHandle()) === doc) {
+        handler.history.clear(bridge)
+        handler.cancelDeferredPaginationFlush()
+        handler.deferredPaginationRunner.cancel()
+        handler.deferredPaginationPending = false
+        handler.pendingFocusedPagePatch = handler.lastCellKey = handler.protectedCellHitCache = null
+        handler.clearTableResizeRuntimeCache()
+        handler.resetDerivedStateAfterHistoryJump()
+        handler.removeFormOverlay()
+        Object.assign(handler, editing)
+        cursor.restore()
+        handler.updateCaret(true)
+        handler.eventBus.emit('document-view-changed')
+        handler.updateViewportOverlayPositions()
+      }
+      throw error
+    }
+    for (const [bus, event, args] of events) {
+      try {
+        bus.emit(event, ...args)
+      } catch (error) {
+        console.error('Studio observer failed after command commit:', error)
+      }
+    }
+    return result
+  }
   const locked = () => closed || replaying || viewer || !editable || !callbacks
   const controls = Object.freeze({
     setEditable(next) {
@@ -81,6 +155,28 @@ export function createStudioCollab(win) {
     get locked() {
       return Boolean(locked() || input?.buffering())
     },
+    transaction,
+    confirmDialog(apply) {
+      return transaction(primary, () => {
+        const result = apply()
+        if (result === false && command?.writes)
+          throw new Error('Studio dialog declined a partial edit')
+        return result
+      })
+    },
+    abortSnapshot(bridge, error) {
+      if (!command || bridge !== primary) return false
+      command.failure ??= { error }
+      return true
+    },
+    deferEvent(bus, event, args) {
+      if (!command || bus !== handler?.eventBus || !commitEvents.has(event)) return false
+      command.events.push([bus, event, args])
+      return true
+    },
+    get hasWrites() {
+      return Boolean(command?.writes)
+    },
     attachHost(next) {
       if (!closed) host = next
     },
@@ -89,7 +185,11 @@ export function createStudioCollab(win) {
       primary = bridge
       if (typeof owner !== 'function') return
       const hooks = owner(win, controls)
-      if (typeof hooks?.onMutation === 'function' && typeof hooks.onBuffer === 'function')
+      if (
+        typeof hooks?.transaction === 'function' &&
+        typeof hooks.onMutation === 'function' &&
+        typeof hooks.onBuffer === 'function'
+      )
         callbacks = hooks
     },
     wrap(bridge, doc) {
@@ -97,10 +197,14 @@ export function createStudioCollab(win) {
       if (raw.has(bridge.borrowDocumentHandle())) editable = false
       input?.cancel()
       const wrapped = wrapHwpMutations(doc, (target, method, args, call) => {
-        if (locked() || input?.buffering() || bridge.borrowDocumentHandle() !== wrapped) {
-          throw new Error(`read-only document: ${method} would change it`)
+        const apply = () => {
+          if (locked() || input?.buffering() || bridge.borrowDocumentHandle() !== wrapped)
+            throw new Error(`read-only document: ${method} would change it`)
+          if (!command) throw new Error(`No Studio edit transaction for ${method}`)
+          command.writes = true
+          return callbacks.onMutation(target, method, args, call)
         }
-        return callbacks.onMutation(target, method, args, call)
+        return command ? run(apply) : apply()
       })
       raw.set(wrapped, doc)
       return wrapped
@@ -110,7 +214,7 @@ export function createStudioCollab(win) {
       input?.dispose()
       const ime = bindComposition(
         ih,
-        commit,
+        (text) => transaction(ih.wasm, () => commit(text)),
         locked,
         (pending) => callbacks?.onBuffer(pending),
         (text) => callbacks?.onDraftLost?.(text),
@@ -207,6 +311,9 @@ function bindComposition(ih, commit, locked, onBuffer, onDraftLost) {
         // The owner may have mapped the live caret/selection while the IME was open.
         commit(text)
       }
+    } catch (error) {
+      onDraftLost(text)
+      throw error
     } finally {
       if (wasBuffered) onBuffer(false)
     }
@@ -325,6 +432,24 @@ function bindComposition(ih, commit, locked, onBuffer, onDraftLost) {
       for (const unsubscribe of off.splice(0)) unsubscribe()
     },
   }
+}
+
+const commitEvents = new Set([
+  'document-mutated',
+  'document-changed',
+  'document-page-invalidated',
+  'command-state-changed',
+  'cursor-rect-updated',
+  'cell-selection-phase-changed',
+  'table-object-selection-changed',
+  'picture-object-selection-changed',
+  'headerFooterModeChanged',
+  'footnoteModeChanged',
+])
+
+/** The frame is optional. Only the action's synchronous body is a Studio edit. */
+export function runStudioTransaction(bridge, action) {
+  return studioCollab ? studioCollab.transaction(bridge, action) : action()
 }
 
 export const studioCollab = createStudioCollab(globalThis.window)

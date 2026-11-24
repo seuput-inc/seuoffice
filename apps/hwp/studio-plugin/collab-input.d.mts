@@ -14,6 +14,7 @@ export interface HwpStudioControls {
 }
 
 export interface HwpStudioCallbacks {
+  transaction<T>(doc: HwpDocument, action: () => T): T
   onMutation(
     doc: HwpDocument,
     method: string,
@@ -36,6 +37,15 @@ interface DocumentOwner {
 }
 interface StudioCollab {
   readonly locked: boolean
+  readonly hasWrites: boolean
+  transaction<T>(bridge: DocumentOwner, action: () => T): T
+  confirmDialog(apply: () => void | boolean): void | boolean
+  abortSnapshot(bridge: DocumentOwner, error: unknown): boolean
+  deferEvent(
+    bus: { emit(event: string, ...args: unknown[]): void },
+    event: string,
+    args: unknown[],
+  ): boolean
   connect(bridge: DocumentOwner): void
   attachHost(host: HwpPresenceHost): void
   wrap(bridge: DocumentOwner, doc: HwpDocument): HwpDocument
@@ -43,3 +53,4 @@ interface StudioCollab {
 }
 export declare function createStudioCollab(win?: Window): StudioCollab | null
 export declare const studioCollab: StudioCollab | null
+export declare function runStudioTransaction<T>(bridge: DocumentOwner, action: () => T): T

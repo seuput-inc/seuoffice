@@ -182,6 +182,7 @@ import { EASY_WORDS_COMMAND, REDO_GATE, RUN_LOCK_GATE } from '../studio-plugin/a
 import { HANCOM_KEYS_MODULE, studioCommandIds } from '../studio-plugin/hancom-keys.mjs'
 import { PC_FONTS_MODULE } from '../studio-plugin/pc-fonts.mjs'
 import { READ_ONLY_MODULE } from '../studio-plugin/read-only.mjs'
+import { COLLAB_PASTE_PATCHES } from './collab-paste-patches.mjs'
 
 /** Must equal RENDERER_SCHEME in packages/electron-utils/src/renderer-scheme.ts. */
 export const APP_SCHEME = 'genoffice-app'
@@ -208,6 +209,7 @@ export { PC_FONTS_MODULE }
 export { READ_ONLY_MODULE }
 export const COLLAB_INPUT_MODULE = '@seuoffice/studio-collab-input'
 const COLLAB_IMPORT = `import { studioCollab } from '${COLLAB_INPUT_MODULE}';`
+const COLLAB_TRANSACTION_IMPORT = `import { runStudioTransaction, studioCollab } from '${COLLAB_INPUT_MODULE}';`
 
 /** Module specifier the studio-dialogs-* patches import; build-studio.mjs aliases it. */
 export { DIALOGS_MODULE }
@@ -228,6 +230,7 @@ function dialogsPatch(file, head, edits) {
 }
 
 const PATCHES = {
+  ...COLLAB_PASTE_PATCHES,
   'sdk-scheme': {
     file: /[\\/]@rhwp[\\/]editor[\\/]transport\.js$/,
     find: "if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {",
@@ -1349,11 +1352,13 @@ const PATCHES = {
       },
       {
         find: '    this.doc = STUDIO_READ_ONLY ? readOnlyDocument(nextDoc) : nextDoc;',
-        replace: '    this.doc = studioCollab ? studioCollab.wrap(this, nextDoc) : STUDIO_READ_ONLY ? readOnlyDocument(nextDoc) : nextDoc;',
+        replace:
+          '    this.doc = studioCollab ? studioCollab.wrap(this, nextDoc) : STUDIO_READ_ONLY ? readOnlyDocument(nextDoc) : nextDoc;',
       },
       {
         find: '      this.doc = HwpDocument.createEmpty();',
-        replace: '      const empty = HwpDocument.createEmpty();\n      this.doc = studioCollab ? studioCollab.wrap(this, empty) : empty;',
+        replace:
+          '      const empty = HwpDocument.createEmpty();\n      this.doc = studioCollab ? studioCollab.wrap(this, empty) : empty;',
       },
     ],
   },
@@ -1362,11 +1367,17 @@ const PATCHES = {
     edits: [
       {
         find: `import { STUDIO_READ_ONLY, readOnlyAllows } from '${READ_ONLY_MODULE}';`,
-        replace: `${COLLAB_IMPORT}\nimport { STUDIO_READ_ONLY, readOnlyAllows } from '${READ_ONLY_MODULE}';`,
+        replace: `${COLLAB_TRANSACTION_IMPORT}\nimport { STUDIO_READ_ONLY, readOnlyAllows } from '${READ_ONLY_MODULE}';`,
       },
       {
         find: '  if (STUDIO_READ_ONLY && !readOnlyAllows(commandId)) return true;',
-        replace: '  if ((STUDIO_READ_ONLY || studioCollab?.locked) && !readOnlyAllows(commandId)) return true;',
+        replace:
+          '  if ((STUDIO_READ_ONLY || studioCollab?.locked) && !readOnlyAllows(commandId)) return true;',
+      },
+      {
+        find: '      def.execute(this.services, params);',
+        replace:
+          '      runStudioTransaction(this.services.wasm, () => def.execute(this.services, params));',
       },
     ],
   },
@@ -1379,11 +1390,13 @@ const PATCHES = {
       },
       {
         find: '  if (!STUDIO_READ_ONLY && !this.cursor.isInHeaderFooter()) {',
-        replace: '  if (!STUDIO_READ_ONLY && !studioCollab?.locked && !this.cursor.isInHeaderFooter()) {',
+        replace:
+          '  if (!STUDIO_READ_ONLY && !studioCollab?.locked && !this.cursor.isInHeaderFooter()) {',
       },
       {
         find: '  if (STUDIO_READ_ONLY || !this.active || !this.contextMenu) return;',
-        replace: '  if (STUDIO_READ_ONLY || studioCollab?.locked || !this.active || !this.contextMenu) return;',
+        replace:
+          '  if (STUDIO_READ_ONLY || studioCollab?.locked || !this.active || !this.contextMenu) return;',
       },
     ],
   },
@@ -1392,13 +1405,71 @@ const PATCHES = {
     edits: [
       {
         find: `import { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
-        replace: `${COLLAB_IMPORT}\nimport { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
+        replace: `${COLLAB_TRANSACTION_IMPORT}\nimport { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
       },
-      { find: '    if (STUDIO_READ_ONLY) return;', replace: '    if (STUDIO_READ_ONLY || studioCollab?.locked) return;' },
-      { find: '    if (STUDIO_READ_ONLY) return false;', replace: '    if (STUDIO_READ_ONLY || studioCollab?.locked) return false;' },
+      {
+        find: '    if (STUDIO_READ_ONLY) return;',
+        replace: '    if (STUDIO_READ_ONLY || studioCollab?.locked) return;',
+      },
+      {
+        find: '    if (STUDIO_READ_ONLY) return false;',
+        replace: '    if (STUDIO_READ_ONLY || studioCollab?.locked) return false;',
+      },
+      {
+        find: '  private withCommandErrorBoundary(operation: string, run: () => void): void {',
+        replace: [
+          '  private withCommandErrorBoundary(operation: string, run: () => void): void {',
+          '    if (studioCollab && !studioCollab.locked) return studioCollab.transaction(this.wasm, run);',
+        ].join('\n'),
+      },
+      {
+        find: '    if (this.commandErrors) throw error;',
+        replace: '    if (studioCollab || this.commandErrors) throw error;',
+      },
+      {
+        find: '        if (!this.commandErrors) return;',
+        replace: '        if (!this.commandErrors && !studioCollab?.hasWrites) return;',
+      },
+      ...[
+        '_text.onInput.call(this, e as InputEvent)',
+        '_keyboard.onCut.call(this, e)',
+        '_mouse.onMouseUp.call(this, _e)',
+        '_mouse.onClick.call(this, e)',
+        '_mouse.onDblClick.call(this, e)',
+      ].map((call) => ({
+        find: `    ${call};`,
+        replace: `    runStudioTransaction(this.wasm, () => ${call});`,
+      })),
+      {
+        find: '  private onKeyDown(e: KeyboardEvent): void {\n    _keyboard.onKeyDown.call(this, e);',
+        replace:
+          '  private onKeyDown(e: KeyboardEvent): void {\n    runStudioTransaction(this.wasm, () => _keyboard.onKeyDown.call(this, e));',
+      },
+      {
+        find: '    try {\n      if (!await this.copySelectedObject(isCurrent) || !isCurrent()) return;\n      if (picture) {',
+        replace: '    const cut = () => {\n      if (picture) {',
+      },
+      {
+        find: '    } finally {\n      cancel();\n      if (this.cancelPendingObjectCut === cancel)',
+        replace: [
+          '    };',
+          '    try {',
+          '      if (!await this.copySelectedObject(isCurrent) || !isCurrent()) return;',
+          '      runStudioTransaction(this.wasm, cut);',
+          '    } finally {',
+          '      cancel();',
+          '      if (this.cancelPendingObjectCut === cancel)',
+        ].join('\n'),
+      },
+      {
+        find: '    if (!this.isOperationAllowedInEditMode(desc)) {\n      throw new Error(',
+        replace:
+          '    if (studioCollab || !this.isOperationAllowedInEditMode(desc)) {\n      throw new Error(',
+      },
       {
         find: '  private onCompositionStartBound: () => void;',
-        replace: '  private disposeCollabInput?: () => void;\n  private onCompositionStartBound: () => void;',
+        replace:
+          '  private disposeCollabInput?: () => void;\n  private onCompositionStartBound: () => void;',
       },
       {
         find: '    this.onInputBound = this.onInput.bind(this);',
@@ -1412,7 +1483,64 @@ const PATCHES = {
       },
       {
         find: "    this.textarea.removeEventListener('input', this.onInputBound);",
-        replace: "    this.disposeCollabInput?.();\n    this.textarea.removeEventListener('input', this.onInputBound);",
+        replace:
+          "    this.disposeCollabInput?.();\n    this.textarea.removeEventListener('input', this.onInputBound);",
+      },
+    ],
+  },
+  'studio-collab-dialog-confirm': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]ui[\\/]dialog\.ts$/,
+    edits: [
+      {
+        find: "import { enableDialogDrag } from './dialog-drag';",
+        replace: `${COLLAB_IMPORT}\nimport { enableDialogDrag } from './dialog-drag';`,
+      },
+      {
+        find: '      const shouldClose = this.onConfirm();',
+        replace:
+          '      const shouldClose = studioCollab ? studioCollab.confirmDialog(() => this.onConfirm()) : this.onConfirm();',
+      },
+    ],
+  },
+  'studio-collab-events': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]core[\\/]event-bus\.ts$/,
+    edits: [
+      {
+        find: 'export class EventBus {',
+        replace: `${COLLAB_IMPORT}\nexport class EventBus {`,
+      },
+      {
+        find: '  emit(event: string, ...args: unknown[]): void {',
+        replace:
+          '  emit(event: string, ...args: unknown[]): void {\n    if (studioCollab?.deferEvent(this, event, args)) return;',
+      },
+    ],
+  },
+  'studio-collab-snapshot': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]engine[\\/]command\.ts$/,
+    edits: [
+      {
+        find: "import { normalizeTextNewlines } from '../core/text-newlines';",
+        replace: `${COLLAB_IMPORT}\nimport { normalizeTextNewlines } from '../core/text-newlines';`,
+      },
+      {
+        find: '        const result = this.operation(wasm);\n        if (result === null) {',
+        replace: [
+          '        const result = this.operation(wasm);',
+          '        if (result === null) {',
+          "          if (studioCollab?.hasWrites) throw new Error('Studio snapshot declined a partial edit');",
+        ].join('\n'),
+      },
+      {
+        find: "    } catch (operationError) {\n      this.failure = 'failed';",
+        replace: [
+          '    } catch (operationError) {',
+          "      this.failure = 'failed';",
+          '      if (studioCollab?.abortSnapshot(wasm, operationError)) {',
+          '        this.discard(wasm);',
+          '        throw operationError;',
+          '      }',
+        ].join('\n'),
       },
     ],
   },
@@ -1420,12 +1548,25 @@ const PATCHES = {
     file: /[\\/]rhwp-studio[\\/]src[\\/]engine[\\/]input-handler-text\.ts$/,
     edits: [
       {
+        find: "import { showConfirm } from '@/ui/confirm-dialog';",
+        replace: `${COLLAB_IMPORT}\nimport { showConfirm } from '@/ui/confirm-dialog';`,
+      },
+      {
+        find: '  if (!this.canInsertTextInFormMode?.(insertPos)) {',
+        replace: [
+          '  if (!this.canInsertTextInFormMode?.(insertPos)) {',
+          "    if (studioCollab?.hasWrites) throw new Error('Cannot insert text after deleting the selection');",
+        ].join('\n'),
+      },
+      {
         find: 'export function onInput(this: any, e?: InputEvent): void {',
-        replace: 'export function onInput(this: any, e?: InputEvent, committedComposition = false): void {',
+        replace:
+          'export function onInput(this: any, e?: InputEvent, committedComposition = false): void {',
       },
       {
         find: '  const text = normalizeTextNewlines(quickCorrectTyped(this, this.textarea.value, e?.inputType));',
-        replace: '  const text = normalizeTextNewlines(committedComposition ? this.textarea.value : quickCorrectTyped(this, this.textarea.value, e?.inputType));',
+        replace:
+          '  const text = normalizeTextNewlines(committedComposition ? this.textarea.value : quickCorrectTyped(this, this.textarea.value, e?.inputType));',
       },
       {
         find: '  if (this._isIOS && !this.isComposing) {',
@@ -1641,7 +1782,11 @@ export const STUDIO_PATCHES = /** @type {const} */ ([
   'studio-collab-commands',
   'studio-collab-pointer',
   'studio-collab-input',
+  'studio-collab-dialog-confirm',
+  'studio-collab-events',
+  'studio-collab-snapshot',
   'studio-collab-commit-ime',
+  ...Object.keys(COLLAB_PASTE_PATCHES),
   'studio-dialogs-input-handler',
   'studio-dialogs-main',
   'studio-dialogs-bookmark',
@@ -1678,6 +1823,7 @@ export const pluginHooks = [
   {
     file: 'src/engine/cursor.ts',
     needles: [
+      'recoveryCheckpoint(): { restore(): void; unchanged(): boolean }',
       'hasSelection(): boolean',
       'getSelectionOrdered()',
       'clearSelection(): void',
@@ -1732,6 +1878,9 @@ export const pluginHooks = [
       'private removeFormOverlay()',
       'private afterEdit(',
       'private updateSelection()',
+      'private cancelDeferredPaginationFlush()',
+      'private clearTableResizeRuntimeCache()',
+      'private updateViewportOverlayPositions()',
     ],
   },
   {

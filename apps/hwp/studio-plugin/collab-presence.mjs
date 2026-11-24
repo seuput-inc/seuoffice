@@ -248,8 +248,10 @@ export function bindHwpPresence(host, publish) {
       const left = viewport.left + scrolling.clientLeft
       const top = viewport.top + scrolling.clientTop
       Object.assign(layer.style, {
-        left: `${left}px`, top: `${top}px`,
-        width: `${scrolling.clientWidth}px`, height: `${scrolling.clientHeight}px`,
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${scrolling.clientWidth}px`,
+        height: `${scrolling.clientHeight}px`,
       })
       plane.style.left = `${origin.left + content.clientLeft - left}px`
       plane.style.top = `${origin.top + content.clientTop - top}px`

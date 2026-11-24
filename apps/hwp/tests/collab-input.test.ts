@@ -52,6 +52,8 @@ function editor(
   if (opts.readonly) parent.document.documentElement.setAttribute('data-studio-read-only', '')
   vi.stubGlobal('document', document)
   const order: (string | boolean)[] = []
+  const batches: string[][] = []
+  let staged: string[]
   const lost = vi.fn<(text: string) => void>()
   let controls!: HwpStudioControls
   if (opts.registered !== false) {
@@ -60,11 +62,27 @@ function editor(
       expect(candidate).toBe(frame)
       controls = next
       return {
+        transaction(doc, action) {
+          const snapshot = doc.saveSnapshot()
+          staged = []
+          try {
+            const result = action()
+            if (staged.length) batches.push(staged)
+            return result
+          } catch (error) {
+            doc.restoreSnapshot(snapshot)
+            throw error
+          } finally {
+            doc.discardSnapshot(snapshot)
+          }
+        },
         onBuffer: (pending) => {
           order.push(pending)
         },
         onDraftLost: lost,
         onMutation: (_doc, method, _args, call) => {
+          if (method === 'restoreSnapshot') throw new Error('No collaborative inverse')
+          staged.push(method)
           order.push(method)
           return call()
         },
@@ -90,6 +108,15 @@ function editor(
   let head: Pos = { sectionIndex: 0, paragraphIndex: 0, charOffset: 1 }
   let anchor: Pos | null = null
   const cursor = {
+    recoveryCheckpoint: () => {
+      const saved = { head, anchor }
+      return {
+        restore() {
+          head = saved.head
+          anchor = saved.anchor
+        },
+      }
+    },
     getPosition: () => head,
     getSelection: () => anchor && { anchor, focus: head },
     setAnchor: () => {
@@ -112,6 +139,11 @@ function editor(
     cursor,
     _isIOS: !!opts.ios,
     history: { clear: vi.fn() },
+    cancelDeferredPaginationFlush: vi.fn(),
+    deferredPaginationRunner: { cancel: vi.fn() },
+    clearTableResizeRuntimeCache: vi.fn(),
+    updateCaret: vi.fn(),
+    updateViewportOverlayPositions: vi.fn(),
     resetDerivedStateAfterHistoryJump: () => {
       anchor = null
     },
@@ -133,6 +165,9 @@ function editor(
     },
     viewportManager: { getZoom: () => 1 },
     eventBus: {
+      emit(name: string, ...args: unknown[]) {
+        if (!session.deferEvent(this, name, args)) events.dispatchEvent(new Event(name))
+      },
       on: (name: string, cb: () => void) => {
         events.addEventListener(name, cb)
         return () => events.removeEventListener(name, cb)
@@ -161,7 +196,7 @@ function editor(
   })
   const unbind = session.bindInput(ih, commit)!
   cleanup.push(unbind)
-  field.addEventListener('input', () => commit(field.value))
+  field.addEventListener('input', () => session.transaction(wasm, () => commit(field.value)))
   const composition = (type: string, data: string) =>
     field.dispatchEvent(new parent.CompositionEvent(type, { data, bubbles: true }))
   const input = (text: string, inputType = 'insertText', isComposing = false) => {
@@ -187,6 +222,7 @@ function editor(
     commit,
     ih,
     order,
+    batches,
     text,
     lost,
   }
@@ -195,6 +231,96 @@ function editor(
 const at = (offset: number) => ({ section: 0, paragraph: 0, path: [], offset })
 
 describe('Studio collaboration input', () => {
+  it('publishes a selection replacement once after the outer command returns', () => {
+    const e = editor()
+    e.controls.setEditable(true)
+    const changed = vi.fn()
+    e.ih.eventBus.on('document-mutated', changed)
+    const result = e.session.transaction(e.wasm, () => {
+      e.session.transaction(e.wasm, () => e.doc.deleteText(0, 0, 0, 1))
+      e.ih.eventBus.emit('document-mutated')
+      e.doc.insertText(0, 0, 0, '새')
+      expect(e.batches).toEqual([])
+      expect(changed).not.toHaveBeenCalled()
+      return 17
+    })
+    expect(result).toBe(17)
+    expect(e.text()).toBe('새B')
+    expect(e.batches).toEqual([['deleteText', 'insertText']])
+    expect(changed).toHaveBeenCalledOnce()
+  })
+
+  it.each(['caught native refusal', 'snapshot rollback', 'outer command error', 'dialog refusal'])(
+    'restores the model and original backward selection without publishing after %s',
+    (failure) => {
+      const e = editor()
+      e.controls.setEditable(true)
+      e.cursor.moveTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 2 })
+      e.cursor.setAnchor()
+      e.cursor.moveTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 0 })
+      const selection = e.cursor.getSelection()
+      const changed = vi.fn(),
+        refreshed = vi.fn()
+      e.ih.eventBus.on('document-mutated', changed)
+      e.ih.eventBus.on('document-view-changed', refreshed)
+      const snapshot = e.doc.saveSnapshot()
+      try {
+        expect(() =>
+          e.session.transaction(e.wasm, () => {
+            e.doc.deleteText(0, 0, 0, 2)
+            e.ih.resetDerivedStateAfterHistoryJump()
+            e.ih.eventBus.emit('document-mutated')
+            if (failure === 'outer command error') throw new Error('refused')
+            if (failure === 'dialog refusal') return e.session.confirmDialog(() => false)
+            if (failure === 'snapshot rollback') {
+              expect(e.session.abortSnapshot(e.wasm, new Error('refused'))).toBe(true)
+              return
+            }
+            try {
+              e.doc.restoreSnapshot(snapshot)
+            } catch {
+              /* Studio tried its fallback. */
+            }
+          }),
+        ).toThrow()
+      } finally {
+        e.doc.discardSnapshot(snapshot)
+      }
+      expect(e.batches).toEqual([])
+      expect(e.text()).toBe('AB')
+      expect(e.cursor.getSelection()).toEqual(selection)
+      expect(changed).not.toHaveBeenCalled()
+      expect(refreshed).toHaveBeenCalledOnce()
+      expect(e.ih.history.clear).toHaveBeenCalledOnce()
+    },
+  )
+
+  it('rolls back an edit rather than committing its synchronous prefix at an await', () => {
+    const e = editor()
+    e.controls.setEditable(true)
+    expect(() =>
+      e.session.transaction(e.wasm, () => {
+        e.doc.deleteText(0, 0, 0, 2)
+        return Promise.resolve()
+      }),
+    ).toThrow(/await/)
+    expect(e.text()).toBe('AB')
+    expect(e.batches).toEqual([])
+  })
+
+  it('does not admit an unscoped write after an asynchronous preparation yields', async () => {
+    const e = editor()
+    e.controls.setEditable(true)
+    const later = e.session.transaction(e.wasm, async () => {
+      await Promise.resolve()
+      e.doc.deleteText(0, 0, 0, 2)
+    })
+    e.session.transaction(e.wasm, () => e.doc.insertText(0, 0, 2, '!'))
+    await expect(later).rejects.toThrow(/transaction/)
+    expect(e.text()).toBe('AB!')
+    expect(e.batches).toEqual([['insertText']])
+  })
+
   it('keeps Korean preedit outside WASM, reprojects after remote replay, and commits once at the mapped caret', () => {
     const e = editor()
     e.controls.setEditable(true)
