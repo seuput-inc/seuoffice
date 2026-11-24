@@ -336,24 +336,30 @@ export function sectionTailsOf(file: Uint8Array): SectionTails | null {
   try {
     const opened = openHwp(file)
     if (!opened) return null
-    const sections = sectionCount(opened)
-    const tails = new Map<number, TailList[]>()
-    const captions = new Map<string, Caption>()
-    for (let index = 0; index < sections; index++) {
-      const data = streamOf(opened, SECTION(index))
-      const records = data ? recordsOf(data) : null
-      if (!data || !records) return null
-      const tail = tailOf(data, records)
-      if (tail && tail.lists.length > 0) tails.set(index, tail.lists)
-      captionsIn(data, records, captions)
-    }
-    if (tails.size === 0 && captions.size === 0) return null
-    const ids = idsOf(opened)
-    if (!ids) return null
-    return { sections, tails, ids, binData: binDataOf(opened), captions }
+    return scanSectionTails(opened, false)
   } catch {
     return null
   }
+}
+
+/** Unlike the desktop's best-effort read, reject a tail that cannot be accounted for. */
+export function scanSectionTails(opened: OpenedHwp, strict = true): SectionTails | null {
+  const sections = sectionCount(opened)
+  const tails = new Map<number, TailList[]>()
+  const captions = new Map<string, Caption>()
+  for (let index = 0; index < sections; index++) {
+    const data = streamOf(opened, SECTION(index))
+    const records = data ? recordsOf(data) : null
+    if (!data || !records) throw new Error('unreadable HWP section')
+    const tail = tailOf(data, records)
+    if (!tail && strict) throw new Error('unrecognized HWP section tail')
+    if (tail && tail.lists.length > 0) tails.set(index, tail.lists)
+    captionsIn(data, records, captions)
+  }
+  if (tails.size === 0 && captions.size === 0) return null
+  const ids = idsOf(opened)
+  if (!ids) throw new Error('unreadable HWP section tail references')
+  return { sections, tails, ids, binData: binDataOf(opened), captions }
 }
 
 /** Every record the lists can refer to is where it was: the saved lists start with the kept ones. */

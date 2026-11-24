@@ -1,0 +1,31 @@
+Subject: [PATCH] rebuild the optimistic editor from its own confirmed model
+
+The source is a detached document in the same engine for the same base.
+Never import a peer snapshot or share Studio's finite local undo store.
+
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -7822,6 +7822,23 @@
+ 
+     // ─── Undo/Redo 스냅샷 API ──────────────────────────
+ 
++    /// Replace only the optimistic model, not the user's fonts or clipboard.
++    #[wasm_bindgen(js_name = restoreCollabConfirmed)]
++    pub fn restore_collab_confirmed(&mut self, confirmed: &HwpDocument) -> Result<(), JsValue> {
++        if self.source_format != confirmed.source_format || self.batch_mode || confirmed.batch_mode {
++            return Err(JsValue::from_str("incompatible collaboration document"));
++        }
++        let paths = confirmed.text_reflowed_table_paths_for_snapshot();
++        self.pending_pagination_job = None;
++        self.deferred_pagination_descriptor = None;
++        self.active_field = None;
++        self.document.clone_from(&confirmed.document);
++        self.restore_text_reflowed_tables_from_snapshot(&paths);
++        self.bump_bin_data_epoch();
++        self.rebuild_derived_state();
++        Ok(())
++    }
++
+     /// Document 스냅샷을 저장하고 ID를 반환한다.
+     #[wasm_bindgen(js_name = saveSnapshot)]
+     pub fn save_snapshot(&mut self) -> u32 {

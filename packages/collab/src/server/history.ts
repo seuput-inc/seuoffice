@@ -1,22 +1,35 @@
 import {
   assertHistoryResult,
   checkPrefix,
+  HistoryError,
   type HistoryOpId,
   type HistoryRequest,
   type HistoryResult,
 } from '../history.js'
-import type { Json } from '../model.js'
+import type { Change, Json } from '../model.js'
 import { sha256 } from '../sha256.js'
-import { createServerCore, type CollabServer, type Limits, type Principal } from './server.js'
+import { createHwpHistory, type HwpArtifact, type HwpCheckpointStore } from './hwp-history.js'
+import {
+  createServerCore,
+  isHwpHistory,
+  type CollabServer,
+  type HwpHistoryCandidate,
+  type HwpHistoryRefusal,
+  type Limits,
+  type Principal,
+} from './server.js'
 import type { CollabStore } from './store.js'
 import { utf8Length } from '../wire.js'
 import { MAX_CHANGE_BYTES } from '../limits.js'
 import {
+  renderStreamBytes,
   withStreamHistory,
   type StreamHistoryArtifact,
   type StreamHistoryOptions,
   type StreamHistoryWrite,
 } from './stream-history.js'
+
+export type { HwpCheckpoint, HwpCheckpointStore } from './hwp-history.js'
 
 export interface HistoryPoint {
   epoch: string
@@ -49,10 +62,12 @@ export type HistoryReceipt = RestoreReceipt | UndoReceipt
 export type HistoryArtifact = Pick<HistoryResult, 'fileName' | 'bytes'>
 export type HistoryWrite =
   | { command: { kind: 'restore' } & RestoreRequest; artifact: HistoryArtifact }
-  | { command: { kind: 'undo' } & UndoRequest; compensation: Json[] }
+  | { command: { kind: 'undo' } & UndoRequest; compensation: Json[]; change?: Change }
 
 /** Trusted persistence port. Never map these methods directly to an HTTP or socket handler. */
-export interface RetainedHistoryStore extends CollabStore {
+export interface RetainedHistoryStore extends CollabStore, HwpCheckpointStore {
+  /** Opt in only if commitHistory appends write.change verbatim when supplied, including its id and author. */
+  readonly exactHistoryChange?: true
   /** Return only the named document/epoch and exactly versions 1..version, including after drop. */
   readHistory(
     principal: Principal,
@@ -121,11 +136,31 @@ export function createHistoryServer(
   const shutdown = new AbortController()
   const signalFor = (signal?: AbortSignal) =>
     signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
-  const server = createServerCore(options)
+  const server = createServerCore({ ...options, admitHwpHistory })
   const staging = new Set<Promise<unknown>>()
   function track<T>(work: Promise<T>): Promise<T> {
     staging.add(work)
     return work.finally(() => staging.delete(work))
+  }
+
+  const hwp = createHwpHistory({
+    store: options.store,
+    signal: shutdown.signal,
+    render:
+      'renderStream' in options
+        ? (base, request, author) =>
+            renderStreamBytes(options, base, request, shutdown.signal, author)
+        : (base, request) => options.render(base, request),
+  })
+
+  async function admitHwpHistory(
+    p: Principal,
+    candidate: HwpHistoryCandidate,
+  ): Promise<HwpHistoryRefusal | undefined> {
+    shutdown.signal.throwIfAborted()
+    if (!('renderStream' in options) && options.store.exactHistoryChange !== true)
+      return 'exact_write_required'
+    return hwp.admit(p, candidate)
   }
 
   function principalFor(p: Principal, action: HistoryAction): Principal {
@@ -145,7 +180,7 @@ export function createHistoryServer(
     source: HistoryPoint,
     action: HistoryAction,
     undo?: UndoRequest['target'],
-  ): Promise<HistoryResult> {
+  ): Promise<HwpArtifact> {
     const { baseBytes, request } = await bytes.store.readHistory(p, source, action)
     if (
       request.epoch !== source.epoch ||
@@ -154,12 +189,17 @@ export function createHistoryServer(
       request.baseHash !== (await sha256(baseBytes))
     )
       throw new Error('invalid retained history')
-    const prefix = undo ? { ...request, undo } : request
-    checkPrefix(prefix, request.format)
+    checkPrefix(undo ? { ...request, undo } : request, request.format)
     if (undo) await store.authorizeUndoTarget(p, undo)
-    const result = await bytes.render(baseBytes, prefix)
+    if (isHwpHistory(request.format)) {
+      if (undo && bytes.store.exactHistoryChange !== true)
+        throw new HistoryError('unsupported', 'HWP undo requires exact history writes')
+      const { format, baseHash, changes } = request
+      return hwp.artifact(p, source, { format, baseHash, base: baseBytes, changes }, undo)
+    }
+    const result = await bytes.render(baseBytes, undo ? { ...request, undo } : request)
     assertHistoryResult(result, !!undo)
-    return result
+    return { file: result }
   }
 
   function checkSubmit(base: number, ops: Json[]) {
@@ -193,6 +233,16 @@ export function createHistoryServer(
     }
     const undo = command.kind === 'undo' ? command.target : undefined
     const source = command.kind === 'restore' ? command.source : command.expected
+    // An undo that replayed from an unstored checkpoint stores it first, inside the document queue:
+    // the committed head must always be replayable from a stored checkpoint. When it cannot be
+    // stored the undo is refused and nothing changes. The checkpoint is a confirmed version, so
+    // it stays a correct file even if the commit is then refused.
+    let keep: (() => Promise<void>) | undefined
+    const committed = (commit: () => Promise<HistoryReceipt>) =>
+      server.commitHistory(p.documentId, command.expected.epoch, async () => {
+        await keep?.()
+        return commit()
+      })
     if ('renderStream' in options) {
       return track(
         withStreamHistory(
@@ -202,6 +252,11 @@ export function createHistoryServer(
           command.kind,
           undo,
           signal,
+          async (retained) => {
+            const result = await hwp.artifact(p, source, retained, undo)
+            keep = result.keep
+            return result
+          },
           (stage, fileName, change) => {
             let write: StreamHistoryWrite
             if (command.kind === 'restore') write = { command, stage, fileName }
@@ -210,7 +265,7 @@ export function createHistoryServer(
               checkSubmit(command.expected.version, change.ops)
               write = { command, change }
             }
-            return server.commitHistory(p.documentId, command.expected.epoch, () => {
+            return committed(() => {
               signal.throwIfAborted()
               return options.store.commitHistoryStream(p, write, signal)
             })
@@ -218,17 +273,17 @@ export function createHistoryServer(
         ),
       )
     }
-    const file = await artifact(options, p, source, command.kind, undo)
+    const result = await artifact(options, p, source, command.kind, undo)
+    const { file, change } = result
+    keep = result.keep
     let write: HistoryWrite
     if (command.kind === 'restore') write = { command, artifact: file }
     else {
       const compensation = file.compensation!
       checkSubmit(command.expected.version, compensation)
-      write = { command, compensation }
+      write = change ? { command, compensation, change } : { command, compensation }
     }
-    return server.commitHistory(p.documentId, command.expected.epoch, () =>
-      options.store.commitHistory(p, write),
-    )
+    return committed(() => options.store.commitHistory(p, write))
   }
 
   return {
@@ -243,16 +298,24 @@ export function createHistoryServer(
       if ('renderStream' in options) {
         const active = signalFor(signal)
         return track(
-          withStreamHistory(options, p, point(source), 'export', undefined, active, (stage, name) =>
-            server.inDocumentQueue(p.documentId, async () => {
-              await store.authorizeHistory(p, 'export')
-              active.throwIfAborted()
-              return options.store.publishHistoryExport(p, stage, name, active)
-            }),
+          withStreamHistory(
+            options,
+            p,
+            point(source),
+            'export',
+            undefined,
+            active,
+            (retained) => hwp.artifact(p, point(source), retained),
+            (stage, name) =>
+              server.inDocumentQueue(p.documentId, async () => {
+                await store.authorizeHistory(p, 'export')
+                active.throwIfAborted()
+                return options.store.publishHistoryExport(p, stage, name, active)
+              }),
           ),
         )
       }
-      const file = await artifact(options, p, point(source), 'export')
+      const { file } = await artifact(options, p, point(source), 'export')
       await store.authorizeHistory(p, 'export')
       return file
     },

@@ -26,6 +26,8 @@ export interface PageCollab<Handles> {
   save(how: { reason: SaveReason; skipWhenSaved?: boolean }): Promise<void>
   /** this page as the session names it (the host's display name for this user); null before the attach */
   self(): { client: string; name: string } | null
+  /** The renderer unmounted. Stop the session and refuse later requests for this editor. */
+  dispose?(): void
 }
 
 declare global {
@@ -151,6 +153,7 @@ export async function joinPageCollab<Handles, Op>(options: {
       unsaved: () => false,
     }
     const releaseInput = holdInput()
+    const owner = window.seuCollab
     return {
       baseBytes: options.bytes,
       attach,
@@ -158,6 +161,10 @@ export async function joinPageCollab<Handles, Op>(options: {
         throw new Error('a history render cannot save')
       },
       self: () => null,
+      dispose() {
+        fail('the history editor was closed')
+        if (window.seuCollab === owner) delete window.seuCollab
+      },
     }
   }
   const link = collabLink()
@@ -181,6 +188,8 @@ export async function joinPageCollab<Handles, Op>(options: {
     },
     fail: (reason) => leave(reason),
   }
+  const owner = window.seuCollab
+  let stopStatus: (() => void) | undefined
   const releaseInput = holdInput(options.inputBeforeAttach)
 
   /** never edit a document the log cannot follow: leave the session and let the host reopen */
@@ -194,13 +203,15 @@ export async function joinPageCollab<Handles, Op>(options: {
   }
 
   const save = async (how: { reason: SaveReason; skipWhenSaved?: boolean }): Promise<void> => {
-    if (!session) throw new Error('the document is not open yet')
-    const status = session.status()
+    const active = session
+    if (!active) throw new Error('the document is not open yet')
+    const status = active.status()
     // the app's own repeated saves (its autosave) store nothing new
     if (how.skipWhenSaved && status.version === status.saved && status.unconfirmed === 0) return
-    const saved = await session.save()
+    const saved = await active.save()
+    if (session !== active) throw new Error('the editor was closed')
     await saveToHost(options.fileName, saved.bytes, how.reason, { version: saved.version })
-    session.reportSaved(saved.version)
+    if (session === active) active.reportSaved(saved.version)
   }
   // a viewer's host never stores a save, so a save request finds no handler
   if (editMode()) {
@@ -210,9 +221,11 @@ export async function joinPageCollab<Handles, Op>(options: {
     )
   }
   onHostExportRequest(async () => {
-    if (!session) throw new Error('the document is not open yet')
-    if (session.status().phase !== 'failed') await options.commitDrafts?.()
-    return session.exportLocal()
+    const active = session
+    if (!active) throw new Error('the document is not open yet')
+    if (active.status().phase !== 'failed') await options.commitDrafts?.()
+    if (session !== active) throw new Error('the editor was closed')
+    return active.exportLocal()
   })
 
   const attach = (handles: Handles): Promise<void> => {
@@ -236,10 +249,11 @@ export async function joinPageCollab<Handles, Op>(options: {
       let queued = false
       // Selection events can fire inside integrate(), before the engine confirms the edit.
       const publish = (): void => {
-        if (queued) return
+        if (queued || session !== joined) return
         queued = true
         queueMicrotask(() => {
           queued = false
+          if (session !== joined) return
           const status = joined.status()
           if (buffered) joined.setPresence(null)
           else if (presence && status.phase === 'live' && !status.unconfirmed)
@@ -248,7 +262,7 @@ export async function joinPageCollab<Handles, Op>(options: {
       }
       const presence = options.presence?.(handles, publish)
       const draw = (status: CollabStatus): void => {
-        if (!presence) return
+        if (!presence || session !== joined) return
         const version =
           !buffered && status.phase === 'live' && !status.unconfirmed ? status.version : null
         if (version !== null && version !== displayedVersion) publish()
@@ -270,7 +284,7 @@ export async function joinPageCollab<Handles, Op>(options: {
         options.status?.(status)
         draw(status)
       }
-      joined.subscribe(report)
+      stopStatus = joined.subscribe(report)
       // opened first: a host that sets its title on opened must not overwrite the dirty state
       // a late joiner reports straight away
       releaseOpened(true)
@@ -283,6 +297,18 @@ export async function joinPageCollab<Handles, Op>(options: {
     attach,
     save,
     self: () => session?.status().self ?? null,
+    dispose() {
+      if (stage === 'waiting') leave('the editor was closed')
+      stage = 'left'
+      stopStatus?.()
+      const active = session
+      session = null
+      active?.close()
+      if (window.seuCollab === owner) {
+        releaseOpened(false)
+        delete window.seuCollab
+      }
+    },
   }
 }
 

@@ -109,6 +109,7 @@ run('wasm-pack', ['build', '--target', 'web', '--release', ...cargoFeatures], wo
 
 for (const file of PACKAGE_FILES) copyFileSync(join(work, 'pkg', file), join(VENDOR, file))
 for (const file of LICENSE_FILES) copyFileSync(join(work, file), join(VENDOR, file))
+run(process.execPath, [join(ROOT, 'apps/hwp/scripts/check-memo-replay.mjs')], ROOT)
 const wasm = readFileSync(join(VENDOR, 'rhwp_bg.wasm'))
 for (const leak of [homedir(), work]) {
   if (wasm.includes(Buffer.from(leak))) {

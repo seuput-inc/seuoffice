@@ -12,6 +12,7 @@ import {
   useAutoSavePref,
   useSplitPaneFocusPing,
   webAiOff,
+  webEmbedded,
   webViewMode,
   whenLoaded,
   type TemplateDocument,
@@ -145,6 +146,8 @@ function savePortOf(editor: RhwpEditor): SaveEditorPort {
 export default function App() {
   const { t, lang } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
+  const recoveryHostRef = useRef<HTMLDivElement>(null)
+  const collabRef = useRef<Window['seuHwpCollabPage']>(undefined)
   const editorRef = useRef<RhwpEditor | null>(null)
   const savingRef = useRef(false)
   /**
@@ -233,6 +236,19 @@ export default function App() {
       }),
     [pluginBridge],
   )
+  const sharedDocument = phase === 'ready' && !!collabRef.current
+  const aiBridge = useMemo(() => {
+    if (!sharedDocument) return agentBridge
+    // A proposal edits the live document and then undoes it. Peers must not see those provisional edits.
+    return withChangeNotes(pluginBridge, () => {
+      const reason =
+        lang === 'ko'
+          ? '공동편집 중에는 AI가 문서를 직접 수정할 수 없습니다. 수정할 문구를 제안해 달라고 요청하세요.'
+          : 'AI cannot edit a co-edited document directly. Ask it to suggest the wording instead.'
+      setNotice({ tone: 'error', text: reason })
+      throw new Error(reason)
+    })
+  }, [sharedDocument, pluginBridge, agentBridge, lang])
 
   // Web embed: the host asks for a picture of the first page, perhaps before the editor took
   // the document
@@ -259,21 +275,38 @@ export default function App() {
   // boot the editor once and load the file queued for this view
   useEffect(() => {
     let disposed = false
+    const lifetime = webEmbedded() ? new AbortController() : null
+    let startingEditor = false
     let editor: RhwpEditor | null = null
     let stopDrop: (() => void) | null = null
     void (async () => {
       try {
         const [path, theme, lang] = await Promise.all([
-          window.hwpApi.consumePending(),
+          lifetime ? window.hwpApi.consumePending(lifetime.signal) : window.hwpApi.consumePending(),
           window.hwpApi.getTheme().catch((): UiTheme => 'system'),
           window.hwpApi.getLanguage(),
         ])
+        if (disposed) return
+        const collab = window.seuHwpCollabPage
+        collabRef.current = collab
         // the studio reads its settings before first paint, so they are seeded before it exists
         localStorage.setItem(
           STUDIO_SETTINGS_KEY,
           seededStudioSettings(localStorage.getItem(STUDIO_SETTINGS_KEY), theme),
         )
-        editor = await createEditor(hostRef.current!, { studioUrl: studioUrl(lang) })
+        const host = hostRef.current!
+        startingEditor = true
+        const opening = createEditor(host, { studioUrl: studioUrl(lang) })
+        // createEditor appends its iframe synchronously, before the frame runs or its ready promise settles.
+        collab?.mount(host, host.lastElementChild, {
+          recoveryHost: recoveryHostRef.current!,
+          draftReason: () => {
+            if (memoBlockedRef.current) return translateNow('memoSaveBlocked')
+            return aiHold.isHeld() ? translateNow('saveAiRunning') : null
+          },
+          notice: (text) => setNotice({ tone: 'error', text }),
+        })
+        editor = await opening
         if (disposed) {
           editor.destroy()
           return
@@ -283,6 +316,7 @@ export default function App() {
           await editor.chrome.set({ menu: false, toolbar: false })
           hideStudioEditingMarks(editor.element)
         }
+        if (disposed) return
         editorRef.current = editor
         stopDrop = openDocumentsDroppedOn(editor.element, (files) =>
           window.hwpApi.openDroppedDocuments(files),
@@ -312,6 +346,13 @@ export default function App() {
           skipUnsavedGuard: true,
         })
         if (disposed) return
+        if (collab) {
+          // Plugin activation supplies the real Studio selection and replay controls.
+          await pluginBridge.foreignChanges()
+          if (disposed) return
+          await collab.loaded(editor.element)
+          if (disposed) return
+        }
         setPhase('ready')
         if (await window.hwpApi.structureUnverified().catch(() => false)) {
           // said once: the document can be read, and its file is not saved over; how it can
@@ -324,7 +365,8 @@ export default function App() {
         }
       } catch (error) {
         if (disposed) return
-        if (editor && isBridgeTimeout(error)) return
+        if (collabRef.current) collabRef.current.fail(detailOf(error))
+        else if (editor && isBridgeTimeout(error)) return
         setPhase('failed')
         if (editor && isPdfImportCancelled(error)) {
           setNotice({ tone: 'info', key: 'pdfImportCancelled', sticky: true })
@@ -332,23 +374,26 @@ export default function App() {
         }
         setNotice({
           tone: 'error',
-          key: editor ? 'openFailed' : 'editorFailed',
+          key: startingEditor && !editor ? 'editorFailed' : 'openFailed',
           detail: detailOf(error),
         })
       }
     })()
     return () => {
       disposed = true
+      lifetime?.abort()
+      collabRef.current = undefined
       editorRef.current = null
       stopDrop?.()
       editor?.destroy()
     }
-  }, [])
+  }, [aiHold, pluginBridge])
 
   // a document can arrive after the load call gave up or failed (a password
   // entered late, a second try in the editor's own prompt): notice it and go on
   useEffect(() => {
     if (phase !== 'loading' && phase !== 'failed') return
+    if (collabRef.current) return
     const timer = setInterval(() => {
       void editorRef.current?.commands
         .context()
@@ -452,7 +497,7 @@ export default function App() {
         if (!automatic) showMemoBlocked()
         return false
       }
-      if (!editor) return false
+      const collab = collabRef.current
       // a manual save waits for an autosave already running; an automatic one lets the
       // save in flight stand for it (no second export, and no backoff)
       while (savingRef.current) {
@@ -467,6 +512,15 @@ export default function App() {
       const done = new Promise<void>((resolve) => (release = resolve))
       savingDoneRef.current = done
       try {
+        if (collab) {
+          try {
+            await collab.save(automatic)
+            return true
+          } catch (error) {
+            if (!automatic) setNotice({ tone: 'error', key: 'saveFailed', detail: detailOf(error) })
+            return false
+          }
+        }
         const outcome = await runSave(
           savePortOf(editor),
           window.hwpApi,
@@ -735,6 +789,7 @@ export default function App() {
         // a plain Save with nothing to write does nothing; ask the editor now
         // rather than trust the polled flag, which may not have seen the last key
         const dirty =
+          !!collabRef.current ||
           mode === 'saveAs' ||
           (await editorRef.current?.commands
             .context()
@@ -927,6 +982,7 @@ export default function App() {
         )
           return false
         if (Date.now() - lastInputAtRef.current < AUTOSAVE_IDLE_MS) return false
+        if (collabRef.current) return collabRef.current.unsaved()
         return editor.commands
           .context()
           .then((context) => context.isDirty === true || restoredRef.current)
@@ -1111,6 +1167,7 @@ export default function App() {
           )}
         </div>
       )}
+      {webEmbedded() && <div ref={recoveryHostRef} />}
       <div className="app-main">
         {/* the AI dock, then the memo column beside the document (as the PDF editor's notes);
             both can be out at once, and both need an open document. The preview covers both. */}
@@ -1118,7 +1175,7 @@ export default function App() {
           <HwpAiDock
             open={aiOpen}
             setOpen={setAiOpen}
-            bridge={agentBridge}
+            bridge={aiBridge}
             filePath={filePath}
             templateDocument={templateDocument}
             prefill={aiPrefill}

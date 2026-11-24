@@ -1,11 +1,12 @@
 import type { HistoryOpId } from '../history.js'
 import type { Change, Format, Json } from '../model.js'
-import type { Principal } from './server.js'
+import { isHwpHistory, type Principal } from './server.js'
 import type {
   HistoryAction,
   HistoryArtifact,
   HistoryCommand,
   HistoryReceipt,
+  HwpCheckpoint,
   RetainedHistoryStore,
   UndoTargetPolicy,
 } from './history.js'
@@ -167,6 +168,8 @@ export function memoryHistoryStore(
   const revisions = new Map<string, HistoryArtifact>()
   const receipts = new Map<string, { intent: string; receipt: HistoryReceipt }>()
   const undone = new Set<string>()
+  /** Per epoch, in ascending version order. */
+  const checkpoints = new Map<string, HwpCheckpoint[]>()
   const key = (...parts: string[]) => JSON.stringify(parts)
 
   function allowed(p: Principal, action: HistoryAction): void {
@@ -223,6 +226,7 @@ export function memoryHistoryStore(
   })
   return {
     ...store,
+    exactHistoryChange: true,
     async authorizeHistory(p, action) {
       allowed(p, action)
     },
@@ -271,16 +275,26 @@ export function memoryHistoryStore(
         const { epoch, v, index } = write.command.target
         const target = JSON.stringify([p.documentId, epoch, v, index])
         if (undone.has(target)) throw new Error('target already undone')
-        const client = `history:${crypto.randomUUID()}`
+        if (isHwpHistory(live.format) && !write.change) throw new Error('missing exact HWP change')
         const version = live.log.length + 1
-        live.log.push({
+        const change = write.change ?? {
           v: version,
-          client,
+          client: `history:${crypto.randomUUID()}`,
           seq: 1,
           author: p.userId,
-          ops: structuredClone(write.compensation),
-        })
-        live.submits.set(`${client}\n1`, version)
+          ops: write.compensation,
+        }
+        const submit = `${change.client}\n${change.seq}`
+        if (
+          change.v !== version ||
+          change.author !== p.userId ||
+          change.seq !== 1 ||
+          !change.client.startsWith('history:') ||
+          live.submits.has(submit)
+        )
+          throw new Error('invalid compensation change')
+        live.log.push({ ...change, ops: structuredClone(change.ops) })
+        live.submits.set(submit, version)
         undone.add(target)
         receipt = { kind: 'undone', version }
       }
@@ -292,6 +306,23 @@ export function memoryHistoryStore(
       const revision = revisions.get(key(p.documentId, revisionId))
       if (!revision) throw new Error('revision unavailable')
       return structuredClone(revision)
+    },
+    async writeHwpCheckpoint(documentId, epochId, { version, baseHash, base }) {
+      const id = key(documentId, epochId)
+      const epoch = archive.get(id)
+      if (!epoch || !Number.isSafeInteger(version) || version < 1 || version > epoch.log.length)
+        throw new Error('checkpoint outside its epoch')
+      const list = checkpoints.get(id) ?? []
+      if (list.some((kept) => kept.version === version)) return
+      list.push({ version, baseHash, base: new Uint8Array(base) })
+      list.sort((a, b) => a.version - b.version)
+      checkpoints.set(id, list)
+    },
+    async readHwpCheckpoint(documentId, epochId, atMost) {
+      const list = checkpoints.get(key(documentId, epochId)) ?? []
+      let found: HwpCheckpoint | undefined
+      for (const kept of list) if (kept.version <= atMost) found = kept
+      return found ? { ...found, base: new Uint8Array(found.base) } : null
     },
   }
 }

@@ -128,7 +128,10 @@ function recipe(output: Buffer, length: number, digest: string | undefined, mixe
     meta.baseHash !== digest ||
     typeof meta.fileName !== 'string' ||
     (meta.fileName !== 'history.pdf' &&
-      (!mixed || !['history.docx', 'history.xlsx', 'history.pptx'].includes(meta.fileName))) ||
+      (!mixed ||
+        !['history.docx', 'history.xlsx', 'history.pptx', 'history.hwp', 'history.hwpx'].includes(
+          meta.fileName,
+        ))) ||
     !Array.isArray(meta.parts) ||
     meta.parts.length > 8192
   )

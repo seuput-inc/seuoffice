@@ -41,11 +41,11 @@ export interface HwpRecord {
 }
 
 /** The records of a stream, or null when the bytes are not a whole list of records. */
-export function recordsOf(data: Buffer): HwpRecord[] | null {
+export function recordsOf(data: Buffer, maxRecords = Infinity): HwpRecord[] | null {
   const out: HwpRecord[] = []
   let at = 0
   while (at < data.length) {
-    if (at + 4 > data.length) return null
+    if (at + 4 > data.length || out.length >= maxRecords) return null
     const start = at
     const word = data.readUInt32LE(at)
     let size = word >>> 20

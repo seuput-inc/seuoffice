@@ -25,6 +25,12 @@
 
 /** Module specifier the studio-clipboard-objects patch imports; build-studio.mjs aliases it. */
 export const CLIPBOARD_HTML_MODULE = '@ieum/clipboard-html'
+export {
+  collabPasteKey,
+  collabPasteNotice,
+  guardCollabTransferInput,
+  pasteStudioCollab,
+} from './collab-paste.mjs'
 
 const FRAGMENT = /<!--StartFragment-->\s*([\s\S]*?)\s*<!--EndFragment-->/
 const PARAGRAPH = /^<p([^>]*)>\s*([\s\S]*?)<\/p>$/

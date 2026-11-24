@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { copyFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -46,6 +47,13 @@ copyFileSync(
   'dist/OFFICE-WASM-NOTICES.txt',
 )
 
+const rhwpDir = '../../vendor/rhwp-core'
+const rhwp = readFileSync(join(rhwpDir, 'rhwp_bg.wasm'))
+const { version, rhwp: pin } = JSON.parse(readFileSync(join(rhwpDir, 'package.json'), 'utf8'))
+if (createHash('sha256').update(rhwp).digest('hex') !== pin.wasmSha256)
+  throw new Error('rhwp engine does not match the pinned artifact')
+writeFileSync('dist/rhwp-engine.js', `export default '${gzipSync(rhwp).toString('base64')}'\n`)
+
 const guest = await build({
   entryPoints: [
     'src/guest.mjs',
@@ -61,7 +69,7 @@ const guest = await build({
   target: 'es2022',
   loader: { '.md': 'text', '.otf': 'base64' },
   metafile: true,
-  external: ['./office-engine.js', './byte-engine.js'],
+  external: ['./office-engine.js', './rhwp-engine.js', './byte-engine.js'],
   inject: ['./src/globals.mjs'],
   plugins: [
     {
@@ -83,6 +91,7 @@ const allowed = new Set([
   'node:util',
   'node:zlib',
   './office-engine.js',
+  './rhwp-engine.js',
   './byte-engine.js',
 ])
 const bundledInputs = new Set()
@@ -96,6 +105,12 @@ for (const artifact of Object.values(guest.metafile.outputs)) {
 }
 const notices = new Map([
   ['Pretendard 1.309', readFileSync('../ui/template-fonts/Pretendard-OFL.txt', 'utf8')],
+  [
+    '@rhwp/core@' + version,
+    ['LICENSE', 'THIRD_PARTY_LICENSES.md']
+      .map((n) => readFileSync(join(rhwpDir, n), 'utf8'))
+      .join('\n'),
+  ],
 ])
 for (const file of bundledInputs) {
   const dir = /^.*node_modules\/(?:@[^/]+\/)?[^/]+/.exec(file)[0]

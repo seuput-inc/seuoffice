@@ -5,6 +5,44 @@ export const ko = {
   editorFailed: '편집기를 시작하지 못했습니다.',
   openFailed: '문서를 열지 못했습니다.',
   pdfImportCancelled: 'PDF 가져오기를 취소했습니다. 이 탭은 닫아도 됩니다.',
+  collabRejectedText: '입력하던 위치가 삭제되어 이 글을 넣지 못했습니다.',
+  collabRejectedPicture: '그림을 넣으려던 위치가 삭제되어 이 그림을 넣지 못했습니다.',
+  collabInterruptedComposition: '글자 조합을 마치기 전에 문서가 바뀌어 이 글을 넣지 못했습니다.',
+  collabChangedTarget: '다른 편집으로 이 위치가 바뀌어 내용을 반영하지 못했습니다.',
+  collabKeptTarget:
+    '다른 사람이 먼저 이곳에 내용을 넣어 삭제하지 않았습니다. 지우려던 내용은 복사할 수 있습니다.',
+  collabCaretLost:
+    '다른 편집으로 커서가 있던 곳이 사라졌습니다. 이어서 쓸 곳을 문서에서 클릭할 때까지 입력을 멈춥니다.',
+  collabHistoryStopped:
+    '서버가 이 변경을 편집 기록에 이어 저장하지 못해(기록 저장 지점을 만들지 못했거나 기록을 다시 재생하지 못함) 공동 편집을 멈췄습니다. 지금 화면의 내용은 내려받기로 이 컴퓨터에 보존할 수 있습니다.',
+  collabAdapterStopped:
+    '이 변경을 공동 편집에 반영하지 못해(편집 기록이 한도에 닿았거나 편집기가 변경을 처리하지 못함) 공동 편집을 멈췄습니다. 지금 화면의 내용은 내려받기로 이 컴퓨터에 보존할 수 있습니다.',
+  collabStopped:
+    '공동 편집이 끝났습니다. 지금 화면의 내용은 내려받기로 이 컴퓨터에 보존할 수 있습니다.',
+  collabDownload: '내려받기',
+  collabDownloadFailed: '파일을 만들지 못했습니다.',
+  collabWebpInHwp:
+    'HWP 문서에는 공동 편집 중 WebP 그림을 넣을 수 없습니다. PNG나 JPEG로 바꿔 넣으세요.',
+  collabOpTooLarge:
+    '공동 편집에서 한 번에 넣는 내용(그림 등)은 {limit}까지입니다. 더 작게 줄여 다시 넣으세요.',
+  collabNotApplied:
+    '다른 편집으로 대상이 바뀌거나 삭제되어 다음 변경을 반영하지 못했습니다: {action}.',
+  collabFormatAction: '서식 변경',
+  collabTableAction: '표 편집',
+  collabDeleteAction: '삭제',
+  collabFormAction: '양식 변경',
+  collabMemoAction: '메모 편집',
+  collabTextAction: '글 편집',
+  collabPictureAction: '그림 편집',
+  collabUnsupportedEdit:
+    '공동편집 중에는 이 기능을 사용할 수 없습니다. 이 변경은 별도 사본에서 하세요.',
+  collabRefusedCommand: '명령을 끝내지 못해 이 명령의 변경은 전송하지 않았습니다.',
+  collabCopy: '복사',
+  collabCopied: '복사했습니다. 원하는 곳에 붙여넣으세요.',
+  collabCopyFailed: '복사하지 못했습니다. 문서에서 자리를 고른 뒤 ‘커서 위치에 넣기’를 누르세요.',
+  collabReinsert: '커서 위치에 넣기',
+  collabReinsertFailed: '여기에는 넣지 못했습니다. 문서에서 다른 자리를 고른 뒤 다시 시도하세요.',
+  collabDiscard: '이 항목 버리기',
   saveFailed: '문서를 저장하지 못했습니다.',
   fileSave: '저장',
   fileSaveAs: '다른 이름으로 저장…',

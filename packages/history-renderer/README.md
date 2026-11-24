@@ -1,6 +1,6 @@
 # 브라우저 없는 이력 렌더러
 
-`@seuoffice/history-renderer`는 **미게시 로컬 후보**다. 입력은 보유한 원본과 그 원본에서 시작하는 `HistoryRequest`의 UTF-8 JSON 바이트다. 현재 파일에서 과거를 추정하지 않는다. 네 형식 모두 아래에 적은 편집만 처리하며 브라우저 편집기 전체를 대체하지 않는다.
+`@seuoffice/history-renderer`는 **미게시 로컬 후보**다. 입력은 보유한 원본과 그 원본에서 시작하는 `HistoryRequest`의 UTF-8 JSON 바이트다. 현재 파일에서 과거를 추정하지 않는다. 아래에 적은 편집만 처리하며 브라우저 편집기 전체를 대체하지 않는다.
 
 ```ts
 import { renderBytes } from '@seuoffice/history-renderer'
@@ -8,7 +8,7 @@ import { renderBytes } from '@seuoffice/history-renderer'
 const { bytes, fileName, compensation } = await renderBytes(baseBytes, requestJsonBytes)
 ```
 
-`renderBytes(base: Uint8Array, requestJson: Uint8Array): Promise<HistoryResult>`는 네 형식의 작은 문서를 처리한다. 호스트에서 신뢰되지 않은 요청을 먼저 `JSON.parse`하지 않는다. 결과의 `bytes`는 다시 열 수 있는 파일이다. `undo`를 주면 지정한 연산만 상쇄하는 wire 연산도 반환한다. 호스트가 아직 기록하지 않은 결과이며, 전체 버전을 롤백하지 않는다. `invalid_history`는 잘못된 입력·원본 해시·로그·대상을, `unsupported`는 처리할 수 없는 문서·연산·실행 환경을, `conflict`는 후속 편집을 보존하면서 취소할 수 없음을 뜻한다.
+`renderBytes(base: Uint8Array, requestJson: Uint8Array): Promise<HistoryResult>`는 DOCX, XLSX, PPTX, PDF, HWP, HWPX의 작은 문서를 처리한다. 호스트에서 신뢰되지 않은 요청을 먼저 `JSON.parse`하지 않는다. 결과의 `bytes`는 다시 열 수 있는 파일이다. `undo`를 주면 지정한 연산만 상쇄하는 wire 연산도 반환한다. 호스트가 아직 기록하지 않은 결과이며, 전체 버전을 롤백하지 않는다. `invalid_history`는 잘못된 입력·원본 해시·로그·대상을, `unsupported`는 처리할 수 없는 문서·연산·실행 환경을, `conflict`는 후속 편집을 보존하면서 취소할 수 없음을 뜻한다.
 
 ## 브라우저와의 차이
 
@@ -20,6 +20,8 @@ const { bytes, fileName, compensation } = await renderBytes(baseBytes, requestJs
 | XLSX, 스키마 3 | `sheet.mutation.set-range-values`로 A1:Z1000 안의 여러 칸에 숫자·문자열을 쓰거나 비운다. 보기의 눈금선과 오른쪽에서 왼쪽 쓰기도 재생한다. 셀 보상은 원본 타입과 서식을 보존하고 후속 쓰기가 겹치면 충돌한다.                                                     | `planCellEditsToXlsx`는 수식 재계산·참조 이동 엔진이 아니다. 수식·병합·스타일 편집, 행열 삽입·이동·크기, 탭·이름·보기의 나머지 [허용 목록](../../apps/sheets/src/web/collab-mutations.ts)은 지원하지 않는다. 브라우저의 단일 리터럴 셀 취소와 달리 안전하게 되돌릴 수 있는 여러 칸도 허용한다.                       |
 | PPTX, 스키마 3 | 실제 `openDeck`·`applyOp`·`deckFile`로 `blankSlide`, `duplicateSlide`, `deleteSlides`, `notes`, `text`를 재생한다. 생성 취소는 그 슬라이드만 삭제하며 동료가 남긴 메모가 있으면 충돌한다. 같은 문단·런 배치를 유지하는 도형 텍스트도 복원한다.                   | 그룹·자동 맞춤·런 배치가 변하는 텍스트는 서식을 보장할 수 없다. 차트 내장 통합문서·OLE·압축 글꼴·SVG·EMF 등 중첩 입력은 열지 않는다. 메모·삭제 자체의 선택 취소는 제공하지 않는다. [브라우저 모델](../../apps/slides/src/web/collab-adapter.ts)                                                                      |
 | PDF, 스키마 2  | 메타데이터·회전·`stampCfg`·미저장 `markups`를 기록하며, 브라우저와 같은 `capturePdfInverse`로 대상 편집을 선택 취소한다. 빈 페이지·순서·삭제도 재생한다. 고전 xref와 pdf-lib의 압축 xref·객체 스트림을 검증한다.                                                 | `noteEdits`, `drawings`, `formFields`, `formEdits`, `formWidgetEdits`는 지원하지 않는다. 브라우저도 `annotDeletes`, `textEdits`, `textInserts`, `imageEdits`는 거부한다. 일반 사진·내장 글꼴·임의의 주석·XMP·암호화·증분 갱신·중첩 페이지 트리는 받지 않는다. [브라우저 wire](../../apps/pdf/src/web/collab-wire.ts) |
+
+HWP와 HWPX(스키마 1)는 격리된 rhwp에서 [편집기와 같은 연산](../../apps/hwp/src/shared/collab-editor-ops.ts)을 적용하고 원래 형식으로 저장한다. 문단 또는 중첩 셀 안의 일반 글자 편집은 나중 편집과 서식을 남기는 보상 연산을 증명할 수 있을 때만 선택 취소한다. 보존할 수 없는 원본은 버전 0에서도 거절한다. 원본과 결과는 각각 2 MiB 이하여야 한다. [한글 이력의 입장 조건과 한도](../collab/README.md)를 함께 본다.
 
 PDF 도장은 워터마크·머리말·꼬리말·쪽 번호를 최종 표시 순서의 페이지에 기록한다. DOM 비트맵 대신 WinAnsi 텍스트(Helvetica) 또는 완성형 한글과 ASCII가 섞인 줄의 고정 Pretendard 윤곽을 사용한다. 호스트 글꼴과 픽셀 일치, 윤곽의 검색·복사는 보장하지 않는다. 한글 윤곽 줄은 128자, WinAnsi 줄은 1,024자 이하이며 페이지당 스트림 16개, 스트림당 2,048바이트 제한도 적용된다. 이모지·결합형·지원하지 않는 글꼴 대체는 추정하지 않는다.
 
@@ -47,17 +49,17 @@ const server = createHistoryServer({ store, renderStream: renderHistory })
 
 문서 소유자는 이 인스턴스 하나로 소켓과 `exportHistory`, `restoreHistory`, `undoHistory`를 처리한다. 형식마다 저장소나 서버를 만들지 않는다. SDK는 보유 원본과 변경 프레임을 그대로 보내며, 선택 취소이면 보상 변경에 기록할 인증된 저자도 넘긴다. 게스트가 형식과 프로필을 정한 뒤 해당 편집기를 한 번 실행한다.
 
-| 보유 원본           | 게스트가 쓰는 편집기               | 한도                                   |
-| ------------------- | ---------------------------------- | -------------------------------------- |
-| DOCX·XLSX·PPTX      | `renderBytes`와 같은 바이트 편집기 | 원본·출력 2 MiB, 요청 1 MiB            |
-| 일반 PDF            | 바이트 PDF 편집기                  | 원본·출력 PDF 프로필 1 MiB, 요청 1 MiB |
-| 검증된 RGB 화상 PDF | 아래의 스트림 PDF 편집기           | 원본·출력 50 MiB, 요청 32 MiB          |
+| 보유 원본               | 게스트가 쓰는 편집기               | 한도                                   |
+| ----------------------- | ---------------------------------- | -------------------------------------- |
+| DOCX·XLSX·PPTX·HWP·HWPX | `renderBytes`와 같은 바이트 편집기 | 원본·출력 2 MiB, 요청 1 MiB            |
+| 일반 PDF                | 바이트 PDF 편집기                  | 원본·출력 PDF 프로필 1 MiB, 요청 1 MiB |
+| 검증된 RGB 화상 PDF     | 아래의 스트림 PDF 편집기           | 원본·출력 50 MiB, 요청 32 MiB          |
 
 1 MiB 이하 PDF도 실제 구조가 RGB 화상 프로필이면 스트림으로 처리한다. 파일명이나 본문의 단어만으로 사진으로 판정하지 않는다. 1 MiB보다 큰 일반 PDF는 지원하지 않는다. 단일 변경 프레임은 어느 경로든 256 KiB 이하다. 인증·해시·버전·편집 충돌·연산 거부가 발생하면 다른 편집기로 다시 시도하지 않는다. 어떤 편집기를 사용해도 공개·복원·보상은 같은 비공개 임시 저장과 권한 재검사·문서 큐·트랜잭션을 거친다.
 
 ### 큰 화상 PDF의 스트림 경로
 
-`renderStream(source, headerBytes, changeFrames, stage, signal?)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 기존 네 형식의 파일·해제·이력 상한을 올리지 않는다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
+`renderStream(source, headerBytes, changeFrames, stage, signal?)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 바이트 편집기의 파일·해제·이력 상한은 그대로다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
 
 허용하는 원본은 classic xref, 평평한 페이지 트리, LF 줄 끝을 가진 PDF다. 한 페이지에 마스크·압축 없는 8비트 `DeviceRGB` 사진 하나가 페이지 전체를 채워야 한다. 사진의 길이·가로·세로, 각 객체의 역할과 xref 위치를 확인한다. 최대 64페이지이며 사진을 뺀 PDF 구문은 1 MiB 이하다. JPEG·압축 스트림·문자 본문·기존 주석·중첩 리소스, `stampCfg`·`markups` 편집은 이 경로로 처리하지 않는다.
 
@@ -112,4 +114,10 @@ node node_modules/@seuoffice/history-renderer/examples/retained-host.mjs
 
 서버 통합 검증은 같은 소비자에 `tests/sdk-stream*.mjs`와 `tests/stream-proof-{exact,fixture,reopen}.mjs`를 복사해 `node sdk-stream.mjs all "$OUT"`으로 실행한다. 바이트 API로 우회하지 않고 인증된 세 명령을 호출한다.
 
-저장소의 형식 대조 시험과 [브라우저 시험](../../apps/web/tests/collab-history-formats.spec.ts)은 [동일한 원본 생성 함수·wire·영수증·재열기 검증](../../apps/web/tests/collab-history-cases.ts)을 사용한다. 독립 설치본 검증은 `node packages/history-renderer/tests/pack-tests.mjs "$CONSUMER/tests"`로 신뢰된 시험·원본 생성기·재열기 도구만 묶고, 소비자 디렉터리에서 Vitest를 실행한다. 실제 서버와 렌더러는 이 번들에 포함하지 않으므로 설치된 두 tarball이 사용된다. 시험 측 `SEUOFFICE_WASM`은 독립 재열기용이며 제품 게스트는 패키지에 든 WASM만 연다. `capabilities.test.ts`는 같은 설치본 실행기로 합성 자격 표식·파일·루프백·프로세스 접근 거부와 WASM 상한을 확인한다. 공개 API에는 실행할 모듈 경로를 받는 인자가 없다.
+저장소의 형식 대조 시험과 [브라우저 시험](../../apps/web/tests/collab-history-formats.spec.ts)은 [동일한 원본 생성 함수·wire·영수증·재열기 검증](../../apps/web/tests/collab-history-cases.ts)을 사용한다.
+
+독립 설치본을 검증할 때마다 새 소비자 디렉터리를 준비한다. `node packages/history-renderer/tests/pack-tests.mjs "$CONSUMER/tests"`로 시험을 묶은 뒤 그 소비자 디렉터리에서 Vitest를 실행한다. 이전 디렉터리를 재사용하면 `pack-tests.mjs`가 지우지 않은 옛 `.test.mjs`까지 Vitest가 실행한다.
+
+시험 번들에는 신뢰된 원본 생성기와 재열기 도구를 넣고, 서버와 렌더러는 소비자에 설치한 두 tarball에서 불러온다. 시험 측 `SEUOFFICE_WASM`은 독립 재열기용이며 제품 게스트는 패키지에 든 WASM만 연다. `capabilities.test.ts`는 같은 설치본 실행기로 합성 자격 표식·파일·루프백·프로세스 접근 거부와 WASM 상한을 확인한다. 공개 API에는 실행할 모듈 경로를 받는 인자가 없다.
+
+한글 설치본 시험은 설치한 렌더러의 rhwp로 HWP와 HWPX 원본을 만들고, 편집·선택 취소한 파일을 다시 연다. `tests/unit/`의 파일 보존 시험은 저장소의 모의 문서와 내부 함수를 쓰므로 저장소에서 실행한다.

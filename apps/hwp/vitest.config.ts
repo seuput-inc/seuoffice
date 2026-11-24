@@ -1,4 +1,4 @@
-import { defaultClientConditions } from 'vite'
+import { defaultClientConditions, defaultServerConditions } from 'vite'
 import { defineConfig } from 'vitest/config'
 import {
   ENGINE_NODE_SETUP,
@@ -12,6 +12,8 @@ export default defineConfig({
   // seuoffice: the web bridge imports @seuoffice/web-platform, whose co-editing page reads
   // @seuoffice/collab, which ships TypeScript source under this export condition
   resolve: { conditions: ['seuoffice-source', ...defaultClientConditions] },
+  // Node-environment suites resolve through the SSR conditions, which need the source condition too.
+  ssr: { resolve: { conditions: ['seuoffice-source', ...defaultServerConditions] } },
   test: {
     include: ['tests/**/*.test.ts'],
     env: engineWasmEnv(),

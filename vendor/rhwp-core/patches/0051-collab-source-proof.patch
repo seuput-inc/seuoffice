@@ -1,0 +1,166 @@
+diff --git a/src/document_core/commands/document.rs b/src/document_core/commands/document.rs
+--- a/src/document_core/commands/document.rs
++++ b/src/document_core/commands/document.rs
+@@ -4,3 +4,4 @@
++mod collab_source;
+ mod grown_table_heights;
+ mod hft_outline_fonts;
+ mod initial_fields;
+diff --git a/src/document_core/commands/document/collab_source.rs b/src/document_core/commands/document/collab_source.rs
+new file mode 100644
+--- /dev/null
++++ b/src/document_core/commands/document/collab_source.rs
+@@ -0,0 +1,130 @@
++use super::{Caption, Control, DocumentCore, HwpError, Paragraph, ShapeObject};
++use crate::model::{control::FieldType, document::SectionDef, image::Picture};
++
++fn unsupported(reason: &str) -> HwpError {
++    HwpError::RenderError(format!("HWP source preservation: {reason}"))
++}
++
++fn caption(value: &mut Option<Caption>) -> Result<(), HwpError> {
++    if let Some(value) = value { paragraphs(&mut value.paragraphs)?; }
++    Ok(())
++}
++
++fn picture(p: &mut Picture) -> Result<(), HwpError> {
++    p.common.raw_extra.clear();
++    p.shape_attr.raw_rendering.clear();
++    p.shape_attr.ctrl_data = None;
++    p.raw_picture_extra.clear();
++    caption(&mut p.caption)
++}
++
++fn shape(s: &mut ShapeObject) -> Result<(), HwpError> {
++    s.common_mut().raw_extra.clear();
++    match s {
++        ShapeObject::Picture(p) => return picture(p),
++        ShapeObject::Group(g) => {
++            g.shape_attr.raw_rendering.clear();
++            g.shape_attr.ctrl_data = None;
++            caption(&mut g.caption)?;
++            for child in &mut g.children { shape(child)?; }
++            return Ok(());
++        }
++        ShapeObject::Ole(_) | ShapeObject::Chart(_) => return Err(unsupported("embedded object")),
++        ShapeObject::Line(l) => {
++            if let Some(c) = &mut l.connector { c.raw_trailing.clear(); }
++        }
++        ShapeObject::Polygon(p) => p.raw_trailing.clear(),
++        ShapeObject::Rectangle(_) | ShapeObject::Ellipse(_) | ShapeObject::Arc(_) | ShapeObject::Curve(_) => (),
++    }
++    let drawing = s.drawing_mut().ok_or_else(|| unsupported("unknown drawing"))?;
++    drawing.shape_attr.raw_rendering.clear();
++    drawing.shape_attr.ctrl_data = None;
++    if let Some(box_) = &mut drawing.text_box {
++        box_.raw_list_header_extra.clear();
++        paragraphs(&mut box_.paragraphs)?;
++    }
++    caption(&mut drawing.caption)
++}
++
++fn section_def(sd: &mut SectionDef) -> Result<(), HwpError> {
++    // The standard section header includes a language word and reserved zero bytes.
++    // The bundled 5.1 template stores 19 zero bytes here, not the writer default of 10.
++    if !matches!(sd.raw_ctrl_extra.len(), 0 | 10 | 19) || sd.raw_ctrl_extra.iter().any(|&b| b != 0) {
++        return Err(unsupported("unmodelled section header extension"));
++    }
++    sd.extra_child_records.clear();
++    for page in &mut sd.master_pages {
++        page.raw_list_header.clear();
++        paragraphs(&mut page.paragraphs)?;
++    }
++    Ok(())
++}
++
++fn paragraphs(list: &mut [Paragraph]) -> Result<(), HwpError> {
++    for p in list {
++        // The model owns the instance id and the optional change-tracking word, not arbitrary suffixes.
++        if p.raw_header_extra.len() > 12 || p.raw_break_type & !0x0f != 0 {
++            return Err(unsupported("unmodelled paragraph header"));
++        }
++        p.ctrl_data_records.clear();
++        for c in &mut p.controls {
++            match c {
++                Control::SectionDef(sd) => section_def(sd)?,
++                Control::ColumnDef(cd) => cd.raw_attr = 0,
++                Control::Table(t) => {
++                    t.raw_ctrl_data.clear();
++                    t.common.raw_extra.clear();
++                    t.raw_table_record_extra.clear();
++                    caption(&mut t.caption)?;
++                    for cell in &mut t.cells {
++                        cell.raw_list_extra = crate::serializer::control::build_cell_list_extra(cell);
++                        paragraphs(&mut cell.paragraphs)?;
++                    }
++                }
++                Control::Picture(p) => picture(p)?,
++                Control::Shape(s) => shape(s)?,
++                Control::Header(h) => { h.raw_ctrl_extra.clear(); h.raw_attr = 0; paragraphs(&mut h.paragraphs)?; }
++                Control::Footer(f) => { f.raw_ctrl_extra.clear(); f.raw_attr = 0; paragraphs(&mut f.paragraphs)?; }
++                Control::Footnote(n) => paragraphs(&mut n.paragraphs)?,
++                Control::Endnote(n) => paragraphs(&mut n.paragraphs)?,
++                Control::HiddenComment(h) => paragraphs(&mut h.paragraphs)?,
++                Control::Field(f) if f.field_type != FieldType::Unknown => paragraphs(&mut f.memo_paragraphs)?,
++                Control::Equation(e) => { e.raw_ctrl_data.clear(); e.common.raw_extra.clear(); }
++                Control::AutoNumber(_) | Control::NewNumber(_) | Control::PageNumberPos(_) |
++                Control::Bookmark(_) | Control::IndexMark(_) | Control::PageNumCtrl(_) |
++                Control::Ruby(_) | Control::CharOverlap(_) | Control::PageHide(_) => (),
++                _ => return Err(unsupported("control has no verified editable writer")),
++            }
++        }
++    }
++    Ok(())
++}
++
++impl DocumentCore {
++    /// Diagnostic snapshot, never a document save. Compare its streams to the original HWP5.
++    pub fn export_reconstructed_hwp_for_collab(&self) -> Result<Vec<u8>, HwpError> {
++        if self.source_format != crate::parser::FileFormat::Hwp {
++            return Err(unsupported("not a native HWP5 document"));
++        }
++        let mut snapshot = self.prepare_hwp_export_snapshot();
++        let doc = &mut snapshot.document;
++        crate::model::section_tail::validate_preservation(doc).map_err(|e| unsupported(&e))?;
++        for section in &mut doc.sections {
++            section.raw_stream = None;
++            section.trailing_lists = None;
++            section_def(&mut section.section_def)?;
++            paragraphs(&mut section.paragraphs)?;
++        }
++        doc.doc_properties.raw_data = None;
++        let info = &mut doc.doc_info;
++        info.raw_stream = None;
++        for font in info.font_faces.iter_mut().flatten() { font.raw_data = None; }
++        macro_rules! rebuild_records {
++            ($($table:ident),+) => { $(for r in &mut info.$table { r.raw_data = None; })+ };
++        }
++        rebuild_records!(bin_data_list, border_fills, char_shapes, tab_defs, numberings, bullets, para_shapes, styles);
++        let result = snapshot.serialize_with(crate::serializer::serialize_document_with_report)?;
++        if !result.content_loss().is_empty() { return Err(unsupported("serializer reported content loss")); }
++        Ok(result.into_bytes())
++    }
++}
+diff --git a/src/serializer/control.rs b/src/serializer/control.rs
+--- a/src/serializer/control.rs
++++ b/src/serializer/control.rs
+@@ -1070,6 +1070,6 @@
+ ///   [+8]     00 ×8
+ /// 파서 대칭: parser::control::parse_cell_field_name (offset 15/17).
+-fn build_cell_list_extra(cell: &Cell) -> Vec<u8> {
++pub(crate) fn build_cell_list_extra(cell: &Cell) -> Vec<u8> {
+     plain_control_payload(ControlPayload::CellExtra(cell))
+ }
+ fn write_cell_list_extra<W: std::io::Write>(
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -7560,3 +7560,8 @@
++    #[wasm_bindgen(js_name = exportReconstructedHwpForCollab)]
++    pub fn export_reconstructed_hwp_for_collab_wasm(&self) -> Result<Vec<u8>, JsValue> {
++        self.export_reconstructed_hwp_for_collab().map_err(JsValue::from)
++    }
++
+     /// 문서를 HWP 바이너리로 내보낸다.
+     ///
+     /// Document IR을 HWP 5.0 CFB 바이너리로 직렬화하여 반환한다.

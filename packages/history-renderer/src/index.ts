@@ -37,7 +37,14 @@ export async function renderBytes(
   if (
     !bytes.length ||
     bytes.length > 2 * 1024 * 1024 ||
-    !['history.docx', 'history.xlsx', 'history.pptx', 'history.pdf'].includes(meta.fileName) ||
+    ![
+      'history.docx',
+      'history.xlsx',
+      'history.pptx',
+      'history.pdf',
+      'history.hwp',
+      'history.hwpx',
+    ].includes(meta.fileName) ||
     (meta.compensation !== undefined && !Array.isArray(meta.compensation))
   )
     throw new HistoryError('invalid_history', 'invalid sandbox result')

@@ -326,7 +326,7 @@ export type ReadUrlResult =
 
 export interface HwpApi {
   /** path queued for this view when its tab was created; null for a view opened without a file */
-  consumePending(): Promise<string | null>
+  consumePending(signal?: AbortSignal): Promise<string | null>
   /** the pending path is an untitled copy (a skill template's): its name and format; null otherwise */
   untitledCopy?(): Promise<{ name: string; format: 'hwp' | 'hwpx' } | null>
   readFile(path: string): Promise<Uint8Array>

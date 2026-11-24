@@ -15,6 +15,8 @@ export type {
   HistoryPoint,
   HistoryReceipt,
   HistoryServer,
+  HwpCheckpoint,
+  HwpCheckpointStore,
   StreamHistoryServer,
   HistoryWrite,
   RestoreReceipt,

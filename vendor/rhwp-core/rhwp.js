@@ -2858,6 +2858,18 @@ export class HwpDocument {
         return DocumentExport.__wrap(ret[0]);
     }
     /**
+     * @returns {Uint8Array}
+     */
+    exportReconstructedHwpForCollab() {
+        const ret = wasm.hwpdocument_exportReconstructedHwpForCollab(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
      * 선택 영역을 HTML 문자열로 변환한다 (본문).
      * @param {number} section_idx
      * @param {number} start_para_idx
@@ -3134,6 +3146,35 @@ export class HwpDocument {
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.hwpdocument_fontSupportsText(this.__wbg_ptr, ptr0, len0, face_index, ptr1, len1);
         return ret !== 0;
+    }
+    /**
+     * Scratch only. CTRL_DATA is the parallel record carried by native split,
+     * merge and control removal. No tag is installed in the live model.
+     * @param {number} section
+     * @param {number} host
+     * @param {string} path_json
+     * @param {number} last
+     * @returns {HwpDocument | undefined}
+     */
+    forkCollabControlTrace(section, host, path_json, last) {
+        const ptr0 = passStringToWasm0(path_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.hwpdocument_forkCollabControlTrace(this.__wbg_ptr, section, host, ptr0, len0, last);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] === 0 ? undefined : HwpDocument.__wrap(ret[0]);
+    }
+    /**
+     * Same-realm fork. Never use an HWP/HWPX export as the model copy.
+     * @returns {HwpDocument}
+     */
+    forkCollabDocument() {
+        const ret = wasm.hwpdocument_forkCollabDocument(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return HwpDocument.__wrap(ret[0]);
     }
     /**
      * [#4709] SVG 메트릭 face 주석 부착 여부를 반환한다.
@@ -3996,6 +4037,216 @@ export class HwpDocument {
             return getStringFromWasm0(ret[0], ret[1]);
         } finally {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {HwpDocument} target
+     * @param {Uint32Array} ids
+     * @returns {Int32Array}
+     */
+    getCollabCharShapeMap(target, ids) {
+        _assertClass(target, HwpDocument);
+        const ptr0 = passArray32ToWasm0(ids, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.hwpdocument_getCollabCharShapeMap(this.__wbg_ptr, target.__wbg_ptr, ptr0, len0);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * @returns {string}
+     */
+    getCollabClipboardText() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.hwpdocument_getCollabClipboardText(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * @returns {string}
+     */
+    getCollabFingerprint() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.hwpdocument_getCollabFingerprint(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * @param {number} section
+     * @param {number} paragraph
+     * @param {string} path
+     * @param {number} start
+     * @param {number} end
+     * @returns {string}
+     */
+    getCollabLiteralFragment(section, paragraph, path, start, end) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_getCollabLiteralFragment(this.__wbg_ptr, section, paragraph, ptr0, len0, start, end);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * @param {number} id
+     * @returns {string}
+     */
+    getCollabMemoAnchor(id) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.hwpdocument_getCollabMemoAnchor(this.__wbg_ptr, id);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * @param {Uint32Array} ids
+     * @returns {string}
+     */
+    getCollabShapeWitness(ids) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(ids, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_getCollabShapeWitness(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * @param {number} section
+     * @param {number} paragraph
+     * @param {string} path
+     * @param {number} offset
+     * @returns {string}
+     */
+    getCollabTableSplit(section, paragraph, path, offset) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_getCollabTableSplit(this.__wbg_ptr, section, paragraph, ptr0, len0, offset);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * @param {number} section
+     * @param {number} paragraph
+     * @param {string} path
+     * @param {number} offset
+     * @param {string} axis
+     * @returns {string}
+     */
+    getCollabTextPosition(section, paragraph, path, offset, axis) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(axis, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_getCollabTextPosition(this.__wbg_ptr, section, paragraph, ptr0, len0, offset, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * @param {number} section
+     * @param {number} paragraph
+     * @param {string} path_json
+     * @returns {string}
+     */
+    getCollabTextUndoContext(section, paragraph, path_json) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ptr0 = passStringToWasm0(path_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_getCollabTextUndoContext(this.__wbg_ptr, section, paragraph, ptr0, len0);
+            deferred2_0 = ret[0];
+            deferred2_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
     }
     /**
@@ -8415,7 +8666,8 @@ export class HwpDocument {
         return ret[0] >>> 0;
     }
     /**
-     * 한 문단의 범위에 메모를 넣는다. `json` = `{author,text}`.
+     * 한 문단의 범위에 메모를 넣는다. `json`은 `{author,text,authoredAt?}`.
+     * `authoredAt`은 `{unixMs,offsetMinutesEast}`이며 생략하면 현재 시각을 쓴다.
      *
      * 반환: `{"ok":true,"id":N,"index":N}`. 실패는 `{ok:false,code,message}`.
      * @param {number} section_idx
@@ -8449,6 +8701,7 @@ export class HwpDocument {
      * 표 칸·글상자 안의 범위에 메모를 넣는다.
      *
      * `path_json` = `[{"controlIndex":N,"cellIndex":N,"cellParaIndex":N}, …]`.
+     * `json`은 `insertMemo`와 같은 작성자·본문·작성 시각이다.
      * @param {number} section_idx
      * @param {number} para_idx
      * @param {string} path_json
@@ -9810,6 +10063,38 @@ export class HwpDocument {
         return ret !== 0;
     }
     /**
+     * @param {number} section
+     * @param {number} paragraph
+     * @param {string} path
+     * @param {number} offset
+     * @param {boolean} after_inline
+     * @param {number | null | undefined} field
+     * @param {string} fragment
+     * @returns {string}
+     */
+    pasteCollabClipboardText(section, paragraph, path, offset, after_inline, field, fragment) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(fragment, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_pasteCollabClipboardText(this.__wbg_ptr, section, paragraph, ptr0, len0, offset, after_inline, isLikeNone(field) ? Number.MAX_SAFE_INTEGER : (field) >>> 0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
      * 내부 클립보드의 컨트롤 객체를 캐럿 위치에 붙여넣는다.
      *
      * 반환값: JSON `{"ok":true,"paraIdx":<idx>,"controlIdx":0}`
@@ -10219,6 +10504,33 @@ export class HwpDocument {
             return getStringFromWasm0(ptr1, len1);
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * @param {number} section
+     * @param {number} host
+     * @param {string} path_json
+     * @param {number} last
+     * @returns {string}
+     */
+    readCollabControlTrace(section, host, path_json, last) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(path_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_readCollabControlTrace(this.__wbg_ptr, section, host, ptr0, len0, last);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**
@@ -11234,6 +11546,17 @@ export class HwpDocument {
             return getStringFromWasm0(ptr3, len3);
         } finally {
             wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * Replace only the optimistic model, not the user's fonts or clipboard.
+     * @param {HwpDocument} confirmed
+     */
+    restoreCollabConfirmed(confirmed) {
+        _assertClass(confirmed, HwpDocument);
+        const ret = wasm.hwpdocument_restoreCollabConfirmed(this.__wbg_ptr, confirmed.__wbg_ptr);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
         }
     }
     /**
@@ -13659,6 +13982,41 @@ export class HwpDocument {
         const ret = wasm.hwpdocument_updateStyleShapes(this.__wbg_ptr, style_id, ptr0, len0, ptr1, len1);
         return ret !== 0;
     }
+    /**
+     * @param {number} section
+     * @param {number} paragraph
+     * @param {string} path
+     * @param {number} offset
+     * @param {number} count
+     * @param {string} text
+     * @param {string} mode
+     * @param {number | null} [field]
+     * @returns {string}
+     */
+    writeCollabText(section, paragraph, path, offset, count, text, mode, field) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passStringToWasm0(path, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ptr2 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len2 = WASM_VECTOR_LEN;
+            const ret = wasm.hwpdocument_writeCollabText(this.__wbg_ptr, section, paragraph, ptr0, len0, offset, count, ptr1, len1, ptr2, len2, isLikeNone(field) ? Number.MAX_SAFE_INTEGER : (field) >>> 0);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
 }
 if (Symbol.dispose) HwpDocument.prototype[Symbol.dispose] = HwpDocument.prototype.free;
 
@@ -14964,6 +15322,11 @@ function getArrayF64FromWasm0(ptr, len) {
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
 }
 
+function getArrayI32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
 function getArrayU32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
@@ -14993,6 +15356,14 @@ function getFloat64ArrayMemory0() {
         cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
     }
     return cachedFloat64ArrayMemory0;
+}
+
+let cachedInt32ArrayMemory0 = null;
+function getInt32ArrayMemory0() {
+    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
+        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
+    }
+    return cachedInt32ArrayMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {
@@ -15034,6 +15405,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -15129,6 +15507,7 @@ function __wbg_finalize_init(instance, module) {
     wasmModule = module;
     cachedDataViewMemory0 = null;
     cachedFloat64ArrayMemory0 = null;
+    cachedInt32ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     cachedUint8ClampedArrayMemory0 = null;

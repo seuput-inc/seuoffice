@@ -844,6 +844,8 @@ describe('the studio source the build fetched', () => {
     'src/embed/protocol.ts',
     'src/core/document-dirty-state.ts',
     'src/core/wasm-bridge.ts',
+    'src/core/event-bus.ts',
+    'src/engine/command.ts',
     'src/engine/input-handler.ts',
     'src/engine/input-handler-keyboard.ts',
     'src/engine/input-handler-mouse.ts',
@@ -854,6 +856,7 @@ describe('the studio source the build fetched', () => {
     'src/command/commands/insert.ts',
     'src/command/commands/table.ts',
     'src/command/shortcut-map.ts',
+    'src/ui/dialog.ts',
     'src/ui/table-cell-props-dialog.ts',
     'src/ui/toolbar.ts',
     'src/command/dispatcher.ts',
@@ -875,7 +878,13 @@ describe('the studio source the build fetched', () => {
     for (const name of STUDIO_PATCHES) {
       const targets = files.filter((file) => patchTargets(name, file))
       expect(targets, name).toHaveLength(1)
-      expect(() => applyPatch(name, readFileSync(targets[0], 'utf8')), name).not.toThrow()
+    }
+    // Later patches may deliberately anchor on text introduced by earlier ones.
+    for (const file of files) {
+      let code = readFileSync(file, 'utf8')
+      for (const name of STUDIO_PATCHES) {
+        if (patchTargets(name, file)) code = applyPatch(name, code)
+      }
     }
   })
 

@@ -3,6 +3,44 @@ export const en = {
   editorFailed: 'The editor could not start.',
   openFailed: 'The document could not be opened.',
   pdfImportCancelled: 'The PDF import was cancelled. You can close this tab.',
+  collabRejectedText: 'The insertion point was deleted. Your text was not added.',
+  collabRejectedPicture: 'The insertion point was deleted. Your picture was not added.',
+  collabInterruptedComposition: 'The document changed before you finished composing this text.',
+  collabChangedTarget: 'Another edit changed this location. Your content was not applied.',
+  collabKeptTarget:
+    'Someone added content here first, so your deletion was not applied. Copy what you meant to delete:',
+  collabCaretLost:
+    'Another edit removed the place your cursor was in. Typing is paused until you click where you want to keep editing.',
+  collabHistoryStopped:
+    'Co-editing stopped: the server could not add this change to the edit history (it could not make a history checkpoint, or could not replay the history). Download keeps what you see now on this computer.',
+  collabAdapterStopped:
+    'Co-editing stopped: this change could not be shared (the edit history reached its limit, or the editor could not process the change). Download keeps what you see now on this computer.',
+  collabStopped: 'Co-editing ended. Download keeps what you see now on this computer.',
+  collabDownload: 'Download',
+  collabDownloadFailed: 'The file could not be made.',
+  collabWebpInHwp:
+    'WebP pictures cannot be added to an HWP document while co-editing. Convert it to PNG or JPEG first.',
+  collabOpTooLarge:
+    'One co-editing change, such as a picture, can be at most {limit}. Make it smaller and try again.',
+  collabNotApplied:
+    'Another edit changed or removed the target. Your change was not applied: {action}.',
+  collabFormatAction: 'formatting',
+  collabTableAction: 'table edit',
+  collabDeleteAction: 'deletion',
+  collabFormAction: 'form edit',
+  collabMemoAction: 'memo edit',
+  collabTextAction: 'text edit',
+  collabPictureAction: 'picture edit',
+  collabUnsupportedEdit:
+    'This operation is not available while co-editing. Use a separate copy for this edit.',
+  collabRefusedCommand: 'The editor could not finish the command. None of its changes were sent.',
+  collabCopy: 'Copy',
+  collabCopied: 'Copied. Paste it where you want it.',
+  collabCopyFailed: 'Could not copy. Place the cursor in the document and choose Insert at cursor.',
+  collabReinsert: 'Insert at cursor',
+  collabReinsertFailed:
+    'Could not insert here. Choose another place in the document and try again.',
+  collabDiscard: 'Discard this item',
   saveFailed: 'The document could not be saved.',
   fileSave: 'Save',
   fileSaveAs: 'Save As…',

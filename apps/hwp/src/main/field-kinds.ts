@@ -9,7 +9,7 @@ import {
   sectionCount,
   streamOf,
 } from './hwp5-file'
-import type { HwpRecord } from './hwp5-file'
+import type { HwpRecord, OpenedHwp } from './hwp5-file'
 
 /**
  * Some fields Hangul writes with the kind "unknown" in their control record and the real
@@ -89,19 +89,30 @@ export function fieldKindsOf(file: Uint8Array): FieldKinds | null {
   try {
     const opened = openHwp(file)
     if (!opened) return null
-    const kinds: FieldKinds = new Map()
-    for (let sec = 0; sec < sectionCount(opened); sec++) {
-      const data = streamOf(opened, SECTION(sec))
-      const records = data ? recordsOf(data) : null
-      if (!data || !records) return null
-      for (const field of unknownFieldsIn(data, records)) {
-        if (field.kind !== UNKNOWN_FIELD) kinds.set(digestOf(data, field.control), field.kind)
-      }
-    }
+    const kinds = scanFieldKinds(opened, false)
     return kinds.size > 0 ? kinds : null
   } catch {
     return null
   }
+}
+
+/** History also needs surviving fields whose opening character lost its kind. */
+export function scanFieldKinds(opened: OpenedHwp, includeUnknown = true): FieldKinds {
+  const kinds: FieldKinds = new Map()
+  const count = sectionCount(opened)
+  for (let sec = 0; sec < count; sec++) {
+    const data = streamOf(opened, SECTION(sec))
+    const records = data ? recordsOf(data) : null
+    if (!data || !records) throw new Error('unreadable HWP fields')
+    for (const field of unknownFieldsIn(data, records)) {
+      if (!includeUnknown && field.kind === UNKNOWN_FIELD) continue
+      const digest = digestOf(data, field.control)
+      if (includeUnknown && kinds.has(digest) && kinds.get(digest) !== field.kind)
+        throw new Error('conflicting HWP field kinds')
+      kinds.set(digest, field.kind)
+    }
+  }
+  return kinds
 }
 
 /**
@@ -127,7 +138,7 @@ export function restoreFieldKinds(
       let any = false
       for (const field of unknownFieldsIn(data, records)) {
         const kind = kept.get(digestOf(data, field.control))
-        if (field.kind !== UNKNOWN_FIELD || kind === undefined) continue
+        if (field.kind !== UNKNOWN_FIELD || kind === undefined || kind === field.kind) continue
         data.writeUInt32LE(kind, field.at)
         restored += 1
         any = true

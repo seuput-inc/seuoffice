@@ -1,0 +1,438 @@
+Subject: [PATCH] memo: keep the author instant and HWPX wall time on replay
+
+HWP carries a UTC FILETIME; HWPX also carries the author's local wall
+time. Keep both on the individual memo, not in a host clock override.
+
+diff --git a/src/document_core/queries/memo_query.rs b/src/document_core/queries/memo_query.rs
+--- a/src/document_core/queries/memo_query.rs
++++ b/src/document_core/queries/memo_query.rs
+@@ -13,10 +13,13 @@
+ 
+ use std::collections::{HashMap, HashSet};
+ 
++use chrono::{DateTime, FixedOffset, Utc};
++use serde_json::{Map, Value};
++
+ use crate::document_core::helpers::json_escape;
+ use crate::document_core::queries::field_query::{shape_lists, FieldLocation, NestedEntry};
+ use crate::document_core::DocumentCore;
+-use crate::model::control::{Control, Field, FieldType, Parameter};
++use crate::model::control::{Control, Field, FieldType, Parameter, ParameterList};
+ use crate::model::document::Document;
+ use crate::model::paragraph::{FieldRange, Paragraph};
+ use crate::parser::tags;
+@@ -1195,7 +1198,7 @@ impl DocumentCore {
+             .collect()
+     }
+ 
+-    /// `insertMemo`: the `{author,text}` JSON argument, then [`Self::insert_memo_at`].
++    /// Insert a body memo, optionally with the original author's clock.
+     pub fn insert_memo_json_native(
+         &mut self,
+         section_idx: usize,
+@@ -1204,19 +1207,17 @@ impl DocumentCore {
+         end_char_idx: usize,
+         json: &str,
+     ) -> Result<String, MemoError> {
+-        let (author, text) = parse_memo_input(json)?;
+-        self.insert_memo_at(
++        let object = memo_input_object(json)?;
++        self.insert_memo_at_input(
+             section_idx,
+             para_idx,
+             start_char_idx,
+             end_char_idx,
+-            &author,
+-            &text,
++            MemoInput::parse(&object)?,
+         )
+     }
+ 
+-    /// `insertMemoByPath`: the cell path and `{author,text}` JSON arguments, then
+-    /// [`Self::insert_memo_by_path`].
++    /// Insert a nested memo using the same payload as a body memo.
+     pub fn insert_memo_by_path_json_native(
+         &mut self,
+         section_idx: usize,
+@@ -1226,17 +1227,17 @@ impl DocumentCore {
+         end_char_idx: usize,
+         json: &str,
+     ) -> Result<String, MemoError> {
+-        let (author, text) = parse_memo_input(json)?;
++        let object = memo_input_object(json)?;
++        let input = MemoInput::parse(&object)?;
+         let path = Self::parse_cell_path(path_json)
+             .map_err(|e| MemoError::new(MemoErrorCode::InvalidRange, e.to_string()))?;
+-        self.insert_memo_by_path(
++        self.insert_memo_by_path_input(
+             section_idx,
+             para_idx,
+             &path,
+             start_char_idx,
+             end_char_idx,
+-            &author,
+-            &text,
++            input,
+         )
+     }
+ 
+@@ -1250,12 +1251,33 @@ impl DocumentCore {
+         end_char_idx: usize,
+         author: &str,
+         text: &str,
++    ) -> Result<String, MemoError> {
++        self.insert_memo_at_input(
++            section_idx,
++            para_idx,
++            start_char_idx,
++            end_char_idx,
++            MemoInput {
++                author,
++                text,
++                authored_at: None,
++            },
++        )
++    }
++
++    fn insert_memo_at_input(
++        &mut self,
++        section_idx: usize,
++        para_idx: usize,
++        start_char_idx: usize,
++        end_char_idx: usize,
++        input: MemoInput<'_>,
+     ) -> Result<String, MemoError> {
+         if self.document_protected() {
+             return Err(MemoError::read_only("protected"));
+         }
+-        let author = sanitize_author(author)?;
+-        let text = &normalize_memo_text(text);
++        let author = sanitize_author(input.author)?;
++        let text = &normalize_memo_text(input.text);
+         check_text_size(text)?;
+         let (number, field_id) = self.next_memo_identity()?;
+ 
+@@ -1275,7 +1297,9 @@ impl DocumentCore {
+             .ok_or_else(|| MemoError::invalid_range("문단 위치를 찾을 수 없음"))?
+             .clone();
+ 
+-        let mut field = new_memo_field(field_id, number, shape_ref, &author, text, &template)?;
++        let mut field = new_memo_field(
++            field_id, number, shape_ref, &author, text, &template, input.authored_at,
++        )?;
+         // A new memo is an editable field like Hancom's (editable + dirty bits).
+         field.properties |= 0x8001;
+ 
+@@ -1331,6 +1355,29 @@ impl DocumentCore {
+         end_char_idx: usize,
+         author: &str,
+         text: &str,
++    ) -> Result<String, MemoError> {
++        self.insert_memo_by_path_input(
++            section_idx,
++            para_idx,
++            path,
++            start_char_idx,
++            end_char_idx,
++            MemoInput {
++                author,
++                text,
++                authored_at: None,
++            },
++        )
++    }
++
++    fn insert_memo_by_path_input(
++        &mut self,
++        section_idx: usize,
++        para_idx: usize,
++        path: &[(usize, usize, usize)],
++        start_char_idx: usize,
++        end_char_idx: usize,
++        input: MemoInput<'_>,
+     ) -> Result<String, MemoError> {
+         if path.is_empty() {
+             return Err(MemoError::invalid_range("cellPath가 비어 있음"));
+@@ -1338,8 +1385,8 @@ impl DocumentCore {
+         if self.document_protected() {
+             return Err(MemoError::read_only("protected"));
+         }
+-        let author = sanitize_author(author)?;
+-        let text = &normalize_memo_text(text);
++        let author = sanitize_author(input.author)?;
++        let text = &normalize_memo_text(input.text);
+         check_text_size(text)?;
+         let (number, field_id) = self.next_memo_identity()?;
+         let shape_ref = self
+@@ -1357,7 +1404,9 @@ impl DocumentCore {
+             .get_cell_paragraph_mut_by_path(section_idx, para_idx, path)
+             .map(|para| para.clone())
+             .map_err(|_| MemoError::invalid_range("문단 위치를 찾을 수 없음"))?;
+-        let mut field = new_memo_field(field_id, number, shape_ref, &author, text, &template)?;
++        let mut field = new_memo_field(
++            field_id, number, shape_ref, &author, text, &template, input.authored_at,
++        )?;
+         field.properties |= 0x8001;
+ 
+         {
+@@ -1623,18 +1672,52 @@ fn memo_json(hit: &MemoHit, protected: bool, reason: &str, page: u32) -> String
+     )
+ }
+ 
+-/// Read the `{author,text}` argument of the insert entries. A missing member is
+-/// empty; anything that is not an object of strings is rejected.
+-pub(crate) fn parse_memo_input(json: &str) -> Result<(String, String), MemoError> {
+-    let invalid = || MemoError::insert_failed("메모 입력은 {author,text} 문자열 객체여야 함");
+-    let value: serde_json::Value = serde_json::from_str(json).map_err(|_| invalid())?;
+-    let object = value.as_object().ok_or_else(invalid)?;
+-    let member = |key: &str| match object.get(key) {
+-        None => Ok(String::new()),
+-        Some(serde_json::Value::String(text)) => Ok(text.clone()),
+-        Some(_) => Err(invalid()),
+-    };
+-    Ok((member("author")?, member("text")?))
++struct MemoInput<'a> {
++    author: &'a str,
++    text: &'a str,
++    authored_at: Option<DateTime<FixedOffset>>,
++}
++
++fn memo_input_object(json: &str) -> Result<Map<String, Value>, MemoError> {
++    match serde_json::from_str(json) {
++        Ok(Value::Object(object)) => Ok(object),
++        _ => Err(MemoError::insert_failed("메모 입력은 JSON 객체여야 함")),
++    }
++}
++
++impl<'a> MemoInput<'a> {
++    fn parse(object: &'a Map<String, Value>) -> Result<Self, MemoError> {
++        let member = |key: &str| match object.get(key) {
++            None => Ok(""),
++            Some(value) => value.as_str().ok_or_else(|| {
++                MemoError::insert_failed("메모 작성자와 본문은 문자열이어야 함")
++            }),
++        };
++        Ok(Self {
++            author: member("author")?,
++            text: member("text")?,
++            authored_at: object.get("authoredAt").map(authored_time).transpose()?,
++        })
++    }
++}
++
++fn authored_time(clock: &Value) -> Result<DateTime<FixedOffset>, MemoError> {
++    let invalid = || MemoError::insert_failed("메모 작성 시각이나 UTC 오프셋이 잘못됨");
++    // Even one day east of UTC, the HWPX timestamp must have a four-digit year.
++    let ms = clock
++        .get("unixMs")
++        .and_then(Value::as_i64)
++        .filter(|ms| (0..=253_402_214_399_999).contains(ms))
++        .ok_or_else(invalid)?;
++    let zone = clock
++        .get("offsetMinutesEast")
++        .and_then(Value::as_i64)
++        .and_then(|m| i32::try_from(m).ok())
++        .and_then(|m| m.checked_mul(60))
++        .and_then(FixedOffset::east_opt)
++        .ok_or_else(invalid)?;
++    let utc = DateTime::from_timestamp_millis(ms).ok_or_else(invalid)?;
++    Ok(utc.with_timezone(&zone))
+ }
+ 
+ /// Trim, drop `/`, `\`, `;` and control characters, cap at 64 UTF-16 units.
+@@ -1677,15 +1760,43 @@ fn new_memo_field(
+     author: &str,
+     text: &str,
+     template: &Paragraph,
++    authored_at: Option<DateTime<FixedOffset>>,
+ ) -> Result<Field, MemoError> {
+-    let time = crate::model::memo_time::now();
++    let instant = authored_at.as_ref().map_or_else(Utc::now, |at| at.to_utc());
++    let time = crate::model::memo_time::filetime(instant);
++    let command = format!(
++        "MEMO/{shape_ref}/{number}/{}/{}/{author}/\\;;",
++        time as u32,
++        time >> 32
++    );
++    // An HWPX memo stores the author's wall time with a literal Z. Without the
++    // full parameter set the HWPX writer would derive it in the exporting zone.
++    let parameters = authored_at.map_or_else(ParameterList::default, |at| {
++        let string = |name: &str, value| Parameter::String {
++            name: Some(name.into()),
++            value,
++            preserve_space: false,
++        };
++        let integer = |name: &str, value| Parameter::Integer {
++            name: Some(name.into()),
++            value,
++        };
++        ParameterList {
++            name: None,
++            items: vec![
++                integer("Prop", 0),
++                string("Command", command.clone()),
++                string("ID", format!("memo{number}")),
++                integer("Number", i64::from(number)),
++                string("Author", author.into()),
++                string("MemoShapeIDRef", shape_ref.to_string()),
++                string("CreateDateTime", at.format("%Y-%m-%dT%H:%M:%SZ").to_string()),
++            ],
++        }
++    });
+     Ok(Field {
+         field_type: FieldType::Memo,
+-        command: format!(
+-            "MEMO/{shape_ref}/{number}/{}/{}/{author}/\\;;",
+-            time as u32,
+-            time >> 32
+-        ),
++        command,
+         properties: 0x8001,
+         extra_properties: 0,
+         field_id,
+@@ -1697,7 +1808,7 @@ fn new_memo_field(
+         memo_paragraphs: memo_paragraphs_from_text(text, template)?,
+         memo_text_direction: None,
+         raw_parameters_xml: None,
+-        parameters: Default::default(),
++        parameters,
+         guide_residue: None,
+         hyperlink_format: None,
+     })
+diff --git a/src/model/memo_time.rs b/src/model/memo_time.rs
+--- a/src/model/memo_time.rs
++++ b/src/model/memo_time.rs
+@@ -19,8 +19,7 @@ pub fn set_local_offset(offset: LocalOffset) -> Result<(), LocalOffset> {
+ const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+ const TICKS_PER_SECOND: i64 = 10_000_000;
+ 
+-pub(crate) fn now() -> u64 {
+-    let time = Utc::now();
++pub(crate) fn filetime(time: DateTime<Utc>) -> u64 {
+     (UNIX_EPOCH_TICKS
+         + time.timestamp() * TICKS_PER_SECOND
+         + i64::from(time.timestamp_subsec_nanos() / 100)) as u64
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -6104,7 +6104,8 @@ impl HwpDocument {
+         self.get_memo_list_json()
+     }
+ 
+-    /// 한 문단의 범위에 메모를 넣는다. `json` = `{author,text}`.
++    /// 한 문단의 범위에 메모를 넣는다. `json`은 `{author,text,authoredAt?}`.
++    /// `authoredAt`은 `{unixMs,offsetMinutesEast}`이며 생략하면 현재 시각을 쓴다.
+     ///
+     /// 반환: `{"ok":true,"id":N,"index":N}`. 실패는 `{ok:false,code,message}`.
+     #[wasm_bindgen(js_name = insertMemo)]
+@@ -6130,6 +6131,7 @@ impl HwpDocument {
+     /// 표 칸·글상자 안의 범위에 메모를 넣는다.
+     ///
+     /// `path_json` = `[{"controlIndex":N,"cellIndex":N,"cellParaIndex":N}, …]`.
++    /// `json`은 `insertMemo`와 같은 작성자·본문·작성 시각이다.
+     #[wasm_bindgen(js_name = insertMemoByPath)]
+     pub fn insert_memo_by_path(
+         &mut self,
+diff --git a/tests/cases/authored_memo_time.rs b/tests/cases/authored_memo_time.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/cases/authored_memo_time.rs
+@@ -0,0 +1,98 @@
++//! A memo inserted with an authored instant keeps that instant and the author's wall time
++//! through HWP and HWPX, instead of taking the clock of the engine that replays it.
++
++use rhwp::document_core::DocumentCore;
++use serde_json::Value;
++
++fn blank() -> DocumentCore {
++    let mut core = DocumentCore::new_empty();
++    core.create_blank_document_native().unwrap();
++    core
++}
++
++#[test]
++fn authored_memos_keep_one_instant_and_distinct_wall_times() {
++    let mut core = blank();
++    core.insert_text_native(0, 0, 0, "body").unwrap();
++    let table: Value =
++        serde_json::from_str(&core.create_table_native(0, 0, 4, 1, 1).unwrap()).unwrap();
++    let para = table["paraIdx"].as_u64().unwrap() as usize;
++    let control = table["controlIdx"].as_u64().unwrap() as usize;
++    core.insert_text_in_cell_native(0, para, control, 0, 0, 0, "cell")
++        .unwrap();
++    let path = format!(r#"[{{"controlIndex":{control},"cellIndex":0,"cellParaIndex":0}}]"#);
++    core.insert_memo_by_path_json_native(
++        0,
++        para,
++        &path,
++        0,
++        4,
++        r#"{"author":"West","text":"nested","authoredAt":{"unixMs":123,"offsetMinutesEast":-210}}"#,
++    )
++    .unwrap();
++    core.insert_memo_json_native(
++        0,
++        0,
++        0,
++        4,
++        r#"{"author":"East","text":"body","authoredAt":{"unixMs":123,"offsetMinutesEast":540}}"#,
++    )
++    .unwrap();
++
++    let hwpx = DocumentCore::from_bytes(&core.export_hwpx_native().unwrap()).unwrap();
++    for doc in [&core, &hwpx] {
++        let memos: Vec<Value> = serde_json::from_str(&doc.get_memo_list_json()).unwrap();
++        assert_eq!(memos.len(), 2);
++        for (author, date) in [
++            ("West", "1969-12-31T20:30:00Z"),
++            ("East", "1970-01-01T09:00:00Z"),
++        ] {
++            let memo = memos.iter().find(|m| m["author"] == author).unwrap();
++            assert_eq!(memo["date"], date);
++        }
++    }
++    let hwp = DocumentCore::from_bytes(&core.export_hwp_native().unwrap()).unwrap();
++    let fields = hwp.collect_all_fields();
++    let commands: Vec<_> = fields
++        .iter()
++        .map(|f| &f.field.command)
++        .filter(|c| c.starts_with("MEMO/"))
++        .collect();
++    assert_eq!(commands.len(), 2);
++    for command in commands {
++        let mut ticks = command.split('/').skip(3);
++        let low: u32 = ticks.next().unwrap().parse().unwrap();
++        let high: u32 = ticks.next().unwrap().parse().unwrap();
++        assert_eq!(
++            (u64::from(high) << 32) | u64::from(low),
++            116_444_736_001_230_000
++        );
++    }
++}
++
++#[test]
++fn malformed_authored_time_never_falls_back_to_now() {
++    let mut core = blank();
++    for clock in [
++        "null",
++        "[]",
++        "{}",
++        r#"{"unixMs":0}"#,
++        r#"{"unixMs":-1,"offsetMinutesEast":0}"#,
++        r#"{"unixMs":253402214400000,"offsetMinutesEast":0}"#,
++        r#"{"unixMs":0.5,"offsetMinutesEast":0}"#,
++        r#"{"unixMs":0,"offsetMinutesEast":1440}"#,
++        r#"{"unixMs":0,"offsetMinutesEast":-1440}"#,
++        r#"{"unixMs":0,"offsetMinutesEast":"60"}"#,
++    ] {
++        let json = format!(r#"{{"authoredAt":{clock}}}"#);
++        let error = core.insert_memo_json_native(0, 0, 0, 0, &json).unwrap_err();
++        assert_eq!(error.code.as_str(), "memo_insert_failed", "{clock}");
++    }
++    assert_eq!(core.get_memo_list_json(), "[]");
++    core.insert_memo_json_native(0, 0, 0, 0, r#"{"text":"unshared"}"#)
++        .unwrap();
++    let memos: Vec<Value> = serde_json::from_str(&core.get_memo_list_json()).unwrap();
++    assert_eq!(memos[0]["text"], "unshared");
++    assert!(memos[0]["date"].as_str().is_some());
++}

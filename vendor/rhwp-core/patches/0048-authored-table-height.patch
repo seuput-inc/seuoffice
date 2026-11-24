@@ -1,0 +1,566 @@
+Subject: [PATCH] Keep authored table height across layout projections
+
+Layout and HWP output use the projected table height. Table size edits use
+the authored height, including when two editors measure different heights.
+This changes the in-memory model only; it does not expose a fingerprint.
+
+diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
+--- a/src/diagnostics/ir_field_sweep.rs
++++ b/src/diagnostics/ir_field_sweep.rs
+@@ -961,6 +961,7 @@ fn sweep_table(base: &str, a: &Table, b: &Table, out: &mut DivergenceCollector)
+         raw_table_record_extra,
+         hwpx_label,
+         layout_page_break_cache: _,
++        height_projection: _,
+     } = a;
+ 
+     macro_rules! f {
+diff --git a/src/document_core/commands/document/grown_table_heights.rs b/src/document_core/commands/document/grown_table_heights.rs
+--- a/src/document_core/commands/document/grown_table_heights.rs
++++ b/src/document_core/commands/document/grown_table_heights.rs
+@@ -155,7 +155,7 @@ pub(super) fn apply_grown_table_heights(document: &mut Document, heights: &[Opti
+                     continue;
+                 };
+                 if let Some(Some(height)) = heights.next() {
+-                    table.sync_ctrl_height(*height);
++                    table.project_layout_height(*height);
+                 }
+                 for cell in &mut table.cells {
+                     walk(&mut cell.paragraphs, heights);
+diff --git a/src/document_core/commands/object_ops/table.rs b/src/document_core/commands/object_ops/table.rs
+--- a/src/document_core/commands/object_ops/table.rs
++++ b/src/document_core/commands/object_ops/table.rs
+@@ -701,6 +701,7 @@ impl DocumentCore {
+             raw_table_record_extra: Vec::new(),
+             hwpx_label: None,
+             layout_page_break_cache: Default::default(),
++            height_projection: None,
+         };
+         table.rebuild_grid();
+ 
+@@ -1091,6 +1092,7 @@ impl DocumentCore {
+             raw_table_record_extra: Vec::new(),
+             hwpx_label: None,
+             layout_page_break_cache: Default::default(),
++            height_projection: None,
+         };
+         table.rebuild_grid();
+         let added_border_fill = self.document.doc_info.border_fills.len() != border_fills_before;
+diff --git a/src/document_core/commands/paragraph_block/rows_geometry.rs b/src/document_core/commands/paragraph_block/rows_geometry.rs
+--- a/src/document_core/commands/paragraph_block/rows_geometry.rs
++++ b/src/document_core/commands/paragraph_block/rows_geometry.rs
+@@ -58,7 +58,7 @@ pub(super) fn inspect(t: &Table, r: &RepeatTableRowsRequest) -> Result<Geometry,
+         zones: vec![],
+         added,
+         rows,
+-        height: t.common.height,
++        height: t.authored_height(),
+         grid_bytes,
+     };
+     // Empty records still validate the address/limits but do not inspect source content.
+diff --git a/src/document_core/commands/paragraph_block/template_rows.rs b/src/document_core/commands/paragraph_block/template_rows.rs
+--- a/src/document_core/commands/paragraph_block/template_rows.rs
++++ b/src/document_core/commands/paragraph_block/template_rows.rs
+@@ -387,7 +387,7 @@ impl DocumentCore {
+         target.row_count = g.rows;
+         rows_geometry::rebuild_row_sizes(target);
+         target.rebuild_grid();
+-        target.sync_ctrl_height(g.height); // Width, position, title and split policy stay intact.
++        target.set_authored_height(g.height);
+         inherited.push(TableTextReflowKey::from_table(target));
+         let anchors: HashMap<_, _> = target
+             .cells
+diff --git a/src/document_core/commands/table_ops.rs b/src/document_core/commands/table_ops.rs
+--- a/src/document_core/commands/table_ops.rs
++++ b/src/document_core/commands/table_ops.rs
+@@ -1443,10 +1443,9 @@ impl DocumentCore {
+ 
+         let (needs_reflow, reflow_para_count) = {
+             let mut needs_reflow = false;
+-            let mut size_changed = false;
++            let mut height_changed = false;
+             let mut width_changed = false;
+             let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+-            let original_width = table.common.width;
+             let direct_border_fill_id = if has_border_fill_change {
+                 None
+             } else {
+@@ -1468,11 +1467,10 @@ impl DocumentCore {
+             if let Some(v) = top_u32("width") {
+                 needs_reflow |= cell.width != v;
+                 width_changed = cell.width != v;
+-                size_changed |= width_changed;
+                 cell.width = v;
+             }
+             if let Some(v) = top_u32("height") {
+-                size_changed |= cell.height != v;
++                height_changed = cell.height != v;
+                 cell.height = v;
+             }
+             if let Some(v) = top_i16("paddingLeft") {
+@@ -1523,18 +1521,11 @@ impl DocumentCore {
+                 }
+                 cell.border_fill_id = v;
+             }
+-            if size_changed {
+-                table.update_ctrl_dimensions();
+-                if !width_changed {
+-                    // 행마다 칸 경계가 다르면 열별 최댓값 합은 실제 표 너비보다 크다.
+-                    // 높이만 바꿀 때 선언 너비와 HWP 원본 헤더는 그대로 둔다.
+-                    table.common.width = original_width;
+-                    patch_raw_ctrl_field(
+-                        &mut table.raw_ctrl_data,
+-                        common_obj_offsets::WIDTH,
+-                        &original_width.to_le_bytes(),
+-                    );
+-                }
++            if width_changed {
++                table.update_ctrl_width();
++            }
++            if height_changed {
++                table.set_authored_height(table.get_row_heights().iter().sum());
+             }
+             if text_direction_changed {
+                 table.invalidate_layout_page_break();
+@@ -2390,9 +2381,13 @@ impl DocumentCore {
+     ) -> Vec<(usize, usize)> {
+         const MIN_CELL_SIZE: u32 = 200; // 최소 셀 크기 (HWPUNIT)
+ 
+-        let original_width = table.common.width;
+-        let original_height = table.common.height;
+-        let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
++        let original_height = table.authored_height();
++        let preserve_extra = table.row_count > 1 && updates.iter().any(|u| u.height_delta != 0);
++        let extra = if preserve_extra {
++            original_height.saturating_sub(table.get_row_heights().iter().sum())
++        } else {
++            0
++        };
+         let mut applied_width_delta: i64 = 0;
+         let mut applied_height_delta: i64 = 0;
+         for update in updates {
+@@ -2412,40 +2407,12 @@ impl DocumentCore {
+                 applied_height_delta += i64::from(cell.height) - i64::from(old_height);
+             }
+         }
+-        table.update_ctrl_dimensions();
+-        if updates.iter().any(|u| u.height_delta != 0)
+-            && original_height > original_row_height_sum
+-            && table.row_count > 1
+-        {
+-            // 여러 행 표에서 일부 행을 조절할 때만 생성 표의 표시 height 여유분을 보존한다.
+-            // 1행 표는 조절한 셀 높이가 곧 표 높이라는 기존 TAC 전환 회귀 규칙을 유지해야 한다.
+-            let resized_row_height_sum: u32 = table.get_row_heights().iter().sum();
+-            let row_height_delta = resized_row_height_sum as i64 - original_row_height_sum as i64;
+-            let adjusted_height = if row_height_delta >= 0 {
+-                original_height.saturating_add(row_height_delta.min(u32::MAX as i64) as u32)
+-            } else {
+-                original_height.saturating_sub((-row_height_delta).min(u32::MAX as i64) as u32)
+-            }
+-            .max(resized_row_height_sum);
+-            table.common.height = adjusted_height;
+-            if table.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+-                table.raw_ctrl_data[common_obj_offsets::HEIGHT]
+-                    .copy_from_slice(&adjusted_height.to_le_bytes());
+-            }
++        if applied_width_delta != 0 {
++            table.update_ctrl_width();
+         }
+-        if applied_width_delta == 0 {
+-            table.common.width = original_width;
+-            if table.raw_ctrl_data.len() >= common_obj_offsets::WIDTH.end {
+-                table.raw_ctrl_data[common_obj_offsets::WIDTH]
+-                    .copy_from_slice(&original_width.to_le_bytes());
+-            }
+-        }
+-        if applied_height_delta == 0 {
+-            table.common.height = original_height;
+-            if table.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+-                table.raw_ctrl_data[common_obj_offsets::HEIGHT]
+-                    .copy_from_slice(&original_height.to_le_bytes());
+-            }
++        if applied_height_delta != 0 {
++            let row_sum: u32 = table.get_row_heights().iter().sum();
++            table.set_authored_height(row_sum.saturating_add(extra));
+         }
+ 
+         updates
+@@ -4245,7 +4212,7 @@ impl DocumentCore {
+         // 열 폭으로 너비를 다시 재므로, 행마다 경계가 어긋난 격자에서는 맞지 않는다.
+         let total = extents.iter().map(|&(_, e)| e).max().unwrap_or(0).max(0) as u32;
+         if vertical {
+-            table.sync_ctrl_height(total);
++            table.set_authored_height(total);
+         } else {
+             table.common.width = total;
+             if table.raw_ctrl_data.len() >= common_obj_offsets::WIDTH.end {
+diff --git a/src/document_core/html_table_import.rs b/src/document_core/html_table_import.rs
+--- a/src/document_core/html_table_import.rs
++++ b/src/document_core/html_table_import.rs
+@@ -645,6 +645,7 @@ impl DocumentCore {
+             raw_table_record_extra: vec![0u8; 2], // 표준 추가 2바이트
+             hwpx_label: None,
+             layout_page_break_cache: Default::default(),
++            height_projection: None,
+         };
+         table.rebuild_grid();
+         // 재조판의 공통 행 측정을 저장 크기로 확정한다. 중첩 표의 직접 paint와
+diff --git a/src/document_core/html_table_width.rs b/src/document_core/html_table_width.rs
+--- a/src/document_core/html_table_width.rs
++++ b/src/document_core/html_table_width.rs
+@@ -157,5 +157,5 @@ pub(super) fn reserve_content_heights(table: &mut Table, styles: &ResolvedStyleS
+             cell.height = rows.iter().sum();
+         }
+     }
+-    table.sync_ctrl_height(heights.iter().sum());
++    table.project_layout_height(heights.iter().sum());
+ }
+diff --git a/src/document_core/tac_host_rows.rs b/src/document_core/tac_host_rows.rs
+--- a/src/document_core/tac_host_rows.rs
++++ b/src/document_core/tac_host_rows.rs
+@@ -170,6 +170,20 @@ impl DocumentCore {
+         self.move_tac_host_row(section_idx, para_idx, control_idx, declared_before, content)
+     }
+ 
++    /// Stores `projected` HWPUNIT as the layout height of one treat-as-char table, as the
++    /// pagination after an edit does with what it measured. Tests outside the crate use it.
++    #[doc(hidden)]
++    pub fn project_tac_table_height(
++        &mut self,
++        section_idx: usize,
++        para_idx: usize,
++        control_idx: usize,
++        projected: crate::model::HwpUnit,
++    ) -> bool {
++        let px = crate::renderer::hwpunit_to_px(projected as i32, self.dpi);
++        self.sync_tac_host_row(section_idx, para_idx, control_idx, px)
++    }
++
+     fn sync_tac_host_row(
+         &mut self,
+         section_idx: usize,
+@@ -243,7 +257,7 @@ impl DocumentCore {
+         let paragraphs = &mut self.document.sections[section_idx].paragraphs;
+         let para = &mut paragraphs[para_idx];
+         if let Some(Control::Table(table)) = para.controls.get_mut(control_idx) {
+-            table.sync_ctrl_height(content);
++            table.project_layout_height(content);
+         }
+         for (index, seg) in para.line_segs.iter_mut().enumerate() {
+             // 한컴은 문단의 모든 줄 line_height에 가장 높은 줄 높이를 적는다.
+diff --git a/src/model/table.rs b/src/model/table.rs
+--- a/src/model/table.rs
++++ b/src/model/table.rs
+@@ -95,6 +95,15 @@ pub struct Table {
+     /// 셀 구성·글 방향을 바꾸면 [`Table::invalidate_layout_page_break`] 로 비운다.
+     #[serde(skip)]
+     pub layout_page_break_cache: LayoutPageBreakCache,
++    /// `common.height`와 HWP 헤더가 조판 높이를 쓰는 동안만 편집 높이를 보존한다.
++    #[serde(skip)]
++    pub height_projection: Option<TableHeightProjection>,
++}
++
++#[derive(Debug, Clone, Copy)]
++pub struct TableHeightProjection {
++    authored: HwpUnit,
++    projected: HwpUnit,
+ }
+ 
+ /// [#8470] 세로쓰기 칸 유무 캐시. 큰 표(5만 칸)에서 조판이 칸마다 나눔 방식을 물어
+@@ -1427,29 +1436,41 @@ impl Table {
+     ///   [12..16] width, [16..20] height, [20..24] z_order,
+     ///   [24..32] outer_margin (i16×4), [32..36] instance_id
+     pub fn update_ctrl_dimensions(&mut self) {
+-        let total_width: HwpUnit = self.base_grid_column_widths().iter().sum();
+-        let total_height: HwpUnit = self.get_row_heights().iter().sum();
+-        self.sync_ctrl_dimensions(total_width, total_height);
++        self.update_ctrl_width();
++        self.set_authored_height(self.get_row_heights().iter().sum());
+     }
+ 
+-    fn sync_ctrl_dimensions(&mut self, total_width: HwpUnit, total_height: HwpUnit) {
+-        // (1) serialize source — raw_ctrl_data bytes (HWP 직렬화 시 사용).
+-        // HWPX 파스 문서처럼 raw 가 없으면 건너뛴다 — 그 경우 직렬화기가
+-        // self.common 에서 합성하므로 (2)만으로 충분하다.
+-        if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+-            self.raw_ctrl_data[common_obj_offsets::WIDTH]
+-                .copy_from_slice(&total_width.to_le_bytes());
+-            self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+-                .copy_from_slice(&total_height.to_le_bytes());
++    pub(crate) fn update_ctrl_width(&mut self) {
++        self.set_ctrl_width(self.base_grid_column_widths().iter().sum());
++    }
++
++    fn set_ctrl_width(&mut self, width: HwpUnit) {
++        self.common.width = width;
++        if let Some(field) = self.raw_ctrl_data.get_mut(common_obj_offsets::WIDTH) {
++            field.copy_from_slice(&width.to_le_bytes());
+         }
+-        // (2) [Task #1151 v6] paragraph_layout cache — self.common.width/height.
+-        // v3 helper (calc_sibling_topandbottom_table_reserved_hu) 가 self.common.height 사용.
+-        // dual maintenance 가 필수 — 한쪽만 갱신 시 stale 결함.
+-        self.common.width = total_width;
+-        self.common.height = total_height;
+     }
+ 
+-    pub(crate) fn sync_ctrl_height(&mut self, height: HwpUnit) {
++    /// 파일에서 읽거나 크기 편집으로 지정한 표 높이. 화면 측정값을 편집 입력으로 쓰지 않는다.
++    pub fn authored_height(&self) -> HwpUnit {
++        self.height_projection
++            .filter(|p| p.projected == self.common.height)
++            .map_or(self.common.height, |p| p.authored)
++    }
++
++    pub fn set_authored_height(&mut self, height: HwpUnit) {
++        self.height_projection = None;
++        self.write_ctrl_height(height);
++    }
++
++    pub(crate) fn project_layout_height(&mut self, projected: HwpUnit) {
++        let authored = self.authored_height();
++        self.height_projection = (authored != projected)
++            .then_some(TableHeightProjection { authored, projected });
++        self.write_ctrl_height(projected);
++    }
++
++    fn write_ctrl_height(&mut self, height: HwpUnit) {
+         self.common.height = height;
+         if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+             self.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&height.to_le_bytes());
+@@ -1459,7 +1480,7 @@ impl Table {
+     pub(crate) fn stretched_row_heights(&self) -> Option<Vec<HwpUnit>> {
+         let mut heights = self.get_row_heights();
+         let raw_sum: u64 = heights.iter().map(|h| *h as u64).sum();
+-        let target = self.common.height as u64;
++        let target = u64::from(self.authored_height());
+         if heights.is_empty() || raw_sum == 0 || target <= raw_sum {
+             return None;
+         }
+@@ -1597,8 +1618,7 @@ impl Table {
+             let end = (c + cell.col_span as usize).min(widths.len());
+             cell.width = widths[c..end].iter().sum();
+         }
+-        let total_height = self.get_row_heights().iter().sum();
+-        self.sync_ctrl_dimensions(total_width, total_height);
++        self.set_ctrl_width(total_width);
+         self.rebuild_grid();
+         Ok(())
+     }
+@@ -1742,7 +1762,7 @@ impl Table {
+         let stretched_new_row_height = self
+             .stretched_row_heights()
+             .and_then(|heights| heights.get(row_idx as usize).copied());
+-        let original_height = self.common.height;
++        let original_height = self.authored_height();
+         let col_widths = self.get_column_widths();
+ 
+         // 셀 height용
+@@ -1833,7 +1853,7 @@ impl Table {
+         if let Some(new_row_height) = stretched_new_row_height {
+             // 일반 표는 셀 저장 height보다 큰 표시 height를 별도로 가진다.
+             // 행 추가 시 표시 기준 행 높이를 더해 표가 납작해지지 않도록 보존한다.
+-            self.sync_ctrl_height(original_height.saturating_add(new_row_height));
++            self.set_authored_height(original_height.saturating_add(new_row_height));
+         }
+ 
+         // 그리드 인덱스 재구축
+@@ -1878,7 +1898,6 @@ impl Table {
+             }
+         }
+ 
+-        let original_height = self.common.height;
+         let col_widths = self.get_column_widths();
+         let row_heights = self.get_row_heights();
+         let new_col_width = col_widths[col_idx as usize];
+@@ -1958,14 +1977,9 @@ impl Table {
+         self.cells.sort_by_key(|c| (c.row, c.col));
+ 
+         // CommonObjAttr 크기 갱신
+-        self.update_ctrl_dimensions();
+-        if original_height > 0 {
+-            // 열 추가는 행 수를 바꾸지 않으므로 표 외곽 높이는 기존 값을 유지한다.
+-            self.common.height = original_height;
+-            if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+-                self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+-                    .copy_from_slice(&original_height.to_le_bytes());
+-            }
++        self.update_ctrl_width();
++        if self.authored_height() == 0 {
++            self.set_authored_height(self.get_row_heights().iter().sum());
+         }
+ 
+         // 그리드 인덱스 재구축
+@@ -1991,7 +2005,7 @@ impl Table {
+         let stretched_deleted_row_height = self
+             .stretched_row_heights()
+             .and_then(|heights| heights.get(row_idx as usize).copied());
+-        let original_height = self.common.height;
++        let original_height = self.authored_height();
+ 
+         // 삭제 행을 걸치는 병합 셀: row_span 축소
+         // [#4264] row/row_span은 파일에서 그대로 온 u16이라 saturating_add 없이
+@@ -2033,7 +2047,7 @@ impl Table {
+             // 일반 표의 표시 높이는 셀 저장 height 합보다 크므로 삭제 행의 표시
+             // 높이만큼 외곽 height를 줄여 한컴식 비례를 유지한다.
+             let raw_sum: HwpUnit = self.get_row_heights().iter().sum();
+-            self.sync_ctrl_height(
++            self.set_authored_height(
+                 original_height
+                     .saturating_sub(deleted_row_height)
+                     .max(raw_sum),
+@@ -2060,8 +2074,6 @@ impl Table {
+             return Err("최소 1열은 유지해야 합니다".to_string());
+         }
+ 
+-        let original_height = self.common.height;
+-
+         // 삭제 열의 폭 (셀 width 축소용)
+         let col_widths = self.get_column_widths();
+         let deleted_width = col_widths[col_idx as usize];
+@@ -2107,14 +2119,9 @@ impl Table {
+         self.cells.sort_by_key(|c| (c.row, c.col));
+ 
+         // CommonObjAttr 크기 갱신
+-        self.update_ctrl_dimensions();
+-        if original_height > 0 {
+-            // 열 삭제는 행 수를 바꾸지 않으므로 표 외곽 높이는 기존 값을 유지한다.
+-            self.common.height = original_height;
+-            if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+-                self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+-                    .copy_from_slice(&original_height.to_le_bytes());
+-            }
++        self.update_ctrl_width();
++        if self.authored_height() == 0 {
++            self.set_authored_height(self.get_row_heights().iter().sum());
+         }
+ 
+         // 그리드 인덱스 재구축
+diff --git a/src/model/table_equal_size.rs b/src/model/table_equal_size.rs
+--- a/src/model/table_equal_size.rs
++++ b/src/model/table_equal_size.rs
+@@ -251,14 +251,13 @@ impl Table {
+             }
+         }
+ 
+-        let (mut total_width, mut total_height) = (self.common.width, self.common.height);
+         let grown = |total: u32| (i64::from(total) + shift).clamp(0, i64::from(u32::MAX)) as u32;
+         if height {
+             self.row_count = new_lines;
+-            total_height = grown(total_height);
++            self.set_authored_height(grown(self.authored_height()));
+         } else {
+             self.col_count = new_lines;
+-            total_width = grown(total_width);
++            self.set_ctrl_width(grown(self.common.width));
+         }
+         let mut order: Vec<usize> = (0..self.cells.len()).collect();
+         order.sort_by_key(|&i| (self.cells[i].row, self.cells[i].col));
+@@ -268,7 +267,6 @@ impl Table {
+             .collect();
+         self.cells = order.iter().filter_map(|&i| cells[i].take()).collect();
+         self.rebuild_row_sizes();
+-        self.sync_ctrl_dimensions(total_width, total_height);
+         self.rebuild_grid();
+         let mut moved_to = vec![0; order.len()];
+         let mut widened = Vec::new();
+diff --git a/src/scaffold/builder.rs b/src/scaffold/builder.rs
+--- a/src/scaffold/builder.rs
++++ b/src/scaffold/builder.rs
+@@ -472,6 +472,7 @@ fn build_table_paragraph(
+         raw_table_record_extra: Vec::new(),
+         hwpx_label: None,
+         layout_page_break_cache: Default::default(),
++        height_projection: None,
+     };
+     table.rebuild_grid();
+ 
+diff --git a/tests/cases/authored_table_height.rs b/tests/cases/authored_table_height.rs
+new file mode 100644
+--- /dev/null
++++ b/tests/cases/authored_table_height.rs
+@@ -0,0 +1,85 @@
++//! Layout may store a measured height for a treat-as-char table, but the height its author
++//! set stays the one the next resize starts from.
++
++use rhwp::document_core::DocumentCore;
++use rhwp::model::control::Control;
++use rhwp::model::table::Table;
++
++/// A treat-as-char table of `rows`×2 in paragraph 0 and four short paragraphs after it,
++/// saved as HWP and opened again: the stored rows hold the table, as in a file Hangul wrote.
++fn saved_page_of_table(rows: u16) -> DocumentCore {
++    let mut doc = DocumentCore::new_empty();
++    doc.create_blank_document_native().expect("blank document");
++    doc.insert_text_native(0, 0, 0, "x").expect("type");
++    doc.split_paragraph_native(0, 0, 1, None).expect("split");
++    for para in 1..4 {
++        doc.split_paragraph_native(0, para, 0, None).expect("split");
++    }
++    doc.delete_text_native(0, 0, 0, 1).expect("delete");
++    for para in 1..=4 {
++        doc.insert_text_native(0, para, 0, &format!("closing line {para}"))
++            .expect("type");
++    }
++    doc.create_table_ex_native(0, 0, 0, rows, 2, true, None, None)
++        .expect("table");
++    DocumentCore::from_bytes(&doc.export_hwp_native().expect("save")).expect("reopen")
++}
++
++fn table_control(doc: &DocumentCore) -> usize {
++    doc.document().sections[0].paragraphs[0]
++        .controls
++        .iter()
++        .position(|control| matches!(control, Control::Table(_)))
++        .expect("table")
++}
++
++fn table(doc: &DocumentCore, index: usize) -> &Table {
++    match &doc.document().sections[0].paragraphs[0].controls[index] {
++        Control::Table(table) => table,
++        _ => panic!("expected table"),
++    }
++}
++
++/// The host row's text height is the table's outer height, as Hangul stores it. The
++/// paragraph holds only the table, so its one row is the host row.
++fn host_row_holds_table(doc: &DocumentCore, control: usize) {
++    let para = &doc.document().sections[0].paragraphs[0];
++    let table = table(doc, control);
++    let band = i64::from(table.common.height)
++        + i64::from(table.outer_margin_top)
++        + i64::from(table.outer_margin_bottom);
++    assert_eq!(para.line_segs.len(), 1, "host paragraph rows");
++    assert_eq!(
++        i64::from(para.line_segs[0].text_height),
++        band,
++        "host row height"
++    );
++}
++
++#[test]
++fn authored_table_height_survives_measurement_and_drives_the_next_resize() {
++    let mut edited = saved_page_of_table(2);
++    let mut reference = saved_page_of_table(2);
++    let ci = table_control(&edited);
++    let reference_ci = table_control(&reference);
++    let authored = table(&edited, ci).authored_height();
++    for projected in [authored + 900, authored + 2400] {
++        assert!(edited.project_tac_table_height(0, 0, ci, projected));
++        assert_eq!(table(&edited, ci).common.height, projected);
++        assert_eq!(table(&edited, ci).authored_height(), authored);
++        host_row_holds_table(&edited, ci);
++        // The file stores what layout measured, as Hangul does.
++        let saved = DocumentCore::from_bytes(&edited.export_hwp_native().unwrap()).unwrap();
++        assert_eq!(table(&saved, table_control(&saved)).common.height, projected);
++    }
++    let change = r#"[{"cellIdx":0,"heightDelta":600},{"cellIdx":1,"heightDelta":600}]"#;
++    reference
++        .resize_table_cells_by_cell_path_native(0, 0, &[(reference_ci, 0, 0)], change)
++        .unwrap();
++    edited
++        .resize_table_cells_by_cell_path_native(0, 0, &[(ci, 0, 0)], change)
++        .unwrap();
++    let expected = table(&reference, reference_ci).authored_height();
++    assert!(expected > authored);
++    assert_eq!(table(&edited, ci).authored_height(), expected);
++}
