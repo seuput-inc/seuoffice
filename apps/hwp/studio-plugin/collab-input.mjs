@@ -164,10 +164,18 @@ export function createStudioCollab(win) {
     win.removeEventListener('pagehide', shutdown)
   }
   win.addEventListener('pagehide', shutdown)
+  // Only placing the caret on the page, by pointer or a navigation key, unlocks; menus do not.
   win.document.addEventListener(
     'pointerdown',
-    () => {
-      stranded = false
+    (event) => {
+      if (event.target?.closest?.('#scroll-container')) stranded = false
+    },
+    true,
+  )
+  win.document.addEventListener(
+    'keydown',
+    (event) => {
+      if (caretKeys.has(event.key)) stranded = false
     },
     true,
   )
@@ -250,6 +258,17 @@ export function createStudioCollab(win) {
     },
   }
 }
+
+const caretKeys = new Set([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+])
 
 function toCursor({ section, paragraph, path, offset }) {
   const pos = { sectionIndex: section, paragraphIndex: paragraph, charOffset: offset }

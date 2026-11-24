@@ -31,7 +31,7 @@ function page(mode = 'edit') {
   const document = frame.document
   document.open()
   document.write(
-    '<body><div id="scroll-content"></div><textarea></textarea><output></output></body>',
+    '<body><nav id="menu-bar"></nav><div id="scroll-container"><div id="scroll-content"></div></div><textarea></textarea><output></output></body>',
   )
   document.close()
   cleanup.push(() => parent.close())
@@ -406,21 +406,38 @@ describe('Studio collaboration input', () => {
     expect(e.caretLost).not.toHaveBeenCalled()
   })
 
-  it('locks input with a notice when a replay removes the caret place, until the user clicks', () => {
-    const e = editor()
-    e.controls.setEditable(true)
-    e.controls.replay(
-      (doc) => doc.insertText(0, 0, 0, 'x'),
-      () => null,
-    )
-    expect(e.caretLost).toHaveBeenCalledOnce()
-    expect(e.session.locked).toBe(true)
-    expect(() => e.doc.insertText(0, 0, 0, '!')).toThrow(/read-only/)
-    e.frame.document.dispatchEvent(new e.parent.Event('pointerdown'))
-    expect(e.session.locked).toBe(false)
-    e.input('!')
-    expect(e.text()).toBe('!xAB')
-  })
+  it.each([
+    ['a click on the page', 'pointerdown', '#scroll-content'],
+    ['a navigation key', 'ArrowRight', 'textarea'],
+  ])(
+    'locks input with a notice when a replay removes the caret place, until %s',
+    (_case, unlock, target) => {
+      const e = editor()
+      e.controls.setEditable(true)
+      e.controls.replay(
+        (doc) => doc.insertText(0, 0, 0, 'x'),
+        () => null,
+      )
+      expect(e.caretLost).toHaveBeenCalledOnce()
+      expect(e.session.locked).toBe(true)
+      expect(() => e.doc.insertText(0, 0, 0, '!')).toThrow(/read-only/)
+      const send = (selector: string, event: Event) =>
+        e.frame.document.querySelector(selector)!.dispatchEvent(event)
+      // Opening a menu or pressing a command key leaves the caret at the document start: still locked.
+      send('#menu-bar', new e.parent.Event('pointerdown', { bubbles: true }))
+      send('textarea', new e.parent.KeyboardEvent('keydown', { key: 'b', bubbles: true }))
+      expect(e.session.locked).toBe(true)
+      send(
+        target,
+        unlock === 'pointerdown'
+          ? new e.parent.Event('pointerdown', { bubbles: true })
+          : new e.parent.KeyboardEvent('keydown', { key: unlock, bubbles: true }),
+      )
+      expect(e.session.locked).toBe(false)
+      e.input('!')
+      expect(e.text()).toBe('!xAB')
+    },
+  )
 
   it('rebuilds both ends in the inner table without confusing the owner paragraph with the cell paragraph', () => {
     const e = editor({ nested: true })
