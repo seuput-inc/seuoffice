@@ -111,15 +111,13 @@ it('distinguishes the payload and anchor of an opaque HWP paragraph record', () 
     const afterText = digest(opaque)
     expect(digest(withRecord(67, 2))).not.toBe(afterText)
     expect(digest(withRecord(66, 1))).not.toBe(afterText)
+    // Patch 0047 keeps the record with the source paragraph and leaves it out of the clipboard,
+    // so copying the text beside it still yields a plain-text fragment.
     for (const bytes of [source, opaque]) {
       const doc = new HwpDocument(bytes)
       try {
         doc.copySelection(0, 1, 0, 1, 2)
-        if (bytes === source) {
-          expect(JSON.parse(doc.getCollabClipboardText()).text).toBe('보존')
-        } else {
-          expect(() => doc.getCollabClipboardText()).toThrow()
-        }
+        expect(JSON.parse(doc.getCollabClipboardText()).text).toBe('보존')
       } finally {
         doc.free()
       }
