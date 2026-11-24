@@ -1,13 +1,17 @@
 import { DEFAULT_AI_PANEL_PREFS, NO_AUTO_SAVE_DEFAULT } from '@seuoffice/ui'
 import {
+  collabLink,
   createAiStreamBridge,
   createWebBridge,
   documentByPath,
   editMode,
+  historyMode,
   installWebBridge,
   onHostSaveRequest,
   onHostThumbnailRequest,
+  registerCollabCapable,
   reportDirty,
+  reportError,
   reportOpened,
   saveReason,
   saveToHost,
@@ -28,10 +32,14 @@ import { watchSaveKey } from './save-key'
 const noop = (): void => {}
 const unsubscribe = (): (() => void) => noop
 
+registerCollabCapable({ history: true })
+
 /** `?mode=edit`: the host stores what this page saves */
 const canSave = editMode()
 
 let trackingDropped = false
+let collabRequested = false
+let collabBytes: Uint8Array | undefined
 /** the document this page opened, and what its saves correct against */
 let opened: { doc: WebDocument; hwp: OpenedHwp } | null = null
 /** the format `beginSave` settled on; `newTabs` and `commitSave` need one */
@@ -60,7 +68,9 @@ function settleSave(ok: boolean, error = 'hwp: the document was not saved'): voi
  * place of the disk. Save As to another name or format is not offered.
  */
 const saveApi: Partial<HwpApi> = {
-  setDirty: reportDirty,
+  setDirty: (dirty) => {
+    if (!collabRequested) reportDirty(dirty)
+  },
   abortSave: () => {
     pendingFormat = null
     settleSave(false)
@@ -78,6 +88,7 @@ const saveApi: Partial<HwpApi> = {
       settleSave(false, error)
       return { ok: false as const, error, ...(reason ? { reason } : {}) }
     }
+    if (collabRequested) return refuse('hwp: co-edited files can only be saved by the session')
     if (!opened) return refuse('hwp: no document is open')
     if (opened.hwp.tracked) return refuse('hwp: the document has tracked changes', 'tracked')
     // the one target a page has is the opened file itself
@@ -98,6 +109,7 @@ const saveApi: Partial<HwpApi> = {
       else settleSave(false, result.error)
       return result
     }
+    if (collabRequested) return done({ ok: false, error: 'hwp: a session save is required' })
     if (!format || !opened) return done({ ok: false, error: 'hwp: no save in progress' })
     const fixed = webSaveBytes(opened.hwp.base, format, data, tabs)
     if (!fixed.ok) return done(fixed)
@@ -122,11 +134,33 @@ const saveApi: Partial<HwpApi> = {
 const ai = createAiStreamBridge()
 
 const hwpApi: Partial<HwpApi> = {
-  consumePending: async () => (await waitForDocument())?.virtualPath ?? null,
+  consumePending: async (signal) => {
+    const doc = await waitForDocument()
+    if (!doc) return null
+    signal?.throwIfAborted()
+    collabRequested = historyMode() || collabLink() !== null
+    if (collabRequested) {
+      // Ordinary pages must not load the collaboration WASM or source-certification readers.
+      const { openHwpCollabPage } = await import('./collab-page').catch((error: unknown) => {
+        if (!signal?.aborted)
+          reportError('collab_unavailable', error instanceof Error ? error.message : String(error))
+        throw error
+      })
+      collabBytes = await openHwpCollabPage(doc, signal)
+    }
+    return doc.virtualPath
+  },
   untitledCopy: async () => null,
   readFile: async (path) => {
     const doc = documentByPath(path)
     if (!doc) throw new Error(`seuoffice web: no document at ${path}`)
+    if (collabRequested) {
+      if (!collabBytes || !window.seuHwpCollabPage) {
+        throw new Error('hwp: no admitted collaboration document')
+      }
+      if (!historyMode()) queueMicrotask(reportOpened)
+      return collabBytes
+    }
     const hwp = openHwpFromBytes(doc, canSave)
     if (!hwp) throw new Error('seuoffice web: hwp refused')
     trackingDropped = hwp.trackingDropped

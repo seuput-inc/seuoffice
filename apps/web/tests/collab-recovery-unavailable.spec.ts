@@ -1,22 +1,51 @@
 /**
- * A file whose format has no co-editing adapter, asked for with `collab`: the page answers
- * `collab_unavailable`, and the host opens it again the way it did before co-editing, under
- * its edit lock (docs/seuoffice/공동-편집.md).
+ * An admitted file cannot join an epoch of another format. Only this session refusal
+ * may fall back to the host's edit lock; a source-preservation refusal must not.
  */
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, test } from '@playwright/test'
+import { expect, test, type BrowserContext } from '@playwright/test'
 import init, { HwpDocument } from '@rhwp/core'
+import { openCoEdited } from './collab'
 
 const repo = fileURLToPath(new URL('../../..', import.meta.url))
-const MEMO = resolve(repo, 'apps/hwp/tests/fixtures/memo.hwp')
+const files = new Map<string, { name: string; mimeType: string; buffer: Buffer }>()
+let seed: BrowserContext | undefined
 
 test.beforeAll(async () => {
   const require = createRequire(import.meta.url)
   const wasm = join(dirname(require.resolve('@rhwp/core')), 'rhwp_bg.wasm')
   await init({ module_or_path: readFileSync(wasm) })
+  const doc = HwpDocument.createEmpty()
+  try {
+    doc.createBlankDocument()
+    doc.insertText(0, 0, 0, 'Original')
+    for (const format of ['hwp', 'hwpx']) {
+      const name = `original.${format}`
+      files.set(name, {
+        name,
+        mimeType: 'application/octet-stream',
+        buffer: Buffer.from(format === 'hwp' ? doc.exportHwp() : doc.exportHwpx()),
+      })
+    }
+  } finally {
+    doc.free()
+  }
+})
+
+test.beforeEach(async ({ browser }, info) => {
+  const owner = await openCoEdited(browser, resolve(repo, 'fixtures/generated/simple.docx'), {
+    documentId: info.testId,
+    user: 'owner',
+  })
+  seed = owner.page.context()
+})
+
+test.afterEach(async () => {
+  await seed?.close()
+  seed = undefined
 })
 
 function textOf(bytes: Uint8Array): string {
@@ -30,9 +59,9 @@ function textOf(bytes: Uint8Array): string {
 
 test('an hwp opened with collab ends up open under the edit lock, edits and saves without a version', async ({
   page,
-}) => {
+}, info) => {
   const query = new URLSearchParams({
-    collab: `hwp-recovery-${Date.now()}`,
+    collab: info.testId,
     user: 'alice',
     name: 'alice',
     access: 'edit',
@@ -48,7 +77,8 @@ test('an hwp opened with collab ends up open under the edit lock, edits and save
     },
     { times: 1 },
   )
-  await page.setInputFiles('#file', MEMO)
+  const input = files.get('original.hwp')!
+  await page.setInputFiles('#file', input)
 
   const app = page.frameLocator('#viewer iframe')
   await expect(app.locator('.hwp-app[data-phase="ready"]')).toHaveCount(1, { timeout: 60_000 })
@@ -62,7 +92,7 @@ test('an hwp opened with collab ends up open under the edit lock, edits and save
     .toEqual({ mode: 'locked', openError: 'collab_unavailable' })
   expect(await page.evaluate(() => window.seuLauncher!.collab)).toBeNull()
   await expect(page.locator('body')).not.toHaveAttribute('data-collab-phase')
-  await expect(page.locator('#status')).toHaveText('memo.hwp')
+  await expect(page.locator('#status')).toHaveText(input.name)
   await expect(page.locator('#save')).toBeVisible()
   // there is no session whose file could be rescued
   expect(
@@ -84,13 +114,13 @@ test('an hwp opened with collab ends up open under the edit lock, edits and save
   expect(stored.version).toBeNull()
   const edited = textOf(new Uint8Array(stored.bytes))
   expect(edited).toContain('SEURECOVER')
-  expect(edited.replace('SEURECOVER', '')).toBe(textOf(readFileSync(MEMO)))
+  expect(edited.replace('SEURECOVER', '')).toBe(textOf(input.buffer))
 })
 
-for (const name of ['memo.hwp', 'memo.hwpx']) {
-  test(`${name} falls back to viewing without saving`, async ({ page }) => {
-    await page.goto('/?collab=read-only&access=view')
-    await page.setInputFiles('#file', resolve(dirname(MEMO), name))
+for (const name of ['original.hwp', 'original.hwpx']) {
+  test(`${name} falls back to viewing without saving`, async ({ page }, info) => {
+    await page.goto(`/?collab=${encodeURIComponent(info.testId)}&access=view`)
+    await page.setInputFiles('#file', files.get(name)!)
 
     await expect(page.locator('#status')).toHaveText(name, { timeout: 60_000 })
     const launcher = await page.evaluate(async () => {
