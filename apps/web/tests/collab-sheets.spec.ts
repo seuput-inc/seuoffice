@@ -594,6 +594,111 @@ test('a cell someone else changes while this page types in it keeps what this pa
   expect(firstSheet(saved).get('H9')).toBe('mine')
 })
 
+test('a value someone else moves into the cell this page types in leaves what this page typed, and says so', async ({
+  browser,
+}) => {
+  const documentId = freshDocument()
+  const writer = await open(browser, documentId, 'writer')
+  const typist = await open(browser, documentId, 'typist')
+  await typeInto(writer, 'B12', 'moved')
+  await typeInto(typist, 'H8', 'ready')
+  await settled([writer, typist])
+  await select(typist, 'H9')
+  await expect(typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')).toBeFocused()
+  await typist.page.keyboard.type('mine')
+
+  // drag B12 by its selection border onto the cell the typist is in: one move of the range.
+  // Each page shows the other's selection, on a grid laid out alike: the writer's border on the
+  // typist's page gives B12's box, the typist's border on the writer's page H9's.
+  const box = async (page: CoEditor, peer: string) => {
+    const border = page.frame
+      .locator('[data-presence-client]')
+      .filter({ hasText: new RegExp(`^${peer}$`) })
+      .locator('..')
+    await expect(border).toBeVisible()
+    return (await border.boundingBox())!
+  }
+  await select(writer, 'B12')
+  const h9 = await box(writer, 'typist')
+  // the writer's border reaches the typist's page a moment after its selection moves to B12
+  let b12 = await box(typist, 'writer')
+  await expect(async () => {
+    b12 = await box(typist, 'writer')
+    expect(Math.abs(b12.y - (h9.y + 3 * h9.height))).toBeLessThan(h9.height / 2)
+  }).toPass({ timeout: 10_000 })
+  const y = b12.y + b12.height / 2
+  const canvasCursor = () =>
+    writer.frame.locator('canvas').evaluateAll((all) => all.map((c) => c.style.cursor).join(' '))
+  // the handle straddles the border; the grip must be inside B12, and the drop as far inside H9
+  let grab: number | null = null
+  for (const dx of [1, 2, 3]) {
+    await writer.page.mouse.move(b12.x + dx, y)
+    if ((await canvasCursor()).includes('move')) {
+      grab = dx
+      break
+    }
+  }
+  if (grab === null) throw new Error("no move handle on B12's left border")
+  await edited(writer, async () => {
+    await writer.page.mouse.down()
+    await writer.page.mouse.move(h9.x + grab!, h9.y + h9.height / 2, { steps: 10 })
+    await writer.page.mouse.up()
+  })
+  await settled([writer, typist])
+  await expect(typist.frame.locator('.app-toast.error')).toBeVisible()
+
+  await edited(typist, () => typist.page.keyboard.press('Enter'))
+  const version = await settled([writer, typist])
+  await writer.page.locator('#save').click()
+  const saved = await savedBook(writer)
+  expect(saved.version).toBe(version)
+  const cells = firstSheet(saved)
+  expect(cells.get('H9'), JSON.stringify([...cells])).toBe('mine')
+  expect(cells.get('B12'), JSON.stringify([...cells])).toBeUndefined()
+})
+
+test('an edit that arrives under an unconfirmed row insert of this page says so only for the cell being typed in', async ({
+  browser,
+}) => {
+  const documentId = freshDocument()
+  const writer = await open(browser, documentId, 'writer')
+  const typist = await open(browser, documentId, 'typist')
+  await typeInto(typist, 'H8', 'ready')
+  await settled([writer, typist])
+  const toast = typist.frame.locator('.app-toast.error')
+  const received = async (act: () => Promise<void>) => {
+    const before = (await typist.status()).version
+    await act()
+    await expect.poll(async () => (await typist.status()).version).toBeGreaterThan(before)
+    // the toast would show a frame after the edit runs
+    await typist.page.waitForTimeout(500)
+  }
+
+  // the insert stays unconfirmed: each edit that arrives takes it back, runs, and runs it again
+  await holdOutgoing(typist, true)
+  await insertRowAbove(typist, 5)
+  await select(typist, 'H10')
+  await expect(typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')).toBeFocused()
+  await typist.page.keyboard.type('mine')
+
+  // the writer's H10 is the cell below the one being typed in (H9 before the insert)
+  await received(() => typeInto(writer, 'H10', 'below'))
+  await expect(toast).toHaveCount(0)
+  await received(() => typeInto(writer, 'H9', 'theirs'))
+  await expect(toast).toBeVisible()
+
+  await holdOutgoing(typist, false)
+  await edited(typist, () => typist.page.keyboard.press('Enter'))
+  const version = await settled([writer, typist])
+  await writer.page.locator('#save').click()
+  const saved = await savedBook(writer)
+  expect(saved.version).toBe(version)
+  const cells = firstSheet(saved)
+  const shown = JSON.stringify([...cells])
+  expect(cells.get('H10'), shown).toBe('mine')
+  expect(cells.get('H11'), shown).toBe('below')
+})
+
 test('a cell that moves or goes away while this page types in it is never written over', async ({
   browser,
 }) => {

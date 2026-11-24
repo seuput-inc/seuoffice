@@ -237,6 +237,11 @@ export interface SheetsCollabOptions {
   readonly onBlocked?: (mutationId: string, reason: BlockReason) => void
   /** the largest op to report, in bytes of its JSON; the engine's limit for one change by default */
   readonly maxChangeBytes?: number
+  /**
+   * Called during `integrate` just before each mutation of someone else's runs here (local
+   * form), after this page's unconfirmed edits are taken back and before they run again.
+   */
+  readonly beforeRemote?: (mutation: Mutation) => void
 }
 
 /** What takes local mutations back: `undo` runs in order, then `journal` in order (newest mark first) */
@@ -1062,8 +1067,9 @@ export function sheetsCollabAdapter(
           const nameBefore = names.nameOf(sheet)
           const change: AxisChange | null = axisChangeOf(mutation)
           // A confirmed edit that does not run here leaves this page without it for good
-          if (!run([fromWire(workbook!, withLocalNameId(mutation))]))
-            throw new Error(`co-editing could not apply ${mutation.id}`)
+          const ran = fromWire(workbook!, withLocalNameId(mutation))
+          options.beforeRemote?.(ran)
+          if (!run([ran])) throw new Error(`co-editing could not apply ${mutation.id}`)
           if (change)
             changes.push(nameBefore === undefined ? change : { ...change, name: nameBefore })
           else if (mutation.id === SET_SHEET_NAME && nameBefore !== undefined)

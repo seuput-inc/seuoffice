@@ -23,7 +23,13 @@ import {
   type SheetsCollabAdapter,
   sheetsCollabAdapter,
 } from './collab-adapter'
-import { REMOVE_COL, REMOVE_ROWS, SET_RANGE_VALUES } from './collab-mutations'
+import {
+  MOVE_RANGE,
+  type Mutation,
+  REMOVE_COL,
+  REMOVE_ROWS,
+  SET_RANGE_VALUES,
+} from './collab-mutations'
 import { journalMark, structuralOpsRefusal } from './collab-journal'
 import { sheetsPresence } from './collab-presence'
 import { refusalIsSilent, sharedWhileCoEditing } from './collab-refusals'
@@ -85,6 +91,20 @@ const draftRemoved = (text: string) => ({
   en: `Someone else removed the row or column of the cell you were typing in, so your entry was cancelled. You typed: ${text}`,
 })
 
+type Cells = Record<number, Record<number, unknown>> | null | undefined
+
+/** Whether `mutation` puts a value, or nothing, into the cell at `row`, `column` of sheet `sheetId` */
+function writesCell(mutation: Mutation, sheetId: string, row: number, column: number): boolean {
+  const p = mutation.params
+  const [sheet, cells] =
+    mutation.id === SET_RANGE_VALUES
+      ? [p.subUnitId, p.cellValue as Cells]
+      : mutation.id === MOVE_RANGE
+        ? [(p.to as { subUnitId: string }).subUnitId, (p.to as { value: Cells }).value]
+        : [null, null]
+  return sheet === sheetId && cells?.[row]?.[column] !== undefined
+}
+
 /**
  * Univer reloads the open cell editor from its cell whenever a mutation writes that cell. During
  * `integrate` that is someone else's change, or this page's unconfirmed edits taken back and run
@@ -93,65 +113,73 @@ const draftRemoved = (text: string) => ({
  * wrote that cell. Univer moves the edit location along inserted and removed rows and columns,
  * except when its own row or column goes: the commit would then write over the cell that moved
  * into its place, so the entry is cancelled and a notice that stays shows its text to copy.
+ * `beforeRemote` goes to the adapter: each edit of someone else's is compared with where the
+ * draft is at the moment it runs, between this page's edits taken back and run again.
  */
-function keepingCellDraft(
-  runtime: UniverRuntime,
-  integrate: SheetsCollabAdapter['integrate'],
-): SheetsCollabAdapter['integrate'] {
+function keepingCellDraft(runtime: UniverRuntime): {
+  beforeRemote: (mutation: Mutation) => void
+  around: (integrate: SheetsCollabAdapter['integrate']) => SheetsCollabAdapter['integrate']
+} {
   const injector = runtime.univer.__getInjector()
   const bridge = injector.get(IEditorBridgeService)
   const commands = injector.get(ICommandService)
-  return (remote, local) => {
-    const draft = bridge.isVisible().visible ? bridge.getEditLocation() : null
-    if (!draft) return integrate(remote, local)
-    const { unitId, sheetId, row, column } = draft
-    let removed = false
-    // before each removal runs: Univer moves the location along a removal above it afterwards
-    const watch = commands.beforeCommandExecuted(({ id, params }) => {
-      if (id !== REMOVE_ROWS && id !== REMOVE_COL) return
-      const at = bridge.getEditLocation()
-      const { subUnitId, range } = params as { subUnitId: string; range: IRange }
-      if (!at || subUnitId !== at.sheetId) return
-      const [line, start, end] =
-        id === REMOVE_ROWS
-          ? [at.row, range.startRow, range.endRow]
-          : [at.column, range.startColumn, range.endColumn]
-      if (line >= start && line <= end) removed = true
-    })
-    const refresh = bridge.refreshEditCellState
-    bridge.refreshEditCellState = noop
-    let rebuilt: SheetOp[]
-    try {
-      rebuilt = integrate(remote, local)
-    } finally {
-      bridge.refreshEditCellState = refresh
-      watch.dispose()
-    }
-    if (removed) {
-      const text = (
-        injector.get(IEditorService).getEditor(DOCS_NORMAL_EDITOR_UNIT_ID_KEY)?.getDocumentData()
-          .body?.dataStream ?? ''
-      ).replace(/\r?\n$/, '')
-      commands.syncExecuteCommand(SetCellEditVisibleOperation.id, {
-        visible: false,
-        eventType: DeviceInputEventType.Keyboard,
-        keycode: KeyCode.ESC,
-        unitId,
+  // null outside an `integrate` that keeps a draft
+  let written: boolean | null = null
+  const beforeRemote = (mutation: Mutation): void => {
+    if (written !== false) return
+    const at = bridge.getEditLocation()
+    if (at && writesCell(mutation, at.sheetId, at.row, at.column)) written = true
+  }
+  const around =
+    (integrate: SheetsCollabAdapter['integrate']): SheetsCollabAdapter['integrate'] =>
+    (remote, local) => {
+      const draft = bridge.isVisible().visible ? bridge.getEditLocation() : null
+      if (!draft) return integrate(remote, local)
+      const { unitId } = draft
+      let removed = false
+      // before each removal runs: Univer moves the location along a removal above it afterwards
+      const watch = commands.beforeCommandExecuted(({ id, params }) => {
+        if (id !== REMOVE_ROWS && id !== REMOVE_COL) return
+        const at = bridge.getEditLocation()
+        const { subUnitId, range } = params as { subUnitId: string; range: IRange }
+        if (!at || subUnitId !== at.sheetId) return
+        const [line, start, end] =
+          id === REMOVE_ROWS
+            ? [at.row, range.startRow, range.endRow]
+            : [at.column, range.startColumn, range.endColumn]
+        if (line >= start && line <= end) removed = true
       })
-      // no clipboard write here: without a press of the person's the browser may refuse it
-      showNotice({ text: say(draftRemoved(text)), copy: text })
+      const refresh = bridge.refreshEditCellState
+      bridge.refreshEditCellState = noop
+      written = false
+      let rebuilt: SheetOp[]
+      try {
+        rebuilt = integrate(remote, local)
+      } finally {
+        bridge.refreshEditCellState = refresh
+        watch.dispose()
+      }
+      const overwritten = written
+      written = null
+      if (removed) {
+        const text = (
+          injector.get(IEditorService).getEditor(DOCS_NORMAL_EDITOR_UNIT_ID_KEY)?.getDocumentData()
+            .body?.dataStream ?? ''
+        ).replace(/\r?\n$/, '')
+        commands.syncExecuteCommand(SetCellEditVisibleOperation.id, {
+          visible: false,
+          eventType: DeviceInputEventType.Keyboard,
+          keycode: KeyCode.ESC,
+          unitId,
+        })
+        // no clipboard write here: without a press of the person's the browser may refuse it
+        showNotice({ text: say(draftRemoved(text)), copy: text })
+        return rebuilt
+      }
+      if (overwritten) showToast(say(DRAFT_OVERWRITTEN), 'error')
       return rebuilt
     }
-    const written = remote.some((op) =>
-      op.mutations.some((mutation) => {
-        if (mutation.id !== SET_RANGE_VALUES || mutation.params.subUnitId !== sheetId) return false
-        const rows = mutation.params.cellValue as Record<number, Record<number, unknown>> | null
-        return rows?.[row]?.[column] !== undefined
-      }),
-    )
-    if (written) showToast(say(DRAFT_OVERWRITTEN), 'error')
-    return rebuilt
-  }
+  return { beforeRemote, around }
 }
 
 export function joinSheetsCollab(
@@ -175,6 +203,7 @@ export function joinSheetsCollab(
       // fingerprint is compared with theirs. The windowed loader would evict what scrolls away.
       modelResidency.whole = true
       const refs = { univerRef: { current: runtime }, lazyWorkbookRef: { current: state } }
+      const draft = keepingCellDraft(runtime)
       const adapter = sheetsCollabAdapter(
         {
           univer: runtime.univer,
@@ -209,7 +238,7 @@ export function joinSheetsCollab(
           journalMark: (mutation) => journalMark(state.editJournal, mutation),
           refusalOf: (mutation) => structuralOpsRefusal(state.editJournal, mutation),
         },
-        { onBlocked: refused },
+        { onBlocked: refused, beforeRemote: draft.beforeRemote },
       )
       // From here on the renderer refuses what would stay on this page (collab-refusals.ts)
       setEditRefusalRule((kind) => {
@@ -217,7 +246,7 @@ export function joinSheetsCollab(
         if (!refusalIsSilent(kind)) refused(kind)
         return refusalText()
       })
-      return { ...adapter, integrate: keepingCellDraft(runtime, adapter.integrate) }
+      return { ...adapter, integrate: draft.around(adapter.integrate) }
     },
   })
 }
