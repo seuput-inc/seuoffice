@@ -67,6 +67,7 @@ for (const { name, appSave } of [
   { name: 'memo.hwpx', appSave: 'File menu' },
 ] as const) {
   test(`edits ${name} and saves it with ${appSave} and from the host`, async ({ page }) => {
+    await page.clock.install()
     const original = textOf(readFileSync(fixture(name)))
     const studio = await openHwp(page, name, true)
     const status = page.locator('#status')
@@ -82,8 +83,11 @@ for (const { name, appSave } of [
     }
     const appSaved = await first
     expect(appSaved.suggestedFilename()).toBe(name)
+    // Finish the layout work queued by typing before checking that the document stayed saved.
+    await page.clock.runFor(1_000)
     // the host stored the bytes: the document reads as saved again
     await expect(status).not.toContainText(dirtyStatus)
+    await expect.poll(() => editorDirty(page)).toBe(false)
     const afterApp = textOf(await bytesOf(appSaved))
     expect(afterApp).toContain('SEUWEBA')
     expect(afterApp.replace('SEUWEBA', '')).toBe(original)

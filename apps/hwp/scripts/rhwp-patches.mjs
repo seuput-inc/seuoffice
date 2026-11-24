@@ -17,6 +17,10 @@
  *   protected but does not say so over the bridge, so its command context
  *   gains one field and the host can refuse to write such a document.
  *
+ * studio-pagination-dirty
+ *   A text edit marks the document dirty immediately. Its deferred layout may finish after
+ *   the host has saved it; keep the layout notifications, but do not count them as edits.
+ *
  * studio-plugin-allow
  *   The studio loads plugins only from a list compiled into it, and in a
  *   production build that list holds its own HwpCtrl plugin alone. The AI
@@ -236,6 +240,15 @@ const PATCHES = {
     file: /[\\/]rhwp-studio[\\/]src[\\/]main\.ts$/,
     find: '    isDirty: documentState.isDirty(),',
     replace: `    isDirty: documentState.isDirty(),\n    ${PASSWORD_FLAG}: wasm.requiresPasswordForSave,`,
+  },
+  'studio-pagination-dirty': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]core[\\/]document-dirty-state\.ts$/,
+    find: '    this.setDirty(true, reason);',
+    replace: [
+      "    if (reason === 'input-handler-resumable-pagination' || reason === 'deferred-pagination-complete'",
+      "        || reason?.startsWith('deferred-pagination-flush:')) return;",
+      '    this.setDirty(true, reason);',
+    ].join('\n'),
   },
   'studio-plugin-allow': {
     file: /[\\/]rhwp-studio[\\/]src[\\/]main\.ts$/,
@@ -1486,6 +1499,7 @@ const PATCHES = {
 export const STUDIO_PATCHES = /** @type {const} */ ([
   'studio-scheme',
   'studio-password-flag',
+  'studio-pagination-dirty',
   'studio-plugin-allow',
   'studio-table-delete-at',
   'studio-nested-table-delete',
