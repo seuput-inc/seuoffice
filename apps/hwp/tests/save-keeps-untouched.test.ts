@@ -199,30 +199,77 @@ async function changedHwpx(change: (part: string, xml: string) => string) {
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
 
+/** The table cut to its widened cell alone: one column, whose width layout widens. */
+const oneWidenedColumn = () =>
+  changedHwpx((part, xml) => {
+    if (part !== 'Contents/section0.xml') return xml
+    const firstRow = xml.indexOf('<hp:tr>', xml.indexOf('<hp:tbl '))
+    const cut = xml.slice(0, firstRow) + xml.slice(xml.indexOf('<hp:tr>', firstRow + 1))
+    return cut
+      .replace(/(<hp:tbl [^>]*)rowCnt="2" colCnt="2"/, '$1rowCnt="1" colCnt="1"')
+      .replace(
+        '<hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="2"',
+        '<hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1"',
+      )
+  })
+
+/** The saved width of each table row: the `cellSz` widths of the cells it starts, summed. */
+async function rowWidths(bytes: Uint8Array) {
+  const zip = await JSZip.loadAsync(bytes)
+  const section = await zip.files['Contents/section0.xml']!.async('string')
+  const cell =
+    /<hp:cellAddr colAddr="\d+" rowAddr="(\d+)"\/><hp:cellSpan[^>]*\/><hp:cellSz width="(\d+)"/g
+  const rows: number[] = []
+  for (const [, row, width] of section.matchAll(cell)) rows[+row!] = (rows[+row!] ?? 0) + +width!
+  return rows
+}
+
+type TableEdit = (doc: HwpDocument, para: number) => string
+
+/** The row widths saved after `edits` on the table of `bytes`. */
+async function editedRows(bytes: Uint8Array, ...edits: TableEdit[]) {
+  const after = saved(
+    'para-float-tail-table.hwpx',
+    'hwpx',
+    (doc) => {
+      const para = tableParagraph(doc)
+      for (const edit of edits) expect(JSON.parse(edit(doc, para)).ok).toBe(true)
+    },
+    bytes,
+  )
+  return rowWidths(after)
+}
+
 describe('an edit next to what a save keeps', () => {
   const name = 'para-float-tail-table.hwpx'
+  const addRow: TableEdit = (doc, para) => doc.insertTableRow(0, para, 0, 0, true)
+  const addColumn: TableEdit = (doc, para) => doc.insertTableColumn(0, para, 0, 0, true)
 
   it('saves a row inserted under a widened cell at the width the file stored', async () => {
-    // the table cut to its widened cell alone: one column, whose width layout widens
-    const oneColumn = await changedHwpx((part, xml) => {
-      if (part !== 'Contents/section0.xml') return xml
-      const firstRow = xml.indexOf('<hp:tr>', xml.indexOf('<hp:tbl '))
-      const cut = xml.slice(0, firstRow) + xml.slice(xml.indexOf('<hp:tr>', firstRow + 1))
-      return cut
-        .replace(/(<hp:tbl [^>]*)rowCnt="2" colCnt="2"/, '$1rowCnt="1" colCnt="1"')
-        .replace(
-          '<hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="2"',
-          '<hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1"',
-        )
-    })
+    const oneColumn = await oneWidenedColumn()
     expect((await hwpxFacts(oneColumn)).cellWidths).toEqual(['40535'])
-    const after = saved(
-      name,
-      'hwpx',
-      (doc) => doc.insertTableRow(0, tableParagraph(doc), 0, 0, true),
-      oneColumn,
-    )
-    expect((await hwpxFacts(after)).cellWidths).toEqual(['40535', '40535'])
+    expect(await editedRows(oneColumn, addRow)).toEqual([40535, 40535])
+  })
+
+  it('saves cells merged in a table whose every row was widened at the stored widths', async () => {
+    const merge: TableEdit = (doc, para) => doc.mergeTableCells(0, para, 0, 0, 0, 0, 1)
+    expect(await editedRows(await oneWidenedColumn(), addRow, addColumn, merge)).toEqual([
+      81070, 81070,
+    ])
+  })
+
+  it('shares the stored width when a widened cell is split into columns', async () => {
+    const split: TableEdit = (doc, para) =>
+      doc.splitTableCellInto(0, para, 0, 0, 0, 1, 2, false, false)
+    expect(await editedRows(await oneWidenedColumn(), addRow, split)).toEqual([40535, 40535])
+  })
+
+  it('grows or shrinks a widened merged cell from its stored width', async () => {
+    // row 0 is 6236 + 34583 as stored; the merged row 1 stores 40535 and is widened on open
+    const source = fixture(name)
+    expect(await editedRows(source, addColumn)).toEqual([6236 + 6236 + 34583, 40535 + 6236])
+    const dropColumn: TableEdit = (doc, para) => doc.deleteTableColumn(0, para, 0, 0)
+    expect(await editedRows(source, dropColumn)).toEqual([34583, 40535 - 6236])
   })
 
   it('keeps a strikeout turned on over the no-strikeout placeholder through an HWP save', async () => {
@@ -245,6 +292,21 @@ describe('an edit next to what a save keeps', () => {
     try {
       expect(JSON.parse(back.getCharPropertiesAt(0, 0, 0)).strikethrough).toBe(true)
       expect(JSON.parse(back.getCharPropertiesAt(0, 0, 1)).strikethrough).toBe(false)
+    } finally {
+      back.free()
+    }
+  })
+
+  it('keeps a strikeout a style turns on over the no-strikeout placeholder through an HWP save', () => {
+    // paragraph 1 runs character shape 0 (strikeout 3D) under style 0 (바탕글), whose
+    // character shape 20 has strikeout NONE
+    const hwp = saved(name, 'hwp', (doc) => {
+      expect(doc.updateStyleShapes(0, '{"strikethrough":true}', '{}')).toBe(true)
+      expect(JSON.parse(doc.getCharPropertiesAt(0, 1, 0)).strikethrough).toBe(true)
+    })
+    const back = new HwpDocument(hwp)
+    try {
+      expect(JSON.parse(back.getCharPropertiesAt(0, 1, 0)).strikethrough).toBe(true)
     } finally {
       back.free()
     }
