@@ -3,7 +3,11 @@
  * declares, and the adapter it builds once the renderer shows the workbook.
  */
 import { joinPageCollab, webLanguage, type PageCollab } from '@seuoffice/web-platform'
-import { IEditorBridgeService } from '@univerjs/sheets-ui'
+import { DOCS_NORMAL_EDITOR_UNIT_ID_KEY, ICommandService, type IRange } from '@univerjs/core'
+import { IEditorService } from '@univerjs/docs-ui'
+import { DeviceInputEventType } from '@univerjs/engine-render'
+import { IEditorBridgeService, SetCellEditVisibleOperation } from '@univerjs/sheets-ui'
+import { KeyCode } from '@univerjs/ui'
 import type { SheetRedactionState } from '@seuoffice/xlsx-gateway/gateway/xlsx-redaction'
 import { handleSave } from '../renderer/save-actions'
 import { setEditRefusalRule } from '../renderer/sheet-protection'
@@ -19,7 +23,7 @@ import {
   type SheetsCollabAdapter,
   sheetsCollabAdapter,
 } from './collab-adapter'
-import { SET_RANGE_VALUES } from './collab-mutations'
+import { REMOVE_COL, REMOVE_ROWS, SET_RANGE_VALUES } from './collab-mutations'
 import { journalMark, structuralOpsRefusal } from './collab-journal'
 import { sheetsPresence } from './collab-presence'
 import { refusalIsSilent, sharedWhileCoEditing } from './collab-refusals'
@@ -69,26 +73,57 @@ function refused(id: string, reason: BlockReason = 'unshared'): void {
   showToast(refusalText(reason), 'error')
 }
 
+const say = (text: { ko: string; en: string }): string => text[webLanguage() === 'ko' ? 'ko' : 'en']
+
 const DRAFT_OVERWRITTEN = {
   ko: '다른 사람이 지금 입력 중인 칸을 바꿨습니다. 입력을 마치면 내 내용으로 바뀝니다.',
   en: 'Someone else changed the cell you are typing in. Finishing your entry replaces their change.',
 }
+
+const draftRemoved = (text: string, copied: boolean) =>
+  copied
+    ? {
+        ko: '다른 사람이 입력 중인 칸의 행이나 열을 지워 입력을 취소했습니다. 입력하던 내용은 클립보드에 복사했습니다.',
+        en: 'Someone else removed the row or column of the cell you were typing in, so your entry was cancelled. What you typed is on the clipboard.',
+      }
+    : {
+        ko: `다른 사람이 입력 중인 칸의 행이나 열을 지워 입력을 취소했습니다. 입력하던 내용: ${text}`,
+        en: `Someone else removed the row or column of the cell you were typing in, so your entry was cancelled. You typed: ${text}`,
+      }
 
 /**
  * Univer reloads the open cell editor from its cell whenever a mutation writes that cell. During
  * `integrate` that is someone else's change, or this page's unconfirmed edits taken back and run
  * again, and the reload would throw away what the person is typing. The draft stays instead: its
  * commit is a later edit than the one that came in, and the person is told when someone else
- * wrote that cell.
+ * wrote that cell. Univer moves the edit location along inserted and removed rows and columns,
+ * except when its own row or column goes: the commit would then write over the cell that moved
+ * into its place, so the entry is cancelled and its text put on the clipboard instead.
  */
 function keepingCellDraft(
   runtime: UniverRuntime,
   integrate: SheetsCollabAdapter['integrate'],
 ): SheetsCollabAdapter['integrate'] {
-  const bridge = runtime.univer.__getInjector().get(IEditorBridgeService)
+  const injector = runtime.univer.__getInjector()
+  const bridge = injector.get(IEditorBridgeService)
+  const commands = injector.get(ICommandService)
   return (remote, local) => {
     const draft = bridge.isVisible().visible ? bridge.getEditLocation() : null
     if (!draft) return integrate(remote, local)
+    const { unitId, sheetId, row, column } = draft
+    let removed = false
+    // before each removal runs: Univer moves the location along a removal above it afterwards
+    const watch = commands.beforeCommandExecuted(({ id, params }) => {
+      if (id !== REMOVE_ROWS && id !== REMOVE_COL) return
+      const at = bridge.getEditLocation()
+      const { subUnitId, range } = params as { subUnitId: string; range: IRange }
+      if (!at || subUnitId !== at.sheetId) return
+      const [line, start, end] =
+        id === REMOVE_ROWS
+          ? [at.row, range.startRow, range.endRow]
+          : [at.column, range.startColumn, range.endColumn]
+      if (line >= start && line <= end) removed = true
+    })
     const refresh = bridge.refreshEditCellState
     bridge.refreshEditCellState = noop
     let rebuilt: SheetOp[]
@@ -96,16 +131,34 @@ function keepingCellDraft(
       rebuilt = integrate(remote, local)
     } finally {
       bridge.refreshEditCellState = refresh
+      watch.dispose()
+    }
+    if (removed) {
+      const text = (
+        injector.get(IEditorService).getEditor(DOCS_NORMAL_EDITOR_UNIT_ID_KEY)?.getDocumentData()
+          .body?.dataStream ?? ''
+      ).replace(/\r?\n$/, '')
+      commands.syncExecuteCommand(SetCellEditVisibleOperation.id, {
+        visible: false,
+        eventType: DeviceInputEventType.Keyboard,
+        keycode: KeyCode.ESC,
+        unitId,
+      })
+      const tell = (copied: boolean) => showToast(say(draftRemoved(text, copied)), 'error')
+      navigator.clipboard.writeText(text).then(
+        () => tell(true),
+        () => tell(false),
+      )
+      return rebuilt
     }
     const written = remote.some((op) =>
       op.mutations.some((mutation) => {
-        if (mutation.id !== SET_RANGE_VALUES || mutation.params.subUnitId !== draft.sheetId)
-          return false
+        if (mutation.id !== SET_RANGE_VALUES || mutation.params.subUnitId !== sheetId) return false
         const rows = mutation.params.cellValue as Record<number, Record<number, unknown>> | null
-        return rows?.[draft.row]?.[draft.column] !== undefined
+        return rows?.[row]?.[column] !== undefined
       }),
     )
-    if (written) showToast(DRAFT_OVERWRITTEN[webLanguage() === 'ko' ? 'ko' : 'en'], 'error')
+    if (written) showToast(say(DRAFT_OVERWRITTEN), 'error')
     return rebuilt
   }
 }

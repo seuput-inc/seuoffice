@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { expect, test, type Browser, type FrameLocator } from '@playwright/test'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import {
+  edited,
   nameBox,
   openCoEdited,
   selectCell as select,
@@ -91,13 +92,15 @@ async function typeInto(editor: CoEditor, cell: string, text: string): Promise<v
   }).toPass({ timeout: 30_000 })
 }
 
-/** Insert one row above `row` (1-based): select a cell of that row, then the ribbon's insert-row button */
-async function insertRowAbove(editor: CoEditor, row: number): Promise<void> {
+/** Select a cell of `row` (1-based), then press the ribbon's `button` for rows */
+async function onRow(editor: CoEditor, row: number, button: '행 삽입' | '행 삭제'): Promise<void> {
   const before = await ownEdits(editor)
   await select(editor, `A${row}`)
-  await editor.frame.getByRole('button', { name: '행 삽입', exact: true }).first().click()
+  await editor.frame.getByRole('button', { name: button, exact: true }).first().click()
   await expect.poll(() => ownEdits(editor), { timeout: 10_000 }).toBeGreaterThan(before)
 }
+
+const insertRowAbove = (editor: CoEditor, row: number) => onRow(editor, row, '행 삽입')
 
 /**
  * Hold (or release, in order) the frames the host page sends on its co-editing
@@ -589,6 +592,56 @@ test('a cell someone else changes while this page types in it keeps what this pa
   expect(saved.version).toBe(version)
   expect(firstSheet(saved).get('H8')).toBe('ready')
   expect(firstSheet(saved).get('H9')).toBe('mine')
+})
+
+test('a cell that moves or goes away while this page types in it is never written over', async ({
+  browser,
+}) => {
+  const documentId = freshDocument()
+  const writer = await open(browser, documentId, 'writer')
+  const typist = await open(browser, documentId, 'typist')
+  await typist.page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+  for (const [cell, text] of [
+    ['H9', 'h9'],
+    ['H10', 'h10'],
+    ['H12', 'h12'],
+  ])
+    await typeInto(writer, cell, text)
+  await typeInto(typist, 'G1', 'ready')
+  await settled([writer, typist])
+  const editor = typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')
+
+  // a row inserted above: the text goes into the cell where it moved, H9 to H10
+  await select(typist, 'H9')
+  await expect(editor).toBeFocused()
+  await typist.page.keyboard.type('moved')
+  await insertRowAbove(writer, 5)
+  await settled([writer, typist])
+  await edited(typist, () => typist.page.keyboard.press('Enter'))
+  await settled([writer, typist])
+
+  // its row removed: nothing is written over h12, which moves up into the removed row's place,
+  // the person is told, and the text waits on the clipboard
+  await select(typist, 'H12')
+  await expect(editor).toBeFocused()
+  await typist.page.keyboard.type('gone')
+  await onRow(writer, 12, '행 삭제')
+  await settled([writer, typist])
+  await expect(typist.frame.locator('.app-toast.error')).toBeVisible()
+  await typist.page.keyboard.press('Enter')
+  const version = await settled([writer, typist])
+  expect(await typist.page.evaluate(() => navigator.clipboard.readText())).toBe('gone')
+
+  await writer.page.locator('#save').click()
+  const saved = await savedBook(writer)
+  expect(saved.version).toBe(version)
+  const cells = firstSheet(saved)
+  const shown = JSON.stringify([...cells])
+  expect(cells.get('H10'), shown).toBe('moved')
+  expect(cells.get('H11'), shown).toBe('h10')
+  // H12 then H13 after the insert, back at H12 after the removal
+  expect(cells.get('H12'), shown).toBe('h12')
+  expect([...cells.values()], shown).not.toContain('gone')
 })
 
 const QUIET: Array<{ label: string; file: string }> = [
