@@ -237,7 +237,7 @@ export function createHistoryServer(
       } catch {
         return 'schema_mismatch'
       }
-      if (bytes > HWP_REPLAY.historyBytes) return 'too_large'
+      if (bytes > HWP_REPLAY.byteRequestBytes) return 'too_large'
       request.changes.push(frame)
     }
     return { base, request }

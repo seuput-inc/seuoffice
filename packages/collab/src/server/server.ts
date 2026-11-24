@@ -112,8 +112,9 @@ export type HwpHistoryRefusal =
 
 export const HWP_REPLAY = {
   fileBytes: 2 * 1024 * 1024,
-  // The renderer accepts 256 KiB of strings and keys per request; JSON bytes bound them.
-  historyBytes: 256 * 1024,
+  historyBytes: 1024 * 1024,
+  // The byte renderer accepts 256 KiB of strings and keys per request; JSON bytes bound them.
+  byteRequestBytes: 256 * 1024,
   changes: 128,
   ops: 256,
 }
