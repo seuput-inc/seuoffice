@@ -890,6 +890,12 @@ jobs:
           done
           cargo test --locked --no-default-features \
             --test unknown_paragraph_records --test unknown_paragraph_xml
+          # 0046, 0048, 0049 and 0050 keep their cases next to the code they test
+          cargo test --locked --no-default-features --lib -- \
+            memo_query::authored_memo_tests:: \
+            authored_table_height_survives_measurement_and_drives_the_next_resize \
+            collab_text_undo::tests:: \
+            raw_provenance::authored::tests::
       - name: What was built
         run: |
           sha256sum vendor/rhwp-core/rhwp_bg.wasm
