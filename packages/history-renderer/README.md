@@ -114,6 +114,10 @@ node node_modules/@seuoffice/history-renderer/examples/retained-host.mjs
 
 서버 통합 검증은 같은 소비자에 `tests/sdk-stream*.mjs`와 `tests/stream-proof-{exact,fixture,reopen}.mjs`를 복사해 `node sdk-stream.mjs all "$OUT"`으로 실행한다. 바이트 API로 우회하지 않고 인증된 세 명령을 호출한다.
 
-저장소의 형식 대조 시험과 [브라우저 시험](../../apps/web/tests/collab-history-formats.spec.ts)은 [동일한 원본 생성 함수·wire·영수증·재열기 검증](../../apps/web/tests/collab-history-cases.ts)을 사용한다. 독립 설치본 검증은 `node packages/history-renderer/tests/pack-tests.mjs "$CONSUMER/tests"`로 신뢰된 시험·원본 생성기·재열기 도구만 묶고, 소비자 디렉터리에서 Vitest를 실행한다. 실제 서버와 렌더러는 이 번들에 포함하지 않으므로 설치된 두 tarball이 사용된다. 시험 측 `SEUOFFICE_WASM`은 독립 재열기용이며 제품 게스트는 패키지에 든 WASM만 연다. `capabilities.test.ts`는 같은 설치본 실행기로 합성 자격 표식·파일·루프백·프로세스 접근 거부와 WASM 상한을 확인한다. 공개 API에는 실행할 모듈 경로를 받는 인자가 없다.
+저장소의 형식 대조 시험과 [브라우저 시험](../../apps/web/tests/collab-history-formats.spec.ts)은 [동일한 원본 생성 함수·wire·영수증·재열기 검증](../../apps/web/tests/collab-history-cases.ts)을 사용한다.
+
+독립 설치본을 검증할 때마다 새 소비자 디렉터리를 준비한다. `node packages/history-renderer/tests/pack-tests.mjs "$CONSUMER/tests"`로 시험을 묶은 뒤 그 소비자 디렉터리에서 Vitest를 실행한다. 이전 디렉터리를 재사용하면 `pack-tests.mjs`가 지우지 않은 옛 `.test.mjs`까지 Vitest가 실행한다.
+
+시험 번들에는 신뢰된 원본 생성기와 재열기 도구를 넣고, 서버와 렌더러는 소비자에 설치한 두 tarball에서 불러온다. 시험 측 `SEUOFFICE_WASM`은 독립 재열기용이며 제품 게스트는 패키지에 든 WASM만 연다. `capabilities.test.ts`는 같은 설치본 실행기로 합성 자격 표식·파일·루프백·프로세스 접근 거부와 WASM 상한을 확인한다. 공개 API에는 실행할 모듈 경로를 받는 인자가 없다.
 
 한글 설치본 시험은 설치한 렌더러의 rhwp로 HWP와 HWPX 원본을 만들고, 편집·선택 취소한 파일을 다시 연다. `tests/unit/`의 파일 보존 시험은 저장소의 모의 문서와 내부 함수를 쓰므로 저장소에서 실행한다.
