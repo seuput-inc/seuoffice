@@ -2,7 +2,11 @@ import { HistoryError } from '@seuoffice/collab/client'
 import { assertZipInflatesWithinLimits } from '@seuoffice/zip-gate'
 import JSZip from 'jszip'
 
-const limits = { maxParts: 256, maxPartBytes: 1024 * 1024, maxTotalBytes: 4 * 1024 * 1024 }
+export const historyPartLimits = {
+  maxParts: 256,
+  maxPartBytes: 1024 * 1024,
+  maxTotalBytes: 4 * 1024 * 1024,
+} as const
 const invalid = (): never => {
   throw new HistoryError('invalid_history', 'invalid office archive')
 }
@@ -11,7 +15,11 @@ const unsupported = (): never => {
 }
 
 /** Admit exactly one directory and the local records it names before handing bytes to JSZip. */
-export async function checkArchive(bytes: Uint8Array): Promise<void> {
+export async function openCheckedArchive(
+  bytes: Uint8Array,
+  required: readonly string[],
+): Promise<JSZip> {
+  const limits = historyPartLimits
   const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const end = buf.length - 22
   if (end < 0 || buf.readUInt32LE(end) !== 0x06054b50 || buf.readUInt16LE(end + 20)) invalid()
@@ -105,8 +113,12 @@ export async function checkArchive(bytes: Uint8Array): Promise<void> {
     if (start !== local.start) invalid()
     start = local.end
   }
-  if (start !== cd || pos !== end || !names.has('[content_types].xml') || !names.has('_rels/.rels'))
+  if (start !== cd || pos !== end || required.some((part) => !names.has(part.toLowerCase())))
     invalid()
   await assertZipInflatesWithinLimits(bytes, limits)
-  await JSZip.loadAsync(bytes, { checkCRC32: true })
+  return JSZip.loadAsync(bytes, { checkCRC32: true })
+}
+
+export async function checkArchive(bytes: Uint8Array): Promise<void> {
+  await openCheckedArchive(bytes, ['[Content_Types].xml', '_rels/.rels'])
 }
