@@ -14,10 +14,13 @@ PARA_LINE_SEG, PARA_RANGE_TAG, n번째 컨트롤) 바로 뒤에 바이트 그대
 
 HWPX: 쓰는 쪽 구역 틀이 선언하지 않는 이름공간(다른 도구의 확장)의 hp:p 속성과
 hp:p, hp:run 아래 요소를 ForeignXml로 원문 그대로 갖고 쓴다. 요소 전체를 가져가므로
-그 안의 hp:t 글이 문단 글로 새지 않는다. 요소는 부모 종류를 지키고 글 사이 자리는
-지키지 않는다. 접두사를 풀 수 없거나 표준 이름공간을 다른 접두사로 쓴 이름이 든
-요소는 0037처럼 버린다. 무편집 저장에서 빠지던 hp:label(표), hp:grid@strikeContinue,
-hh:paraPr@textDir도 원문 값으로 남긴다.
+그 안의 hp:t 글이 문단 글로 새지 않는다. 요소는 바깥(hp:p, 구역 뿌리)에서 빌린
+이름공간 선언을 자기 시작 태그에 붙여 가지므로, 같은 접두사를 다른 이름공간에 묶은
+문단을 합쳐도 이름이 바뀌지 않는다. 합칠 때 뒤 문단의 속성은 제 이름공간에 묶인
+접두사로 옮겨 hp:p에 같은 접두사 선언이 둘 생기지 않는다. 요소는 부모 종류를 지키고
+글 사이 자리는 지키지 않는다. 접두사를 풀 수 없거나 표준 이름공간을 다른 접두사로
+쓴 이름이 든 요소는 0037처럼 버린다. 무편집 저장에서 빠지던 hp:label(표),
+hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
 
 문단을 지우면 함께 지워지고, 나누면 앞 문단에 남고, 합치면 뒤 문단의 것이 합친
 문단에 이어 붙는다.
@@ -26,12 +29,12 @@ hh:paraPr@textDir도 원문 값으로 남긴다.
  src/document_core/commands/object_ops/table.rs |   2 +
  src/document_core/html_table_import.rs         |   1 +
  src/model/document.rs                          |   2 +
- src/model/paragraph.rs                         |  88 +++++++++
+ src/model/paragraph.rs                         | 128 +++++++++++++
  src/model/style.rs                             |   3 +
  src/model/table.rs                             |   3 +
  src/parser/body_text.rs                        |  26 ++-
  src/parser/doc_info.rs                         |   1 +
- src/parser/hwpx/foreign.rs                     | 233 +++++++++++++++++++++++
+ src/parser/hwpx/foreign.rs                     | 254 +++++++++++++++++++++++++
  src/parser/hwpx/header.rs                      |   1 +
  src/parser/hwpx/mod.rs                         |   1 +
  src/parser/hwpx/section.rs                     |  46 ++++-
@@ -40,11 +43,11 @@ hh:paraPr@textDir도 원문 값으로 남긴다.
  src/serializer/body_text.rs                    |  46 ++++-
  src/serializer/doc_info/tests.rs               |   2 +
  src/serializer/hwpx/header.rs                  |  29 +--
- src/serializer/hwpx/section.rs                 |  52 +++++-
+ src/serializer/hwpx/section.rs                 |  52 ++++-
  src/serializer/hwpx/table.rs                   |   4 +
- tests/cases/unknown_paragraph_records.rs       | 244 +++++++++++++++++++++++++
- tests/cases/unknown_paragraph_xml.rs           | 198 ++++++++++++++++++++
- 22 files changed, 964 insertions(+), 27 deletions(-)
+ tests/cases/unknown_paragraph_records.rs       | 244 ++++++++++++++++++++++++
+ tests/cases/unknown_paragraph_xml.rs           | 239 +++++++++++++++++++++++
+ 22 files changed, 1066 insertions(+), 27 deletions(-)
 
 diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
 index 73e938d4d..d4b140a0b 100644
@@ -130,10 +133,10 @@ index c41025c52..5a8275506 100644
      pub raw_ctrl_extra: Vec<u8>,
      /// 추가 쪽 테두리/배경 (2번째, 3번째 등)
 diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
-index c8444900d..c711efb11 100644
+index c8444900d..46265eb53 100644
 --- a/src/model/paragraph.rs
 +++ b/src/model/paragraph.rs
-@@ -17,6 +17,70 @@ pub fn normalize_text_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+@@ -17,6 +17,110 @@ pub fn normalize_text_newlines(text: &str) -> std::borrow::Cow<'_, str> {
      }
  }
  
@@ -168,32 +171,72 @@ index c8444900d..c711efb11 100644
 +
 +/// HWPX markup of a paragraph in namespaces the HWPX writer does not declare (another
 +/// tool's extension), kept verbatim. The same ownership rule as [`UnknownRecord`] applies;
-+/// on a merge the front paragraph's attributes win over the back one's of the same name.
-+/// Elements keep their parent kind but not their place among the runs: the ones under
-+/// `<hp:run>` are written in one run after the paragraph's text, the ones under `<hp:p>`
-+/// after the runs.
++/// on a merge the front paragraph's attributes win over the back one's with the same
++/// expanded name. Elements keep their parent kind but not their place among the runs: the
++/// ones under `<hp:run>` are written in one run after the paragraph's text, the ones under
++/// `<hp:p>` after the runs.
 +#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 +pub struct ForeignXml {
-+    /// `(prefix, uri)` declarations the kept markup needs, written on `<hp:p>`.
++    /// `(prefix, uri)` declarations of the attributes' prefixes, written on `<hp:p>`; one
++    /// binding per prefix.
 +    pub namespaces: Vec<(String, String)>,
 +    /// Attributes of `<hp:p>` the parser does not read: name and value as in the source.
 +    pub attributes: Vec<(String, String)>,
-+    /// Elements directly under `<hp:p>`.
++    /// Elements directly under `<hp:p>`, each declaring the foreign prefixes it uses.
 +    pub p_children: Vec<String>,
-+    /// Elements under `<hp:run>`.
++    /// Elements under `<hp:run>`, each declaring the foreign prefixes it uses.
 +    pub run_children: Vec<String>,
 +}
 +
 +impl ForeignXml {
-+    pub fn absorb(&mut self, back: &ForeignXml) {
-+        for ns in &back.namespaces {
-+            if !self.namespaces.contains(ns) {
-+                self.namespaces.push(ns.clone());
-+            }
++    fn binding(&self, prefix: &str) -> Option<&str> {
++        self.namespaces
++            .iter()
++            .find(|(p, _)| p == prefix)
++            .map(|(_, uri)| uri.as_str())
++    }
++
++    /// Namespace and local name of an attribute name.
++    fn expanded<'a>(&'a self, name: &'a str) -> (Option<&'a str>, &'a str) {
++        match name.split_once(':') {
++            Some((prefix, local)) => (self.binding(prefix), local),
++            None => (None, name),
 +        }
-+        for attr in &back.attributes {
-+            if !self.attributes.iter().any(|(name, _)| *name == attr.0) {
-+                self.attributes.push(attr.clone());
++    }
++
++    /// Takes in the back paragraph's markup on a merge. A back attribute whose prefix the
++    /// front binds to another namespace is renamed to a prefix bound to its own namespace, so
++    /// `<hp:p>` never declares one prefix twice and no attribute changes its expanded name.
++    pub fn absorb(&mut self, back: &ForeignXml) {
++        for (name, value) in &back.attributes {
++            let name = match name.split_once(':') {
++                None => name.clone(),
++                Some((prefix, local)) => {
++                    let Some(uri) = back.binding(prefix) else {
++                        continue;
++                    };
++                    let prefix = match self.namespaces.iter().find(|(_, u)| u == uri) {
++                        Some((p, _)) => p.clone(),
++                        None => {
++                            let mut fresh = prefix.to_string();
++                            let mut n = 1;
++                            while self.binding(&fresh).is_some() {
++                                fresh = format!("{prefix}{n}");
++                                n += 1;
++                            }
++                            self.namespaces.push((fresh.clone(), uri.to_string()));
++                            fresh
++                        }
++                    };
++                    format!("{prefix}:{local}")
++                }
++            };
++            let taken = self
++                .attributes
++                .iter()
++                .any(|(own, _)| self.expanded(own) == self.expanded(&name));
++            if !taken {
++                self.attributes.push((name, value.clone()));
 +            }
 +        }
 +        self.p_children.extend(back.p_children.iter().cloned());
@@ -204,7 +247,7 @@ index c8444900d..c711efb11 100644
  /// 문자 offset 단위의 글자 모양 복원 구간. IR의 UTF-16 위치와 구분한다.
  #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
  #[serde(rename_all = "camelCase", deny_unknown_fields)]
-@@ -152,6 +216,10 @@ pub struct Paragraph {
+@@ -152,6 +256,10 @@ pub struct Paragraph {
      /// 각 컨트롤에 대응하는 CTRL_DATA 레코드 (라운드트립 보존용)
      /// controls[i]에 대응하는 CTRL_DATA가 있으면 ctrl_data_records[i] = Some(data)
      pub ctrl_data_records: Vec<Option<Vec<u8>>>,
@@ -215,7 +258,7 @@ index c8444900d..c711efb11 100644
      /// char_count의 최상위 비트 (bit 31) 파싱값.
      /// HWP5 저장기는 현재 list scope의 마지막 문단 여부로 bit 31을 재생성한다.
      pub char_count_msb: bool,
-@@ -2479,6 +2547,8 @@ impl Paragraph {
+@@ -2479,6 +2587,8 @@ impl Paragraph {
              control_mask: new_control_mask,
              controls: new_controls,
              ctrl_data_records: new_ctrl_data_records,
@@ -224,7 +267,7 @@ index c8444900d..c711efb11 100644
              char_count_msb: false,
              raw_header_extra: new_raw_header_extra,
              has_para_text: new_has_para_text,
-@@ -2517,6 +2587,24 @@ impl Paragraph {
+@@ -2517,6 +2627,24 @@ impl Paragraph {
          other: &Paragraph,
          storage: &S,
      ) -> Result<usize, S::Error> {
@@ -363,10 +406,10 @@ index d793703ac..b8779b18d 100644
          hwpx_plain_para_margin_physical: false,
 diff --git a/src/parser/hwpx/foreign.rs b/src/parser/hwpx/foreign.rs
 new file mode 100644
-index 000000000..0b88f2a54
+index 000000000..7b8bf47c9
 --- /dev/null
 +++ b/src/parser/hwpx/foreign.rs
-@@ -0,0 +1,233 @@
+@@ -0,0 +1,254 @@
 +//! HWPX markup in a paragraph that belongs to no namespace the HWPX writer declares
 +//! (another tool's extension): kept verbatim in [`ForeignXml`] so a save writes it back.
 +//!
@@ -512,8 +555,15 @@ index 000000000..0b88f2a54
 +    let Some(needed) = namespaces_needed(&xml, outer) else {
 +        return Ok(());
 +    };
++    // The element declares what it borrows from `<hp:p>` or the section root itself, so
++    // markup taken from paragraphs that bind one prefix differently never shares a scope.
++    let name_end = 1 + e.name().as_ref().len();
++    let borrowed: String = needed
++        .iter()
++        .map(|(prefix, uri)| format!(r#" xmlns:{prefix}="{uri}""#))
++        .collect();
++    let xml = format!("{}{borrowed}{}", &xml[..name_end], &xml[name_end..]);
 +    let foreign = para.foreign_xml.get_or_insert_with(Default::default);
-+    add_namespaces(foreign, needed);
 +    if in_run {
 +        foreign.run_children.push(xml);
 +    } else {
@@ -526,16 +576,23 @@ index 000000000..0b88f2a54
 +/// it cannot be written verbatim.
 +fn namespaces_needed(xml: &str, outer: &[(String, String)]) -> Option<Vec<(String, String)>> {
 +    let mut reader = Reader::from_str(xml);
-+    let mut inside: Vec<(String, String)> = Vec::new();
-+    let mut needed = Vec::new();
++    // declarations of the open elements, outermost first
++    let mut scopes: Vec<Vec<(String, String)>> = Vec::new();
++    let mut needed: Vec<(String, String)> = Vec::new();
 +    loop {
-+        let e = match reader.read_event() {
-+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => e,
++        let (e, empty) = match reader.read_event() {
++            Ok(Event::Start(e)) => (e, false),
++            Ok(Event::Empty(e)) => (e, true),
++            Ok(Event::End(_)) => {
++                scopes.pop();
++                continue;
++            }
 +            Ok(Event::Eof) => return Some(needed),
 +            Err(_) => return None,
 +            Ok(_) => continue,
 +        };
-+        inside.extend(declarations(&e));
++        scopes.push(declarations(&e));
++        let inside: Vec<(String, String)> = scopes.iter().flatten().cloned().collect();
 +        let local: Vec<(String, String)> = outer.iter().chain(&inside).cloned().collect();
 +        let attributes: Vec<String> = e
 +            .attributes()
@@ -554,11 +611,14 @@ index 000000000..0b88f2a54
 +                Name::Unwritable => return None,
 +                Name::Foreign(prefix, uri) => {
 +                    let declared_inside = inside.iter().any(|(p, _)| *p == prefix);
-+                    if !declared_inside && !needed.contains(&(prefix.clone(), uri.clone())) {
++                    if !declared_inside && !needed.iter().any(|(p, _)| *p == prefix) {
 +                        needed.push((prefix, uri));
 +                    }
 +                }
 +            }
++        }
++        if empty {
++            scopes.pop();
 +        }
 +    }
 +}
@@ -586,6 +646,10 @@ index 000000000..0b88f2a54
 +            // An OWPML attribute the parser does not read stays out of scope.
 +            Name::Written | Name::Unwritable => continue,
 +            Name::Foreign(prefix, uri) => {
++                // declared on <hp:p>, a writer prefix would rebind the paragraph's own names
++                if written().iter().any(|(p, _)| *p == prefix) {
++                    continue;
++                }
 +                if !needed.contains(&(prefix.clone(), uri.clone())) {
 +                    needed.push((prefix, uri));
 +                }
@@ -1295,10 +1359,10 @@ index 000000000..e8f3a5eda
 +}
 diff --git a/tests/cases/unknown_paragraph_xml.rs b/tests/cases/unknown_paragraph_xml.rs
 new file mode 100644
-index 000000000..06e46982b
+index 000000000..79a784968
 --- /dev/null
 +++ b/tests/cases/unknown_paragraph_xml.rs
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,239 @@
 +//! HWPX markup outside the OWPML namespaces in a paragraph (attributes of `<hp:p>`,
 +//! elements under `<hp:p>` or `<hp:run>`) stays with that paragraph through edits elsewhere,
 +//! save and reopen. Text inside such an element is not paragraph text.
@@ -1313,6 +1377,10 @@ index 000000000..06e46982b
 +const P_ATTRS: &str = r#"ext:mark="kept" data-x="1""#;
 +const P_CHILD: &str = r#"<ext:note id="7">under-p</ext:note>"#;
 +const RUN_CHILD: &str = r#"<ext:inRun><hp:t>leak</hp:t></ext:inRun>"#;
++// as saved: each kept element declares the foreign prefix it borrowed from the root
++const P_CHILD_KEPT: &str = r#"<ext:note xmlns:ext="urn:example:ext" id="7">under-p</ext:note>"#;
++const RUN_CHILD_KEPT: &str =
++    r#"<ext:inRun xmlns:ext="urn:example:ext"><hp:t>leak</hp:t></ext:inRun>"#;
 +
 +fn section_xml(bytes: &[u8]) -> String {
 +    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
@@ -1406,8 +1474,8 @@ index 000000000..06e46982b
 +
 +fn assert_kept(paragraph: &str) {
 +    for part in [
-+        P_CHILD,
-+        RUN_CHILD,
++        P_CHILD_KEPT,
++        RUN_CHILD_KEPT,
 +        r#"ext:mark="kept""#,
 +        r#"data-x="1""#,
 +        NS,
@@ -1493,9 +1561,46 @@ index 000000000..06e46982b
 +    let (xml, _) = saved(&core);
 +
 +    let merged = body_paragraph(&xml, 0);
-+    for part in [P_CHILD, RUN_CHILD, NS] {
++    for part in [P_CHILD_KEPT, RUN_CHILD_KEPT] {
 +        assert!(merged.contains(part), "{part} missing in {merged}");
 +    }
++}
++
++/// Binds `ext` to `uri` on the paragraph holding `text`, with an attribute and a run child.
++fn bind_on_paragraph(xml: &mut String, text: &str, uri: &str, attr: &str, child: &str) {
++    let t = format!("<hp:t>{text}</hp:t>");
++    let t_at = xml.find(&t).unwrap();
++    xml.insert_str(t_at + t.len(), &format!("<ext:{child}/>"));
++    let p = xml[..t_at].rfind("<hp:p ").unwrap() + "<hp:p".len();
++    xml.insert_str(p, &format!(r#" xmlns:ext="{uri}" ext:{attr}="1""#));
++}
++
++#[test]
++fn merge_of_paragraphs_binding_one_prefix_differently_keeps_names_and_one_declaration() {
++    let bytes = two_paragraphs().export_hwpx_native().unwrap();
++    let mut xml = section_xml(&bytes);
++    bind_on_paragraph(&mut xml, "first paragraph", "urn:a", "mark", "noteA");
++    bind_on_paragraph(&mut xml, "second paragraph", "urn:b", "flag", "noteB");
++    let mut core = DocumentCore::from_bytes(&with_section_xml(&bytes, &xml)).unwrap();
++
++    core.merge_paragraph_native(0, 1).unwrap();
++    let (xml, reopened) = saved(&core);
++
++    let merged = body_paragraph(&xml, 0);
++    let p_open = &merged[..merged.find('>').unwrap()];
++    assert_eq!(p_open.matches("xmlns:ext=").count(), 1, "{p_open}");
++    assert!(p_open.contains(r#"xmlns:ext="urn:a""#) && p_open.contains(r#"ext:mark="1""#));
++    // the back attribute moves to a prefix bound to its own namespace
++    assert!(p_open.contains(r#"xmlns:ext1="urn:b""#) && p_open.contains(r#"ext1:flag="1""#));
++    assert!(
++        merged.contains(r#"<ext:noteA xmlns:ext="urn:a"/>"#),
++        "{merged}"
++    );
++    assert!(
++        merged.contains(r#"<ext:noteB xmlns:ext="urn:b"/>"#),
++        "{merged}"
++    );
++    assert_eq!(body_paragraph(&saved(&reopened).0, 0), merged);
 +}
 -- 
 2.50.1
