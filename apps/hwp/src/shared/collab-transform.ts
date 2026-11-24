@@ -441,15 +441,28 @@ function boundaries(op: HwpOp, shape: HwpTextSplice | null) {
       : []
 }
 
-// Where a confirmed op put new content: a later structural deletion of what holds it must not
-// discard it unannounced. Text inserted after a line break lands in a new paragraph instead.
-function additions(op: HwpOp, shape: HwpTextSplice | null): HwpPosition[] {
+// Where a confirmed op put or changed content: a later structural deletion of what holds it must
+// not discard it unannounced. Text inserted after a line break lands in a new paragraph instead.
+// Formatting and object properties are not content; a form value, a replaced image and memo text are.
+function additions(doc: HwpDocument, op: HwpOp, shape: HwpTextSplice | null): HwpPosition[] {
   if (shape) return shape.text && !shape.text.startsWith('\n') ? [shape.from] : []
   if (op.kind === 'insertCellPicture' || op.kind === 'insertMemo') return [op.at]
   if (op.kind !== 'command') return []
-  if (op.action === 'pasteText' || op.action === 'table') return [op.at]
-  if (op.action === 'grid' && op.side !== 'delete') return [op.at]
-  return []
+  switch (op.action) {
+    case 'pasteText':
+    case 'table':
+    case 'form':
+    case 'image':
+      return [op.at]
+    case 'grid':
+      return op.side === 'delete' ? [] : [op.at]
+    case 'memoText': {
+      const memo = findHwpMemo(doc, op.id)
+      return memo ? [memo.at] : []
+    }
+    default:
+      return []
+  }
 }
 
 /** True when `added` lies in a cell that deleting `index` along `axis` would remove whole. */
@@ -599,6 +612,8 @@ export interface HwpRebase {
   replay: HwpOp[]
   deleted: HwpOp[]
   retry: HwpOp[]
+  /** The retried deletions that would have discarded content a peer confirmed first. */
+  kept: HwpOp[]
   mapCaret(at: HwpPosition): HwpPosition | null
 }
 
@@ -611,8 +626,9 @@ export function rebaseHwpOps(
   const doc = confirmed as Mirror
   const replay: HwpOp[] = [],
     deleted: HwpOp[] = [],
-    retry: HwpOp[] = []
-  if (!remote.length) return { replay: [...pending], deleted, retry, mapCaret: (p) => p }
+    retry: HwpOp[] = [],
+    kept: HwpOp[] = []
+  if (!remote.length) return { replay: [...pending], deleted, retry, kept, mapCaret: (p) => p }
   const remoteDoc = doc.forkCollabDocument()
   let local: Mirror | undefined, target: Mirror | undefined
   try {
@@ -634,7 +650,7 @@ export function rebaseHwpOps(
           addCut(cuts, reverse(p, 'after'))
         }
       }
-      const fresh = pending.length ? additions(op, shape) : []
+      const fresh = pending.length ? additions(remoteDoc, op, shape) : []
       const step = observe(remoteDoc, op, shape)
       advance(step)
       for (const p of fresh) addCut(added, step.forward(p, 'before'))
@@ -661,7 +677,8 @@ export function rebaseHwpOps(
         return { at: host, control: object.control }
       }
       let ops: HwpOp[] | null = null,
-        conflict = false
+        conflict = false,
+        holdsAddition = false
       if (shape) {
         const parts = fragments(before, shape, map, cuts)
         if (parts && textOp(op)) ops = parts
@@ -714,12 +731,14 @@ export function rebaseHwpOps(
                 after.getTableDimensions(mapped.at.section, mapped.at.paragraph, mapped.control),
               )
               const count = mapped.axis === 'row' ? dims.rowCount : dims.colCount
+              holdsAddition =
+                mapped.side === 'delete' &&
+                added.some((a) =>
+                  inRemovedCell(after, mapped.at, mapped.control, mapped.axis, index, a),
+                )
               conflict =
                 mapped.side === 'delete'
-                  ? count <= 1 ||
-                    added.some((a) =>
-                      inRemovedCell(after, mapped.at, mapped.control, mapped.axis, index, a),
-                    )
+                  ? count <= 1 || holdsAddition
                   : (count + 1) * (mapped.axis === 'row' ? dims.colCount : dims.rowCount) > 4096
               if (!conflict && op.side !== 'delete') {
                 const gap = map(
@@ -788,18 +807,23 @@ export function rebaseHwpOps(
               row: p.object!.index!,
             }
             const host = { section: next.section, paragraph: next.paragraph, path: [], offset: 0 }
+            holdsAddition = added.some((a) =>
+              inRemovedCell(after, host, next.control, 'row', next.row, a),
+            )
             conflict =
               JSON.parse(after.getTableDimensions(next.section, next.paragraph, next.control))
-                .rowCount <= 1 ||
-              added.some((a) => inRemovedCell(after, host, next.control, 'row', next.row, a))
+                .rowCount <= 1 || holdsAddition
             if (!conflict) ops = [next]
           } else {
             // A text point can survive a merge even when deleting its current host
             // would also delete another original paragraph's text or table.
+            holdsAddition = added.some(
+              (a) => a.section === p.section && a.paragraph === p.paragraph,
+            )
             conflict =
               after.getParagraphCount(op.section) <= 1 ||
               p.offset !== 0 ||
-              added.some((a) => a.section === p.section && a.paragraph === p.paragraph) ||
+              holdsAddition ||
               cuts.some((c) => {
                 if (c.section !== op.section || c.path.length || c.paragraph === op.paragraph)
                   return false
@@ -884,6 +908,7 @@ export function rebaseHwpOps(
       else {
         conflict ||= dependsOnRetry
         ;(conflict ? retry : deleted).push(op)
+        if (conflict && holdsAddition) kept.push(op)
       }
       const nextCuts: HwpPosition[] = []
       for (const p of [...cuts, ...boundaries(op, shape)]) {
@@ -899,7 +924,7 @@ export function rebaseHwpOps(
       map = cross(map, localStep, steps, conflict ? markDependency : undefined)
     }
     doc.restoreCollabConfirmed(remoteDoc)
-    return { replay, deleted, retry, mapCaret: (p) => map(p, 'after') }
+    return { replay, deleted, retry, kept, mapCaret: (p) => map(p, 'after') }
   } finally {
     target?.free()
     local?.free()

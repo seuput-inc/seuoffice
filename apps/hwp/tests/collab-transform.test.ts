@@ -99,6 +99,7 @@ it('keeps a confirmed picture and its row when a later row deletion would discar
     const r = rebaseHwpOps(doc, [kept], [row, typed])
     expect(r.deleted).toEqual([])
     expect(r.retry).toEqual([row])
+    expect(r.kept).toEqual([row])
     replay(doc, r.replay)
     expect(JSON.parse(doc.getTableDimensions(0, 12, 0)).rowCount).toBe(2)
     expect(doc.getControlImageData(0, 12, JSON.stringify(cell(0).path), 0)).toBeTruthy()
@@ -122,6 +123,98 @@ it('keeps confirmed typing in a column a later column deletion would remove', ()
     expect(doc.getTextInCellByPath(0, 12, JSON.stringify(cell(0).path), 0, 100)).toBe(
       '먼저' + before,
     )
+  } finally {
+    doc.free()
+  }
+})
+
+it('retries a row deletion that would empty the table without claiming a peer added content', () => {
+  const doc = new HwpDocument(fixture('cell-line-break-form.hwpx'))
+  try {
+    const r = rebaseHwpOps(doc, [{ ...row, row: 1 }], [row])
+    expect(r.retry).toEqual([row])
+    expect(r.kept).toEqual([])
+  } finally {
+    doc.free()
+  }
+})
+
+it('keeps a row whose existing picture a peer replaced first', () => {
+  const doc = new HwpDocument(fixture('cell-line-break-form.hwpx'))
+  try {
+    applyHwpOp(doc, picture(doc, cell(0)))
+    const replace = captureHwpCommand(doc, 'assignPictureImage', [
+      0,
+      12,
+      JSON.stringify(cell(0).path),
+      0,
+      image,
+      64,
+      6,
+      'png',
+    ])
+    if (!replace) throw new Error('Expected a picture replacement')
+    const r = rebaseHwpOps(doc, [replace], [row])
+    expect(r.retry).toEqual([row])
+    expect(r.kept).toEqual([row])
+  } finally {
+    doc.free()
+  }
+})
+
+it('keeps a paragraph whose form field a peer filled first', async () => {
+  const zip = await JSZip.loadAsync(fixture('single-line-record-paragraph.hwpx')),
+    file = 'Contents/section0.xml'
+  const xml = await zip.file(file)!.async('string')
+  zip.file(
+    file,
+    xml.replace(
+      '<hp:t>',
+      '<hp:checkBtn name="choice" enabled="1" caption="원본" value="UNCHECKED"><hp:sz width="1200" height="1200"/></hp:checkBtn><hp:t>',
+    ),
+  )
+  const doc = new HwpDocument(await zip.generateAsync({ type: 'uint8array' }))
+  try {
+    doc.splitParagraph(0, 0, doc.getParagraphLength(0, 0))
+    const count = JSON.parse(doc.getControlTextPositions(0, 0)).length
+    const ci = Array.from({ length: count }, (_, i) => i).find(
+      (i) => JSON.parse(doc.getFormValue(0, 0, i)).name === 'choice',
+    )!
+    const fill = captureHwpCommand(doc, 'setFormValue', [0, 0, ci, '{"value":1}'])
+    if (!fill) throw new Error('Expected a form value')
+    const r = rebaseHwpOps(doc, [fill], [del(0)])
+    expect(r.retry).toEqual([del(0)])
+    expect(r.kept).toEqual([del(0)])
+  } finally {
+    doc.free()
+  }
+})
+
+it('keeps a paragraph whose memo text a peer changed first', () => {
+  const doc = new HwpDocument(fixture('generated-form-tables.hwpx'))
+  try {
+    applyHwpOp(doc, {
+      kind: 'insertMemo',
+      at: at(2, 1),
+      end: 2,
+      author: '저자',
+      text: '원본',
+      unixMs: 1000,
+      offsetMinutesEast: 0,
+    })
+    const memo = (JSON.parse(doc.getMemoList()) as { id: number; text: string }[]).find(
+      (m) => m.text === '원본',
+    )!
+    const edit = {
+      kind: 'command',
+      action: 'memoText',
+      id: memo.id,
+      before: '원본',
+      text: '수정',
+    } as const
+    const r = rebaseHwpOps(doc, [edit], [del(2)])
+    expect(r.retry).toEqual([del(2)])
+    expect(r.kept).toEqual([del(2)])
   } finally {
     doc.free()
   }

@@ -339,7 +339,9 @@ export function createHwpCollabAdapter({
         )
         pending = plan.replay.slice()
         for (const op of plan.deleted) rejected(op, 'deleted')
-        for (const op of plan.retry) rejected(op, 'changed', removed.get(op))
+        // Only a deletion kept for a peer's confirmed content offers its text to copy.
+        for (const op of plan.retry)
+          rejected(op, 'changed', plan.kept.includes(op) ? removed.get(op) : undefined)
         return plan.replay
       },
       confirmed(ops) {
