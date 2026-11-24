@@ -55,6 +55,6 @@
       "0047-keep-unmodelled-paragraph-records.patch"
     ],
     "wasmPack": "0.15.0",
-    "wasmSha256": "110aa4a365d1bd8f27f42ad679f66fe351f744a77a79db0ebfb67944041aa977"
+    "wasmSha256": "b5f9def76d7ad4486c00ac3935b67cceac37ad3d13b2e3f93d88f81611cd8a12"
   }
 }
