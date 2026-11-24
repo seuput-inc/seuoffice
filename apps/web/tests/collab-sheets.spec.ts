@@ -634,7 +634,15 @@ test('a cell that moves or goes away while this page types in it is never writte
   // longer than any toast stays
   await typist.page.waitForTimeout(6_000)
   await expect(notice).toBeVisible()
+  // as in a page that embeds this one without delegating clipboard-write: the async clipboard refuses
+  await typist.page.evaluate(() => navigator.clipboard.writeText('before'))
+  await typist.page.locator('#viewer iframe').evaluate((iframe: HTMLIFrameElement) =>
+    Object.defineProperty(iframe.contentWindow!.navigator.clipboard, 'writeText', {
+      value: () => Promise.reject(new DOMException('not allowed', 'NotAllowedError')),
+    }),
+  )
   await notice.getByRole('button', { name: '복사', exact: true }).click()
+  await expect(notice.getByRole('button', { name: '복사됨', exact: true })).toBeVisible()
   expect(await typist.page.evaluate(() => navigator.clipboard.readText())).toBe('gone')
   await notice.getByRole('button', { name: '닫기', exact: true }).click()
   await expect(notice).toHaveCount(0)

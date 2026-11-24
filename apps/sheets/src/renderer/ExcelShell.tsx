@@ -1246,15 +1246,7 @@ export function ExcelShell({
             {notice && (
               <div className="csv-empty-notice" role="status">
                 <span>{notice.text}</span>
-                {notice.copy !== undefined && (
-                  // a press is the user activation the clipboard needs
-                  <button
-                    type="button"
-                    onClick={() => void navigator.clipboard.writeText(notice.copy!)}
-                  >
-                    {t('appCopy')}
-                  </button>
-                )}
+                {notice.copy !== undefined && <CopyButton key={notice.copy} text={notice.copy} />}
                 <button
                   type="button"
                   className="csv-empty-notice-close"
@@ -4998,4 +4990,43 @@ function queryConnectionHost(source: string): string {
   } catch {
     return source
   }
+}
+
+/**
+ * Copies `text` on a press. An embedding page that does not delegate `clipboard-write` to the
+ * iframe makes the async clipboard refuse even then; a selected textarea and the copy command
+ * need only the press. The label says when neither worked, and the text stays selectable.
+ */
+function CopyButton({ text }: { readonly text: string }): React.JSX.Element {
+  const { t } = useI18n()
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyBySelection = (): boolean => {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.style.cssText = 'position:fixed;opacity:0'
+    document.body.append(area)
+    area.select()
+    try {
+      return document.execCommand('copy')
+    } catch {
+      return false
+    } finally {
+      area.remove()
+    }
+  }
+  const copy = (): void => {
+    // the press's activation outlasts the refusal, so the copy command still counts as the person's
+    navigator.clipboard
+      .writeText(text)
+      .then(
+        () => true,
+        () => copyBySelection(),
+      )
+      .then((copied) => setState(copied ? 'copied' : 'failed'))
+  }
+  return (
+    <button type="button" onClick={copy}>
+      {t(state === 'copied' ? 'appCopied' : state === 'failed' ? 'appCopyFailed' : 'appCopy')}
+    </button>
+  )
 }

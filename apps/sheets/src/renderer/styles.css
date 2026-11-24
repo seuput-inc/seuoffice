@@ -1833,6 +1833,8 @@ button.check-item:hover {
 
 .csv-empty-notice span {
   flex: 1;
+  /* the last way to keep a notice's text when copying is refused */
+  user-select: text;
 }
 
 .csv-empty-notice button {

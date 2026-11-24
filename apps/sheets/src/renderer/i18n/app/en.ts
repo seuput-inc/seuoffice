@@ -88,6 +88,8 @@ export const en = {
   appFormatHeader: 'Format — {target}',
   appClose: 'Close',
   appCopy: 'Copy',
+  appCopied: 'Copied',
+  appCopyFailed: 'Could not copy. Select the text and copy it',
   appSeries: 'Series',
   appDataPoint: 'Data Point',
   appFillColor: 'Fill Color',

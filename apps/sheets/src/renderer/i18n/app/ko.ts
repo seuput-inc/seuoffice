@@ -91,6 +91,8 @@ export const ko = {
   appFormatHeader: '서식: {target}',
   appClose: '닫기',
   appCopy: '복사',
+  appCopied: '복사됨',
+  appCopyFailed: '복사하지 못했습니다. 글을 선택해 복사하세요',
   appSeries: '계열',
   appDataPoint: '데이터 요소',
   appFillColor: '채우기 색',
