@@ -307,5 +307,28 @@ describe.each<Kind>(['bytes', 'stream'])(
         await t.close()
       }
     })
+
+    it('keeps a committed undo when its checkpoint cannot be stored and stops at the next overflow', async () => {
+      const t = await setup(kind)
+      try {
+        await t.type(256)
+        t.store.writeHwpCheckpoint = vi.fn(async () => {
+          throw new Error('disk full')
+        })
+        await expect(
+          t.server.undoHistory(p, {
+            requestId: 'full',
+            expected: { epoch: t.epoch, version: 256 },
+            target: { epoch: t.epoch, v: 130, index: 0 },
+          }),
+        ).resolves.toEqual({ kind: 'undone', version: 257 })
+        expect(await t.alice.next('change')).toMatchObject({ v: 257 })
+        t.alice.receive({ t: 'submit', seq: t.next(), base: 257, ops: [{ t: 'y' }] })
+        expect(await t.alice.next('error')).toEqual({ t: 'error', code: 'too_large' })
+        expect((await t.store.load(p.documentId))!.head).toBe(257)
+      } finally {
+        await t.close()
+      }
+    })
   },
 )

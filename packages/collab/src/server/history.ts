@@ -234,21 +234,15 @@ export function createHistoryServer(
     const undo = command.kind === 'undo' ? command.target : undefined
     const source = command.kind === 'restore' ? command.source : command.expected
     // An undo that replayed from an unstored checkpoint keeps it right after its commit, inside the
-    // document queue, so no submit is admitted before it exists. A failure is reported after the
-    // receipt is broadcast: the undo itself stays applied.
+    // document queue, so no submit is admitted before it exists. The undo is committed either way:
+    // without the checkpoint, the next submit that overflows the window ends with a reason.
     let keep: (() => Promise<void>) | undefined
-    let unkept: unknown
-    const committed = async (commit: () => Promise<HistoryReceipt>) => {
-      const receipt = await server.commitHistory(p.documentId, command.expected.epoch, async () => {
+    const committed = (commit: () => Promise<HistoryReceipt>) =>
+      server.commitHistory(p.documentId, command.expected.epoch, async () => {
         const receipt = await commit()
-        await keep?.().catch((error: unknown) => {
-          unkept = error
-        })
+        await keep?.().catch(() => {})
         return receipt
       })
-      if (unkept) throw unkept
-      return receipt
-    }
     if ('renderStream' in options) {
       return track(
         withStreamHistory(
