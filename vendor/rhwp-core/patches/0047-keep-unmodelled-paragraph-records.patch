@@ -1,0 +1,1501 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SeuPut <228744781+SeuPut0705@users.noreply.github.com>
+Date: Tue, 24 Nov 2026 00:00:00 +0900
+Subject: [PATCH 34/34] fix(save): 해석하지 않는 문단 레코드와 HWPX 확장 표기를 저장에서
+ 버리지 않는다
+
+HWP: 파서가 모르는 태그의 문단 자식 레코드(와 그 아래 레코드)를 그냥 건너뛰어
+모델에 남지 않았다. 구역을 처음 편집하면 원본 구역 스트림을 버리고 모델로 다시
+쓰므로, 편집하지 않은 문단의 그런 레코드까지 사라졌다. 이제 Paragraph가
+unknown_records로 갖고, 원본에서 앞서 있던 해석된 형제(PARA_TEXT, PARA_CHAR_SHAPE,
+PARA_LINE_SEG, PARA_RANGE_TAG, n번째 컨트롤) 바로 뒤에 바이트 그대로 쓴다. 레벨은
+문단 머리에서의 깊이로 두어 다른 깊이에 써도 구조가 같다. 편집 없는 저장은 종전대로
+봉인된 원본 스트림을 쓴다.
+
+HWPX: 쓰는 쪽 구역 틀이 선언하지 않는 이름공간(다른 도구의 확장)의 hp:p 속성과
+hp:p, hp:run 아래 요소를 ForeignXml로 원문 그대로 갖고 쓴다. 요소 전체를 가져가므로
+그 안의 hp:t 글이 문단 글로 새지 않는다. 요소는 부모 종류를 지키고 글 사이 자리는
+지키지 않는다. 접두사를 풀 수 없거나 표준 이름공간을 다른 접두사로 쓴 이름이 든
+요소는 0037처럼 버린다. 무편집 저장에서 빠지던 hp:label(표), hp:grid@strikeContinue,
+hh:paraPr@textDir도 원문 값으로 남긴다.
+
+문단을 지우면 함께 지워지고, 나누면 앞 문단에 남고, 합치면 뒤 문단의 것이 합친
+문단에 이어 붙는다.
+---
+ src/diagnostics/ir_field_sweep.rs              |   6 +
+ src/document_core/commands/object_ops/table.rs |   2 +
+ src/document_core/html_table_import.rs         |   1 +
+ src/model/document.rs                          |   2 +
+ src/model/paragraph.rs                         |  88 +++++++++
+ src/model/style.rs                             |   3 +
+ src/model/table.rs                             |   3 +
+ src/parser/body_text.rs                        |  26 ++-
+ src/parser/doc_info.rs                         |   1 +
+ src/parser/hwpx/foreign.rs                     | 233 +++++++++++++++++++++++
+ src/parser/hwpx/header.rs                      |   1 +
+ src/parser/hwpx/mod.rs                         |   1 +
+ src/parser/hwpx/section.rs                     |  46 ++++-
+ src/parser/hwpx/utils.rs                       |   2 +-
+ src/scaffold/builder.rs                        |   1 +
+ src/serializer/body_text.rs                    |  46 ++++-
+ src/serializer/doc_info/tests.rs               |   2 +
+ src/serializer/hwpx/header.rs                  |  29 +--
+ src/serializer/hwpx/section.rs                 |  52 +++++-
+ src/serializer/hwpx/table.rs                   |   4 +
+ tests/cases/unknown_paragraph_records.rs       | 244 +++++++++++++++++++++++++
+ tests/cases/unknown_paragraph_xml.rs           | 198 ++++++++++++++++++++
+ 22 files changed, 964 insertions(+), 27 deletions(-)
+
+diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
+index 73e938d4d..d4b140a0b 100644
+--- a/src/diagnostics/ir_field_sweep.rs
++++ b/src/diagnostics/ir_field_sweep.rs
+@@ -652,6 +652,8 @@ fn sweep_paragraph(base: &str, a: &Paragraph, b: &Paragraph, out: &mut Divergenc
+         orphan_field_ends,
+         controls,
+         ctrl_data_records,
++        unknown_records,
++        foreign_xml,
+         char_count_msb,
+         raw_header_extra,
+         has_para_text,
+@@ -701,6 +703,8 @@ fn sweep_paragraph(base: &str, a: &Paragraph, b: &Paragraph, out: &mut Divergenc
+     f!(field_ranges);
+     f!(orphan_field_ends);
+     f!(ctrl_data_records);
++    f!(unknown_records);
++    f!(foreign_xml);
+     f!(char_count_msb);
+     f!(raw_header_extra);
+     f!(has_para_text);
+@@ -955,6 +959,7 @@ fn sweep_table(base: &str, a: &Table, b: &Table, out: &mut DivergenceCollector)
+         raw_ctrl_seal: _,
+         raw_table_record_attr,
+         raw_table_record_extra,
++        hwpx_label,
+         layout_page_break_cache: _,
+     } = a;
+ 
+@@ -982,6 +987,7 @@ fn sweep_table(base: &str, a: &Table, b: &Table, out: &mut DivergenceCollector)
+     f!(raw_ctrl_data);
+     f!(raw_table_record_attr);
+     f!(raw_table_record_extra);
++    f!(hwpx_label);
+ 
+     // 캡션: 속성은 문단을 뺀 사본으로, 문단은 재귀로.
+     {
+diff --git a/src/document_core/commands/object_ops/table.rs b/src/document_core/commands/object_ops/table.rs
+index c1c2f9c5c..89fb7afda 100644
+--- a/src/document_core/commands/object_ops/table.rs
++++ b/src/document_core/commands/object_ops/table.rs
+@@ -699,6 +699,7 @@ impl DocumentCore {
+             }),
+             // [#3570] 한컴은 TABLE 레코드를 zone 개수까지만 쓴다 — 여분 2바이트 없음.
+             raw_table_record_extra: Vec::new(),
++            hwpx_label: None,
+             layout_page_break_cache: Default::default(),
+         };
+         table.rebuild_grid();
+@@ -1088,6 +1089,7 @@ impl DocumentCore {
+             raw_table_record_attr: 0x04000006,
+             // [#3570] 한컴은 TABLE 레코드를 zone 개수까지만 쓴다 — 여분 2바이트 없음.
+             raw_table_record_extra: Vec::new(),
++            hwpx_label: None,
+             layout_page_break_cache: Default::default(),
+         };
+         table.rebuild_grid();
+diff --git a/src/document_core/html_table_import.rs b/src/document_core/html_table_import.rs
+index 5987eff1f..36267d1d7 100644
+--- a/src/document_core/html_table_import.rs
++++ b/src/document_core/html_table_import.rs
+@@ -643,6 +643,7 @@ impl DocumentCore {
+             raw_ctrl_seal: None,
+             raw_table_record_attr: tbl_rec_attr,
+             raw_table_record_extra: vec![0u8; 2], // 표준 추가 2바이트
++            hwpx_label: None,
+             layout_page_break_cache: Default::default(),
+         };
+         table.rebuild_grid();
+diff --git a/src/model/document.rs b/src/model/document.rs
+index c41025c52..5a8275506 100644
+--- a/src/model/document.rs
++++ b/src/model/document.rs
+@@ -394,6 +394,8 @@ pub struct SectionDef {
+     /// [#2779] 메모 모양 ID (HWPX `secPr@memoShapeIDRef`, header.xml `hh:memoPr@id` 참조).
+     /// HWP5 SECTION_DEF 고정 필드에는 대응 슬롯이 없어 HWPX 경로 전용 보존 필드다.
+     pub memo_shape_id: u16,
++    /// HWPX `<hp:grid strikeContinue>` as in the source. HWPX only, like `memo_shape_id`.
++    pub hwpx_grid_strike_continue: Option<String>,
+     /// CTRL_HEADER 데이터의 파싱된 필드 이후 추가 바이트 (라운드트립 보존용)
+     pub raw_ctrl_extra: Vec<u8>,
+     /// 추가 쪽 테두리/배경 (2번째, 3번째 등)
+diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
+index c8444900d..c711efb11 100644
+--- a/src/model/paragraph.rs
++++ b/src/model/paragraph.rs
+@@ -17,6 +17,70 @@ pub fn normalize_text_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+     }
+ }
+ 
++/// HWP5 records under a paragraph that the parser does not model: a child with an unknown
++/// tag and any records nested under it. The serializer writes them back unchanged after
++/// the modelled child they followed in the file, so an edit elsewhere keeps them. They
++/// belong to the paragraph: deleting it drops them, splitting it leaves them in the front
++/// part (the one keeping the paragraph's instance id), merging carries the back part's
++/// records into the merged paragraph after the front part's own.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
++pub struct UnknownRecord {
++    pub after: RecordAnchor,
++    /// Levels below the paragraph header (1 = direct child): the record keeps its place
++    /// when the paragraph is written at another depth.
++    pub depth: u16,
++    pub tag_id: u16,
++    pub data: Vec<u8>,
++}
++
++/// The modelled paragraph child an [`UnknownRecord`] follows.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
++pub enum RecordAnchor {
++    /// Right after PARA_HEADER, before any other child.
++    Header,
++    /// After the PARA_TEXT, PARA_CHAR_SHAPE, PARA_LINE_SEG or PARA_RANGE_TAG step, whether
++    /// or not that record is written this time.
++    Record(u16),
++    /// After control `n` and its records. Past the paragraph's last control (an edit
++    /// removed some), at the end of the paragraph.
++    Control(usize),
++}
++
++/// HWPX markup of a paragraph in namespaces the HWPX writer does not declare (another
++/// tool's extension), kept verbatim. The same ownership rule as [`UnknownRecord`] applies;
++/// on a merge the front paragraph's attributes win over the back one's of the same name.
++/// Elements keep their parent kind but not their place among the runs: the ones under
++/// `<hp:run>` are written in one run after the paragraph's text, the ones under `<hp:p>`
++/// after the runs.
++#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
++pub struct ForeignXml {
++    /// `(prefix, uri)` declarations the kept markup needs, written on `<hp:p>`.
++    pub namespaces: Vec<(String, String)>,
++    /// Attributes of `<hp:p>` the parser does not read: name and value as in the source.
++    pub attributes: Vec<(String, String)>,
++    /// Elements directly under `<hp:p>`.
++    pub p_children: Vec<String>,
++    /// Elements under `<hp:run>`.
++    pub run_children: Vec<String>,
++}
++
++impl ForeignXml {
++    pub fn absorb(&mut self, back: &ForeignXml) {
++        for ns in &back.namespaces {
++            if !self.namespaces.contains(ns) {
++                self.namespaces.push(ns.clone());
++            }
++        }
++        for attr in &back.attributes {
++            if !self.attributes.iter().any(|(name, _)| *name == attr.0) {
++                self.attributes.push(attr.clone());
++            }
++        }
++        self.p_children.extend(back.p_children.iter().cloned());
++        self.run_children.extend(back.run_children.iter().cloned());
++    }
++}
++
+ /// 문자 offset 단위의 글자 모양 복원 구간. IR의 UTF-16 위치와 구분한다.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "camelCase", deny_unknown_fields)]
+@@ -152,6 +216,10 @@ pub struct Paragraph {
+     /// 각 컨트롤에 대응하는 CTRL_DATA 레코드 (라운드트립 보존용)
+     /// controls[i]에 대응하는 CTRL_DATA가 있으면 ctrl_data_records[i] = Some(data)
+     pub ctrl_data_records: Vec<Option<Vec<u8>>>,
++    /// HWP5 child records the parser does not model, in file order.
++    pub unknown_records: Vec<UnknownRecord>,
++    /// HWPX markup of this paragraph outside the namespaces the HWPX writer declares.
++    pub foreign_xml: Option<Box<ForeignXml>>,
+     /// char_count의 최상위 비트 (bit 31) 파싱값.
+     /// HWP5 저장기는 현재 list scope의 마지막 문단 여부로 bit 31을 재생성한다.
+     pub char_count_msb: bool,
+@@ -2479,6 +2547,8 @@ impl Paragraph {
+             control_mask: new_control_mask,
+             controls: new_controls,
+             ctrl_data_records: new_ctrl_data_records,
++            unknown_records: Vec::new(),
++            foreign_xml: None,
+             char_count_msb: false,
+             raw_header_extra: new_raw_header_extra,
+             has_para_text: new_has_para_text,
+@@ -2517,6 +2587,24 @@ impl Paragraph {
+         other: &Paragraph,
+         storage: &S,
+     ) -> Result<usize, S::Error> {
++        // The back paragraph's unmodelled records follow its content into this one.
++        let own_controls = self.controls.len();
++        storage.extend(
++            &mut self.unknown_records,
++            other.unknown_records.iter().map(|u| UnknownRecord {
++                after: match u.after {
++                    RecordAnchor::Control(i) => RecordAnchor::Control(i + own_controls),
++                    _ if own_controls > 0 => RecordAnchor::Control(own_controls - 1),
++                    other_anchor => other_anchor,
++                },
++                ..u.clone()
++            }),
++        )?;
++        if let Some(back) = &other.foreign_xml {
++            self.foreign_xml
++                .get_or_insert_with(Default::default)
++                .absorb(back);
++        }
+         // 텍스트 없이 컨트롤만 있는 문단(예: 그림 복사 클립보드)도 병합 대상 (#1323)
+         if other.text.is_empty() && other.controls.is_empty() {
+             return Ok(self.text.chars().count());
+diff --git a/src/model/style.rs b/src/model/style.rs
+index b2d9132c4..fdd2e6e84 100644
+--- a/src/model/style.rs
++++ b/src/model/style.rs
+@@ -387,6 +387,8 @@ pub struct ParaShape {
+     /// KEEP_WORD. 값이 3가지라 attr1 비트 인코딩 대신 원문 보존으로 무손실 방출.
+     /// 꼬리말·표셀 등 재계산 경로에서 줄나눔이 달라져 레이아웃이 갈리는 것을 막는다.
+     pub break_latin_word: Option<String>,
++    /// HWPX `paraPr@textDir` as in the source. HWPX only: HWP5 has no slot for it.
++    pub hwpx_text_dir: Option<String>,
+ }
+ 
+ /// [#6875] 문단 줄바꿈 방식("한 줄로 입력") — HWP5 ParaShape `attr2` bits 0-1 ↔
+@@ -436,6 +438,7 @@ impl PartialEq for ParaShape {
+             && self.head_type == other.head_type
+             && self.para_level == other.para_level
+             && self.break_latin_word == other.break_latin_word
++            && self.hwpx_text_dir == other.hwpx_text_dir
+     }
+ }
+ 
+diff --git a/src/model/table.rs b/src/model/table.rs
+index 98ad0a84f..c85c7f43f 100644
+--- a/src/model/table.rs
++++ b/src/model/table.rs
+@@ -88,6 +88,9 @@ pub struct Table {
+     pub raw_table_record_attr: u32,
+     /// HWPTAG_TABLE 레코드의 border_fill_id 이후 추가 바이트 (라운드트립 보존용)
+     pub raw_table_record_extra: Vec<u8>,
++    /// HWPX `<hp:label>` (label paper layout) attributes as in the source. HWPX only: the
++    /// HWP5 table record has no slot for them.
++    pub hwpx_label: Option<Vec<(String, String)>>,
+     /// [#8470] [`Table::layout_page_break`] 의 세로쓰기 칸 판정 캐시. 저장되지 않는다.
+     /// 셀 구성·글 방향을 바꾸면 [`Table::invalidate_layout_page_break`] 로 비운다.
+     #[serde(skip)]
+diff --git a/src/parser/body_text.rs b/src/parser/body_text.rs
+index 972d2556e..65269a656 100644
+--- a/src/parser/body_text.rs
++++ b/src/parser/body_text.rs
+@@ -32,7 +32,7 @@ use crate::model::page::{
+ };
+ use crate::model::paragraph::{
+     CharShapeRef, ColumnBreakType, FieldRange, LineSeg, OrphanFieldEnd, Paragraph, RangeTag,
+-    TitleMark,
++    RecordAnchor, TitleMark, UnknownRecord,
+ };
+ 
+ /// `PARA_TEXT` 한 레코드에서 뽑아낸 문단 본문 축 정보.
+@@ -431,11 +431,15 @@ pub fn parse_paragraph(records: &[Record]) -> Result<Paragraph, BodyTextError> {
+     let base_level = records[0].level;
+ 
+     let mut i = 1;
++    let mut anchor = RecordAnchor::Header;
+     while i < records.len() {
+         let record = &records[i];
+ 
+-        // 직접 자식만 처리 (level == base_level + 1)
++        // 직접 자식만 처리 (level == base_level + 1). Deeper records here nest under an
++        // unmodelled child (CTRL_HEADER consumes its own subtree) and travel with it.
+         if record.level != base_level + 1 {
++            para.unknown_records
++                .push(unknown_record(anchor, base_level, record));
+             i += 1;
+             continue;
+         }
+@@ -540,10 +544,17 @@ pub fn parse_paragraph(records: &[Record]) -> Result<Paragraph, BodyTextError> {
+ 
+                 para.controls.push(control);
+                 para.ctrl_data_records.push(ctrl_data);
++                anchor = RecordAnchor::Control(para.controls.len() - 1);
+                 continue; // i는 이미 전진됨
+             }
+-            _ => {}
++            _ => {
++                para.unknown_records
++                    .push(unknown_record(anchor, base_level, record));
++                i += 1;
++                continue;
++            }
+         }
++        anchor = RecordAnchor::Record(record.tag_id);
+ 
+         i += 1;
+     }
+@@ -552,6 +563,15 @@ pub fn parse_paragraph(records: &[Record]) -> Result<Paragraph, BodyTextError> {
+     Ok(para)
+ }
+ 
++fn unknown_record(anchor: RecordAnchor, base_level: u16, record: &Record) -> UnknownRecord {
++    UnknownRecord {
++        after: anchor,
++        depth: record.level - base_level,
++        tag_id: record.tag_id,
++        data: record.data.clone(),
++    }
++}
++
+ /// PARA_HEADER 바이너리 데이터 파싱
+ ///
+ /// 레이아웃 (최소 12바이트, 실제로 22~24바이트):
+diff --git a/src/parser/doc_info.rs b/src/parser/doc_info.rs
+index d793703ac..b8779b18d 100644
+--- a/src/parser/doc_info.rs
++++ b/src/parser/doc_info.rs
+@@ -870,6 +870,7 @@ fn parse_para_shape(data: &[u8]) -> Result<ParaShape, DocInfoError> {
+         // HWP5 는 breakLatinWord 를 attr1 비트로 갖지만 HWPX 원문 보존 필드는 미사용
+         // (None → 직렬화 KEEP_WORD 기본, 기존 동작 유지). (#1986)
+         break_latin_word: None,
++        hwpx_text_dir: None,
+         // HWP5 원본에는 HWPX 표기 구분이 없다 — switch 형태로 방출한다 (#4898).
+         hwpx_plain_para_margin: false,
+         hwpx_plain_para_margin_physical: false,
+diff --git a/src/parser/hwpx/foreign.rs b/src/parser/hwpx/foreign.rs
+new file mode 100644
+index 000000000..0b88f2a54
+--- /dev/null
++++ b/src/parser/hwpx/foreign.rs
+@@ -0,0 +1,233 @@
++//! HWPX markup in a paragraph that belongs to no namespace the HWPX writer declares
++//! (another tool's extension): kept verbatim in [`ForeignXml`] so a save writes it back.
++//!
++//! An element is foreign when its prefix resolves (on the element, `<hp:p>` or the section
++//! root) to a namespace outside the writer's section template. The whole element is taken,
++//! so text in it never becomes paragraph text. A foreign element holding a name whose prefix
++//! does not resolve, or that names a writer namespace under another prefix, cannot be
++//! written verbatim into a document that declares only the template's prefixes: it is read
++//! past and dropped, as the canonical-prefix rule for copied spans does.
++
++use std::cell::RefCell;
++use std::sync::LazyLock;
++
++use quick_xml::events::{BytesStart, Event};
++use quick_xml::Reader;
++
++use super::HwpxError;
++use crate::model::paragraph::{ForeignXml, Paragraph};
++
++thread_local! {
++    static ROOT_NAMESPACES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
++}
++
++/// The section root's namespace declarations while that section is parsed.
++pub(super) struct RootNamespacesScope(Vec<(String, String)>);
++
++impl RootNamespacesScope {
++    pub(super) fn enter(xml: &str) -> Self {
++        let declared = super::utils::root_namespaces(xml);
++        Self(ROOT_NAMESPACES.with(|ns| ns.replace(declared)))
++    }
++}
++
++impl Drop for RootNamespacesScope {
++    fn drop(&mut self) {
++        let previous = std::mem::take(&mut self.0);
++        ROOT_NAMESPACES.with(|ns| *ns.borrow_mut() = previous);
++    }
++}
++
++/// `(prefix, uri)` pairs every written section declares on its root.
++static WRITTEN: LazyLock<Vec<(String, String)>> = LazyLock::new(|| {
++    super::utils::root_namespaces(crate::serializer::hwpx::section::EMPTY_SECTION_XML)
++});
++
++fn written() -> &'static [(String, String)] {
++    &WRITTEN
++}
++
++enum Name {
++    /// Unprefixed, or a prefix the writer declares with the same namespace.
++    Written,
++    Foreign(String, String),
++    /// Cannot be written verbatim.
++    Unwritable,
++}
++
++fn prefix(qname: &str) -> Option<&str> {
++    qname.split_once(':').map(|(prefix, _)| prefix)
++}
++
++fn classify(qname: &str, local: &[(String, String)]) -> Name {
++    let Some(prefix) = prefix(qname) else {
++        return Name::Written;
++    };
++    let uri = local
++        .iter()
++        .rev()
++        .find(|(p, _)| p == prefix)
++        .map(|(_, uri)| uri.clone())
++        .or_else(|| {
++            ROOT_NAMESPACES.with(|ns| {
++                ns.borrow()
++                    .iter()
++                    .rev()
++                    .find(|(p, _)| p == prefix)
++                    .map(|(_, uri)| uri.clone())
++            })
++        });
++    let Some(uri) = uri else {
++        return Name::Unwritable;
++    };
++    if written().iter().any(|(p, u)| p == prefix && *u == uri) {
++        Name::Written
++    } else if written().iter().any(|(_, u)| *u == uri) {
++        Name::Unwritable
++    } else {
++        Name::Foreign(prefix.to_string(), uri)
++    }
++}
++
++/// Namespace declarations made on the element itself.
++pub(super) fn declarations(e: &BytesStart) -> Vec<(String, String)> {
++    let open: &str = e;
++    if !open.contains("xmlns") {
++        return Vec::new();
++    }
++    e.attributes()
++        .flatten()
++        .filter_map(|a| {
++            let key: &str = a.key.as_ref();
++            key.strip_prefix("xmlns:")
++                .map(|prefix| (prefix.to_string(), a.value.to_string()))
++        })
++        .collect()
++}
++
++/// Whether the paragraph parser must hand this element to [`take_element`] instead of
++/// reading into it: its namespace is one the writer does not declare. `outer`: the
++/// declarations made on `<hp:p>`. An OWPML element under another prefix, or one whose
++/// prefix resolves nowhere, stays with the paragraph parser, which reads by local name.
++pub(super) fn is_foreign(e: &BytesStart, outer: &[(String, String)]) -> bool {
++    let own = declarations(e);
++    let local = if outer.is_empty() {
++        own
++    } else {
++        [outer, &own].concat()
++    };
++    matches!(classify(e.name().as_ref(), &local), Name::Foreign(..))
++}
++
++/// Reads the foreign element whose start (`empty`: the whole element) was just read and
++/// keeps it in the paragraph, under `<hp:run>` when `in_run`.
++pub(super) fn take_element(
++    e: &BytesStart,
++    empty: bool,
++    in_run: bool,
++    outer: &[(String, String)],
++    reader: &mut Reader<&[u8]>,
++    para: &mut Paragraph,
++) -> Result<(), HwpxError> {
++    let open: &str = e;
++    let xml = if empty {
++        format!("<{open}/>")
++    } else {
++        let inner = reader
++            .read_text(e.name())
++            .map_err(|err| HwpxError::XmlError(format!("paragraph: {err}")))?;
++        let name = e.name();
++        let name: &str = name.as_ref();
++        format!("<{open}>{}</{name}>", &*inner)
++    };
++    let Some(needed) = namespaces_needed(&xml, outer) else {
++        return Ok(());
++    };
++    let foreign = para.foreign_xml.get_or_insert_with(Default::default);
++    add_namespaces(foreign, needed);
++    if in_run {
++        foreign.run_children.push(xml);
++    } else {
++        foreign.p_children.push(xml);
++    }
++    Ok(())
++}
++
++/// The declarations a kept element needs from outside itself, or `None` when some name in
++/// it cannot be written verbatim.
++fn namespaces_needed(xml: &str, outer: &[(String, String)]) -> Option<Vec<(String, String)>> {
++    let mut reader = Reader::from_str(xml);
++    let mut inside: Vec<(String, String)> = Vec::new();
++    let mut needed = Vec::new();
++    loop {
++        let e = match reader.read_event() {
++            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => e,
++            Ok(Event::Eof) => return Some(needed),
++            Err(_) => return None,
++            Ok(_) => continue,
++        };
++        inside.extend(declarations(&e));
++        let local: Vec<(String, String)> = outer.iter().chain(&inside).cloned().collect();
++        let attributes: Vec<String> = e
++            .attributes()
++            .flatten()
++            .map(|a| {
++                let key: &str = a.key.as_ref();
++                key.to_string()
++            })
++            .filter(|key| key != "xmlns" && !key.starts_with("xmlns:"))
++            .collect();
++        let element = e.name();
++        let element: &str = element.as_ref();
++        for qname in std::iter::once(element.to_string()).chain(attributes) {
++            match classify(&qname, &local) {
++                Name::Written => {}
++                Name::Unwritable => return None,
++                Name::Foreign(prefix, uri) => {
++                    let declared_inside = inside.iter().any(|(p, _)| *p == prefix);
++                    if !declared_inside && !needed.contains(&(prefix.clone(), uri.clone())) {
++                        needed.push((prefix, uri));
++                    }
++                }
++            }
++        }
++    }
++}
++
++fn add_namespaces(foreign: &mut ForeignXml, needed: Vec<(String, String)>) {
++    for ns in needed {
++        if !foreign.namespaces.contains(&ns) {
++            foreign.namespaces.push(ns);
++        }
++    }
++}
++
++/// Keeps the attributes of `<hp:p>` the parser does not read.
++pub(super) fn take_p_attributes(e: &BytesStart, read: &[&str], para: &mut Paragraph) {
++    let local = declarations(e);
++    let mut kept = Vec::new();
++    let mut needed = Vec::new();
++    for attr in e.attributes().flatten() {
++        let key: &str = attr.key.as_ref();
++        if read.contains(&key) || key == "xmlns" || key.starts_with("xmlns:") {
++            continue;
++        }
++        match classify(key, &local) {
++            Name::Written if prefix(key).is_none() => {}
++            // An OWPML attribute the parser does not read stays out of scope.
++            Name::Written | Name::Unwritable => continue,
++            Name::Foreign(prefix, uri) => {
++                if !needed.contains(&(prefix.clone(), uri.clone())) {
++                    needed.push((prefix, uri));
++                }
++            }
++        }
++        kept.push((key.to_string(), attr.value.replace('"', "&quot;")));
++    }
++    if kept.is_empty() {
++        return;
++    }
++    let foreign = para.foreign_xml.get_or_insert_with(Default::default);
++    add_namespaces(foreign, needed);
++    foreign.attributes.extend(kept);
++}
+diff --git a/src/parser/hwpx/header.rs b/src/parser/hwpx/header.rs
+index 8886ff702..4c90f13c7 100644
+--- a/src/parser/hwpx/header.rs
++++ b/src/parser/hwpx/header.rs
+@@ -971,6 +971,7 @@ fn parse_para_shape(
+                     ps.attr1 &= !(1 << 8);
+                 }
+             }
++            b"textDir" => ps.hwpx_text_dir = Some(attr_str(&attr)),
+             _ => {}
+         }
+     }
+diff --git a/src/parser/hwpx/mod.rs b/src/parser/hwpx/mod.rs
+index a63957573..70c66e34b 100644
+--- a/src/parser/hwpx/mod.rs
++++ b/src/parser/hwpx/mod.rs
+@@ -13,6 +13,7 @@
+ pub mod content;
+ mod contract_streams;
+ mod crypto;
++mod foreign;
+ pub mod header;
+ pub mod reader;
+ pub mod section;
+diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
+index 2b75c684e..eca7e84f4 100644
+--- a/src/parser/hwpx/section.rs
++++ b/src/parser/hwpx/section.rs
+@@ -58,6 +58,7 @@ pub fn parse_hwpx_section(xml: &str) -> Result<Section, HwpxError> {
+     // 구역 없음)이나 다음 구역에 값이 새지 않게 한다.
+     let sized = section_xml_has_sized_lineseg(xml);
+     let _lineseg_scope = SectionLinesegScope::enter(sized);
++    let _namespace_scope = super::foreign::RootNamespacesScope::enter(xml);
+ 
+     loop {
+         match reader.read_event_into(&mut buf) {
+@@ -502,6 +503,7 @@ fn parse_grid(e: &quick_xml::events::BytesStart, sec_def: &mut SectionDef) {
+             b"lineGrid" => sec_def.line_grid = parse_i32(&attr) as i16,
+             b"charGrid" => sec_def.char_grid = parse_i32(&attr) as i16,
+             b"wonggojiFormat" => sec_def.set_wonggoji_format(parse_i32(&attr) != 0),
++            b"strikeContinue" => sec_def.hwpx_grid_strike_continue = Some(attr_str(&attr)),
+             _ => {}
+         }
+     }
+@@ -702,6 +704,18 @@ fn parse_paragraph_body(
+             _ => {}
+         }
+     }
++    super::foreign::take_p_attributes(
++        e,
++        &[
++            "id",
++            "paraPrIDRef",
++            "styleIDRef",
++            "columnBreak",
++            "pageBreak",
++            "merged",
++        ],
++        &mut para,
++    );
+ 
+     if !has_para_shape_ref {
+         HWPX_DEFAULT_PARA_SHAPE.with(|state| -> Result<(), HwpxError> {
+@@ -746,6 +760,8 @@ fn parse_paragraph_body(
+     // [Task #1556] fieldEnd 의 (beginIDRef, fieldid) 를 출현 순서대로 보관 — text_parts 의
+     // `\u{0004}` 와 1:1 대응. 고아 fieldEnd 복원에 사용.
+     let mut field_end_attrs: Vec<(u32, u32)> = Vec::new();
++    let mut in_run = false;
++    let p_namespaces = super::foreign::declarations(e);
+ 
+     // Empty elements share attributes/finalization but must not consume a sibling.
+     loop {
+@@ -754,6 +770,12 @@ fn parse_paragraph_body(
+         }
+         match reader.read_event_into(&mut buf) {
+             Ok(Event::Start(ref ce)) => {
++                if super::foreign::is_foreign(ce, &p_namespaces) {
++                    let ns = &p_namespaces;
++                    super::foreign::take_element(ce, false, in_run, ns, reader, &mut para)?;
++                    buf.clear();
++                    continue;
++                }
+                 let cname = ce.name();
+                 let local = local_name(cname.as_ref());
+                 match local {
+@@ -771,6 +793,7 @@ fn parse_paragraph_body(
+                         }
+                     }
+                     b"run" => {
++                        in_run = true;
+                         // 런 시작: charPrIDRef 읽기
+                         for attr in ce.attributes().flatten() {
+                             if attr.key.as_ref().as_bytes() == b"charPrIDRef" {
+@@ -971,6 +994,12 @@ fn parse_paragraph_body(
+                 }
+             }
+             Ok(Event::Empty(ref ce)) => {
++                if super::foreign::is_foreign(ce, &p_namespaces) {
++                    let ns = &p_namespaces;
++                    super::foreign::take_element(ce, true, in_run, ns, reader, &mut para)?;
++                    buf.clear();
++                    continue;
++                }
+                 let cname = ce.name();
+                 let local = local_name(cname.as_ref());
+                 match local {
+@@ -1021,8 +1050,10 @@ fn parse_paragraph_body(
+             }
+             Ok(Event::End(ref ee)) => {
+                 let eename = ee.name();
+-                if local_name(eename.as_ref()) == b"p" {
+-                    break;
++                match local_name(eename.as_ref()) {
++                    b"p" => break,
++                    b"run" => in_run = false,
++                    _ => {}
+                 }
+             }
+             Ok(Event::Eof) => break,
+@@ -2506,6 +2537,17 @@ fn parse_table(
+                 let cname = ce.name();
+                 let local = local_name(cname.as_ref());
+                 match local {
++                    b"label" => {
++                        let attrs = ce.attributes().flatten();
++                        table.hwpx_label = Some(
++                            attrs
++                                .map(|a| {
++                                    let key: &str = a.key.as_ref();
++                                    (key.to_string(), attr_str(&a))
++                                })
++                                .collect(),
++                        );
++                    }
+                     b"sz" => {
+                         for attr in ce.attributes().flatten() {
+                             match attr.key.as_ref().as_bytes() {
+diff --git a/src/parser/hwpx/utils.rs b/src/parser/hwpx/utils.rs
+index c23203ede..bb6a6ccd5 100644
+--- a/src/parser/hwpx/utils.rs
++++ b/src/parser/hwpx/utils.rs
+@@ -251,7 +251,7 @@ const CANONICAL_PREFIXES: &[(&str, &str)] = &[
+ ];
+ 
+ /// 문서 뿌리 요소가 선언한 이름공간: (접두사, URI). 기본 이름공간은 접두사 "".
+-fn root_namespaces(xml: &str) -> Vec<(String, String)> {
++pub(crate) fn root_namespaces(xml: &str) -> Vec<(String, String)> {
+     let mut rest = xml;
+     // XML 선언·주석·처리 지시를 건너 첫 요소의 여는 태그를 찾는다.
+     let tag = loop {
+diff --git a/src/scaffold/builder.rs b/src/scaffold/builder.rs
+index 9a43a586f..083268462 100644
+--- a/src/scaffold/builder.rs
++++ b/src/scaffold/builder.rs
+@@ -470,6 +470,7 @@ fn build_table_paragraph(
+         raw_ctrl_seal: None,
+         raw_table_record_attr: 0x0000_0006, // bits 0-1 = 2(나눔, 행 단위 = HWPX CELL), bit2 = repeat_header
+         raw_table_record_extra: Vec::new(),
++        hwpx_label: None,
+         layout_page_break_cache: Default::default(),
+     };
+     table.rebuild_grid();
+diff --git a/src/serializer/body_text.rs b/src/serializer/body_text.rs
+index f338d8196..c71c005f8 100644
+--- a/src/serializer/body_text.rs
++++ b/src/serializer/body_text.rs
+@@ -18,7 +18,9 @@ use super::record_writer::write_records;
+ 
+ use crate::model::control::Control;
+ use crate::model::document::Section;
+-use crate::model::paragraph::{CharShapeRef, ColumnBreakType, LineSeg, Paragraph, RangeTag};
++use crate::model::paragraph::{
++    CharShapeRef, ColumnBreakType, LineSeg, Paragraph, RangeTag, RecordAnchor,
++};
+ use crate::parser::record::Record;
+ use crate::parser::tags;
+ 
+@@ -507,6 +509,10 @@ fn try_serialize_paragraph_with_msb<S: crate::storage::Storage>(
+             }))?,
+         },
+     )?;
++    let unknown = |after: RecordAnchor, records: &mut Vec<Record>| {
++        try_push_unknown_records(para, base_level, |a| a == after, records, storage)
++    };
++    unknown(RecordAnchor::Header, records)?;
+ 
+     // PARA_TEXT
+     if let Some(text_data) = text_data {
+@@ -520,6 +526,7 @@ fn try_serialize_paragraph_with_msb<S: crate::storage::Storage>(
+             },
+         )?;
+     }
++    unknown(RecordAnchor::Record(tags::HWPTAG_PARA_TEXT), records)?;
+ 
+     // PARA_CHAR_SHAPE (항상 출력 — HWP 필수)
+     {
+@@ -545,6 +552,7 @@ fn try_serialize_paragraph_with_msb<S: crate::storage::Storage>(
+             },
+         )?;
+     }
++    unknown(RecordAnchor::Record(tags::HWPTAG_PARA_CHAR_SHAPE), records)?;
+ 
+     // PARA_LINE_SEG
+     if !line_segs_in_range.is_empty() {
+@@ -559,6 +567,7 @@ fn try_serialize_paragraph_with_msb<S: crate::storage::Storage>(
+             },
+         )?;
+     }
++    unknown(RecordAnchor::Record(tags::HWPTAG_PARA_LINE_SEG), records)?;
+ 
+     // PARA_RANGE_TAG
+     if !range_tags.is_empty() {
+@@ -573,6 +582,7 @@ fn try_serialize_paragraph_with_msb<S: crate::storage::Storage>(
+             },
+         )?;
+     }
++    unknown(RecordAnchor::Record(tags::HWPTAG_PARA_RANGE_TAG), records)?;
+ 
+     // CTRL_HEADER (컨트롤별) + CTRL_DATA (있으면)
+     for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
+@@ -588,11 +598,45 @@ fn try_serialize_paragraph_with_msb<S: crate::storage::Storage>(
+             records,
+             storage,
+         )?;
++        unknown(RecordAnchor::Control(ctrl_idx), records)?;
+     }
++    let controls = para.controls.len();
++    try_push_unknown_records(
++        para,
++        base_level,
++        |a| matches!(a, RecordAnchor::Control(i) if i >= controls),
++        records,
++        storage,
++    )?;
+     storage.bytes(0)?;
+     Ok(())
+ }
+ 
++fn try_push_unknown_records<S: crate::storage::Storage>(
++    para: &Paragraph,
++    base_level: u16,
++    belongs_here: impl Fn(RecordAnchor) -> bool,
++    records: &mut Vec<Record>,
++    storage: &S,
++) -> Result<(), S::Error> {
++    for unknown in para
++        .unknown_records
++        .iter()
++        .filter(|u| belongs_here(u.after))
++    {
++        storage.push(
++            records,
++            Record {
++                tag_id: unknown.tag_id,
++                level: base_level + unknown.depth,
++                size: unknown.data.len() as u32,
++                data: storage.copy_slice(&unknown.data)?,
++            },
++        )?;
++    }
++    Ok(())
++}
++
+ /// 문단의 control_mask 비트를 계산한다.
+ ///
+ /// 각 컨트롤의 char_code(제어 문자 코드)가 비트 위치에 대응:
+diff --git a/src/serializer/doc_info/tests.rs b/src/serializer/doc_info/tests.rs
+index 18a07ee4d..1fdacbad1 100644
+--- a/src/serializer/doc_info/tests.rs
++++ b/src/serializer/doc_info/tests.rs
+@@ -292,6 +292,7 @@ fn test_serialize_para_shape_roundtrip() {
+         head_type: crate::model::style::HeadType::None,
+         para_level: 0,
+         break_latin_word: None,
++        hwpx_text_dir: None,
+         hwpx_plain_para_margin: false,
+         hwpx_plain_para_margin_physical: false,
+     };
+@@ -684,6 +685,7 @@ fn test_serialize_doc_info_roundtrip() {
+         head_type: crate::model::style::HeadType::None,
+         para_level: 0,
+         break_latin_word: None,
++        hwpx_text_dir: None,
+         hwpx_plain_para_margin: false,
+         hwpx_plain_para_margin_physical: false,
+     });
+diff --git a/src/serializer/hwpx/header.rs b/src/serializer/hwpx/header.rs
+index 24701e5d0..72b7200cb 100644
+--- a/src/serializer/hwpx/header.rs
++++ b/src/serializer/hwpx/header.rs
+@@ -1225,20 +1225,21 @@ where
+     let condense = xml_value(storage, (ps.attr1 >> 9) & 0x7f)?;
+     let font_line_height = xml_value(storage, (ps.attr1 >> 22) & 1)?;
+     let snap_to_grid = xml_value(storage, (ps.attr1 >> 8) & 1)?;
+-    start_tag_attrs(
+-        w,
+-        "hh:paraPr",
+-        &[
+-            ("id", &xml_value(storage, id)?),
+-            ("tabPrIDRef", &xml_value(storage, ps.tab_def_id)?),
+-            ("condense", &condense),
+-            ("fontLineHeight", &font_line_height),
+-            ("snapToGrid", &snap_to_grid),
+-            ("suppressLineNumbers", "0"),
+-            ("checked", "0"),
+-        ],
+-        storage,
+-    )?;
++    let id = xml_value(storage, id)?;
++    let tab_pr = xml_value(storage, ps.tab_def_id)?;
++    let mut attrs = vec![
++        ("id", &id[..]),
++        ("tabPrIDRef", &tab_pr[..]),
++        ("condense", &condense[..]),
++        ("fontLineHeight", &font_line_height[..]),
++        ("snapToGrid", &snap_to_grid[..]),
++        ("suppressLineNumbers", "0"),
++        ("checked", "0"),
++    ];
++    if let Some(text_dir) = &ps.hwpx_text_dir {
++        attrs.push(("textDir", text_dir));
++    }
++    start_tag_attrs(w, "hh:paraPr", &attrs, storage)?;
+ 
+     // 자식 순서 (한컴 원본 관찰):
+     // align, heading, breakSetting, autoSpacing, switch(margin+lineSpacing), border
+diff --git a/src/serializer/hwpx/section.rs b/src/serializer/hwpx/section.rs
+index 73b9c9ba3..4cd8afb81 100644
+--- a/src/serializer/hwpx/section.rs
++++ b/src/serializer/hwpx/section.rs
+@@ -50,7 +50,7 @@ use super::utils::{
+ use super::SerializeError;
+ use super::{picture, table};
+ 
+-const EMPTY_SECTION_XML: &str = include_str!("templates/empty_section0.xml");
++pub(crate) const EMPTY_SECTION_XML: &str = include_str!("templates/empty_section0.xml");
+ 
+ /// MEMO subList 여는 태그 (#1391) — 실물(aift) 고정 속성.
+ /// `textDirection` 만 원본값 보존(가변); 나머지는 실측 고정 속성.
+@@ -251,16 +251,27 @@ where
+ 
+     // 구역 그리드와 시작 번호. 템플릿 상수가 모두 0 이고 SectionDef 기본값도 0 이라
+     // 기본 문서의 출력은 그대로이며, 파싱된 문서에서만 실제 값이 살아난다.
++    let strike_continue = match &sd.hwpx_grid_strike_continue {
++        Some(value) => xml_value(
++            storage,
++            format_args!(
++                r#" strikeContinue="{}""#,
++                xml_escape_with_storage(value, storage)?
++            ),
++        )?,
++        None => String::new(),
++    };
+     let out = xml_replacen(
+         out,
+         r#"<hp:grid lineGrid="0" charGrid="0" wonggojiFormat="0"/>"#,
+         &xml_value(
+             storage,
+             format_args!(
+-                r#"<hp:grid lineGrid="{}" charGrid="{}" wonggojiFormat="{}"/>"#,
++                r#"<hp:grid lineGrid="{}" charGrid="{}" wonggojiFormat="{}"{}/>"#,
+                 sd.line_grid,
+                 sd.char_grid,
+-                u8::from(sd.wonggoji_format())
++                u8::from(sd.wonggoji_format()),
++                strike_continue
+             ),
+         )?,
+         1,
+@@ -959,13 +970,26 @@ where
+         } else {
+             0
+         };
+-    xml_value(
++    let mut open = xml_value(
+         storage,
+         format_args!(
+             r#"<hp:p id="{}" paraPrIDRef="{}" styleIDRef="{}" pageBreak="{}" columnBreak="{}" merged="0">"#,
+             id, p.para_shape_id, style_id_ref, page_break, column_break,
+         ),
+-    )
++    )?;
++    if let Some(foreign) = &p.foreign_xml {
++        open.pop();
++        for (prefix, uri) in &foreign.namespaces {
++            let decl = xml_value(storage, format_args!(r#" xmlns:{prefix}="{uri}""#))?;
++            storage.push_str(&mut open, &decl).map_err(xml_error)?;
++        }
++        for (name, value) in &foreign.attributes {
++            let attr = xml_value(storage, format_args!(r#" {name}="{value}""#))?;
++            storage.push_str(&mut open, &attr).map_err(xml_error)?;
++        }
++        storage.push_str(&mut open, ">").map_err(xml_error)?;
++    }
++    Ok(open)
+ }
+ 
+ /// 문단 첫 run 의 charPrIDRef. IR의 `char_shapes[0].char_shape_id` 사용.
+@@ -1066,12 +1090,28 @@ where
+         0
+     };
+     let (
+-        runs_xml,
++        mut runs_xml,
+         position_axis_intact,
+         serialized_axis_end,
+         mut hwp5_only_slot_positions,
+         collapsed_slot_positions,
+     ) = render_runs_with_storage(para, ctx, storage)?;
++    if let Some(foreign) = &para.foreign_xml {
++        if !foreign.run_children.is_empty() {
++            let run = xml_value(
++                storage,
++                format_args!(
++                    r#"<hp:run charPrIDRef="{}">{}</hp:run>"#,
++                    para.char_shapes.last().map_or(0, |c| c.char_shape_id),
++                    foreign.run_children.concat()
++                ),
++            )?;
++            storage.push_str(&mut runs_xml, &run).map_err(xml_error)?;
++        }
++        for child in &foreign.p_children {
++            storage.push_str(&mut runs_xml, child).map_err(xml_error)?;
++        }
++    }
+ 
+     (|| -> Result<(String, String, u32), SerializeError> {
+         // [#4778] 위치 축이 무너진 문단(파서가 담지 못한 8유닛 슬롯 — 예: 차례표지
+diff --git a/src/serializer/hwpx/table.rs b/src/serializer/hwpx/table.rs
+index 40caeeb45..597250630 100644
+--- a/src/serializer/hwpx/table.rs
++++ b/src/serializer/hwpx/table.rs
+@@ -158,6 +158,10 @@ where
+         }
+         end_tag_with_storage(w, "hp:tr", storage)?;
+     }
++    if let Some(label) = &table.hwpx_label {
++        let attrs: Vec<(&str, &str)> = label.iter().map(|(k, v)| (&k[..], &v[..])).collect();
++        empty_tag_with_storage(w, "hp:label", &attrs, storage)?;
++    }
+ 
+     end_tag_with_storage(w, "hp:tbl", storage)?;
+     Ok(())
+diff --git a/tests/cases/unknown_paragraph_records.rs b/tests/cases/unknown_paragraph_records.rs
+new file mode 100644
+index 000000000..e8f3a5eda
+--- /dev/null
++++ b/tests/cases/unknown_paragraph_records.rs
+@@ -0,0 +1,244 @@
++//! Records the parser does not model stay with the paragraph that owns them: an edit
++//! elsewhere rebuilds the section from the model and must still write them back unchanged.
++
++use std::io::{Cursor, Read, Write};
++
++use rhwp::document_core::DocumentCore;
++use rhwp::parser::cfb_reader::decompress_stream;
++use rhwp::parser::record::Record;
++use rhwp::parser::tags;
++use rhwp::serializer::record_writer::write_records;
++
++const SECTION: &str = "/BodyText/Section0";
++const OPAQUE_TAG: u16 = 0x3fe;
++
++fn opaque(level: u16, data: &[u8]) -> Record {
++    Record {
++        tag_id: OPAQUE_TAG,
++        level,
++        size: data.len() as u32,
++        data: data.to_vec(),
++    }
++}
++
++fn compressed(bytes: &[u8]) -> bool {
++    let mut file = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
++    let mut header = Vec::new();
++    file.open_stream("/FileHeader")
++        .unwrap()
++        .read_to_end(&mut header)
++        .unwrap();
++    header[36] & 1 != 0
++}
++
++fn section_records(bytes: &[u8]) -> Vec<Record> {
++    let mut file = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
++    let mut stream = Vec::new();
++    file.open_stream(SECTION)
++        .unwrap()
++        .read_to_end(&mut stream)
++        .unwrap();
++    let data = if compressed(bytes) {
++        decompress_stream(&stream).unwrap()
++    } else {
++        stream
++    };
++    Record::read_all(&data).unwrap()
++}
++
++fn with_section_records(bytes: &[u8], records: &[Record]) -> Vec<u8> {
++    let mut data = write_records(records);
++    if compressed(bytes) {
++        let mut encoder =
++            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
++        encoder.write_all(&data).unwrap();
++        data = encoder.finish().unwrap();
++    }
++    let mut file = cfb::CompoundFile::open(Cursor::new(bytes.to_vec())).unwrap();
++    file.create_stream(SECTION)
++        .unwrap()
++        .write_all(&data)
++        .unwrap();
++    file.flush().unwrap();
++    file.into_inner().into_inner()
++}
++
++/// Index one past the last record of the subtree that starts at `start`.
++fn subtree_end(records: &[Record], start: usize) -> usize {
++    let level = records[start].level;
++    start
++        + 1
++        + records[start + 1..]
++            .iter()
++            .take_while(|r| r.level > level)
++            .count()
++}
++
++/// Indexes of the paragraph headers at `level`, in file order.
++fn paragraphs(records: &[Record], level: u16) -> Vec<usize> {
++    records
++        .iter()
++        .enumerate()
++        .filter(|(_, r)| r.tag_id == tags::HWPTAG_PARA_HEADER && r.level == level)
++        .map(|(i, _)| i)
++        .collect()
++}
++
++/// The child records of the paragraph whose header is at `header`.
++fn children(records: &[Record], header: usize) -> &[Record] {
++    &records[header + 1..subtree_end(records, header)]
++}
++
++fn same(a: &Record, b: &Record) -> bool {
++    a.tag_id == b.tag_id && a.level == b.level && a.data == b.data
++}
++
++/// Body paragraphs "first paragraph" and "second paragraph", as the app makes them.
++fn two_paragraphs() -> DocumentCore {
++    let mut core = DocumentCore::new_empty();
++    core.create_blank_document_native().unwrap();
++    core.insert_text_native(0, 0, 0, "first paragraph").unwrap();
++    core.split_paragraph_native(0, 0, 15, None).unwrap();
++    core.insert_text_native(0, 1, 0, "second paragraph")
++        .unwrap();
++    core
++}
++
++/// Puts `extra` right after the record at `after` and opens the result.
++fn insert_after(bytes: &[u8], after: usize, extra: &[Record]) -> (Vec<u8>, DocumentCore) {
++    let mut records = section_records(bytes);
++    for (offset, record) in extra.iter().enumerate() {
++        records.insert(after + 1 + offset, record.clone());
++    }
++    let bytes = with_section_records(bytes, &records);
++    let core = DocumentCore::from_bytes(&bytes).unwrap();
++    (bytes, core)
++}
++
++fn reopen(core: &DocumentCore) -> (Vec<u8>, DocumentCore) {
++    let bytes = core.export_hwp_native().unwrap();
++    let reopened = DocumentCore::from_bytes(&bytes).unwrap();
++    (bytes, reopened)
++}
++
++/// First paragraph with an opaque record right after its text and an opaque record with a
++/// child of its own as its last children.
++fn body_fixture() -> (DocumentCore, [Record; 3]) {
++    let base = two_paragraphs().export_hwp_native().unwrap();
++    let records = section_records(&base);
++    let first = paragraphs(&records, 0)[0];
++    let text = first
++        + 1
++        + children(&records, first)
++            .iter()
++            .position(|r| r.tag_id == tags::HWPTAG_PARA_TEXT)
++            .unwrap();
++    let after_text = opaque(1, b"after-text");
++    let (bytes, _) = insert_after(&base, text, std::slice::from_ref(&after_text));
++    let records = section_records(&bytes);
++    let last = subtree_end(&records, paragraphs(&records, 0)[0]) - 1;
++    let tail = [
++        opaque(1, b"vendor-opaque-metadata"),
++        opaque(2, b"child-of-opaque"),
++    ];
++    let (_, core) = insert_after(&bytes, last, &tail);
++    let [a, b] = tail;
++    (core, [after_text, a, b])
++}
++
++#[test]
++fn edit_in_another_paragraph_keeps_the_records_of_an_untouched_one() {
++    let (mut core, [after_text, tail, tail_child]) = body_fixture();
++
++    core.insert_text_native(0, 1, 0, "x").unwrap();
++    let (bytes, reopened) = reopen(&core);
++    let (bytes, _) = reopen(&reopened);
++
++    let records = section_records(&bytes);
++    let first = children(&records, paragraphs(&records, 0)[0]);
++    let text = first
++        .iter()
++        .position(|r| r.tag_id == tags::HWPTAG_PARA_TEXT)
++        .unwrap();
++    assert!(same(&first[text + 1], &after_text), "{:?}", first[text + 1]);
++    let n = first.len();
++    assert!(same(&first[n - 2], &tail), "{:?}", first[n - 2]);
++    assert!(same(&first[n - 1], &tail_child), "{:?}", first[n - 1]);
++    let opaque_count = records.iter().filter(|r| r.tag_id == OPAQUE_TAG).count();
++    assert_eq!(opaque_count, 3);
++}
++
++#[test]
++fn table_cell_paragraph_keeps_its_records_through_an_edit_elsewhere() {
++    let mut core = two_paragraphs();
++    core.create_table_native(0, 1, 0, 1, 1).unwrap();
++    let base = core.export_hwp_native().unwrap();
++    let records = section_records(&base);
++    let cell_para = records
++        .iter()
++        .position(|r| r.tag_id == tags::HWPTAG_PARA_HEADER && r.level > 0)
++        .expect("cell paragraph");
++    let level = records[cell_para].level + 1;
++    let record = opaque(level, b"cell-opaque");
++    let end = subtree_end(&records, cell_para) - 1;
++    let (_, mut core) = insert_after(&base, end, std::slice::from_ref(&record));
++
++    core.insert_text_native(0, 0, 0, "x").unwrap();
++    let (bytes, _) = reopen(&core);
++
++    let records = section_records(&bytes);
++    let cell_para = records
++        .iter()
++        .position(|r| r.tag_id == tags::HWPTAG_PARA_HEADER && r.level > 0)
++        .unwrap();
++    let kept = children(&records, cell_para);
++    assert!(kept.iter().any(|r| same(r, &record)), "{kept:?}");
++}
++
++#[test]
++fn deleting_the_owning_paragraph_removes_its_records() {
++    let (mut core, _) = body_fixture();
++
++    core.delete_paragraph_native(0, 0).unwrap();
++    let (bytes, _) = reopen(&core);
++
++    let records = section_records(&bytes);
++    assert!(records.iter().all(|r| r.tag_id != OPAQUE_TAG));
++}
++
++#[test]
++fn split_keeps_the_records_with_the_front_paragraph() {
++    let (mut core, [after_text, tail, tail_child]) = body_fixture();
++
++    core.split_paragraph_native(0, 0, 5, None).unwrap();
++    let (bytes, _) = reopen(&core);
++
++    let records = section_records(&bytes);
++    let paras = paragraphs(&records, 0);
++    let front = children(&records, paras[0]);
++    for record in [&after_text, &tail, &tail_child] {
++        assert!(front.iter().any(|r| same(r, record)), "{record:?}");
++    }
++    assert!(children(&records, paras[1])
++        .iter()
++        .all(|r| r.tag_id != OPAQUE_TAG));
++}
++
++#[test]
++fn merge_carries_the_back_paragraph_records_into_the_merged_one() {
++    let base = two_paragraphs().export_hwp_native().unwrap();
++    let records = section_records(&base);
++    let second = paragraphs(&records, 0)[1];
++    let record = opaque(1, b"back-paragraph");
++    let end = subtree_end(&records, second) - 1;
++    let (_, mut core) = insert_after(&base, end, std::slice::from_ref(&record));
++
++    core.merge_paragraph_native(0, 1).unwrap();
++    let (bytes, _) = reopen(&core);
++
++    let records = section_records(&bytes);
++    let paras = paragraphs(&records, 0);
++    assert_eq!(paras.len(), 1);
++    let merged = children(&records, paras[0]);
++    assert!(same(merged.last().unwrap(), &record), "{merged:?}");
++}
+diff --git a/tests/cases/unknown_paragraph_xml.rs b/tests/cases/unknown_paragraph_xml.rs
+new file mode 100644
+index 000000000..06e46982b
+--- /dev/null
++++ b/tests/cases/unknown_paragraph_xml.rs
+@@ -0,0 +1,198 @@
++//! HWPX markup outside the OWPML namespaces in a paragraph (attributes of `<hp:p>`,
++//! elements under `<hp:p>` or `<hp:run>`) stays with that paragraph through edits elsewhere,
++//! save and reopen. Text inside such an element is not paragraph text.
++#![cfg(not(target_arch = "wasm32"))]
++
++use std::io::{Cursor, Read, Write};
++
++use rhwp::document_core::DocumentCore;
++
++const SECTION: &str = "Contents/section0.xml";
++const NS: &str = r#"xmlns:ext="urn:example:ext""#;
++const P_ATTRS: &str = r#"ext:mark="kept" data-x="1""#;
++const P_CHILD: &str = r#"<ext:note id="7">under-p</ext:note>"#;
++const RUN_CHILD: &str = r#"<ext:inRun><hp:t>leak</hp:t></ext:inRun>"#;
++
++fn section_xml(bytes: &[u8]) -> String {
++    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
++    let mut xml = String::new();
++    zip.by_name(SECTION)
++        .unwrap()
++        .read_to_string(&mut xml)
++        .unwrap();
++    xml
++}
++
++fn with_section_xml(bytes: &[u8], xml: &str) -> Vec<u8> {
++    let mut input = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
++    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
++    for i in 0..input.len() {
++        let mut entry = input.by_index(i).unwrap();
++        let mut data = Vec::new();
++        entry.read_to_end(&mut data).unwrap();
++        let name = entry.name().unwrap().to_string();
++        if name == SECTION {
++            data = xml.as_bytes().to_vec();
++        }
++        output
++            .start_file(
++                name,
++                zip::write::SimpleFileOptions::default().compression_method(entry.compression()),
++            )
++            .unwrap();
++        output.write_all(&data).unwrap();
++    }
++    output.finish().unwrap().into_inner()
++}
++
++/// Byte ranges of the `<hp:p ...>...</hp:p>` elements, nested ones included.
++fn paragraphs(xml: &str) -> Vec<std::ops::Range<usize>> {
++    let mut open = Vec::new();
++    let mut out = Vec::new();
++    let mut at = 0;
++    while let Some(found) = xml[at..].find(['<']) {
++        let start = at + found;
++        if xml[start..].starts_with("<hp:p ") || xml[start..].starts_with("<hp:p>") {
++            open.push(start);
++        } else if xml[start..].starts_with("</hp:p>") {
++            let begin = open.pop().unwrap();
++            out.push(begin..start + "</hp:p>".len());
++        }
++        at = start + 1;
++    }
++    out.sort_by_key(|r| r.start);
++    out
++}
++
++/// Top-level paragraph `n` (not nested in a table).
++fn body_paragraph(xml: &str, n: usize) -> &str {
++    let all = paragraphs(xml);
++    let top: Vec<_> = all
++        .iter()
++        .filter(|r| {
++            !all.iter()
++                .any(|o| o != *r && o.start < r.start && r.end <= o.end)
++        })
++        .collect();
++    &xml[top[n].clone()]
++}
++
++fn two_paragraphs() -> DocumentCore {
++    let mut core = DocumentCore::new_empty();
++    core.create_blank_document_native().unwrap();
++    core.insert_text_native(0, 0, 0, "first paragraph").unwrap();
++    core.split_paragraph_native(0, 0, 15, None).unwrap();
++    core.insert_text_native(0, 1, 0, "second paragraph")
++        .unwrap();
++    core
++}
++
++/// Adds the foreign markup to the paragraph whose text run is `<hp:t>{text}</hp:t>`.
++fn add_foreign(core: &DocumentCore, text: &str) -> DocumentCore {
++    let bytes = core.export_hwpx_native().unwrap();
++    let mut xml = section_xml(&bytes);
++    let root = xml.find("<hs:sec ").unwrap() + "<hs:sec ".len();
++    xml.insert_str(root, &format!("{NS} "));
++    let t = format!("<hp:t>{text}</hp:t>");
++    let t_at = xml.find(&t).unwrap();
++    let p_start = xml[..t_at].rfind("<hp:p ").unwrap() + "<hp:p ".len();
++    xml.insert_str(t_at + t.len(), RUN_CHILD);
++    let p_end = xml[t_at..].find("</hp:p>").unwrap() + t_at;
++    xml.insert_str(p_end, P_CHILD);
++    xml.insert_str(p_start, &format!("{P_ATTRS} "));
++    DocumentCore::from_bytes(&with_section_xml(&bytes, &xml)).unwrap()
++}
++
++fn assert_kept(paragraph: &str) {
++    for part in [
++        P_CHILD,
++        RUN_CHILD,
++        r#"ext:mark="kept""#,
++        r#"data-x="1""#,
++        NS,
++    ] {
++        assert!(paragraph.contains(part), "{part} missing in {paragraph}");
++    }
++}
++
++fn saved(core: &DocumentCore) -> (String, DocumentCore) {
++    let bytes = core.export_hwpx_native().unwrap();
++    (
++        section_xml(&bytes),
++        DocumentCore::from_bytes(&bytes).unwrap(),
++    )
++}
++
++#[test]
++fn foreign_markup_survives_an_edit_elsewhere_save_and_reopen() {
++    let mut core = add_foreign(&two_paragraphs(), "first paragraph");
++    assert_eq!(
++        core.document().sections[0].paragraphs[0].text,
++        "first paragraph"
++    );
++
++    core.insert_text_native(0, 1, 0, "x").unwrap();
++    let (xml, reopened) = saved(&core);
++    assert_kept(body_paragraph(&xml, 0));
++    assert!(!body_paragraph(&xml, 1).contains("ext:"));
++
++    let (xml, reopened) = saved(&reopened);
++    assert_kept(body_paragraph(&xml, 0));
++    assert_eq!(
++        reopened.document().sections[0].paragraphs[0].text,
++        "first paragraph"
++    );
++}
++
++#[test]
++fn foreign_markup_in_a_table_cell_paragraph_survives_an_edit_elsewhere() {
++    let mut core = two_paragraphs();
++    core.create_table_native(0, 1, 0, 1, 1).unwrap();
++    core.insert_text_in_cell_native(0, 1, 0, 0, 0, 0, "cell")
++        .unwrap();
++    let mut core = add_foreign(&core, "cell");
++
++    core.insert_text_native(0, 0, 0, "x").unwrap();
++    let (xml, _) = saved(&core);
++
++    let cell = paragraphs(&xml)
++        .into_iter()
++        .map(|r| &xml[r])
++        .find(|p| p.contains("<hp:t>cell</hp:t>") && !p[1..].contains("<hp:p "))
++        .unwrap();
++    assert_kept(cell);
++}
++
++#[test]
++fn deleting_the_owning_paragraph_removes_its_foreign_markup() {
++    let mut core = add_foreign(&two_paragraphs(), "first paragraph");
++
++    core.delete_paragraph_native(0, 0).unwrap();
++    let (xml, _) = saved(&core);
++
++    assert!(!xml.contains("ext:note") && !xml.contains("ext:inRun") && !xml.contains("ext:mark"));
++}
++
++#[test]
++fn split_keeps_the_foreign_markup_with_the_front_paragraph() {
++    let mut core = add_foreign(&two_paragraphs(), "first paragraph");
++
++    core.split_paragraph_native(0, 0, 5, None).unwrap();
++    let (xml, _) = saved(&core);
++
++    assert_kept(body_paragraph(&xml, 0));
++    assert!(!body_paragraph(&xml, 1).contains("ext:"));
++}
++
++#[test]
++fn merge_carries_the_back_paragraph_foreign_markup_into_the_merged_one() {
++    let mut core = add_foreign(&two_paragraphs(), "second paragraph");
++
++    core.merge_paragraph_native(0, 1).unwrap();
++    let (xml, _) = saved(&core);
++
++    let merged = body_paragraph(&xml, 0);
++    for part in [P_CHILD, RUN_CHILD, NS] {
++        assert!(merged.contains(part), "{part} missing in {merged}");
++    }
++}
+-- 
+2.50.1
