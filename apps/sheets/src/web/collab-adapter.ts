@@ -444,6 +444,7 @@ export function sheetsCollabAdapter(
   let emit: ((ops: SheetOp[]) => void) | null = null
   let editable = true
   let burst: Burst | null = null
+  let bufferChanged: ((buffered: boolean) => void) | undefined
   let flushTimer: ReturnType<typeof setTimeout> | null = null
   /** set while integrate runs mutations; anything else that writes then is a stray */
   let applying = false
@@ -627,7 +628,10 @@ export function sheetsCollabAdapter(
     burst.undo = burst.undo.slice(undone)
     burst.journal = burst.journal.slice(marks)
     burst.mutations = burst.mutations.slice(0, from.mutations)
-    if (burst.mutations.length === 0) burst = null
+    if (burst.mutations.length === 0) {
+      burst = null
+      bufferChanged?.(false)
+    }
     // the command may have left an undo entry for what is no longer there
     if (undone > 0) clearHistory()
   }
@@ -784,7 +788,10 @@ export function sheetsCollabAdapter(
         undoable.set(sheet, own)
       }
     }
-    burst ??= { mutations: [], undo: [], journal: [], work: 0 }
+    if (!burst) {
+      burst = { mutations: [], undo: [], journal: [], work: 0 }
+      bufferChanged?.(true)
+    }
     burst.work += taken.work
     burst.mutations.push(wire)
     burst.undo = taken.undo.concat(burst.undo)
@@ -836,6 +843,7 @@ export function sheetsCollabAdapter(
     burst = null
     resetMarks()
     emit([op])
+    bufferChanged?.(burst !== null)
     return true
   }
 
@@ -1083,6 +1091,7 @@ export function sheetsCollabAdapter(
           rebuilt.push(op)
         } else {
           burst = replayed.mutations.length > 0 ? replayed : null
+          if (!burst) bufferChanged?.(false)
         }
       })
       resetMarks()
@@ -1130,10 +1139,17 @@ export function sheetsCollabAdapter(
       if (typeof id !== 'string' || !Array.isArray(m)) throw new Error('not a sheet op')
       return { id, mutations: m.map(decodeMutation) }
     },
+    observeLocalBuffer(changed) {
+      bufferChanged = changed
+      changed(burst !== null)
+    },
     listen(handler) {
       emit = handler
       return () => {
-        if (emit === handler) emit = null
+        if (emit === handler) {
+          emit = null
+          bufferChanged = undefined
+        }
       }
     },
     integrate,
@@ -1173,6 +1189,7 @@ export function sheetsCollabAdapter(
       ended.dispose()
       clearTimeout(flushTimer ?? undefined)
       emit = null
+      bufferChanged = undefined
     },
   }
 

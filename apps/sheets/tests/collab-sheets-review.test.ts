@@ -88,6 +88,28 @@ function expectSame(room: Room): void {
   for (const text of texts) expect(text).toBe(texts[0])
 }
 
+it('reports an on-screen cell edit as buffered until the burst timer submits it', () => {
+  const page = new Room().join(undefined, { bursts: 'macrotask' })
+  const buffered = vi.fn()
+  page.adapter.observeLocalBuffer?.(buffered)
+  vi.useFakeTimers()
+  try {
+    page.commands.syncExecuteCommand(SET_RANGE_VALUES, {
+      unitId: page.workbook.getUnitId(),
+      subUnitId: 's1',
+      cellValue: { 0: { 0: { v: 'pending' } } },
+    })
+    expect(cellOf(page, 0, 0)?.v).toBe('pending')
+    expect(page.emitted).toEqual([])
+    expect(buffered).toHaveBeenLastCalledWith(true)
+    vi.advanceTimersByTime(0)
+    expect(page.emitted).toHaveLength(1)
+    expect(buffered).toHaveBeenLastCalledWith(false)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 describe('the fingerprint holds only what people put in', () => {
   const currency = { n: { pattern: '$#,##0.00' } }
 

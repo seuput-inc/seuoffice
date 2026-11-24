@@ -232,6 +232,7 @@ export async function joinPageCollab<Handles, Op>(options: {
       session = joined
       releaseInput()
       let displayedVersion: number | null = null
+      let buffered = false
       let queued = false
       // Selection events can fire inside integrate(), before the engine confirms the edit.
       const publish = (): void => {
@@ -240,22 +241,34 @@ export async function joinPageCollab<Handles, Op>(options: {
         queueMicrotask(() => {
           queued = false
           const status = joined.status()
-          if (presence && status.phase === 'live' && !status.unconfirmed)
+          if (buffered) joined.setPresence(null)
+          else if (presence && status.phase === 'live' && !status.unconfirmed)
             joined.setPresence(presence.read())
         })
       }
       const presence = options.presence?.(handles, publish)
+      const draw = (status: CollabStatus): void => {
+        if (!presence) return
+        const version =
+          !buffered && status.phase === 'live' && !status.unconfirmed ? status.version : null
+        if (version !== null && version !== displayedVersion) publish()
+        displayedVersion = version
+        presence.draw(buffered ? [] : presenceMarks(status))
+      }
+      if (presence)
+        adapter.observeLocalBuffer?.((next) => {
+          if (buffered === next) return
+          buffered = next
+          if (buffered) publish()
+          // A burst can end inside integrate(), before the new version is visible.
+          queueMicrotask(() => draw(joined.status()))
+        })
       const report = (status: CollabStatus): void => {
         reportCollabStatus(status)
         // unsaved means the log holds edits no stored file has
         reportDirty(status.version > status.saved)
         options.status?.(status)
-        if (presence) {
-          const version = status.phase === 'live' && !status.unconfirmed ? status.version : null
-          if (version !== null && version !== displayedVersion) publish()
-          displayedVersion = version
-          presence.draw(presenceMarks(status))
-        }
+        draw(status)
       }
       joined.subscribe(report)
       // opened first: a host that sets its title on opened must not overwrite the dirty state

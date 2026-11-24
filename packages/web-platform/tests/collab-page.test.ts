@@ -333,6 +333,57 @@ describe('joining a co-edited page', () => {
     remote.close()
   })
 
+  it('hides both selections when an edit is buffered and restores them after confirmation', async () => {
+    playHost({ canEdit: true })
+    await open(true)
+    const file = { format: toyMap.format, bytes: toyMap.file() }
+    const remote = (await joinCollab(directLink('Other'), file)).attach(toyMap.open(file.bytes))
+    const local = toyMap.open(file.bytes)
+    const draw = vi.fn()
+    let bufferChanged: ((buffered: boolean) => void) | undefined
+    let caret = 3
+    const collab = (await page.joinPageCollab<null, MapOp>({
+      ...file,
+      fileName: 'memo.toy',
+      adapter: () => ({
+        ...local,
+        observeLocalBuffer: (changed) => {
+          bufferChanged = changed
+          changed(false)
+        },
+      }),
+      presence: () => ({ read: () => caret, draw }),
+    }))!
+    await collab.attach(null)
+    const client = collab.self()!.client
+    remote.setPresence(2)
+    await vi.waitFor(() => {
+      expect(draw).toHaveBeenLastCalledWith([expect.objectContaining({ at: 2 })])
+      expect(remote.status().presences[client]).toEqual({ v: 0, at: 3 })
+    })
+
+    caret = 4
+    bufferChanged?.(true)
+    await vi.waitFor(() => {
+      expect(draw).toHaveBeenLastCalledWith([])
+      expect(remote.status().presences[client]).toBeUndefined()
+    })
+    remote.setPresence(1)
+    await vi.waitFor(() =>
+      expect(statuses().at(-1)?.presences[remote.status().self!.client]).toEqual({ v: 0, at: 1 }),
+    )
+    expect(draw).toHaveBeenLastCalledWith([])
+
+    local.perform({ id: 'a', key: 'a', value: 1 })
+    bufferChanged?.(false)
+    await vi.waitFor(() => expect(remote.status().presences[client]).toEqual({ v: 1, at: 4 }))
+    remote.setPresence(5)
+    await vi.waitFor(() =>
+      expect(draw).toHaveBeenLastCalledWith([expect.objectContaining({ at: 5 })]),
+    )
+    remote.close()
+  })
+
   it('refuses a host save before the renderer attached', async () => {
     playHost({ canEdit: true })
     await open(true)

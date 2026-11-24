@@ -140,6 +140,21 @@ const kinds = (p: Page) => {
 }
 
 describe('two people starting a list at the same moment', () => {
+  it('reports the on-screen list as buffered until its definition goes out with it', async () => {
+    const alice = page()
+    const buffered = vi.fn()
+    alice.adapter.observeLocalBuffer?.(buffered)
+
+    startList(alice, 'bullet', 'alpha')
+    expect(alice.sent).toEqual([])
+    expect(buffered).toHaveBeenLastCalledWith(true)
+
+    alice.app.render()
+    await nextPoll()
+    expect(alice.sent.map((op) => op.kind)).toEqual(['steps', 'side'])
+    expect(buffered).toHaveBeenLastCalledWith(false)
+  })
+
   it('keeps each list its own kind on both pages', async () => {
     const alice = page()
     const bob = page()

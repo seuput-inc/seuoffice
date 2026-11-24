@@ -256,6 +256,7 @@ export function createDocsAdapter(options: DocsAdapterOptions): CollabAdapter<Do
    */
   let outbox: Outgoing[] = []
   let outboxTimer: ReturnType<typeof setTimeout> | null = null
+  let bufferChanged: ((buffered: boolean) => void) | undefined
   let integrating = false
   const wrapped = new WeakSet<object>()
 
@@ -414,16 +415,20 @@ export function createDocsAdapter(options: DocsAdapterOptions): CollabAdapter<Do
     outbox = outbox.slice(count)
     clearTimeout(outboxTimer ?? undefined)
     outboxTimer = outbox.length > 0 ? setTimeout(() => flush(true), ENTRY_WAIT_MS) : null
-    if (released.length === 0) return
-    settleCollisions(released)
-    emit(released.map((item) => item.op))
+    if (released.length > 0) {
+      settleCollisions(released)
+      emit(released.map((item) => item.op))
+    }
+    bufferChanged?.(outbox.length > 0)
   }
 
   const queue = (items: Outgoing[]): void => {
     if (items.length === 0) return
     outbox.push(...items)
-    if (integrating) queueMicrotask(() => flush(false))
-    else flush(false)
+    if (integrating) {
+      bufferChanged?.(true)
+      queueMicrotask(() => flush(false))
+    } else flush(false)
   }
 
   const commit = (records: readonly Recorded[]): void => {
@@ -629,11 +634,19 @@ export function createDocsAdapter(options: DocsAdapterOptions): CollabAdapter<Do
       throw new Error('not a docs op')
     },
 
+    observeLocalBuffer(changed) {
+      bufferChanged = changed
+      changed(outbox.length > 0)
+    },
+
     listen(handler) {
       emit = handler
       flush(false)
       return () => {
-        if (emit === handler) emit = null
+        if (emit === handler) {
+          emit = null
+          bufferChanged = undefined
+        }
         clearTimeout(outboxTimer ?? undefined)
         unobserve()
         for (const type of ISLAND_EVENTS)
@@ -693,6 +706,7 @@ export function createDocsAdapter(options: DocsAdapterOptions): CollabAdapter<Do
         return local.filter(kept).map((op) => rebasedSide.get(op) ?? rebuilt(op as StepsOp))
       } finally {
         integrating = false
+        bufferChanged?.(outbox.length > 0)
       }
     },
 

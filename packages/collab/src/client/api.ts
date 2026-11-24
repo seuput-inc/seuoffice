@@ -22,6 +22,8 @@ export interface CollabAdapter<Op> {
   decode(json: Json): Op
   /** report every local edit, in order, already applied to the editor. Returns unsubscribe. */
   listen(emit: (ops: Op[]) => void): () => void
+  /** Report edits on screen not yet handed to `emit`, now and on changes, until `listen` unsubscribes. */
+  observeLocalBuffer?(changed: (buffered: boolean) => void): void
   /**
    * Apply `remote` (confirmed, in server order) to the editor, which currently shows the confirmed
    * state plus `local` (this client's unconfirmed ops, in order). Return `local` rewritten so that
