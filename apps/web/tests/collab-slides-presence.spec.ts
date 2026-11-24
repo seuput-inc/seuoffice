@@ -39,12 +39,11 @@ async function boxes(p: CoEditor): Promise<Box[]> {
   })
 }
 
-async function clickBox(p: CoEditor, box: Box, double = false) {
+async function clickBox(p: CoEditor, box: Box) {
   const rect = (await stage(p).boundingBox())!
   const x = rect.x + (box.x + box.w / 2) * rect.width,
     y = rect.y + (box.y + box.h / 2) * rect.width
-  if (double) await p.page.mouse.dblclick(x, y)
-  else await p.page.mouse.click(x, y)
+  await p.page.mouse.click(x, y)
 }
 
 async function relativeBounds(mark: Locator, p: CoEditor): Promise<Box | null> {
@@ -109,12 +108,15 @@ test('slides show the other person’s selected objects, caret and text range, i
     await atBox(onAlice, alice, subtitle!)
     const readerText = bob.frame.locator('.slide-reader-text')
     await readerText.getByText('Fiscal', { exact: false }).last().dblclick()
-    await expect(alice.frame.locator('[data-slide-presence="range"]').first()).toBeVisible()
+    const readerRange = alice.frame.locator('[data-slide-presence="range"]').first()
+    await expect(readerRange).toBeVisible()
     expect(
       await readerText.evaluate((el) => el instanceof HTMLElement && el.isContentEditable),
     ).toBe(false)
 
-    await clickBox(alice, subtitle!, true)
+    // Hit the highlighted word through Bob's mark, not the blank middle of the subtitle frame.
+    const word = (await readerRange.boundingBox())!
+    await alice.page.mouse.dblclick(word.x + word.width / 2, word.y + word.height / 2)
     const editor = alice.frame.locator('.slide-text-editor')
     await expect(editor).toBeFocused()
     await editor.press('ControlOrMeta+A')
