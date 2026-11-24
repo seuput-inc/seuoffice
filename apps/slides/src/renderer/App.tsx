@@ -35,6 +35,8 @@ import type {
 import { baseName } from '../shared/base-name'
 import { mergeBroadcastUpdate, mergeSlideUpdate, setDeckRefresh } from '../shared/slide-update'
 import { SlideCanvas, selectionChromeColor, type SlideCanvasHandle } from './SlideCanvas'
+import { SlidePresenceLayer } from './SlidePresenceLayer'
+import { SlidePresence } from './slide-presence'
 import { tableCellOverlayBox } from './table-hit'
 import { ZOOM_PREVIEW_EVENT } from './zoom-preview'
 import { ZOOM_MAX, ZOOM_MIN, clampZoom, nextPreset, notchStep, prevPreset } from './zoom-steps'
@@ -393,12 +395,18 @@ export function App() {
     if (slides.length) void syncPrivateFonts()
   }, [slides])
   const [path, setPath] = useState<string | null>(null)
+  const [presence, setPresence] = useState<SlidePresence | null>(null)
   // Web co-editing: the page's session takes over once the opened deck is on screen
   useEffect(() => {
     if (!path) return
     void window.seuCollab?.attach({
       path,
       commitDrafts: () => fileActions.commitDrafts(() => ctxRef.current),
+      presence(publish: () => void) {
+        const session = new SlidePresence(publish)
+        setPresence(session)
+        return session
+      },
     })
   }, [path])
   // Font store changed (local install): re-register FontFaces
@@ -1070,6 +1078,17 @@ export function App() {
   useEffect(
     () =>
       window.slidesApi.onDeckChanged?.(({ slides: all, order, replaced = [], rebuild }) => {
+        // A new confirmed version may publish before React paints its replacement slide.
+        const shown = presence?.shownSlide
+        if (
+          presence &&
+          shown &&
+          (!order?.includes(shown) ||
+            all.some((s) => s.partPath === shown) ||
+            replaced.includes(shown))
+        ) {
+          presence.read = () => null
+        }
         // an edit was refused after the canvas showed it (a border or a handle where it was dragged)
         if (rebuild) setCanvasEpoch((n) => n + 1)
         // Slides before the one on screen may have come or gone: it stays on screen, found by its
@@ -1098,7 +1117,7 @@ export function App() {
         // session instead of assuming the change dirtied it
         void window.slidesApi.isDirty?.().then((d) => setDirty(!!d))
       }),
-    [refreshDeck],
+    [refreshDeck, presence],
   )
 
   // Auto-save (off by default): when on and a file path exists, silently write back every 30s + on blur.
@@ -3996,6 +4015,15 @@ export function App() {
                       onClick={() => setCurrent((c) => Math.min(c + 1, slides.length - 1))}
                     >
                       <SlideThumb slide={slide} images={images} width={readW} />
+                      {presence && (
+                        <SlidePresenceLayer
+                          key={slide.partPath}
+                          presence={presence}
+                          slide={slide}
+                          selectedIds={selectedIds}
+                          readerScale={readW / slide.widthPx}
+                        />
+                      )}
                     </div>
                     <div className="reading-bar">
                       <button
@@ -4439,6 +4467,15 @@ export function App() {
                                     : null
                               }
                             />
+                            {presence && (
+                              <SlidePresenceLayer
+                                presence={presence}
+                                slide={slide}
+                                selectedIds={selectedIds}
+                                groupId={enteredGroupId}
+                                editing={editing?.sourceId}
+                              />
+                            )}
                             {showGrid && <div className="grid-overlay" />}
                             {showGuides &&
                               guides.map((g, gi) => (

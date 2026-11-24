@@ -23,6 +23,7 @@ import { getPrivateFontData, listPrivateFontFaces } from '../main/fonts'
 import type { DeckChange, DesktopFilesApi, OpenResult, SlidesApi } from '../shared/ipc'
 import type { SlidesOp } from './collab-ops'
 import type { Redraw, SlidesCollabHandles } from './collab-side'
+import type { SlidePresence } from '../renderer/slide-presence'
 import { coEditDeck, deckEdits, installHostSave, requestRendererSave } from './deck-edits'
 import { deckReads } from './deck-reads'
 import { currentSession, openPptxForWeb, renderDeck } from './session'
@@ -208,7 +209,10 @@ function reportFirst(result: OpenResult | null): OpenResult | null {
 let pendingTaken = false
 
 /** set when the host asked for co-editing and the page joined its session */
-let coEditing: PageCollab<SlidesCollabHandles> | null = null
+type SlidesPageHandles = SlidesCollabHandles & {
+  presence(publish: () => void): SlidePresence
+}
+let coEditing: PageCollab<SlidesPageHandles> | null = null
 
 /** The renderer's deck-changed listeners; only co-editing sends them anything */
 const deckListeners = new Set<(change: DeckChange) => void>()
@@ -239,7 +243,8 @@ function redrawDeck(redraw: Redraw): void {
  */
 async function joinSlidesCollab(doc: WebDocument): Promise<void> {
   let renderer: SlidesCollabHandles | null = null
-  const page = await joinPageCollab<SlidesCollabHandles, SlidesOp>({
+  const page = await joinPageCollab<SlidesPageHandles, SlidesOp>({
+    presence: (handles, publish) => handles.presence(publish),
     // 3: rebuilt runs preserve language tags, and newly authored Hangul is tagged ko-KR
     format: { name: 'pptx', schema: 3 },
     fileName: doc.fileName,

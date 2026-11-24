@@ -18,6 +18,7 @@ import {
   type FontSizeStep,
 } from '@seuoffice/pptx-ops/font-size'
 import { bulletRunText } from './bullet-presets'
+import { bodyKey } from './slide-presence'
 
 interface Props {
   node: ShapeRenderNode
@@ -637,39 +638,8 @@ export function releaseFragmentsAtEdit(
   }
 }
 
-export function TextEditOverlay({
-  node,
-  scale,
-  onCommit,
-  onCancel,
-  onTabNav,
-  onNextPlaceholder,
-  caretPoint,
-  replaceWith,
-  selectAll,
-  onFollowLink,
-  frameColor = '#232425',
-  zoom = 1,
-  onFrameDrag,
-  onContextMenu,
-}: Props) {
-  const ref = useRef<HTMLDivElement>(null)
-  const frameRef = useRef<HTMLDivElement>(null)
-
-  // The edit frame lives inside the CSS-scaled stage: during a zoom gesture only the
-  // transform advances, so the zoom-compensated outline would thicken and then snap at
-  // commit. Counter-scale it per previewed frame, same as the selection chrome.
-  useEffect(() => {
-    const onPreview = (e: Event) => {
-      const z = (e as CustomEvent<number>).detail
-      const el = frameRef.current
-      if (typeof z !== 'number' || !el) return
-      el.style.outlineWidth = `${2 / (globalThis.devicePixelRatio || 1) / Math.max(z, 0.1)}px`
-    }
-    window.addEventListener(ZOOM_PREVIEW_EVENT, onPreview)
-    return () => window.removeEventListener(ZOOM_PREVIEW_EVENT, onPreview)
-  }, [])
-
+/** The editor and read-only range measurement must lay out the same paragraph DOM. */
+export function slideTextLayout(node: ShapeRenderNode, scale: number) {
   const box = node.box
   // A shape with no text body yet: preview the body setText is about to create so the
   // content does not jump between typing and commit. Every fresh body gets the standard
@@ -713,12 +683,7 @@ export function TextEditOverlay({
   const baseColor = normalizeCss(firstRun?.color ?? '#000')
   const baseFont = displayFontFamily(firstRun?.fontFamily ?? 'Calibri')
 
-  // Initial content: see populateEditorDom; snapshot the initial extraction, unchanged commits go through onCancel
-  // (no empty undo step / no dirty flag — opening to look and clicking away isn't an edit)
-  const initialRef = useRef<string>('')
-  useEffect(() => {
-    const div = ref.current
-    if (!div) return
+  function populate(div: HTMLElement, readOnly = false) {
     div.dataset.norm = String(norm) // The ribbon helpers for font size increase/decrease/set take the conversion factor from here
     // Same anchor offset as the engine (the dy text-layout bakes into line tops), removed back
     // during populate — the engine anchors against the glyph extent (inkBottom), so mirror it
@@ -735,6 +700,109 @@ export function TextEditOverlay({
       vertText ? undefined : box.w - insets.l - insets.r,
       vertText,
     )
+    if (readOnly) {
+      for (const a of div.querySelectorAll('a[href]')) a.removeAttribute('href')
+    }
+    if (window.seuCollab) div.dataset.presenceBody = String(bodyKey(div))
+  }
+  const frame: React.CSSProperties = {
+    position: 'absolute',
+    left: box.x,
+    top: box.y,
+    width: growW && !vertText ? 'max-content' : box.w,
+    minWidth: growW && !vertText ? box.w : undefined,
+    height: growH && !vertText ? 'auto' : box.h,
+    minHeight: growH && !vertText ? box.h : undefined,
+    // The canvas counter-flips text in mirrored shapes.
+    transform: `rotate(${box.rotationDeg ?? 0}deg)`,
+    transformOrigin: 'center center',
+    zIndex: 20,
+    display: 'flex',
+    flexDirection: vertText ? (vertLtr ? 'row' : 'row-reverse') : 'column',
+    justifyContent:
+      anchor === 'middle' ? 'center' : anchor === 'bottom' ? 'flex-end' : 'flex-start',
+  }
+  const body: React.CSSProperties = {
+    // No-wrap content may overflow, but must still center inside the original box.
+    width: wrap ? Math.max(box.w, 40 + insets.l + insets.r) : 'max-content',
+    minWidth: wrap ? undefined : growW ? box.w : Math.max(box.w, 40 + insets.l + insets.r),
+    minHeight: node.text?.lines.length ? undefined : baseFontSize * 1.2 + insets.t + insets.b,
+    ...(fresh ? { textAlign: 'center' } : {}),
+    padding: `${insets.t}px ${insets.r}px ${insets.b}px ${insets.l}px`,
+    fontSize: baseFontSize,
+    fontFamily: baseFont,
+    color: baseColor,
+    lineHeight: 1.2,
+    outline: 'none',
+    background: 'transparent',
+    caretColor: baseColor,
+    boxSizing: 'border-box',
+    whiteSpace: wrap ? 'pre-wrap' : 'pre',
+    ...(vertText
+      ? {
+          writingMode:
+            vertMode === 'vert270'
+              ? 'sideways-lr'
+              : vertMode === 'wordArtVert'
+                ? 'vertical-lr'
+                : 'vertical-rl',
+          textOrientation:
+            vertMode === 'vert' ? 'sideways' : vertMode === 'wordArtVert' ? 'upright' : 'mixed',
+          width: 'max-content',
+          minWidth: undefined,
+          minHeight: undefined,
+          // Columns overflow; shrinking the block would introduce extra column breaks.
+          flexShrink: 0,
+        }
+      : {}),
+  }
+  return { frame, body, populate, norm }
+}
+
+export function TextEditOverlay({
+  node,
+  scale,
+  onCommit,
+  onCancel,
+  onTabNav,
+  onNextPlaceholder,
+  caretPoint,
+  replaceWith,
+  selectAll,
+  onFollowLink,
+  frameColor = '#232425',
+  zoom = 1,
+  onFrameDrag,
+  onContextMenu,
+}: Props) {
+  const ref = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
+
+  // The edit frame lives inside the CSS-scaled stage: during a zoom gesture only the
+  // transform advances, so the zoom-compensated outline would thicken and then snap at
+  // commit. Counter-scale it per previewed frame, same as the selection chrome.
+  useEffect(() => {
+    const onPreview = (e: Event) => {
+      const z = (e as CustomEvent<number>).detail
+      const el = frameRef.current
+      if (typeof z !== 'number' || !el) return
+      el.style.outlineWidth = `${2 / (globalThis.devicePixelRatio || 1) / Math.max(z, 0.1)}px`
+    }
+    window.addEventListener(ZOOM_PREVIEW_EVENT, onPreview)
+    return () => window.removeEventListener(ZOOM_PREVIEW_EVENT, onPreview)
+  }, [])
+
+  const { frame, body, populate, norm } = React.useMemo(
+    () => slideTextLayout(node, scale),
+    [node, scale],
+  )
+  // Initial content: see populateEditorDom; snapshot the initial extraction, unchanged commits go through onCancel
+  // (no empty undo step / no dirty flag — opening to look and clicking away isn't an edit)
+  const initialRef = useRef<string>('')
+  useEffect(() => {
+    const div = ref.current
+    if (!div) return
+    populate(div)
     initialRef.current = JSON.stringify(extractParagraphs(div, norm))
     div.focus()
     const sel = window.getSelection()
@@ -768,7 +836,7 @@ export function TextEditOverlay({
         sel.addRange(range)
       }
     }
-  }, [node, norm, caretPoint, replaceWith, selectAll])
+  }, [populate, norm, caretPoint, replaceWith, selectAll])
 
   const commit = () => {
     savedSel = null
@@ -832,25 +900,8 @@ export function TextEditOverlay({
     <div
       ref={frameRef}
       style={{
-        position: 'absolute',
-        left: box.x,
-        top: box.y,
-        width: growW && !vertText ? 'max-content' : box.w,
-        minWidth: growW && !vertText ? box.w : undefined,
-        height: growH && !vertText ? 'auto' : box.h,
-        minHeight: growH && !vertText ? box.h : undefined,
-        // Rotation only — the canvas counter-flips text in flipped shapes (NodeBody), so the editor must not mirror
-        transform: `rotate(${box.rotationDeg ?? 0}deg)`,
-        transformOrigin: 'center center',
-        zIndex: 20,
-        display: 'flex',
-        // Vertical text: the row direction keeps the anchor mapping (top = the
-        // flow-start edge, like the engine's anchoring)
-        flexDirection: vertText ? (vertLtr ? 'row' : 'row-reverse') : 'column',
-        justifyContent:
-          anchor === 'middle' ? 'center' : anchor === 'bottom' ? 'flex-end' : 'flex-start',
-        // 2 device px, zoom-compensated: the canvas is CSS-scaled, and 2 CSS px reads
-        // twice as heavy on retina displays
+        ...frame,
+        // Two device pixels at every zoom.
         outline: `${2 / (globalThis.devicePixelRatio || 1) / Math.max(zoom, 0.1)}px solid ${frameColor}`,
       }}
       onMouseMove={(e) => {
@@ -956,59 +1007,7 @@ export function TextEditOverlay({
             }
           }
         }}
-        style={{
-          // wrap=none: no wrapping (width follows content, same as the canvas overflow behavior); soft-break \n still breaks via pre.
-          // insets use padding not margin: paragraph divs' marginTop (paragraph spacing) must not collapse with the root node
-          width: wrap ? Math.max(box.w, 40 + insets.l + insets.r) : 'max-content',
-          // nowrap keeps max-content growth for overflow, but never below the box width:
-          // a narrower block would defeat per-paragraph text-align (centered titles would
-          // visually snap left on entering edit) — the canvas centers within the box.
-          // A growing box takes the box width alone: the 40px floor would inflate the
-          // 19px click-to-type box and snap back on commit
-          minWidth: wrap ? undefined : growW ? box.w : Math.max(box.w, 40 + insets.l + insets.r),
-          // Only an empty body needs a synthetic height (so typing matches the canvas line
-          // height); inflating a laid-out body distorts the flex vertical anchor — a
-          // middle-anchored single line with tight spacing sat a few px too high in edit
-          minHeight: node.text?.lines.length ? undefined : baseFontSize * 1.2 + insets.t + insets.b,
-          // extractParagraphs reads the root alignment back, so the fresh-shape preview
-          // is also what gets committed
-          ...(fresh ? { textAlign: 'center' as const } : {}),
-          padding: `${insets.t}px ${insets.r}px ${insets.b}px ${insets.l}px`,
-          fontSize: baseFontSize,
-          fontFamily: baseFont,
-          color: baseColor,
-          lineHeight: 1.2,
-          outline: 'none',
-          background: 'transparent',
-          caretColor: baseColor,
-          boxSizing: 'border-box',
-          whiteSpace: wrap ? 'pre-wrap' : 'pre',
-          // Vertical editing: the browser lays out real vertical text (upright CJK, rotated
-          // Latin). The block axis is horizontal, so width follows content (columns) and the
-          // row flex stretch pins the height to the box so wrap breaks columns at box height.
-          ...(vertText
-            ? {
-                writingMode:
-                  vertMode === 'vert270'
-                    ? ('sideways-lr' as const)
-                    : vertMode === 'wordArtVert'
-                      ? ('vertical-lr' as const)
-                      : ('vertical-rl' as const),
-                textOrientation:
-                  vertMode === 'vert'
-                    ? ('sideways' as const)
-                    : vertMode === 'wordArtVert'
-                      ? ('upright' as const)
-                      : ('mixed' as const),
-                width: 'max-content',
-                minWidth: undefined,
-                minHeight: undefined,
-                // Keep natural column width: overflow spills left (the flow direction), it
-                // must not compress into extra column breaks
-                flexShrink: 0,
-              }
-            : {}),
-        }}
+        style={body}
       />
     </div>
   )

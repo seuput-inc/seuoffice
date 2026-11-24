@@ -6693,6 +6693,7 @@ body.vib .slide-list {
 }
 
 .reading-slide {
+  position: relative;
   line-height: 0;
   box-shadow: var(--slides-shadow-reading);
   cursor: pointer;
@@ -9834,7 +9835,8 @@ body.show-curtain::after {
 
 /* Editing overlay bullets: the canvas hides the edited node's text, so each paragraph div
  * draws its bullet as a ::before filling the hanging indent (set by TextEditOverlay) */
-.slide-text-editor > div[data-bullet-text]::before {
+.slide-text-editor > div[data-bullet-text]::before,
+.slide-presence-text > div[data-bullet-text]::before {
   content: attr(data-bullet-text);
   display: inline-block;
   /* hangs into the left margin like the canvas bullet; the width past the hang pushes the text */
@@ -9850,11 +9852,13 @@ body.show-curtain::after {
   user-select: none;
   pointer-events: none;
 }
-.slide-text-editor > div[data-bullet-img] {
+.slide-text-editor > div[data-bullet-img],
+.slide-presence-text > div[data-bullet-img] {
   position: relative;
 }
 /* Picture bullet: the ::before (an invisible glyph) reserves the hanging indent, the ::after paints the image */
-.slide-text-editor > div[data-bullet-img]::after {
+.slide-text-editor > div[data-bullet-img]::after,
+.slide-presence-text > div[data-bullet-img]::after {
   content: '';
   position: absolute;
   left: var(--bullet-x);
@@ -9864,6 +9868,19 @@ body.show-curtain::after {
   background: var(--bullet-img) center / contain no-repeat;
   user-select: none;
   pointer-events: none;
+}
+
+/* The reading canvas supplies the ink. This layer supplies native, read-only selection. */
+.slide-reader-text,
+.slide-reader-text * {
+  user-select: text;
+  cursor: text;
+  -webkit-text-fill-color: transparent;
+  text-decoration-color: transparent !important;
+  background-color: transparent !important;
+}
+.slide-reader-text > div[data-bullet-img]::after {
+  visibility: hidden;
 }
 
 /* The default fonts line under the template cards (Settings › General, decision 0115) */
