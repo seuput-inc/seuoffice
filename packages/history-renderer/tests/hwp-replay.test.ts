@@ -5,6 +5,13 @@ import { renderHistory } from '@seuoffice/history-renderer'
 import JSZip from 'jszip'
 import { SaxesParser } from 'saxes'
 import { beforeAll, describe, expect, it } from 'vitest'
+import {
+  openHwp,
+  recordsOf,
+  rewriteStreams,
+  SECTION,
+  streamOf,
+} from '../../../apps/hwp/src/main/hwp5-file'
 import { HwpDocument, initSync } from '../../../vendor/rhwp-core/rhwp.js'
 import { render } from './render'
 
@@ -179,6 +186,21 @@ describe.each(formats)('%s retained history in the Deno sandbox', (name) => {
     })
   }, 20_000)
 })
+
+it('refuses an unmodelled paragraph record before returning the source for version zero', async () => {
+  const opened = openHwp(base.get('hwp')!)!
+  const path = SECTION(0)
+  const data = streamOf(opened, path)!
+  const { end } = recordsOf(data)!.find((r) => r.tag === 67 && r.level === 1)!
+  const record = Buffer.alloc(5)
+  record.writeUInt32LE((1 << 20) | (1 << 10) | 0x3fe)
+  record[4] = 42
+  const body = Buffer.concat([data.subarray(0, end), record, data.subarray(end)])
+  const source = rewriteStreams(opened, new Map([[path, body]]))!
+  await expect(render(source, request('hwp', source))).rejects.toMatchObject({
+    code: 'unsupported',
+  })
+}, 20_000)
 
 it('retains HWPX layout fields after unrelated body edits and replay of their compensation', async () => {
   const zip = await JSZip.loadAsync(table)

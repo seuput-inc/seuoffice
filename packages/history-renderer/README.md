@@ -59,7 +59,7 @@ const server = createHistoryServer({ store, renderStream: renderHistory })
 
 ### 큰 화상 PDF의 스트림 경로
 
-`renderStream(source, headerBytes, changeFrames, stage, signal?)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 기존 네 형식의 파일·해제·이력 상한을 올리지 않는다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
+`renderStream(source, headerBytes, changeFrames, stage, signal?)`는 별도 진입점이다. 형식은 PDF 스키마 2, 편집은 메타데이터와 회전으로 한정한다. 바이트 편집기의 파일·해제·이력 상한은 그대로다. 호스트가 보내는 것은 `changes`를 제외한 원래 `HistoryRequest` 머리글과 `v=1`부터 요청 버전까지 각 `Change`의 UTF-8 JSON 바이트다. 한 JSON 문자열을 호스트에서 파싱해 조각내지 않는다. 크기가 맞더라도 해당 문서나 연산을 해석할 수 없으면 거부한다.
 
 허용하는 원본은 classic xref, 평평한 페이지 트리, LF 줄 끝을 가진 PDF다. 한 페이지에 마스크·압축 없는 8비트 `DeviceRGB` 사진 하나가 페이지 전체를 채워야 한다. 사진의 길이·가로·세로, 각 객체의 역할과 xref 위치를 확인한다. 최대 64페이지이며 사진을 뺀 PDF 구문은 1 MiB 이하다. JPEG·압축 스트림·문자 본문·기존 주석·중첩 리소스, `stampCfg`·`markups` 편집은 이 경로로 처리하지 않는다.
 
@@ -115,3 +115,5 @@ node node_modules/@seuoffice/history-renderer/examples/retained-host.mjs
 서버 통합 검증은 같은 소비자에 `tests/sdk-stream*.mjs`와 `tests/stream-proof-{exact,fixture,reopen}.mjs`를 복사해 `node sdk-stream.mjs all "$OUT"`으로 실행한다. 바이트 API로 우회하지 않고 인증된 세 명령을 호출한다.
 
 저장소의 형식 대조 시험과 [브라우저 시험](../../apps/web/tests/collab-history-formats.spec.ts)은 [동일한 원본 생성 함수·wire·영수증·재열기 검증](../../apps/web/tests/collab-history-cases.ts)을 사용한다. 독립 설치본 검증은 `node packages/history-renderer/tests/pack-tests.mjs "$CONSUMER/tests"`로 신뢰된 시험·원본 생성기·재열기 도구만 묶고, 소비자 디렉터리에서 Vitest를 실행한다. 실제 서버와 렌더러는 이 번들에 포함하지 않으므로 설치된 두 tarball이 사용된다. 시험 측 `SEUOFFICE_WASM`은 독립 재열기용이며 제품 게스트는 패키지에 든 WASM만 연다. `capabilities.test.ts`는 같은 설치본 실행기로 합성 자격 표식·파일·루프백·프로세스 접근 거부와 WASM 상한을 확인한다. 공개 API에는 실행할 모듈 경로를 받는 인자가 없다.
+
+한글 설치본 시험은 설치한 렌더러의 rhwp로 HWP와 HWPX 원본을 만들고, 편집·선택 취소한 파일을 다시 연다. `tests/unit/`의 파일 보존 시험은 저장소의 모의 문서와 내부 함수를 쓰므로 저장소에서 실행한다.
