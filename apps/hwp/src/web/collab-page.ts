@@ -239,8 +239,8 @@ export async function openHwpCollabPage(
     const explanation =
       opening === 'source'
         ? ko
-          ? '파일의 필드와 레코드를 빠짐없이 보존할 수 있는지 확인하지 못했습니다. 원본은 변경하지 않았으며 공동편집과 기록 재생은 열지 않습니다. 원본과 저장 결과는 각각 2 MiB 이하여야 합니다.'
-          : 'The editor could not verify that it can preserve every field and record. The original is unchanged. Co-editing and history replay are unavailable for this file. The input and saved file must each be at most 2 MiB.'
+          ? '이 파일의 내용을 두 사람이 고친 뒤에도 빠짐없이 저장할 수 있는지 확인하지 못했습니다. 뜻을 알 수 없는 문서 정보가 있는 파일은 공동편집과 이력을 열지 않습니다. 원본은 변경하지 않았습니다. 원본과 저장 결과는 각각 2 MiB 이하여야 합니다.'
+          : 'The editor could not verify that every part of this file survives co-editing. Files with document information it cannot interpret cannot join or create history. The original is unchanged. The input and saved file must each be at most 2 MiB.'
         : ko
           ? '공동편집 또는 기록 세션을 열지 못했습니다.'
           : 'The collaboration or history session could not be opened.'

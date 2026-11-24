@@ -5,6 +5,7 @@ import { EventEmitter, once } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { createHistoryServer, memoryHistoryStore } from '@seuoffice/collab/server'
 import { renderBytes, renderHistory } from '@seuoffice/history-renderer'
 import { createStreamStore } from '../../history-renderer/examples/stream-store.mjs'
@@ -106,6 +107,25 @@ for (const [mode, format] of [
       await refused.hello()
       assert.equal((await refused.reply(wrongSource, 'error')).code, 'schema_mismatch')
       assert.match(refused.reason(), /HWP.*history/i)
+      assert.equal(await store.load(p.documentId), null)
+      if (db) assert.equal(db.prepare('SELECT count(*) AS n FROM objects').get().n, 0)
+
+      let opaque
+      if (format === 'hwp') {
+        opaque = await readFile(
+          new URL('../../../apps/hwp/tests/fixtures/collab-opaque-record.hwp', import.meta.url),
+        )
+      } else {
+        const parts = unzipSync(sources.get('hwpx'))
+        const section = 'Contents/section0.xml'
+        parts[section] = strToU8(
+          strFromU8(parts[section]).replace('<hp:p ', '<hp:p data-sample="1" '),
+        )
+        opaque = zipSync(parts)
+      }
+      const unknown = socket(server, format, opaque)
+      await unknown.hello()
+      assert.equal((await unknown.reply(opaque, 'error')).code, 'schema_mismatch')
       assert.equal(await store.load(p.documentId), null)
       if (db) assert.equal(db.prepare('SELECT count(*) AS n FROM objects').get().n, 0)
 

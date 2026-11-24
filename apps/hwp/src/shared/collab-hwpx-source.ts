@@ -1,11 +1,34 @@
 import type { HwpDocument } from '@rhwp/core'
 import { assertZipInflatesWithinLimits } from '@seuoffice/zip-gate'
 import JSZip from 'jszip'
-import { SaxesParser } from 'saxes'
+import { SaxesParser, type SaxesTagNS } from 'saxes'
 
 const header = 'Contents/header.xml'
 const manifest = 'Contents/content.hpf'
-const head = 'http://www.hancom.co.kr/hwpml/2011/head'
+const hml = 'http://www.hancom.co.kr/hwpml/2011/'
+const head = hml + 'head'
+const paragraph = hml + 'paragraph'
+const contentNamespaces = [
+  head,
+  hml + 'section',
+  hml + 'core',
+  paragraph,
+  'http://www.hancom.co.kr/hwpml/2016/paragraph',
+]
+const paragraphAttrs = ['id', 'paraPrIDRef', 'styleIDRef', 'columnBreak', 'pageBreak', 'merged']
+const labelAttrs = [
+  'topmargin',
+  'leftmargin',
+  'boxwidth',
+  'boxlength',
+  'boxmarginhor',
+  'boxmarginver',
+  'labelcols',
+  'labelrows',
+  'landscape',
+  'pagewidth',
+  'pageheight',
+]
 const opf = 'http://www.idpf.org/2007/opf/'
 const limits = { maxParts: 256, maxPartBytes: 1024 * 1024, maxTotalBytes: 4 * 1024 * 1024 }
 const maxFileBytes = 2 * 1024 * 1024
@@ -34,10 +57,29 @@ function refuse(part: string, reason: string): never {
   throw new Error(`HWPX source preservation: ${part}: ${reason}`)
 }
 
+// The writer also round-trips opaque paragraph markup and arbitrary table label attributes.
+// Byte preservation alone says nothing about their relationships or editing semantics.
+export function unverifiedHwpxMarkup(tag: SaxesTagNS): string | undefined {
+  if (!contentNamespaces.includes(tag.uri)) return tag.name
+  for (const a of Object.values(tag.attributes)) {
+    if (a.uri === 'http://www.w3.org/2000/xmlns/') continue
+    if (
+      (a.uri && a.prefix !== 'xml' && !contentNamespaces.includes(a.uri)) ||
+      (tag.uri === paragraph &&
+        tag.local === 'p' &&
+        (a.uri || !paragraphAttrs.includes(a.local))) ||
+      (tag.uri === paragraph && tag.local === 'label' && (a.uri || !labelAttrs.includes(a.local)))
+    )
+      return `${tag.name}/@${a.name}`
+  }
+}
+
 function tree(bytes: Uint8Array, part: string): Xml {
   const stack: Xml[] = []
   let root: Xml | undefined
   let elements = 0
+  const content = part === header || part.startsWith('Contents/section')
+  const master = part.startsWith('Contents/masterpage')
   const parser = new SaxesParser({ xmlns: true, fileName: part })
   parser.on('xmldecl', ({ encoding, version }) => {
     if ((encoding && !/^utf-8$/i.test(encoding)) || version !== '1.0')
@@ -48,6 +90,10 @@ function tree(bytes: Uint8Array, part: string): Xml {
   parser.on('processinginstruction', () => refuse(part, 'unmodelled processing instruction'))
   parser.on('opentag', (tag) => {
     if (stack.length >= 64 || ++elements > 40_000) refuse(part, 'XML structure limit')
+    if (content || (master && stack.length > 0)) {
+      const markup = unverifiedHwpxMarkup(tag)
+      if (markup) refuse(part, `unverified HWPX extension markup: ${markup}`)
+    }
     const attrs = Object.values(tag.attributes)
       .filter((a) => a.uri !== 'http://www.w3.org/2000/xmlns/')
       .map((a) => [a.uri, a.local, a.value])

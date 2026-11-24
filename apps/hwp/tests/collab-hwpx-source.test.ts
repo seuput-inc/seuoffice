@@ -50,6 +50,10 @@ describe('HWPX source preservation before collaboration', () => {
   })
 
   it.each([
+    [section, '<hp:p ', '<hp:p data-sample="보관" '],
+    [section, '<hp:p ', '<hp:p xmlns:x="urn:example:note" x:mark="보관" '],
+    [section, '</hp:run>', '<x:note xmlns:x="urn:example:note">보관</x:note></hp:run>'],
+    [section, '</hp:p>', '<x:note xmlns:x="urn:example:note">보관</x:note></hp:p>'],
     [section, '<hp:p ', '<hp:p hp:unmodelled="preserve" '],
     [section, '</hs:sec>', '<hp:t>omitted by the model</hp:t></hs:sec>'],
     [header, '<hh:compatibleDocument ', '<hh:compatibleDocument hh:unmodelled="preserve" '],

@@ -9,6 +9,7 @@ import { openHwp, recordsOf, SIGNATURE } from '../../../apps/hwp/src/main/hwp5-f
 import { applySaveFixes, type SaveBase } from '../../../apps/hwp/src/main/save-fixes'
 import { scanSectionTails } from '../../../apps/hwp/src/main/section-tails'
 import { newTabsOf } from '../../../apps/hwp/src/main/tab-widths'
+import { unverifiedHwpxMarkup } from '../../../apps/hwp/src/shared/collab-hwpx-source'
 import { historyPartLimits, openCheckedArchive } from './archive'
 
 type Format = 'hwp' | 'hwpx'
@@ -142,7 +143,11 @@ function checkHwp(bytes: Uint8Array): CheckedFile {
   for (let i = 0; i < sections; i++) {
     if (!seen.has(`bodytext/section${i}`)) unsupported('missing HWP section')
   }
-  checkHwpSourceRecords(opened)
+  try {
+    checkHwpSourceRecords(opened)
+  } catch (error) {
+    unsupported(error instanceof Error ? error.message : 'unsupported HWP records')
+  }
   return {
     sections,
     memos,
@@ -153,13 +158,6 @@ function checkHwp(bytes: Uint8Array): CheckedFile {
 const hml = 'http://www.hancom.co.kr/hwpml/2011/'
 const opf = 'http://www.idpf.org/2007/opf/'
 const containerNamespace = 'urn:oasis:names:tc:opendocument:xmlns:container'
-const contentNamespaces = [
-  hml + 'head',
-  hml + 'section',
-  hml + 'core',
-  hml + 'paragraph',
-  'http://www.hancom.co.kr/hwpml/2016/paragraph',
-]
 const roots = new Map([
   ['Contents/content.hpf', [opf, 'package']],
   ['Contents/header.xml', [hml + 'head', 'head']],
@@ -216,19 +214,9 @@ async function checkHwpx(bytes: Uint8Array): Promise<CheckedFile> {
     })
     parser.on('opentag', (tag) => {
       if (++depth > 64 || ++elements > 40000) unsupported('excessive HWPX XML structure')
-      if (section || part.name === 'Contents/header.xml') {
-        if (
-          !contentNamespaces.includes(tag.uri) ||
-          Object.values(tag.attributes).some(
-            (a) =>
-              a.uri &&
-              a.prefix !== 'xmlns' &&
-              a.name !== 'xmlns' &&
-              a.prefix !== 'xml' &&
-              !contentNamespaces.includes(a.uri),
-          )
-        )
-          unsupported('unverified HWPX extension markup')
+      if (section || part.name === 'Contents/header.xml' || (master && depth > 1)) {
+        const markup = unverifiedHwpxMarkup(tag)
+        if (markup) unsupported(`unverified HWPX extension markup: ${part.name} ${markup}`)
       }
       if (depth === 1 && expected && (tag.uri !== expected[0] || tag.local !== expected[1]))
         unsupported('wrong HWPX document part')

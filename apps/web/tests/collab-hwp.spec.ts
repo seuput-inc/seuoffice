@@ -414,18 +414,35 @@ for (const [kind, format] of [
   })
 }
 
-test('an unpreserved HWPX part refuses entry without reopening a writable private copy', async ({
-  page,
-}) => {
-  const { file, documentId } = fixture('hwpx')
-  const parts = unzipSync(file.buffer)
-  parts['Contents/custom.xml'] = new TextEncoder().encode('<custom/>')
-  await page.goto(`/?collab=${documentId}&access=edit`)
-  await page.locator('#edit').check()
-  await page.setInputFiles('#file', { ...file, buffer: Buffer.from(zipSync(parts)) })
-  const app = page.frameLocator('#viewer iframe')
-  await expect(app.locator('.hwp-app')).toHaveAttribute('data-phase', 'failed')
-  await expect(app.locator('.hwp-notice-detail')).toContainText('2 MiB')
-  await expect(page.locator('#save')).toBeHidden()
-  expect(await page.evaluate(() => window.seuLauncher!.mode)).toBeNull()
-})
+for (const format of ['hwp', 'hwpx'] as const) {
+  test(`${format}: opaque document data refuses entry without a writable private copy`, async ({
+    page,
+  }) => {
+    const { file, documentId } = fixture(format)
+    let buffer: Buffer
+    if (format === 'hwp') {
+      buffer = readFileSync(
+        new URL('../../hwp/tests/fixtures/collab-opaque-record.hwp', import.meta.url),
+      )
+    } else {
+      const parts = unzipSync(file.buffer)
+      const section = 'Contents/section0.xml'
+      const xml = new TextDecoder().decode(parts[section])
+      parts[section] = new TextEncoder().encode(xml.replace('<hp:p ', '<hp:p data-sample="1" '))
+      buffer = Buffer.from(zipSync(parts))
+    }
+    await page.goto(`/?collab=${documentId}&access=edit`)
+    await page.locator('#edit').check()
+    await page.setInputFiles('#file', { ...file, buffer })
+    const app = page.frameLocator('#viewer iframe')
+    await expect(app.locator('.hwp-app')).toHaveAttribute('data-phase', 'failed')
+    await expect(app.locator('.hwp-notice-detail')).toContainText(
+      /뜻을 알 수 없는|cannot interpret/,
+    )
+    await expect(app.locator('.hwp-notice-detail')).toContainText(
+      format === 'hwp' ? '0x3fe' : 'data-sample',
+    )
+    await expect(page.locator('#save')).toBeHidden()
+    expect(await page.evaluate(() => window.seuLauncher!.mode)).toBeNull()
+  })
+}

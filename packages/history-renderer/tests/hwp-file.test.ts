@@ -1,13 +1,21 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { crc32, deflateRawSync } from 'node:zlib'
 import JSZip from 'jszip'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import init, { DocumentExport, HwpDocument } from '../../../vendor/rhwp-core/rhwp.js'
-import { openHwp, SECTION, streamOf, writeContainer } from '../../../apps/hwp/src/main/hwp5-file'
+import {
+  openHwp,
+  recordsOf,
+  rewriteStreams,
+  SECTION,
+  streamOf,
+  writeContainer,
+} from '../../../apps/hwp/src/main/hwp5-file'
 import { newTabsOf } from '../../../apps/hwp/src/main/tab-widths'
 import { openHwpFile } from '../src/hwp-file'
+import { render } from './render'
 
 const fixture = (name: string) =>
   readFileSync(new URL(`../../../apps/hwp/tests/fixtures/${name}`, import.meta.url))
@@ -81,6 +89,31 @@ describe('HWP history file boundary', () => {
     accepted.doc.free()
     expect(opened).toBe(1)
   })
+
+  it('refuses an unproven paragraph record before version zero can return the source', async () => {
+    const opened = openHwp(blank)!
+    const path = SECTION(0)
+    const data = streamOf(opened, path)!
+    const text = recordsOf(data)!.find((r) => r.tag === 67 && r.level === 1)!
+    const record = Buffer.alloc(5)
+    record.writeUInt32LE((1 << 20) | (1 << 10) | 0x3fe)
+    record[4] = 42
+    const body = Buffer.concat([data.subarray(0, text.end), record, data.subarray(text.end)])
+    const source = rewriteStreams(opened, new Map([[path, body]]))!
+    await expect(openHwpFile('hwp', source, HwpDocument)).rejects.toMatchObject({
+      code: 'unsupported',
+      message: expect.stringContaining('0x3fe'),
+    })
+    await expect(
+      render(source, {
+        format: { name: 'hwp', schema: 1 },
+        epoch: 'opaque',
+        baseHash: createHash('sha256').update(source).digest('hex'),
+        version: 0,
+        changes: [],
+      }),
+    ).rejects.toMatchObject({ code: 'unsupported' })
+  }, 20_000)
 
   it('requires the actual HWPX package, a complete spine and metered XML before parsing', async () => {
     const wrongMime = await changedHwpx((zip) => {

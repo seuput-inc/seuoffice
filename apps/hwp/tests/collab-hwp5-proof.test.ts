@@ -113,13 +113,16 @@ describe('HWP5 editable source preservation', () => {
     )
   })
 
-  it('refuses a vendor child under the section definition even if its opaque record list retains it', () => {
+  it.each([
+    ['paragraph', 67, 1],
+    ['section definition', 75, 2],
+  ] as const)('refuses an opaque record owned by the %s', (_, tag, level) => {
     const bytes = modified(SECTION(0), (data) => {
-      const def = recordsOf(data)!.find((r) => r.tag === 75)!
+      const preceding = recordsOf(data)!.find((r) => r.tag === tag && r.level === level)!
       const record = Buffer.alloc(5)
-      record.writeUInt32LE((1 << 20) | (2 << 10) | 0x3fe)
+      record.writeUInt32LE((1 << 20) | (level << 10) | 0x3fe)
       record[4] = 0x5a
-      return Buffer.concat([data.subarray(0, def.end), record, data.subarray(def.end)])
+      return Buffer.concat([data.subarray(0, preceding.end), record, data.subarray(preceding.end)])
     })
     expect(() => certifyHwp5Source(bytes, HwpDocument)).toThrow(/0x3fe/)
   })

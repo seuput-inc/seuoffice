@@ -1,7 +1,7 @@
 import { LIST_HEADER, PARA_HEADER, SECTION, recordsOf, sectionCount, streamOf } from './hwp5-file'
 import type { OpenedHwp } from './hwp5-file'
 
-/** Check the HWP5 paragraph records rhwp would silently discard on its first edited save. */
+/** An opaque paragraph record may survive a solo save without having defined co-editing semantics. */
 export function checkHwpSourceRecords(opened: OpenedHwp): void {
   let remaining = 262144
   const sections = sectionCount(opened)
