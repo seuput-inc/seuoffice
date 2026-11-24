@@ -9,6 +9,9 @@ export const ko = {
   collabRejectedPicture: '그림을 넣으려던 위치가 삭제되어 이 그림을 넣지 못했습니다.',
   collabInterruptedComposition: '글자 조합을 마치기 전에 문서가 바뀌어 이 글을 넣지 못했습니다.',
   collabChangedTarget: '다른 편집으로 이 위치가 바뀌어 내용을 반영하지 못했습니다.',
+  collabKeptTarget:
+    '다른 사람이 먼저 이곳에 내용을 넣어 삭제하지 않았습니다. 지우려던 내용은 복사할 수 있습니다.',
+  collabCaretLost: '다른 편집으로 커서가 있던 곳이 사라졌습니다. 이어서 쓸 곳을 클릭하세요.',
   collabNotApplied:
     '다른 편집으로 대상이 바뀌거나 삭제되어 다음 변경을 반영하지 못했습니다: {action}.',
   collabFormatAction: '서식 변경',

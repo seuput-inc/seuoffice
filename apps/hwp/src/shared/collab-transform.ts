@@ -441,6 +441,54 @@ function boundaries(op: HwpOp, shape: HwpTextSplice | null) {
       : []
 }
 
+// Where a confirmed op put new content: a later structural deletion of what holds it must not
+// discard it unannounced. Text inserted after a line break lands in a new paragraph instead.
+function additions(op: HwpOp, shape: HwpTextSplice | null): HwpPosition[] {
+  if (shape) return shape.text && !shape.text.startsWith('\n') ? [shape.from] : []
+  if (op.kind === 'insertCellPicture' || op.kind === 'insertMemo') return [op.at]
+  if (op.kind !== 'command') return []
+  if (op.action === 'pasteText' || op.action === 'table') return [op.at]
+  if (op.action === 'grid' && op.side !== 'delete') return [op.at]
+  return []
+}
+
+/** True when `added` lies in a cell that deleting `index` along `axis` would remove whole. */
+function inRemovedCell(
+  doc: HwpDocument,
+  host: HwpPosition,
+  control: number,
+  axis: 'row' | 'column',
+  index: number,
+  added: HwpPosition,
+): boolean {
+  const depth = host.path.length
+  if (
+    added.section !== host.section ||
+    added.paragraph !== host.paragraph ||
+    added.path.length <= depth ||
+    added.path[depth].controlIndex !== control ||
+    host.path.some((step, i) => {
+      const other = added.path[i]
+      return (
+        other.controlIndex !== step.controlIndex ||
+        other.cellIndex !== step.cellIndex ||
+        other.cellParaIndex !== step.cellParaIndex
+      )
+    })
+  )
+    return false
+  const cell = JSON.parse(
+    doc.getCellInfoByPath(
+      added.section,
+      added.paragraph,
+      JSON.stringify(added.path.slice(0, depth + 1)),
+    ),
+  ) as { row: number; col: number; rowSpan: number; colSpan: number }
+  return axis === 'row'
+    ? cell.row === index && cell.rowSpan === 1
+    : cell.col === index && cell.colSpan === 1
+}
+
 // The next pending op was written AFTER this local op. Map its old text backwards,
 // but carry text inserted by this op directly to its matching replay insertion.
 function cross(
@@ -570,6 +618,13 @@ export function rebaseHwpOps(
   try {
     const remoteSteps: Step[] = []
     let cuts: HwpPosition[] = []
+    // Content the confirmed ops added, kept in the coordinates of the replay target.
+    let added: HwpPosition[] = []
+    const advance = (step: Step) => {
+      const next: HwpPosition[] = []
+      for (const p of added) addCut(next, step.forward(p, 'before'))
+      added = next
+    }
     for (const op of remote) {
       const shape = projection(remoteDoc, op)
       if (pending.length) {
@@ -579,7 +634,11 @@ export function rebaseHwpOps(
           addCut(cuts, reverse(p, 'after'))
         }
       }
-      remoteSteps.push(observe(remoteDoc, op, shape))
+      const fresh = pending.length ? additions(op, shape) : []
+      const step = observe(remoteDoc, op, shape)
+      advance(step)
+      for (const p of fresh) addCut(added, step.forward(p, 'before'))
+      remoteSteps.push(step)
     }
     let map = direction(remoteSteps)
     let dependsOnRetry = false
@@ -657,7 +716,10 @@ export function rebaseHwpOps(
               const count = mapped.axis === 'row' ? dims.rowCount : dims.colCount
               conflict =
                 mapped.side === 'delete'
-                  ? count <= 1
+                  ? count <= 1 ||
+                    added.some((a) =>
+                      inRemovedCell(after, mapped.at, mapped.control, mapped.axis, index, a),
+                    )
                   : (count + 1) * (mapped.axis === 'row' ? dims.colCount : dims.rowCount) > 4096
               if (!conflict && op.side !== 'delete') {
                 const gap = map(
@@ -725,9 +787,11 @@ export function rebaseHwpOps(
               control: p.object!.control,
               row: p.object!.index!,
             }
+            const host = { section: next.section, paragraph: next.paragraph, path: [], offset: 0 }
             conflict =
               JSON.parse(after.getTableDimensions(next.section, next.paragraph, next.control))
-                .rowCount <= 1
+                .rowCount <= 1 ||
+              added.some((a) => inRemovedCell(after, host, next.control, 'row', next.row, a))
             if (!conflict) ops = [next]
           } else {
             // A text point can survive a merge even when deleting its current host
@@ -735,6 +799,7 @@ export function rebaseHwpOps(
             conflict =
               after.getParagraphCount(op.section) <= 1 ||
               p.offset !== 0 ||
+              added.some((a) => a.section === p.section && a.paragraph === p.paragraph) ||
               cuts.some((c) => {
                 if (c.section !== op.section || c.path.length || c.paragraph === op.paragraph)
                   return false
@@ -830,6 +895,7 @@ export function rebaseHwpOps(
         addCut(nextCuts, localStep.insertion.to)
       }
       cuts = nextCuts
+      for (const step of steps) advance(step)
       map = cross(map, localStep, steps, conflict ? markDependency : undefined)
     }
     doc.restoreCollabConfirmed(remoteDoc)

@@ -24,6 +24,8 @@ export interface HwpStudioCallbacks {
   onBuffer(buffered: boolean): void
   /** Recover locally only: this preedit never became a document change. */
   onDraftLost?(text: string): void
+  /** A remote change removed the caret's place; input stays locked until the user clicks. */
+  onCaretLost?(): void
 }
 
 declare global {

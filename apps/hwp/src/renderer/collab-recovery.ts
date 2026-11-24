@@ -5,11 +5,14 @@ export type HwpRecoveryFragment =
   { kind: 'text'; text: string } | { kind: 'picture'; blob: Blob; name?: string }
 
 export interface HwpRecovery {
-  /** Return true only after inserting at the current cursor. A refusal keeps the item here. */
+  /**
+   * Return true only after inserting at the current cursor. A refusal keeps the item here.
+   * `kept` reports a deletion that was not applied; the item offers no reinsertion.
+   */
   show<F extends HwpRecoveryFragment>(
     fragment: F,
-    reinsert: (content: F) => boolean | Promise<boolean>,
-    reason?: 'deleted' | 'changed' | 'composition',
+    reinsert: ((content: F) => boolean | Promise<boolean>) | null,
+    reason?: 'deleted' | 'changed' | 'composition' | 'kept',
   ): void
   destroy(): void
 }
@@ -31,11 +34,13 @@ export function mountHwpRecovery(host: HTMLElement): HwpRecovery {
       title.textContent = t(
         reason === 'composition'
           ? 'collabInterruptedComposition'
-          : reason === 'changed'
-            ? 'collabChangedTarget'
-            : fragment.kind === 'text'
-              ? 'collabRejectedText'
-              : 'collabRejectedPicture',
+          : reason === 'kept'
+            ? 'collabKeptTarget'
+            : reason === 'changed'
+              ? 'collabChangedTarget'
+              : fragment.kind === 'text'
+                ? 'collabRejectedText'
+                : 'collabRejectedPicture',
       )
       item.append(title)
       let url: string | undefined
@@ -87,17 +92,18 @@ export function mountHwpRecovery(host: HTMLElement): HwpRecovery {
           }
         })
       }
-      button(t('collabReinsert'), async () => {
-        item.disabled = true
-        try {
-          if (await reinsert(fragment)) remove()
-          else feedback.textContent = t('collabReinsertFailed')
-        } catch {
-          feedback.textContent = t('collabReinsertFailed')
-        } finally {
-          item.disabled = false
-        }
-      })
+      if (reinsert)
+        button(t('collabReinsert'), async () => {
+          item.disabled = true
+          try {
+            if (await reinsert(fragment)) remove()
+            else feedback.textContent = t('collabReinsertFailed')
+          } catch {
+            feedback.textContent = t('collabReinsertFailed')
+          } finally {
+            item.disabled = false
+          }
+        })
       button(t('collabDiscard'), remove)
       item.append(feedback)
       list.prepend(item)

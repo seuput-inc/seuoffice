@@ -93,6 +93,51 @@ export interface HwpCollabBinding {
   dispose(): void
 }
 
+type Removal = { section: number; paragraph: number; control: number; col: boolean; index: number }
+function removal(op: HwpOp): Removal | 'paragraph' | null {
+  if (op.kind === 'deleteParagraph') return 'paragraph'
+  if (op.kind === 'deleteRow') return { ...op, col: false, index: op.row }
+  if (op.kind === 'command' && op.action === 'grid' && op.side === 'delete')
+    return { ...op.at, control: op.control, col: op.axis === 'column', index: op.index }
+  return null
+}
+
+/** The text each pending row, column or paragraph deletion would remove, read before it applies. */
+function targetsOf(mirror: HwpDocument, pending: readonly HwpOp[]): Map<HwpOp, string> {
+  const result = new Map<HwpOp, string>()
+  if (!pending.some(removal)) return result
+  const doc = native(mirror).forkCollabDocument()
+  try {
+    for (const op of pending) {
+      const target = removal(op)
+      if (target === 'paragraph' && op.kind === 'deleteParagraph') {
+        const length = doc.getParagraphLength(op.section, op.paragraph)
+        result.set(op, doc.getTextRange(op.section, op.paragraph, 0, length))
+      } else if (target && target !== 'paragraph') {
+        const { section, paragraph, control, col, index } = target
+        const { cellCount } = JSON.parse(doc.getTableDimensions(section, paragraph, control))
+        const cells: string[] = []
+        for (let cell = 0; cell < cellCount; cell++) {
+          const info = JSON.parse(doc.getCellInfo(section, paragraph, control, cell))
+          if ((col ? info.col : info.row) !== index) continue
+          const lines: string[] = []
+          const count = doc.getCellParagraphCount(section, paragraph, control, cell)
+          for (let p = 0; p < count; p++) {
+            const length = doc.getCellParagraphLength(section, paragraph, control, cell, p)
+            lines.push(doc.getTextInCell(section, paragraph, control, cell, p, 0, length))
+          }
+          cells.push(lines.join('\n'))
+        }
+        result.set(op, cells.join('\t'))
+      }
+      applyHwpOp(doc, op)
+    }
+  } finally {
+    doc.free()
+  }
+  return result
+}
+
 export function createHwpCollabAdapter({
   file,
   fileName,
@@ -189,10 +234,12 @@ export function createHwpCollabAdapter({
       )
     } else if (text) onLost({ kind: 'text', text }, reinsert, reason)
   }
-  function rejected(op: HwpOp, reason: Reason) {
+  /** `removed` is the text a retried deletion would have removed, offered for copying. */
+  function rejected(op: HwpOp, reason: Reason, removed?: string) {
     const changed = (key: Parameters<typeof t>[0]) =>
       notice(t('collabNotApplied', { action: t(key) }))
     if (op.kind === 'insertCellPicture') return recover(reason, '', op)
+    if (removed) return onLost({ kind: 'text', text: removed }, null, 'kept')
     if (op.kind === 'deleteRow') return changed('collabTableAction')
     if (op.kind === 'deleteParagraph') return changed('collabDeleteAction')
     if (op.kind === 'command') {
@@ -253,6 +300,7 @@ export function createHwpCollabAdapter({
       },
       integrate(remote, local) {
         let mapped: HwpSelection | null = null
+        const removed = targetsOf(mirror, local)
         const plan = controls.replay(
           (doc, before) => {
             const anchor = before && selectedCaret(doc, before.anchor)
@@ -277,7 +325,7 @@ export function createHwpCollabAdapter({
         )
         pending = plan.replay.slice()
         for (const op of plan.deleted) rejected(op, 'deleted')
-        for (const op of plan.retry) rejected(op, 'changed')
+        for (const op of plan.retry) rejected(op, 'changed', removed.get(op))
         return plan.replay
       },
       confirmed(ops) {
@@ -308,6 +356,7 @@ export function createHwpCollabAdapter({
         bufferChanged?.(next)
       },
       onDraftLost: (text) => recover('composition', text),
+      onCaretLost: () => notice(t('collabCaretLost')),
       onMutation(doc, method, args, call) {
         if (!editable || disposed || !emit) throw new Error('The HWP document is not editable')
         const memo =

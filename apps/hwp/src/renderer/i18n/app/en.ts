@@ -7,6 +7,10 @@ export const en = {
   collabRejectedPicture: 'The insertion point was deleted. Your picture was not added.',
   collabInterruptedComposition: 'The document changed before you finished composing this text.',
   collabChangedTarget: 'Another edit changed this location. Your content was not applied.',
+  collabKeptTarget:
+    'Someone added content here first, so your deletion was not applied. Copy what you meant to delete:',
+  collabCaretLost:
+    'Another edit removed the place your cursor was in. Click where you want to keep editing.',
   collabNotApplied:
     'Another edit changed or removed the target. Your change was not applied: {action}.',
   collabFormatAction: 'formatting',

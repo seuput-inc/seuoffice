@@ -415,6 +415,50 @@ for (const [kind, format] of [
 }
 
 for (const format of ['hwp', 'hwpx'] as const) {
+  test(`${format}: a late row deletion keeps the confirmed picture and offers the deleter a copy`, async ({
+    browser,
+  }) => {
+    const base = fixture(format, true)
+    const alice = await open(browser, base, 'Alice')
+    const bob = await open(browser, base, 'Bob')
+    await pointAt(alice, base.table!)
+    const point = await pointAt(bob, base.table!)
+    alice.hold()
+    bob.hold()
+    await alice.page.keyboard.press('Control+Backspace')
+    await bob.studio.locator('#menu-bar .menu-item[data-menu="insert"] .menu-title').click()
+    const chooser = bob.page.waitForEvent('filechooser')
+    await bob.studio.locator('.md-item[data-cmd="insert:image"]').click()
+    await (await chooser).setFiles({ name: 'stamp.png', mimeType: 'image/png', buffer: png })
+    await expect(bob.studio.locator('#scroll-container')).toHaveCSS('cursor', 'crosshair')
+    await bob.page.mouse.click(point.x, point.y)
+    await expect.poll(() => invoke(bob.studio, 'listPictures')).toMatchObject({ count: 1 })
+    // Bob's insertion is confirmed first; Alice's deletion arrives against the older base.
+    await releaseInOrder(bob, alice)
+    const notice = (editor: Editor) => editor.frame.locator('.hwp-collab-recovery fieldset')
+    for (const editor of [alice, bob]) {
+      expect(await editor.text()).toBe(await bob.text())
+      expect(await invoke(editor.studio, 'readTable', 1)).toMatchObject({ ok: true, rows: 2 })
+      expect(await invoke(editor.studio, 'listPictures')).toMatchObject({ count: 1 })
+      await expect(notice(editor)).toHaveCount(editor === alice ? 1 : 0)
+    }
+    await expect(notice(alice).locator('.hwp-collab-recovery-text')).toHaveText('remove row')
+    await expect(
+      notice(alice).getByRole('button', { name: /^(커서 위치에 넣기|Insert at cursor)$/ }),
+    ).toHaveCount(0)
+    const copy = notice(alice).getByRole('button', { name: /^(복사|Copy)$/ })
+    await alice.page.context().grantPermissions(['clipboard-read', 'clipboard-write'], {
+      origin: new URL(alice.page.url()).origin,
+    })
+    await alice.page.bringToFront()
+    await copy.click()
+    await expect
+      .poll(() => alice.page.evaluate(() => navigator.clipboard.readText()))
+      .toBe('remove row')
+  })
+}
+
+for (const format of ['hwp', 'hwpx'] as const) {
   test(`${format}: opaque document data refuses entry without a writable private copy`, async ({
     page,
   }) => {

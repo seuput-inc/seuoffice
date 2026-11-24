@@ -5,6 +5,7 @@ import init, { HwpDocument } from '@rhwp/core'
 import JSZip from 'jszip'
 import { beforeAll, expect, it } from 'vitest'
 import { applyHwpOp, type HwpOp } from '../src/shared/collab-editor-ops'
+import { captureHwpCommand } from '../src/shared/collab-command'
 import { captureHwpStructure } from '../src/shared/collab-structure'
 import type { HwpPosition, HwpTextSplice } from '../src/shared/collab-text'
 import { rebaseHwpOps } from '../src/shared/collab-transform'
@@ -87,16 +88,55 @@ it('keeps a lost picture available for copying and replays dependent typing only
   }
 })
 
-it('applies a later genuine row deletion even when the server accepted the picture first', () => {
+it('keeps a confirmed picture and its row when a later row deletion would discard it', () => {
   const doc = new HwpDocument(fixture('cell-line-break-form.hwpx'))
   try {
-    const r = rebaseHwpOps(doc, [picture(doc, cell(0))], [row, ins(cell(0), '남음')])
+    const kept = picture(doc, cell(0))
+    // Typed after the local deletion, cell 0 was the first cell of the original second row.
+    const typed = ins(cell(0), '남음')
+    let below = 0
+    while (JSON.parse(doc.getCellInfo(0, 12, 0, below)).row !== 1) below++
+    const r = rebaseHwpOps(doc, [kept], [row, typed])
     expect(r.deleted).toEqual([])
-    expect(r.retry).toEqual([])
+    expect(r.retry).toEqual([row])
+    replay(doc, r.replay)
     expect(JSON.parse(doc.getTableDimensions(0, 12, 0)).rowCount).toBe(2)
+    expect(doc.getControlImageData(0, 12, JSON.stringify(cell(0).path), 0)).toBeTruthy()
+    expect(doc.getTextInCellByPath(0, 12, JSON.stringify(cell(below).path), 0, 100)).toMatch(
+      /^남음/,
+    )
+  } finally {
+    doc.free()
+  }
+})
+
+it('keeps confirmed typing in a column a later column deletion would remove', () => {
+  const doc = new HwpDocument(fixture('cell-line-break-form.hwpx'))
+  try {
+    const remove = captureHwpCommand(doc, 'deleteTableColumn', [0, 12, 0, 0])
+    if (!remove) throw new Error('Expected a column deletion')
+    const before = doc.getTextInCellByPath(0, 12, JSON.stringify(cell(0).path), 0, 100)
+    const r = rebaseHwpOps(doc, [ins(cell(0), '먼저')], [remove])
+    expect(r.retry).toEqual([remove])
+    replay(doc, r.replay)
+    expect(doc.getTextInCellByPath(0, 12, JSON.stringify(cell(0).path), 0, 100)).toBe(
+      '먼저' + before,
+    )
+  } finally {
+    doc.free()
+  }
+})
+
+it('still applies a row deletion when the confirmed typing is in a row that stays', () => {
+  const doc = new HwpDocument(fixture('cell-line-break-form.hwpx'))
+  try {
+    let other = 0
+    while (JSON.parse(doc.getCellInfo(0, 12, 0, other)).row !== 1) other++
+    const r = rebaseHwpOps(doc, [ins(cell(other), '남음')], [row])
+    expect(r.retry).toEqual([])
+    expect(r.replay).toHaveLength(1)
     replay(doc, r.replay)
     expect(JSON.parse(doc.getTableDimensions(0, 12, 0)).rowCount).toBe(1)
-    expect(doc.getTextInCellByPath(0, 12, JSON.stringify(cell(0).path), 0, 2)).toBe('남음')
   } finally {
     doc.free()
   }
@@ -119,18 +159,36 @@ it('does not retarget a split and typing into a deleted paragraph, even when the
   }
 })
 
-it('keeps a legitimate paragraph deletion after confirmed typing and shifts a dependent nested edit through both axes', () => {
+it('keeps a paragraph that received confirmed typing when a later deletion targets it', () => {
   const doc = new HwpDocument(fixture('cell-line-break-form.hwpx'))
   try {
+    const remove = del(2)
+    // Written after the local deletion: the table of the original paragraph 4 is in paragraph 3.
     const r = rebaseHwpOps(
       doc,
       [ins(at(1), '\n'), ins(at(3), '서버')],
-      [del(2), ins(cell(0, 3), '계속')],
+      [remove, ins(cell(0, 3), '계속')],
     )
     expect(r.deleted).toEqual([])
+    expect(r.retry).toEqual([remove])
+    replay(doc, r.replay)
+    expect(doc.getTextRange(0, 3, 0, 2)).toBe('서버')
+    expect(doc.getTextInCellByPath(0, 5, JSON.stringify(cell(0).path), 0, 5)).toBe('계속키워드')
+  } finally {
+    doc.free()
+  }
+})
+
+it('still deletes a paragraph whose confirmed change only split off a new paragraph after it', () => {
+  const doc = new HwpDocument(fixture('generated-form-tables.hwpx'))
+  try {
+    const end = doc.getParagraphLength(0, 2)
+    const next = doc.getTextRange(0, 3, 0, 300)
+    const r = rebaseHwpOps(doc, [ins(at(2, end), '\n'), ins(at(3), '새 줄')], [del(2)])
     expect(r.retry).toEqual([])
     replay(doc, r.replay)
-    expect(doc.getTextInCellByPath(0, 4, JSON.stringify(cell(0).path), 0, 5)).toBe('계속키워드')
+    expect(doc.getTextRange(0, 2, 0, 300)).toBe('새 줄')
+    expect(doc.getTextRange(0, 3, 0, 300)).toBe(next)
   } finally {
     doc.free()
   }
