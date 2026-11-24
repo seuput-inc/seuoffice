@@ -621,16 +621,23 @@ test('a cell that moves or goes away while this page types in it is never writte
   await settled([writer, typist])
 
   // its row removed: nothing is written over h12, which moves up into the removed row's place,
-  // the person is told, and the text waits on the clipboard
+  // and a notice that stays until it is closed shows the text and copies it on a press
   await select(typist, 'H12')
   await expect(editor).toBeFocused()
   await typist.page.keyboard.type('gone')
   await onRow(writer, 12, '행 삭제')
   await settled([writer, typist])
-  await expect(typist.frame.locator('.app-toast.error')).toBeVisible()
+  const notice = typist.frame.getByRole('status').filter({ hasText: 'gone' })
+  await expect(notice).toBeVisible()
   await typist.page.keyboard.press('Enter')
   await settled([writer, typist])
+  // longer than any toast stays
+  await typist.page.waitForTimeout(6_000)
+  await expect(notice).toBeVisible()
+  await notice.getByRole('button', { name: '복사', exact: true }).click()
   expect(await typist.page.evaluate(() => navigator.clipboard.readText())).toBe('gone')
+  await notice.getByRole('button', { name: '닫기', exact: true }).click()
+  await expect(notice).toHaveCount(0)
 
   // the row just above removed: the text goes one row up, H15 to H14
   await select(typist, 'H15')

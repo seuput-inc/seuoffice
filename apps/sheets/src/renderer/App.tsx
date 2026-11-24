@@ -696,7 +696,7 @@ import { ExcelShell, type SelectedShapeRibbon } from './ExcelShell'
 import { ChangeWorkbookPasswordDialog } from './ChangeWorkbookPasswordDialog'
 import { odsConversionNoticeOf, type OdsConversionNotice } from './ods-import'
 import { ToastHost } from './toast'
-import { showToast } from './toast-bus'
+import { setNoticeEmitter, showToast, type NoticeData } from './toast-bus'
 import { AdvancedFilterDialog, type AdvancedFilterColumn } from './AdvancedFilterDialog'
 import { EquationDialog } from './EquationDialog'
 import { IconsDialog } from './IconsDialog'
@@ -1062,12 +1062,17 @@ export function App({
       stopWriteNow?.()
     }
   }, [])
-  /// A password workbook keeps no recovery copy: main says so once per tab.
-  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null)
+  /// A notice that stays until it is closed: main says once per tab that a password workbook
+  /// keeps no recovery copy, and co-editing says when it cancelled an entry (web/collab-join.ts).
+  const [notice, setNotice] = useState<NoticeData | null>(null)
   useEffect(
-    () => window.desktopApi?.onRecoveryNotice?.((text) => setRecoveryNotice(text)) ?? undefined,
+    () => window.desktopApi?.onRecoveryNotice?.((text) => setNotice({ text })) ?? undefined,
     [],
   )
+  useEffect(() => {
+    setNoticeEmitter(setNotice)
+    return () => setNoticeEmitter(null)
+  }, [])
   /// Streaming-mode filter gate: the filter panel builds
   /// value counts from whatever happens to be loaded and the apply command is
   /// cancelled, so instead of a silent no-op the user gets an explicit offer
@@ -6754,8 +6759,8 @@ export function App({
         odsNotice={odsNotice}
         onOpenWorkbook={() => void handleInspectWorkbook()}
         onDismissEmptyCsvNotice={() => setEmptyCsvNotice(false)}
-        recoveryNotice={recoveryNotice}
-        onDismissRecoveryNotice={() => setRecoveryNotice(null)}
+        notice={notice}
+        onDismissNotice={() => setNotice(null)}
         aiBusy={aiBusy}
         {...(sessionUsage !== undefined ? { sessionUsage } : {})}
         aiSubscription={{

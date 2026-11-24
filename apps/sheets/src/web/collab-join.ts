@@ -11,7 +11,7 @@ import { KeyCode } from '@univerjs/ui'
 import type { SheetRedactionState } from '@seuoffice/xlsx-gateway/gateway/xlsx-redaction'
 import { handleSave } from '../renderer/save-actions'
 import { setEditRefusalRule } from '../renderer/sheet-protection'
-import { showToast } from '../renderer/toast-bus'
+import { showNotice, showToast } from '../renderer/toast-bus'
 import {
   type LazyWorkbookState,
   modelResidency,
@@ -80,16 +80,10 @@ const DRAFT_OVERWRITTEN = {
   en: 'Someone else changed the cell you are typing in. Finishing your entry replaces their change.',
 }
 
-const draftRemoved = (text: string, copied: boolean) =>
-  copied
-    ? {
-        ko: '다른 사람이 입력 중인 칸의 행이나 열을 지워 입력을 취소했습니다. 입력하던 내용은 클립보드에 복사했습니다.',
-        en: 'Someone else removed the row or column of the cell you were typing in, so your entry was cancelled. What you typed is on the clipboard.',
-      }
-    : {
-        ko: `다른 사람이 입력 중인 칸의 행이나 열을 지워 입력을 취소했습니다. 입력하던 내용: ${text}`,
-        en: `Someone else removed the row or column of the cell you were typing in, so your entry was cancelled. You typed: ${text}`,
-      }
+const draftRemoved = (text: string) => ({
+  ko: `다른 사람이 입력 중인 칸의 행이나 열을 지워 입력을 취소했습니다. 입력하던 내용: ${text}`,
+  en: `Someone else removed the row or column of the cell you were typing in, so your entry was cancelled. You typed: ${text}`,
+})
 
 /**
  * Univer reloads the open cell editor from its cell whenever a mutation writes that cell. During
@@ -98,7 +92,7 @@ const draftRemoved = (text: string, copied: boolean) =>
  * commit is a later edit than the one that came in, and the person is told when someone else
  * wrote that cell. Univer moves the edit location along inserted and removed rows and columns,
  * except when its own row or column goes: the commit would then write over the cell that moved
- * into its place, so the entry is cancelled and its text put on the clipboard instead.
+ * into its place, so the entry is cancelled and a notice that stays shows its text to copy.
  */
 function keepingCellDraft(
   runtime: UniverRuntime,
@@ -144,11 +138,8 @@ function keepingCellDraft(
         keycode: KeyCode.ESC,
         unitId,
       })
-      const tell = (copied: boolean) => showToast(say(draftRemoved(text, copied)), 'error')
-      navigator.clipboard.writeText(text).then(
-        () => tell(true),
-        () => tell(false),
-      )
+      // no clipboard write here: without a press of the person's the browser may refuse it
+      showNotice({ text: say(draftRemoved(text)), copy: text })
       return rebuilt
     }
     const written = remote.some((op) =>

@@ -87,6 +87,7 @@ export const en = {
   appAuto: 'Auto',
   appFormatHeader: 'Format — {target}',
   appClose: 'Close',
+  appCopy: 'Copy',
   appSeries: 'Series',
   appDataPoint: 'Data Point',
   appFillColor: 'Fill Color',

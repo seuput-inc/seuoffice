@@ -90,6 +90,7 @@ export const ko = {
   appAuto: '자동',
   appFormatHeader: '서식: {target}',
   appClose: '닫기',
+  appCopy: '복사',
   appSeries: '계열',
   appDataPoint: '데이터 요소',
   appFillColor: '채우기 색',

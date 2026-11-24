@@ -162,6 +162,7 @@ import {
 import { SHEET_ZOOM_MAX, SHEET_ZOOM_MIN, clampZoomPercent } from './zoom-range'
 import { ZoomDialog } from './ZoomDialog'
 import { blockEditingInput } from './web-view-input'
+import type { NoticeData } from './toast-bus'
 
 /** the web embed opened the page only to read: no ribbon, and the AI panel stays closed at start */
 const WEB_VIEW = webViewMode()
@@ -367,9 +368,9 @@ interface ExcelShellProps {
   readonly odsNotice?: OdsConversionNotice | null
   readonly onOpenWorkbook: () => void
   readonly onDismissEmptyCsvNotice: () => void
-  /// The open workbook keeps no recovery copy (password protected): shown once per tab.
-  readonly recoveryNotice?: string | null
-  readonly onDismissRecoveryNotice?: () => void
+  /// A notice that stays until it is closed, with an optional button that copies `copy`.
+  readonly notice?: NoticeData | null
+  readonly onDismissNotice?: () => void
   /// Zoom of the active sheet in percent, echoed by the status-bar slider.
   readonly zoomPercent: number
   /// Aggregates ticked in the status bar's right-click menu (Excel parity).
@@ -638,8 +639,8 @@ export function ExcelShell({
   odsNotice,
   onOpenWorkbook,
   onDismissEmptyCsvNotice,
-  recoveryNotice,
-  onDismissRecoveryNotice,
+  notice,
+  onDismissNotice,
   zoomPercent,
   statusBarFuncs,
   onToggleStatusBarFunc,
@@ -1242,14 +1243,23 @@ export function ExcelShell({
                 </button>
               </div>
             )}
-            {recoveryNotice && (
+            {notice && (
               <div className="csv-empty-notice" role="status">
-                <span>{recoveryNotice}</span>
+                <span>{notice.text}</span>
+                {notice.copy !== undefined && (
+                  // a press is the user activation the clipboard needs
+                  <button
+                    type="button"
+                    onClick={() => void navigator.clipboard.writeText(notice.copy!)}
+                  >
+                    {t('appCopy')}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="csv-empty-notice-close"
                   aria-label={t('appClose')}
-                  onClick={onDismissRecoveryNotice}
+                  onClick={onDismissNotice}
                 >
                   ×
                 </button>

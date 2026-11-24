@@ -17,3 +17,20 @@ export function setToastEmitter(fn: ((toast: ToastData) => void) | null): void {
 export function showToast(text: string, kind: 'success' | 'error' = 'success'): void {
   emit?.({ text, kind })
 }
+
+/** A notice that stays until the person closes it; `copy` adds a button that copies that text */
+export interface NoticeData {
+  text: string
+  copy?: string
+}
+
+let emitNotice: ((notice: NoticeData) => void) | null = null
+
+/** Registered by the app shell on mount; null while unmounted. */
+export function setNoticeEmitter(fn: ((notice: NoticeData) => void) | null): void {
+  emitNotice = fn
+}
+
+export function showNotice(notice: NoticeData): void {
+  emitNotice?.(notice)
+}
