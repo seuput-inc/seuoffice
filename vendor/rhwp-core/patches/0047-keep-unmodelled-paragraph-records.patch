@@ -20,14 +20,16 @@ hp:p, hp:run 아래 요소를 ForeignXml로 원문 그대로 갖고 쓴다. 요�
 이름공간 선언을 자기 시작 태그에 붙여 가지므로,
 같은 접두사를 다른 이름공간에 묶은 문단을 합쳐도 이름이 바뀌지 않는다. 합칠 때 뒤
 문단의 속성은 제 이름공간에 묶인 접두사로 옮겨 hp:p에 같은 접두사 선언이 둘 생기지
-않는다. 요소는 부모 종류를 지키고
-글 사이 자리는 지키지 않는다. 접두사를 풀 수 없거나 표준 이름공간을 다른 접두사로
+않는다. 요소는 부모 종류를 지키고 글 사이 자리는 지키지 않는다(hp:run 아래 것은
+마지막 run 끝에 쓴다. 따로 run을 열면 다시 읽을 때 글자 모양 경계가 하나 늘어 저장마다
+빈 run이 생긴다). 접두사를 풀 수 없거나 표준 이름공간을 다른 접두사로
 쓴 이름이 든 요소는 0037처럼 버린다. 무편집 저장에서 빠지던 hp:label(표),
 hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
 
 문단을 지우면 함께 지워지고, 나누면 앞 문단에 남고, 합치면 뒤 문단의 것이 합친
-문단에 이어 붙는다. 합치기를 되돌리면(ParaMeta에 실어 보낸 뒤 문단 몫) 되살아난
-문단으로 돌아간다. 클립보드로 복사한 문단에는 싣지 않아 붙여 넣어도 두 벌이 되지
+문단에 이어 붙는다. 합치기를 되돌리면 앞 문단을 합치기 전 제 몫의 개수(ParaMeta의
+merge_front)로 자르고 뒤 문단 몫은 되살아난 문단으로 돌아간다. 클립보드로 복사한
+문단에는 싣지 않아 붙여 넣어도 두 벌이 되지
 않는다.
 ---
  src/diagnostics/ir_field_sweep.rs               |   6 +
@@ -52,11 +54,11 @@ hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
  src/serializer/body_text.rs                     |  46 ++-
  src/serializer/doc_info/tests.rs                |   2 +
  src/serializer/hwpx/header.rs                   |  29 +-
- src/serializer/hwpx/section.rs                  |  52 +++-
+ src/serializer/hwpx/section.rs                  |  60 +++-
  src/serializer/hwpx/table.rs                    |   4 +
  tests/cases/unknown_paragraph_records.rs        | 295 +++++++++++++++++++
  tests/cases/unknown_paragraph_xml.rs            | 363 ++++++++++++++++++++++++
- 26 files changed, 1449 insertions(+), 43 deletions(-)
+ 26 files changed, 1457 insertions(+), 43 deletions(-)
 
 diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
 index 73e938d4d..d4b140a0b 100644
@@ -1424,7 +1426,7 @@ index 24701e5d0..72b7200cb 100644
      // 자식 순서 (한컴 원본 관찰):
      // align, heading, breakSetting, autoSpacing, switch(margin+lineSpacing), border
 diff --git a/src/serializer/hwpx/section.rs b/src/serializer/hwpx/section.rs
-index 73b9c9ba3..4cd8afb81 100644
+index 73b9c9ba3..8ea729494 100644
 --- a/src/serializer/hwpx/section.rs
 +++ b/src/serializer/hwpx/section.rs
 @@ -50,7 +50,7 @@ use super::utils::{
@@ -1495,7 +1497,7 @@ index 73b9c9ba3..4cd8afb81 100644
  }
  
  /// 문단 첫 run 의 charPrIDRef. IR의 `char_shapes[0].char_shape_id` 사용.
-@@ -1066,12 +1090,28 @@ where
+@@ -1066,12 +1090,36 @@ where
          0
      };
      let (
@@ -1508,14 +1510,22 @@ index 73b9c9ba3..4cd8afb81 100644
      ) = render_runs_with_storage(para, ctx, storage)?;
 +    if let Some(foreign) = &para.foreign_xml {
 +        if !foreign.run_children.is_empty() {
-+            let run = xml_value(
-+                storage,
-+                format_args!(
-+                    r#"<hp:run charPrIDRef="{}">{}</hp:run>"#,
-+                    para.char_shapes.last().map_or(0, |c| c.char_shape_id),
-+                    foreign.run_children.concat()
-+                ),
-+            )?;
++            // Inside the last run: a run of their own would read back as one more
++            // character-shape boundary, written as an extra empty run on every save.
++            const RUN_END: &str = "</hp:run>";
++            let children = foreign.run_children.concat();
++            let run = if runs_xml.ends_with(RUN_END) {
++                runs_xml.truncate(runs_xml.len() - RUN_END.len());
++                xml_value(storage, format_args!("{children}{RUN_END}"))?
++            } else {
++                xml_value(
++                    storage,
++                    format_args!(
++                        r#"<hp:run charPrIDRef="{}">{children}{RUN_END}"#,
++                        para.char_shapes.last().map_or(0, |c| c.char_shape_id),
++                    ),
++                )?
++            };
 +            storage.push_str(&mut runs_xml, &run).map_err(xml_error)?;
 +        }
 +        for child in &foreign.p_children {
