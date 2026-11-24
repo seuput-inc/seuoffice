@@ -189,8 +189,8 @@ new file mode 100644
 diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
 --- a/src/model/paragraph.rs
 +++ b/src/model/paragraph.rs
-@@ -2057,6 +2057,32 @@
-         self.tab_extended = meta.tab_extended;
+@@ -2239,6 +2239,32 @@
+         }
      }
  
 +    fn split_control_moves(&self, char_offset: usize, control_positions: &[usize], split_pos: usize, kept_number: Option<usize>) -> Vec<bool> {
