@@ -76,7 +76,8 @@ function addExtension(xml: string, text: string, uri: string, attr: string, chil
   return `${withChild.slice(0, p)} xmlns:ext="${uri}" ext:${attr}="1"${withChild.slice(p)}`
 }
 
-it('merging paragraphs that bind one prefix to different namespaces keeps every name', async () => {
+/** Body paragraphs "front" and "back", saved as HWPX, and their section XML. */
+async function twoParagraphsHwpx(): Promise<{ zip: JSZip; xml: string }> {
   const doc = new HwpDocument(new Uint8Array(readFileSync(BLANK)))
   let source: Uint8Array
   try {
@@ -88,7 +89,13 @@ it('merging paragraphs that bind one prefix to different namespaces keeps every 
     doc.free()
   }
   const zip = await JSZip.loadAsync(source)
-  let xml = await zip.files[SECTION_XML].async('string')
+  return { zip, xml: await zip.files[SECTION_XML].async('string') }
+}
+
+it('merging paragraphs that bind one prefix to different namespaces keeps every name', async () => {
+  const fixture = await twoParagraphsHwpx()
+  const zip = fixture.zip
+  let xml = fixture.xml
   xml = addExtension(xml, 'front', 'urn:a', 'mark', 'noteA')
   xml = addExtension(xml, 'back', 'urn:b', 'flag', 'noteB')
   zip.file(SECTION_XML, xml)
@@ -114,4 +121,39 @@ it('merging paragraphs that bind one prefix to different namespaces keeps every 
     '1',
     '1',
   ])
+})
+
+it('keeps text inside foreign elements bound on the run or by default out of the paragraph', async () => {
+  const fixture = await twoParagraphsHwpx()
+  const zip = fixture.zip
+  let xml = fixture.xml
+  const t = '<hp:t>front</hp:t>'
+  const at = xml.indexOf(t) + t.length
+  const run = xml.lastIndexOf('<hp:run', at) + '<hp:run'.length
+  const foreign =
+    '<x:note><hp:t>leak</hp:t></x:note><note xmlns="urn:vendor2"><hp:t>leak2</hp:t></note>'
+  xml = `${xml.slice(0, run)} xmlns:x="urn:vendor"${xml.slice(run, at)}${foreign}${xml.slice(at)}`
+  zip.file(SECTION_XML, xml)
+
+  const edited = new HwpDocument(await zip.generateAsync({ type: 'uint8array' }))
+  let saved: Uint8Array
+  try {
+    expect(edited.getTextRange(0, 0, 0, edited.getParagraphLength(0, 0))).toBe('front')
+    saved = edited.exportHwpx()
+  } finally {
+    edited.free()
+  }
+  const reopened = new HwpDocument(saved)
+  try {
+    expect(reopened.getTextRange(0, 0, 0, reopened.getParagraphLength(0, 0))).toBe('front')
+  } finally {
+    reopened.free()
+  }
+  const out = new new JSDOM().window.DOMParser().parseFromString(
+    await (await JSZip.loadAsync(saved)).files[SECTION_XML].async('string'),
+    'application/xml',
+  )
+  expect(out.getElementsByTagName('parsererror')).toHaveLength(0)
+  expect(out.getElementsByTagNameNS('urn:vendor', 'note')).toHaveLength(1)
+  expect(out.getElementsByTagNameNS('urn:vendor2', 'note')).toHaveLength(1)
 })
