@@ -110,6 +110,13 @@ describe('HWP retained history checkpoints', () => {
       expect(text(file.bytes)).toBe('base:' + 'x'.repeat(version))
     }
     expect((await store.readHwpCheckpoint!(p.documentId, epoch, 300))?.version).toBeLessThan(300)
+    const { revisionId } = await server.restoreHistory(p, {
+      requestId: 'restore-200',
+      source: { epoch, version: 200 },
+      expected: { epoch, version: 300 },
+    })
+    const revision = await store.readRevision(p, revisionId)
+    expect(text(revision.bytes)).toBe('base:' + 'x'.repeat(200))
   })
 
   it('writes the checkpoint once when two editors submit at the limit together', async () => {
