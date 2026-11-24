@@ -123,6 +123,24 @@ it('merging paragraphs that bind one prefix to different namespaces keeps every 
   ])
 })
 
+it('saves a paragraph with foreign run children the same way after reopening', async () => {
+  const fixture = await twoParagraphsHwpx()
+  fixture.zip.file(SECTION_XML, addExtension(fixture.xml, 'front', 'urn:a', 'mark', 'noteA'))
+  const save = async (bytes: Uint8Array) => {
+    const doc = new HwpDocument(bytes)
+    try {
+      const out = doc.exportHwpx()
+      const xml = await (await JSZip.loadAsync(out)).files[SECTION_XML].async('string')
+      return { out, front: xml.slice(xml.indexOf('<hp:p '), xml.indexOf('</hp:p>') + 7) }
+    } finally {
+      doc.free()
+    }
+  }
+  const first = await save(await fixture.zip.generateAsync({ type: 'uint8array' }))
+  const second = await save(first.out)
+  expect(second.front).toBe(first.front)
+})
+
 it('keeps text inside foreign elements bound on the run or by default out of the paragraph', async () => {
   const fixture = await twoParagraphsHwpx()
   const zip = fixture.zip
