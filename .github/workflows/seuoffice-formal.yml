@@ -45,11 +45,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Fetch tla2tools 1.8.0 (pre-release asset rebuilt 2026-11-06; a rebuild fails the checksum)
+      # 1.8.0 is still a pre-release whose asset is rebuilt in place (2026-11-06, 2026-11-19);
+      # each rebuild fails this checksum on purpose. The stable 1.7.4 lacks -noTE, which
+      # tools/formal/run-matrix.sh passes. Re-pin only after checking the new asset's digest.
+      - name: Fetch tla2tools 1.8.0 (asset rebuilt 2026-11-19)
         if: steps.gate.outputs.run == 'true'
         run: |
           curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
-          echo "e1f11b75c4b5bc4478ba0ac5cb6ae28e40a01b0016bc33e0aa97da22dfdbcd7f  $RUNNER_TEMP/tla2tools.jar" | sha256sum -c -
+          echo "fdffef247f563ef6edbfd44958d2a82db79e7564e07cb673262d896353fa6713  $RUNNER_TEMP/tla2tools.jar" | sha256sum -c -
       - name: Run the ${{ matrix.tier }} matrix
         if: steps.gate.outputs.run == 'true'
         run: |
