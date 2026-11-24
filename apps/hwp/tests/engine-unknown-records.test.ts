@@ -196,3 +196,42 @@ it('keeps text inside a foreign element of a table cell bound on the enclosing r
   expect(out.getElementsByTagName('parsererror')).toHaveLength(0)
   expect(out.getElementsByTagNameNS('urn:vendor', 'note')).toHaveLength(1)
 })
+
+it('does not duplicate a paragraph record through copy and paste', () => {
+  const doc = new HwpDocument(new Uint8Array(readFileSync(FIXTURE)))
+  let saved: Uint8Array
+  try {
+    doc.copySelection(0, 0, 0, 1, 2)
+    doc.pasteInternal(0, 1, 2)
+    saved = doc.exportHwp()
+  } finally {
+    doc.free()
+  }
+  expect(opaqueByParagraph(saved).flat()).toEqual([PAYLOAD])
+})
+
+it('gives the back paragraph its foreign markup back when a merge is undone', async () => {
+  const fixture = await twoParagraphsHwpx()
+  fixture.zip.file(SECTION_XML, addExtension(fixture.xml, 'back', 'urn:b', 'flag', 'noteB'))
+  const doc = new HwpDocument(await fixture.zip.generateAsync({ type: 'uint8array' }))
+  let saved: Uint8Array
+  try {
+    const merged = JSON.parse(doc.mergeParagraph(0, 1)) as {
+      charOffset: number
+      removedParaMeta: unknown
+    }
+    doc.splitParagraph(0, 0, merged.charOffset, JSON.stringify(merged.removedParaMeta))
+    saved = doc.exportHwpx()
+  } finally {
+    doc.free()
+  }
+  const out = new new JSDOM().window.DOMParser().parseFromString(
+    await (await JSZip.loadAsync(saved)).files[SECTION_XML].async('string'),
+    'application/xml',
+  )
+  const notes = out.getElementsByTagNameNS('urn:b', 'noteB')
+  expect(notes).toHaveLength(1)
+  const owner = notes[0].closest('p')
+  expect(owner?.textContent).toBe('back')
+  expect(owner?.getAttributeNS('urn:b', 'flag')).toBe('1')
+})
