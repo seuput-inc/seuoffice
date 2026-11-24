@@ -195,6 +195,25 @@ it('accepts the exact metadata returned by merge and rejects extra methods, meta
     expect(parseHwpRichText({ ...op, meta: { ...restored, other: 0 } })).toBeNull()
     expect(parseHwpRichText({ ...op, meta: { ...restored, raw_header_extra: [-1] } })).toBeNull()
     expect(parseHwpRichText({ ...op, meta: { ...restored, tab_extended: [[1]] } })).toBeNull()
+    const front = {
+      unknown_records: 0,
+      namespaces: 0,
+      attributes: 0,
+      p_children: 0,
+      run_children: 0,
+    }
+    expect(restored).toMatchObject({ unknown_records: [], foreign_xml: null, merge_front: front })
+    expect(parseHwpRichText({ ...op, meta: { ...restored, merge_front: null } })).not.toBeNull()
+    const record = { after: 'Header', depth: 1, tag_id: 0x3fe, data: [1] }
+    const markup = { namespaces: [['x', 'urn:x']], attributes: [['x:y', '1']], p_children: [] }
+    for (const injected of [
+      { unknown_records: [record] },
+      { foreign_xml: { ...markup, run_children: ['<x:z xmlns:x="urn:x"/>'] } },
+      { merge_front: { ...front, run_children: 1 } },
+      { merge_front: { ...front, extra: 0 } },
+    ]) {
+      expect(parseHwpRichText({ ...op, meta: { ...restored, ...injected } })).toBeNull()
+    }
     replay(doc, op)
     expect(JSON.parse(doc.mergeParagraph(0, 2)).removedParaMeta).toEqual(restored)
     expect(captureHwpText(doc, 'exportHwp', [])).toBeNull()

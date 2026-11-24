@@ -18,6 +18,9 @@ type ParaMeta = {
   numbering_restart: null | 'ContinuePrevious' | { NewStart: number }
   raw_header_extra: number[]
   tab_extended: number[][]
+  unknown_records: []
+  foreign_xml: null
+  merge_front: null | Record<(typeof mergeFront)[number], 0>
 }
 
 type RichAction =
@@ -82,6 +85,15 @@ function text(v: unknown): v is string {
 function uintArray(v: unknown, max: number): v is number[] {
   return Array.isArray(v) && v.length <= 4096 && Array.from(v).every((n) => uint(n, max))
 }
+// Admission refuses documents with unmodelled records or foreign markup, so a merge undo in a
+// session only ever carries empty shares of them. Anything else would write peer bytes or XML.
+const mergeFront = [
+  'unknown_records',
+  'namespaces',
+  'attributes',
+  'p_children',
+  'run_children',
+] as const
 function meta(v: unknown): v is ParaMeta {
   if (
     !record(v) ||
@@ -93,6 +105,9 @@ function meta(v: unknown): v is ParaMeta {
       'numbering_restart',
       'raw_header_extra',
       'tab_extended',
+      'unknown_records',
+      'foreign_xml',
+      'merge_front',
     ])
   )
     return false
@@ -114,7 +129,14 @@ function meta(v: unknown): v is ParaMeta {
     v.tab_extended.length <= 4096 &&
     Array.from(v.tab_extended).every(
       (row) => Array.isArray(row) && row.length === 7 && uintArray(row, 65535),
-    )
+    ) &&
+    Array.isArray(v.unknown_records) &&
+    v.unknown_records.length === 0 &&
+    v.foreign_xml === null &&
+    (v.merge_front === null ||
+      (record(v.merge_front) &&
+        keys(v.merge_front, [...mergeFront]) &&
+        mergeFront.every((k) => (v.merge_front as Record<string, unknown>)[k] === 0)))
   )
 }
 
