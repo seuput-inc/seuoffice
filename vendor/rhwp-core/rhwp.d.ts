@@ -646,6 +646,7 @@ export class HwpDocument {
      * HWPX 바이트와 이번 산출물의 내용 손실을 같은 결과로 반환한다 (#4430).
      */
     exportHwpxWithReport(): DocumentExport;
+    exportReconstructedHwpForCollab(): Uint8Array;
     /**
      * 선택 영역을 HTML 문자열로 변환한다 (본문).
      */
@@ -705,6 +706,15 @@ export class HwpDocument {
      * 공급 후보를 등록하기 전에 실제 cmap를 대조한다. CSS 이름 검사가 아니다.
      */
     fontSupportsText(bytes: Uint8Array, face_index: number, text: string): boolean;
+    /**
+     * Scratch only. CTRL_DATA is the parallel record carried by native split,
+     * merge and control removal. No tag is installed in the live model.
+     */
+    forkCollabControlTrace(section: number, host: number, path_json: string, last: number): HwpDocument | undefined;
+    /**
+     * Same-realm fork. Never use an HWP/HWPX export as the model copy.
+     */
+    forkCollabDocument(): HwpDocument;
     /**
      * [#4709] SVG 메트릭 face 주석 부착 여부를 반환한다.
      */
@@ -861,6 +871,15 @@ export class HwpDocument {
      * 내부 클립보드의 플레인 텍스트를 반환한다.
      */
     getClipboardText(): string;
+    getCollabCharShapeMap(target: HwpDocument, ids: Uint32Array): Int32Array;
+    getCollabClipboardText(): string;
+    getCollabFingerprint(): string;
+    getCollabLiteralFragment(section: number, paragraph: number, path: string, start: number, end: number): string;
+    getCollabMemoAnchor(id: number): string;
+    getCollabShapeWitness(ids: Uint32Array): string;
+    getCollabTableSplit(section: number, paragraph: number, path: string, offset: number): string;
+    getCollabTextPosition(section: number, paragraph: number, path: string, offset: number, axis: string): string;
+    getCollabTextUndoContext(section: number, paragraph: number, path_json: string): string;
     /**
      * 현재 구역의 다단 설정을 JSON으로 반환한다.
      */
@@ -1806,7 +1825,8 @@ export class HwpDocument {
     insertFootnote(section_idx: number, para_idx: number, char_offset: number): string;
     insertHyperlinkEx(options_json: string): number;
     /**
-     * 한 문단의 범위에 메모를 넣는다. `json` = `{author,text}`.
+     * 한 문단의 범위에 메모를 넣는다. `json`은 `{author,text,authoredAt?}`.
+     * `authoredAt`은 `{unixMs,offsetMinutesEast}`이며 생략하면 현재 시각을 쓴다.
      *
      * 반환: `{"ok":true,"id":N,"index":N}`. 실패는 `{ok:false,code,message}`.
      */
@@ -1815,6 +1835,7 @@ export class HwpDocument {
      * 표 칸·글상자 안의 범위에 메모를 넣는다.
      *
      * `path_json` = `[{"controlIndex":N,"cellIndex":N,"cellParaIndex":N}, …]`.
+     * `json`은 `insertMemo`와 같은 작성자·본문·작성 시각이다.
      */
     insertMemoByPath(section_idx: number, para_idx: number, path_json: string, start_char_idx: number, end_char_idx: number, json: string): string;
     /**
@@ -2104,6 +2125,7 @@ export class HwpDocument {
      * 페이지네이션 메타데이터만 조회하므로 render tree build가 필요 없다 (#2428).
      */
     pageHasFootnoteFootholds(page_num: number): boolean;
+    pasteCollabClipboardText(section: number, paragraph: number, path: string, offset: number, after_inline: boolean, field: number | null | undefined, fragment: string): string;
     /**
      * 내부 클립보드의 컨트롤 객체를 캐럿 위치에 붙여넣는다.
      *
@@ -2185,6 +2207,7 @@ export class HwpDocument {
      * 한/글 5.x/97 OLE 수식을 편집 가능한 native equation으로 변환한다.
      */
     promoteOleEquation(section_idx: number, para_idx: number, control_idx: number): string;
+    readCollabControlTrace(section: number, host: number, path_json: string, last: number): string;
     /**
      * 표의 계산식 필드를 다시 계산한다. `edited_cell`은 고친 셀이고 음수면 모두 다시 계산한다
      * (손으로 고친 결과는 그 식이 고친 셀을 쓸 때만 다시 계산한다). `paginate`가 거짓이면 셀 쪽
@@ -2381,6 +2404,10 @@ export class HwpDocument {
      * 마지막 항목이 조절할 표를 가리킨다. 깊이 1 이면 평면 API 와 같은 경로로 처리한다.
      */
     resizeTableCellsByPath(section_idx: number, parent_para_idx: number, cell_path_json: string, json: string): string;
+    /**
+     * Replace only the optimistic model, not the user's fonts or clipboard.
+     */
+    restoreCollabConfirmed(confirmed: HwpDocument): void;
     /**
      * 삭제 조각을 원래 자리에 되돌려 끼운다 — 삭제의 참 역연산 (#5769).
      *
@@ -2899,6 +2926,7 @@ export class HwpDocument {
      * charMods/paraMods는 기존 parse_char_shape_mods/parse_para_shape_mods와 동일한 JSON 형식
      */
     updateStyleShapes(style_id: number, char_mods_json: string, para_mods_json: string): boolean;
+    writeCollabText(section: number, paragraph: number, path: string, offset: number, count: number, text: string, mode: string, field?: number | null): string;
 }
 
 /**
@@ -3180,6 +3208,7 @@ export interface InitOutput {
     readonly hwpdocument_exportHwpxWithPassword: (a: number, b: number, c: number) => [number, number, number, number];
     readonly hwpdocument_exportHwpxWithPasswordAndReport: (a: number, b: number, c: number) => [number, number, number];
     readonly hwpdocument_exportHwpxWithReport: (a: number) => [number, number, number];
+    readonly hwpdocument_exportReconstructedHwpForCollab: (a: number) => [number, number, number, number];
     readonly hwpdocument_exportSelectionHtml: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_exportSelectionInCellHtml: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
     readonly hwpdocument_exportSelectionInCellHtmlByPath: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
@@ -3193,6 +3222,8 @@ export interface InitOutput {
     readonly hwpdocument_fontMissingText: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly hwpdocument_fontMissingTextWithSpaces: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly hwpdocument_fontSupportsText: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+    readonly hwpdocument_forkCollabControlTrace: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly hwpdocument_forkCollabDocument: (a: number) => [number, number, number];
     readonly hwpdocument_getAnnotateMetricFont: (a: number) => number;
     readonly hwpdocument_getBookmarks: (a: number) => [number, number, number, number];
     readonly hwpdocument_getBulletList: (a: number) => [number, number];
@@ -3230,6 +3261,15 @@ export interface InitOutput {
     readonly hwpdocument_getChartDataByIndex: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_getClickHereProps: (a: number, b: number) => [number, number];
     readonly hwpdocument_getClipboardText: (a: number) => [number, number];
+    readonly hwpdocument_getCollabCharShapeMap: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabClipboardText: (a: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabFingerprint: (a: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabLiteralFragment: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabMemoAnchor: (a: number, b: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabShapeWitness: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabTableSplit: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabTextPosition: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly hwpdocument_getCollabTextUndoContext: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly hwpdocument_getColumnDef: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_getComposeControl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_getComposeControlByPath: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
@@ -3472,6 +3512,7 @@ export interface InitOutput {
     readonly hwpdocument_ordinaryTextFontProgram: (a: number, b: number, c: number, d: number) => [number, number];
     readonly hwpdocument_pageCount: (a: number) => number;
     readonly hwpdocument_pageHasFootnoteFootholds: (a: number, b: number) => number;
+    readonly hwpdocument_pasteCollabClipboardText: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly hwpdocument_pasteControl: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_pasteHtml: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_pasteHtmlInCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number, number];
@@ -3487,6 +3528,7 @@ export interface InitOutput {
     readonly hwpdocument_pasteTableCellsTransposedAsTable: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly hwpdocument_prepareNativeOtfFonts: (a: number, b: any) => [number, number, number];
     readonly hwpdocument_promoteOleEquation: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly hwpdocument_readCollabControlTrace: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_recalculateTableFormulas: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_reflowLinesegs: (a: number) => number;
     readonly hwpdocument_registerCanvasMetricReplies: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
@@ -3531,6 +3573,7 @@ export interface InitOutput {
     readonly hwpdocument_resizeTableCell: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly hwpdocument_resizeTableCells: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly hwpdocument_resizeTableCellsByPath: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly hwpdocument_restoreCollabConfirmed: (a: number, b: number) => [number, number];
     readonly hwpdocument_restoreDeleteFragment: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_restoreSectionRaw: (a: number, b: number) => [number, number, number, number];
     readonly hwpdocument_restoreSnapshot: (a: number, b: number) => [number, number, number, number];
@@ -3633,6 +3676,7 @@ export interface InitOutput {
     readonly hwpdocument_updateHyperlinkEx: (a: number, b: number, c: number) => [number, number, number];
     readonly hwpdocument_updateStyle: (a: number, b: number, c: number, d: number) => number;
     readonly hwpdocument_updateStyleShapes: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+    readonly hwpdocument_writeCollabText: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
     readonly hwpviewer_new: (a: number) => number;
     readonly hwpviewer_pendingTaskCount: (a: number) => number;
     readonly hwpviewer_renderPageHtml: (a: number, b: number) => [number, number, number, number];
