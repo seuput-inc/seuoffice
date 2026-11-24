@@ -252,6 +252,29 @@ describe('joining a co-edited page', () => {
     expect(editors).toHaveLength(1)
   })
 
+  it('closes a disposed editor and refuses subsequent saves and exports', async () => {
+    const { stored } = playHost({ canEdit: true })
+    await open(true)
+    const collab = (await join([]))!
+    await collab.attach({ bytes: collab.baseBytes })
+    collab.dispose!()
+    collab.dispose!()
+    expect(window.seuCollab).toBeUndefined()
+    expect(sent.filter((message) => message.type === 'collab_disconnect')).toHaveLength(1)
+    await expect(collab.save({ reason: 'user' })).rejects.toThrow()
+    fromHost({ type: 'collab_export', requestId: 'closed' })
+    await vi.waitFor(() =>
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          type: 'collab_export_done',
+          requestId: 'closed',
+          ok: false,
+        }),
+      ),
+    )
+    expect(stored).toEqual([])
+  })
+
   it('answers a host save with the bytes of one exact version and reports it stored', async () => {
     const { stored } = playHost({ canEdit: true })
     await open(true)
