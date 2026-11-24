@@ -1,40 +1,40 @@
 import { HistoryError } from '@seuoffice/collab/client'
 import { HwpDocument } from '../../../vendor/rhwp-core/rhwp.js'
-import type { HwpTextSplice } from '../../../apps/hwp/src/shared/collab-text'
-import { applyHwpText } from '../../../apps/hwp/src/shared/collab-text-model'
-import { captureHwpTextUndo } from '../../../apps/hwp/src/shared/collab-text-undo'
-import { decodeHwpText, encodeHwpText } from '../../../apps/hwp/src/shared/collab-text-wire'
+import {
+  applyHwpOp,
+  captureHwpUndo,
+  decodeHwpOp,
+  encodeHwpOp,
+  type HwpOp,
+} from '../../../apps/hwp/src/shared/collab-editor-ops'
+import { releaseHwpUndo } from '../../../apps/hwp/src/shared/collab-text-undo'
 import type { ByteHistoryAdapter } from './adapter'
-import { openHwpFile } from './hwp-file'
+import { openRestorableHwp } from './hwp-source'
 
 export async function openHwpHistory(
   format: 'hwp' | 'hwpx',
   base: Uint8Array,
-): Promise<ByteHistoryAdapter<HwpTextSplice>> {
-  const file = await openHwpFile(format, base, HwpDocument)
-  try {
-    // Even version zero must be restorable, but its result is the original bytes.
-    await file.produce()
-  } catch (error) {
-    file.doc.free()
-    throw error
-  }
+): Promise<ByteHistoryAdapter<HwpOp>> {
+  const file = await openRestorableHwp(format, base, HwpDocument)
   let dirty = false
   return {
-    decode: decodeHwpText,
-    encode: encodeHwpText,
+    decode: decodeHwpOp,
+    encode: encodeHwpOp,
     integrate(ops, local) {
       if (local.length) throw new HistoryError('invalid_history', 'unexpected pending HWP edits')
       for (const op of ops) {
-        applyHwpText(file.doc, op)
+        applyHwpOp(file.doc, op)
         dirty = true
       }
       return local
     },
-    captureUndo: (op) => captureHwpTextUndo(file.doc, op),
+    captureUndo: (op) => captureHwpUndo(file.doc, op),
     async produceFile() {
       return { fileName: `history.${format}`, bytes: dirty ? await file.produce() : base }
     },
-    dispose: () => file.doc.free(),
+    dispose() {
+      releaseHwpUndo(file.doc)
+      file.doc.free()
+    },
   }
 }

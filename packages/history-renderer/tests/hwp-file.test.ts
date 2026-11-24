@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import { crc32, deflateRawSync } from 'node:zlib'
 import JSZip from 'jszip'
-import { beforeAll, describe, expect, it } from 'vitest'
-import init, { HwpDocument } from '../../../vendor/rhwp-core/rhwp.js'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+import init, { DocumentExport, HwpDocument } from '../../../vendor/rhwp-core/rhwp.js'
 import { openHwp, SECTION, streamOf, writeContainer } from '../../../apps/hwp/src/main/hwp5-file'
 import { newTabsOf } from '../../../apps/hwp/src/main/tab-widths'
 import { openHwpFile } from '../src/hwp-file'
@@ -167,6 +168,34 @@ describe('HWP history file boundary', () => {
       }
     },
   )
+
+  it('saves an edited HWPX when Studio exports its bytes from another realm', async () => {
+    const opened = await openHwpFile('hwpx', fixture('memo.hwpx'), HwpDocument)
+    const FrameBytes: Uint8ArrayConstructor = runInNewContext('Uint8Array')
+    const takeBytes = DocumentExport.prototype.takeBytes
+    const frameExport = vi
+      .spyOn(DocumentExport.prototype, 'takeBytes')
+      .mockImplementationOnce(function (this: DocumentExport) {
+        return FrameBytes.from(takeBytes.call(this))
+      })
+    try {
+      const body = JSON.parse(opened.doc.getMemoList()).find(
+        (m: { place: string }) => m.place === 'body',
+      )
+      expect(JSON.parse(opened.doc.setMemoText(body.id, '공동 검토'))).toMatchObject({ ok: true })
+      const back = new HwpDocument(await opened.produce())
+      try {
+        expect(JSON.parse(back.getMemoList())).toContainEqual(
+          expect.objectContaining({ place: 'body', text: '공동 검토' }),
+        )
+      } finally {
+        back.free()
+      }
+    } finally {
+      frameExport.mockRestore()
+      opened.doc.free()
+    }
+  })
 
   it('will not admit an unmodelled extra HWPX memo as if it were absent', async () => {
     const file = await changedHwpx(async (zip) => {

@@ -63,6 +63,7 @@ describe.each(formats)('%s retained history in the Deno sandbox', (name) => {
     const zero = await render(source, request(name, source))
     expect(zero.fileName).toBe(`history.${name}`)
     expect(Buffer.compare(zero.bytes, source)).toBe(0)
+    expectText(zero.bytes, name, '한🙂글')
     const edited = await render(
       source,
       request(name, source, splice(1, 2, '동료'), splice(4, 4, '!')),
@@ -103,7 +104,10 @@ describe.each(formats)('%s retained history in the Deno sandbox', (name) => {
     const source = base.get(name)!
     const ops = [splice(3, 3, '\n원🙂본'), splice(1, 2, 'X', 2), splice(0, 0, '앞', 2)]
     const prefix = request(name, source, ...ops)
-    const undone = await render(source, { ...prefix, undo: { epoch: prefix.epoch, v: 2, index: 0 } })
+    const undone = await render(source, {
+      ...prefix,
+      undo: { epoch: prefix.epoch, v: 2, index: 0 },
+    })
     expect(undone.compensation).toEqual([splice(2, 3, '🙂', 2)])
     expectText(undone.bytes, name, '한🙂글', '앞원🙂본')
     const appended = await render(source, request(name, source, ...ops, ...undone.compensation!))

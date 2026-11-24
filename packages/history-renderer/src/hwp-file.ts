@@ -27,7 +27,12 @@ function unsupported(reason: string): never {
 }
 
 function checkSize(bytes: Uint8Array) {
-  if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > maxFile)
+  if (
+    !ArrayBuffer.isView(bytes) ||
+    Object.prototype.toString.call(bytes) !== '[object Uint8Array]' ||
+    !bytes.length ||
+    bytes.length > maxFile
+  )
     unsupported('empty HWP document or outside the 2 MiB history limit')
 }
 
@@ -42,8 +47,14 @@ function binarySize(bytes: Buffer): number {
         inflate(bytes, { maxOutputLength: historyPartLimits.maxPartBytes }).length,
       )
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code !== 'Z_DATA_ERROR' && code !== 'Z_BUF_ERROR') throw err
+      const code: unknown = (err as NodeJS.ErrnoException).code
+      // fflate uses numeric codes 0..3 for invalid/truncated deflate and 6 for an invalid zlib header.
+      if (
+        code !== 'Z_DATA_ERROR' &&
+        code !== 'Z_BUF_ERROR' &&
+        ![0, 1, 2, 3, 6].some((n) => n === code)
+      )
+        throw err
     }
   }
   return size
@@ -348,7 +359,10 @@ async function produce(
       report.losses.length
     )
       unsupported('HWP serializer reported content loss')
-    raw = exported.takeBytes()
+    const bytes = exported.takeBytes()
+    checkSize(bytes)
+    // Studio owns the bytes; JSZip requires a Uint8Array view from this realm.
+    raw = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   } finally {
     exported.free()
   }
@@ -390,9 +404,10 @@ export async function openHwpFile(
   bytes: Uint8Array,
   Document: Constructor,
 ): Promise<{
+  readonly bytes: Uint8Array
   readonly format: Format
   readonly doc: HwpDocument
-  produce(): Promise<Uint8Array>
+  produce(live?: HwpDocument): Promise<Uint8Array>
 }> {
   checkSize(bytes)
   // ZIP verification yields. A caller cannot replace already verified bytes before construction.
@@ -406,7 +421,12 @@ export async function openHwpFile(
       memoSnapshot(doc).length !== original.memos
     )
       unsupported('incomplete HWP document model')
-    return { format, doc, produce: () => produce(format, doc, original.base, Document) }
+    return {
+      format,
+      bytes: source,
+      doc,
+      produce: (live = doc) => produce(format, live, original.base, Document),
+    }
   } catch (err) {
     doc.free()
     throw err
