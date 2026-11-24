@@ -1,0 +1,87 @@
+Subject: [PATCH] Read bounded literal undo fragments from the admitted native source
+
+The original-file gate owns opaque source records. This query describes only
+text and style operands; the planner separately proves the compensation against
+the authored model obtained by replaying without the selected operation.
+
+diff --git a/src/document_core/queries/collab_text_undo.rs b/src/document_core/queries/collab_text_undo.rs
+--- a/src/document_core/queries/collab_text_undo.rs
++++ b/src/document_core/queries/collab_text_undo.rs
+@@ -24,6 +24,52 @@ struct TextContext<'a> {
+     char_shape_id: u32,
+ }
+ 
++impl DocumentCore {
++    pub(crate) fn collab_literal_fragment(&self, section: usize, paragraph: usize, path: &str, start: usize, end: usize) -> Option<String> {
++        let doc = &self.document;
++        if !matches!(self.source_format, FileFormat::Hwp | FileFormat::Hwpx)
++            || doc.layout_profile().hwp3_layout() || doc.header.encrypted || doc.header.distribution
++            || path.len() > 4096 || path.contains('\\') || start > end { return None; }
++        let steps: Vec<&RawValue> = serde_json::from_str(path).ok()?;
++        if steps.len() > 16 { return None; }
++        let mut budget = 32_768;
++        let list = &doc.sections.get(section)?.paragraphs;
++        let mut p = paragraph_outside_fields(list, paragraph, &mut budget)?;
++        for raw in steps {
++            if !raw.get().starts_with('{') { return None; }
++            let s: CellStep = serde_json::from_str(raw.get()).ok()?;
++            if s.cell_index >= 65534 { return None; }
++            let Control::Table(table) = p.controls.get(s.control_index as usize)? else { return None; };
++            let cell = table.cells.get(s.cell_index as usize)?;
++            if cell.cell_protect() || cell.field_name.is_some() { return None; }
++            p = paragraph_outside_fields(&cell.paragraphs, s.cell_para_index as usize, &mut budget)?;
++        }
++        if end > p.char_offsets.len() || p.char_offsets.len() > 256 * 1024 || p.text.len() > 1024 * 1024
++            || !p.range_tags.is_empty() || !p.title_marks.is_empty() || !p.markpen_marks.is_empty()
++            || p.controls.iter().any(|c| !matches!(c, Control::SectionDef(_) | Control::ColumnDef(_))) {
++            return None;
++        }
++        let mut first_byte = None;
++        let mut end_byte = None;
++        let mut count = 0;
++        for (byte, ch) in p.text.char_indices() {
++            if count == start { first_byte = Some(byte); }
++            if count == end { end_byte = Some(byte); }
++            if (start..end).contains(&count) && (ch.is_control() || matches!(ch, '\u{00a0}' | '\u{2007}' | '\u{2028}' | '\u{2029}' | '\u{fffc}')) { return None; }
++            count += 1;
++        }
++        if count != p.char_offsets.len() { return None; }
++        let text = &p.text[first_byte.unwrap_or(p.text.len())..end_byte.unwrap_or(p.text.len())];
++        let shapes = doc.doc_info.char_shapes.len();
++        let runs = p.char_shape_runs(start, end);
++        if runs.len() > 4096 || runs.iter().any(|r| r.char_shape_id as usize >= shapes) { return None; }
++        Some(serde_json::json!({
++            "text": text, "shapeCount": shapes,
++            "runs": runs.into_iter().map(|r| (r.start_offset - start, r.char_shape_id)).collect::<Vec<_>>(),
++        }).to_string())
++    }
++}
++
+ impl DocumentCore {
+     /// Call again on the current head before applying a same-paragraph text inverse.
+     pub fn get_collab_text_undo_context_native(&self, section: usize, paragraph: usize, path_json: &str) -> String {
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -2133,3 +2133,21 @@
++    #[wasm_bindgen(js_name = getCollabLiteralFragment)]
++    pub fn get_collab_literal_fragment(&self, section: usize, paragraph: usize, path: &str, start: usize, end: usize) -> Result<String, JsValue> {
++        self.core.collab_literal_fragment(section, paragraph, path, start, end)
++            .ok_or_else(|| JsValue::from_str("Unsupported collaborative text fragment"))
++    }
++
++    #[wasm_bindgen(js_name = getCollabShapeWitness)]
++    pub fn get_collab_shape_witness(&self, ids: &[u32]) -> Result<String, JsValue> {
++        if ids.len() > 4096 { return Err(JsValue::from_str("Too many fragment styles")); }
++        let mut hash = blake3::Hasher::new();
++        for &id in ids {
++            let shape = self.document().doc_info.char_shapes.get(id as usize)
++                .ok_or_else(|| JsValue::from_str("Missing fragment style"))?;
++            serde_json::to_writer(&mut hash, &(id, shape)).map_err(|_| JsValue::from_str("Invalid fragment style"))?;
++        }
++        Ok(hash.finalize().to_hex().to_string())
++    }
++
+     #[wasm_bindgen(js_name = getCollabTextUndoContext)]
+     pub fn get_collab_text_undo_context(
+         &self,

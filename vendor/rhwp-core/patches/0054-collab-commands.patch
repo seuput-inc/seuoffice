@@ -1,0 +1,287 @@
+diff --git a/src/document_core/commands/clipboard.rs b/src/document_core/commands/clipboard.rs
+--- a/src/document_core/commands/clipboard.rs
++++ b/src/document_core/commands/clipboard.rs
+@@ -1,4 +1,6 @@
+ //! 내부 클립보드 + HTML 내보내기 관련 native 메서드
++
++mod collab_fragment;
+ 
+ use super::super::helpers::{
+     clipboard_color_to_css, clipboard_escape_html, detect_clipboard_image_mime,
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -9395,6 +9395,40 @@
+         self.clipboard_is_single_text_native()
+     }
+ 
++    #[wasm_bindgen(js_name = getCollabCharShapeMap)]
++    pub fn get_collab_char_shape_map(&self, target: &HwpDocument, ids: &[u32]) -> Result<Box<[i32]>, JsValue> {
++        if ids.len() > 512 { return Err(JsValue::from_str("Too many clipboard styles")); }
++        Ok(self.core.collab_char_shape_map(&target.core, ids).into_boxed_slice())
++    }
++
++    #[wasm_bindgen(js_name = getCollabTableSplit)]
++    pub fn get_collab_table_split(&self, section: u32, paragraph: u32, path: &str, offset: u32) -> Result<String, JsValue> {
++        if path.len() > 4096 { return Err(JsValue::from_str("Invalid table path")); }
++        let path = DocumentCore::parse_cell_path(path)?;
++        let target = self.resolve_control_para(section as usize, paragraph as usize, &path)?;
++        let split = target.collab_table_split(offset as usize).ok_or_else(|| JsValue::from_str("Invalid table insertion point"))?;
++        serde_json::to_string(&split).map_err(|_| JsValue::from_str("Invalid table insertion point"))
++    }
++
++    #[wasm_bindgen(js_name = getCollabMemoAnchor)]
++    pub fn get_collab_memo_anchor(&self, id: u32) -> Result<String, JsValue> {
++        self.core.collab_memo_anchor(id).map_err(|e| JsValue::from_str(&e.to_json()))
++    }
++
++    #[wasm_bindgen(js_name = getCollabClipboardText)]
++    pub fn get_collab_clipboard_text(&self) -> Result<String, JsValue> {
++        self.core.collab_clipboard_text().map_err(Into::into)
++    }
++
++    #[wasm_bindgen(js_name = pasteCollabClipboardText)]
++    pub fn paste_collab_clipboard_text(&mut self, section: u32, paragraph: u32, path: &str, offset: u32,
++        after_inline: bool, field: Option<u32>, fragment: &str) -> Result<String, JsValue> {
++        if path.len() > 4096 { return Err(JsValue::from_str("Invalid clipboard path")); }
++        let path = DocumentCore::parse_cell_path(path)?;
++        self.core.paste_collab_clipboard_text_native(section as usize, paragraph as usize, &path, offset as usize,
++            after_inline, field.map(|id| id as usize), fragment).map_err(Into::into)
++    }
++
+     /// 내부 클립보드의 플레인 텍스트를 반환한다.
+     #[wasm_bindgen(js_name = getClipboardText)]
+     pub fn get_clipboard_text(&self) -> String {
+diff --git a/src/document_core/commands/clipboard/collab_fragment.rs b/src/document_core/commands/clipboard/collab_fragment.rs
+new file mode 100644
+--- /dev/null
++++ b/src/document_core/commands/clipboard/collab_fragment.rs
+@@ -0,0 +1,129 @@
++use super::{ClipboardData, Control, DocumentCore, HwpError, Paragraph};
++use crate::document_core::ActiveFieldInfo;
++use crate::model::{control::FieldType, paragraph::CharShapeRef};
++use serde::{Deserialize, Serialize};
++use std::borrow::Cow;
++
++#[derive(Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++struct TextFragment<'a> {
++    text: Cow<'a, str>,
++    runs: Vec<(usize, u32)>,
++    spaces: Vec<usize>,
++}
++
++fn invalid() -> HwpError { HwpError::InvalidField("Invalid collaborative clipboard fragment".into()) }
++
++impl DocumentCore {
++    pub(crate) fn collab_clipboard_text(&self) -> Result<String, HwpError> {
++        let Some(c) = &self.clipboard else { return Err(invalid()) };
++        if !super::is_single_text_fragment(&c.paragraphs) { return Err(invalid()); }
++        let p = &c.paragraphs[0];
++        let n = p.char_offsets.len();
++        if p.text.len() > 262144 || p.char_shapes.len() > 512 || n.saturating_mul(p.char_shapes.len()) > 2_000_000
++            || n != p.text.chars().count() || p.char_offsets.windows(2).any(|w| w[0] >= w[1]) { return Err(invalid()); }
++        let mut runs = Vec::with_capacity(p.char_shapes.len());
++        for r in &p.char_shapes {
++            let i = p.char_offsets.partition_point(|pos| *pos < r.start_pos);
++            if i == n || runs.last().is_some_and(|&(prev, _)| prev >= i)
++                || r.char_shape_id as usize >= self.document.doc_info.char_shapes.len() { return Err(invalid()); }
++            runs.push((i, r.char_shape_id));
++        }
++        let spaces = p.text.chars().enumerate().filter_map(|(i, ch)|
++            (ch == '\u{a0}' && p.nb_space_is_control_at(i)).then_some(i)).collect();
++        serde_json::to_string(&TextFragment { text: Cow::Borrowed(&p.text), runs, spaces }).map_err(|_| invalid())
++    }
++
++    pub(crate) fn paste_collab_clipboard_text_native(&mut self, section: usize, paragraph: usize,
++        path: &[(usize,usize,usize)], offset: usize, after_inline: bool, field: Option<usize>, raw: &str) -> Result<String, HwpError> {
++        if raw.len() > 2_000_000 || path.len() > 16 || (!path.is_empty() && (field.is_some() || after_inline)) { return Err(invalid()); }
++        let target = match path {
++            &[(ci, cell, cp)] => self.get_cell_paragraph_ref(section, paragraph, ci, cell, cp).ok_or_else(invalid)?,
++            _ => self.resolve_control_para(section, paragraph, path)?,
++        };
++        if offset > target.text.chars().count() { return Err(invalid()); }
++        if after_inline {
++            let logical = crate::document_core::helpers::text_to_logical_offset(target, offset);
++            if super::logical_to_text_offset(target, logical + 1) != (offset, true) { return Err(invalid()); }
++        }
++        if let Some(ci) = field {
++            if !matches!(target.controls.get(ci), Some(Control::Field(f)) if f.field_type == FieldType::ClickHere)
++                || !target.field_ranges.iter().any(|r| r.control_idx == ci) { return Err(invalid()); }
++        }
++        let f: TextFragment<'_> = serde_json::from_str(raw).map_err(|_| invalid())?;
++        let n = f.text.chars().count();
++        if n == 0 || f.text.len() > 262144 || f.runs.len() > 512 || n.saturating_mul(f.runs.len()) > 2_000_000
++            || f.runs.windows(2).any(|w| w[0].0 >= w[1].0) || f.spaces.windows(2).any(|w| w[0] >= w[1])
++            || f.runs.iter().any(|&(i, id)| i >= n || id as usize >= self.document.doc_info.char_shapes.len()) { return Err(invalid()); }
++        let mut spaces = f.spaces.iter().copied().peekable();
++        for (i, ch) in f.text.chars().enumerate() {
++            if ch.is_control() && !matches!(ch, '\t' | '\n') { return Err(invalid()); }
++            if spaces.next_if_eq(&i).is_some() && ch != '\u{a0}' { return Err(invalid()); }
++        }
++        if spaces.next().is_some() { return Err(invalid()); }
++        let mut p = Paragraph::new_empty();
++        p.insert_text_at(0, &f.text);
++        p.char_shapes = f.runs.into_iter().map(|(i, char_shape_id)| CharShapeRef { start_pos: p.char_offsets[i], char_shape_id }).collect();
++        p.nb_space_control_indices = Some(f.spaces);
++        let prev_clip = self.clipboard.replace(ClipboardData { paragraphs: vec![p], plain_text: String::new(), copied_table_text_reflowed: false });
++        let active = field.map(|control_idx| ActiveFieldInfo { section_idx: section, para_idx: paragraph, control_idx, cell_path: None });
++        let switched = self.active_field != active;
++        let prev_field = std::mem::replace(&mut self.active_field, active);
++        if switched { self.invalidate_page_tree_cache(); }
++        let result = match path {
++            [] => self.paste_internal_at_caret_native(section, paragraph, offset, after_inline),
++            &[(ci, cell, cp)] => self.paste_internal_in_cell_native(section, paragraph, ci, cell, cp, offset),
++            _ => self.paste_internal_in_cell_by_path_native(section, paragraph, path, offset),
++        };
++        self.clipboard = prev_clip;
++        self.active_field = prev_field;
++        if switched { self.invalidate_page_tree_cache(); }
++        result
++    }
++}
++
++fn same_binary(a: &crate::model::document::Document, b: &crate::model::document::Document, id: u16) -> bool {
++    use crate::model::bin_data::{BinDataBytes, MAX_BIN_DATA_BYTES};
++    if a.doc_info.bin_data_list.iter().find(|v| v.storage_id == id) != b.doc_info.bin_data_list.iter().find(|v| v.storage_id == id) { return false; }
++    let (Some(left), Some(right)) = (a.bin_data_content.iter().find(|v| v.id == id), b.bin_data_content.iter().find(|v| v.id == id)) else { return false };
++    if left.extension != right.extension { return false; }
++    match (&left.data, &right.data) {
++        (BinDataBytes::Loaded(x), BinDataBytes::Loaded(y)) => x == y,
++        (BinDataBytes::Loaded(x), y) | (y, BinDataBytes::Loaded(x)) => y.load_limited_shared(x.len().min(MAX_BIN_DATA_BYTES)).is_some_and(|v| &*v == x.as_slice()),
++        (BinDataBytes::Lazy { resolver: a, key: x }, BinDataBytes::Lazy { resolver: b, key: y }) if x == y && std::sync::Arc::ptr_eq(a, b) => true,
++        (x, y) => x.load_limited_shared(MAX_BIN_DATA_BYTES).is_some_and(|a| y.load_limited_shared(a.len()).is_some_and(|b| a == b)),
++    }
++}
++
++impl DocumentCore {
++    pub(crate) fn collab_char_shape_map(&self, target: &Self, ids: &[u32]) -> Vec<i32> {
++        let (a, b) = (&self.document, &target.document);
++        let mut resources = std::collections::BTreeMap::new();
++        let mut binary = |id| *resources.entry(id).or_insert_with(|| same_binary(a, b, id));
++        ids.iter().map(|&id| {
++            let Some(s) = a.doc_info.char_shapes.get(id as usize) else { return -1 };
++            for (lang, &font_id) in s.font_ids.iter().enumerate() {
++                let left = a.doc_info.font_faces.get(lang).and_then(|v| v.get(font_id as usize));
++                let right = b.doc_info.font_faces.get(lang).and_then(|v| v.get(font_id as usize));
++                if left != right { return -1; }
++                if let Some(f) = left {
++                    if f.is_embedded && f.resolved_bin_data_id.is_none() { return -1; }
++                    if f.resolved_bin_data_id.is_some_and(|n| !binary(n)) { return -1; }
++                    if let Some(sub) = &f.subst_font {
++                        if sub.is_embedded && sub.resolved_bin_data_id.is_none() { return -1; }
++                        if sub.resolved_bin_data_id.is_some_and(|n| !binary(n)) { return -1; }
++                    }
++                }
++            }
++            if let Some(i) = s.border_fill_id.checked_sub(1) {
++                let Some(fill) = a.doc_info.border_fills.get(i as usize) else { return -1 };
++                if b.doc_info.border_fills.get(i as usize) != Some(fill) { return -1; }
++                if fill.fill.image.as_ref().is_some_and(|v| !binary(v.bin_data_id)) { return -1; }
++            }
++            let shapes = &b.doc_info.char_shapes;
++            let matches = |v: &crate::model::style::CharShape| v == s && v.raw_data == s.raw_data;
++            if shapes.get(id as usize).is_some_and(matches) { return id as i32; }
++            shapes.iter().position(matches).and_then(|i| i32::try_from(i).ok()).unwrap_or(-1)
++        }).collect()
++    }
++}
+diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
+--- a/src/model/paragraph.rs
++++ b/src/model/paragraph.rs
+@@ -2057,6 +2057,32 @@
+         self.tab_extended = meta.tab_extended;
+     }
+ 
++    fn split_control_moves(&self, char_offset: usize, control_positions: &[usize], split_pos: usize, kept_number: Option<usize>) -> Vec<bool> {
++        self
++            .controls
++            .iter()
++            .enumerate()
++            .map(|(ci, ctrl)| {
++                ((Self::is_split_movable_control(ctrl)
++                    && control_positions.get(ci).copied().unwrap_or(usize::MAX) >= char_offset)
++                    || self
++                        .field_ranges
++                        .iter()
++                        .any(|fr| fr.control_idx == ci && fr.start_char_idx >= split_pos))
++                    && Some(ci) != kept_number
++            })
++            .collect()
++    }
++
++    pub(crate) fn collab_table_split(&self, offset: usize) -> Option<(usize, Vec<bool>)> {
++        let length = self.text.chars().count();
++        if self.controls.len() > 4096 || offset > length + self.controls.iter().filter(|c| Self::occupies_split_slot(c)).count() { return None; }
++        let positions = self.split_logical_control_positions();
++        let scalar = self.split_text_pos_for_logical_offset(offset, &positions);
++        let kept = (scalar == length).then(|| self.trailing_auto_number(&self.control_text_positions())).flatten();
++        Some((scalar, self.split_control_moves(offset, &positions, scalar, kept)))
++    }
++
+     /// char_offset 위치에서 문단을 분할한다.
+     ///
+     /// `char_offset` 은 캐럿 축이다 — 글자와 [`Self::occupies_split_slot`] 컨트롤을 하나씩 센다.
+@@ -2104,20 +2130,7 @@
+         // 이관되는 FieldRange가 참조하는 Field control은 범위와 함께 이동해야 한다.
+         // 일반 이동형 컨트롤로 분류하면 split의 논리 offset 계산에 Field가 더해져
+         // ClickHere 복사/붙여넣기 경계가 한 글자씩 어긋난다.
+-        let moves: Vec<bool> = self
+-            .controls
+-            .iter()
+-            .enumerate()
+-            .map(|(ci, ctrl)| {
+-                ((Self::is_split_movable_control(ctrl)
+-                    && control_positions.get(ci).copied().unwrap_or(usize::MAX) >= char_offset)
+-                    || self
+-                        .field_ranges
+-                        .iter()
+-                        .any(|fr| fr.control_idx == ci && fr.start_char_idx >= split_pos))
+-                    && Some(ci) != kept_number
+-            })
+-            .collect();
++        let moves = self.split_control_moves(char_offset, &control_positions, split_pos, kept_number);
+ 
+         // 분할 지점의 UTF-16 위치
+         let utf16_split: u32 = if split_pos < self.char_offsets.len() {
+diff --git a/src/document_core/queries/memo_query.rs b/src/document_core/queries/memo_query.rs
+--- a/src/document_core/queries/memo_query.rs
++++ b/src/document_core/queries/memo_query.rs
+@@ -1081,6 +1081,13 @@
+             .ok_or_else(|| MemoError::not_found(id))
+     }
+ 
++    pub(crate) fn collab_memo_anchor(&self, id: u32) -> Result<String, MemoError> {
++        let hit = self.memo_hit(id)?;
++        let loc = hit.location.as_ref().ok_or_else(|| MemoError::unsupported_place(hit.place))?;
++        Ok(serde_json::json!({"section": loc.section_index, "paragraph": loc.para_index,
++            "path": Self::flat_path(loc), "control": hit.control_idx}).to_string())
++    }
++
+     fn memo_paragraph_mut(
+         &mut self,
+         location: &FieldLocation,
+diff --git a/src/model/style.rs b/src/model/style.rs
+--- a/src/model/style.rs
++++ b/src/model/style.rs
+@@ -56,7 +56,7 @@
+ }
+ 
+ /// 글꼴 정보 (HWPTAG_FACE_NAME)
+-#[derive(Debug, Clone, Default, serde::Serialize)]
++#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+ pub struct Font {
+     /// 원본 레코드 바이트 (라운드트립 보존용)
+     pub raw_data: Option<Vec<u8>>,
+diff --git a/src/model/bin_data.rs b/src/model/bin_data.rs
+--- a/src/model/bin_data.rs
++++ b/src/model/bin_data.rs
+@@ -26,7 +26,7 @@
+ }
+ 
+ /// 바이너리 데이터 아이템 (HWPTAG_BIN_DATA)
+-#[derive(Debug, Clone, Default, serde::Serialize)]
++#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+ pub struct BinData {
+     /// 원본 레코드 바이트 (라운드트립 보존용)
+     pub raw_data: Option<Vec<u8>>,

@@ -1,0 +1,49 @@
+diff --git a/src/document_core/commands/text_editing/collab_text.rs b/src/document_core/commands/text_editing/collab_text.rs
+--- a/src/document_core/commands/text_editing/collab_text.rs
++++ b/src/document_core/commands/text_editing/collab_text.rs
+@@ -8,6 +8,13 @@
+ 
+ fn invalid() -> HwpError {
+     HwpError::RenderError("Invalid collaborative text operand".into())
++}
++
++fn trailing_slots(p: &Paragraph, length: usize) -> usize {
++    p.control_text_positions().iter().filter(|&&at| at >= length).count()
++        + p.field_ranges.iter().filter(|r| r.end_char_idx == length).count()
++        + p.orphan_field_ends.iter().filter(|r| r.char_idx == length).count()
++        + p.title_marks.iter().filter(|r| r.char_idx == length).count()
+ }
+ 
+ impl DocumentCore {
+@@ -23,7 +30,8 @@
+         let p = self.collab_text_target(section, paragraph, path)?;
+         let length = p.text.chars().count();
+         let (scalar, after_inline) = match axis {
+-            "scalar" | "local" | "toSplit" | "anchors" if offset <= length => (offset, false),
++            "scalar" | "insert" | "local" | "toSplit" | "anchors" if offset <= length => (offset, false),
++            "insert" | "local" if offset > length && offset - length <= trailing_slots(p, length) => (length, false),
+             "caret" if path.is_empty() && offset <= logical_paragraph_length(p) => logical_to_text_offset(p, offset),
+             "split" if offset <= length + p.controls.iter().filter(|c| Paragraph::occupies_split_slot(c)).count() => (p.collab_split_scalar(offset), false),
+             _ => return Err(invalid()),
+@@ -31,8 +39,9 @@
+         let split_before = if matches!(axis, "split" | "toSplit") {
+             text_to_split_logical_offset(p, scalar, false)
+         } else { scalar };
++        if axis == "toSplit" && p.collab_split_scalar(split_before) != scalar { return Err(invalid()); }
+         let field = active_field_control(self.active_field.as_ref(), section, paragraph, (!path.is_empty()).then_some(path));
+-        let simple = p.field_ranges.is_empty() && p.orphan_field_ends.is_empty()
++        let simple = offset <= length && p.field_ranges.is_empty() && p.orphan_field_ends.is_empty()
+             && !p.controls.iter().any(Paragraph::occupies_split_slot)
+             && !matches!(path, [(_, 65534, _)])
+             && (axis != "local" || self.picture_band_owning_body_paragraph(section, paragraph).is_none());
+@@ -60,7 +69,9 @@
+     pub(crate) fn write_collab_text_native(&mut self, section: usize, paragraph: usize, path: &[CellStep], offset: usize, count: usize, text: &str, mode: &str, field: Option<usize>) -> Result<String, HwpError> {
+         let p = self.collab_text_target(section, paragraph, path)?;
+         let length = p.text.chars().count();
+-        if offset > length || count > length - offset { return Err(invalid()); }
++        if offset > length {
++            if count != 0 || !matches!(mode, "insert" | "bodyLocal") || offset - length > trailing_slots(p, length) { return Err(invalid()); }
++        } else if count > length - offset { return Err(invalid()); }
+         if let Some(ci) = field {
+             if !matches!(p.controls.get(ci), Some(Control::Field(f)) if f.field_type == FieldType::ClickHere)
+                 || !p.field_ranges.iter().any(|r| r.control_idx == ci) { return Err(invalid()); }

@@ -1,0 +1,78 @@
+Subject: [PATCH] trace native text-control relocation in a detached document
+
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -7822,3 +7822,73 @@
+     // ─── Undo/Redo 스냅샷 API ──────────────────────────
+ 
++    /// Same-realm fork. Never use an HWP/HWPX export as the model copy.
++    #[wasm_bindgen(js_name = forkCollabDocument)]
++    pub fn fork_collab_document(&self) -> Result<HwpDocument, JsValue> {
++        let mut copy = HwpDocument::create_empty();
++        copy.source_format = self.source_format;
++        copy.restore_collab_confirmed(self)?;
++        Ok(copy)
++    }
++
++    /// Scratch only. CTRL_DATA is the parallel record carried by native split,
++    /// merge and control removal. No tag is installed in the live model.
++    #[wasm_bindgen(js_name = forkCollabControlTrace)]
++    pub fn fork_collab_control_trace(&self, section: u32, host: u32, path_json: &str, last: u32) -> Result<Option<HwpDocument>, JsValue> {
++        let mut path = DocumentCore::parse_cell_path(path_json)?;
++        if path.len() > 16 { return Err(JsValue::from_str("invalid trace path")); }
++        let sec = section as usize;
++        let first = path.last().map_or(host as usize, |s| s.2);
++        let last = last as usize;
++        let mut copy = None;
++        for index in first..=last {
++            let mut para = host as usize;
++            if let Some(step) = path.last_mut() { step.2 = index; } else { para = index; }
++            let old = match path.as_slice() {
++                &[(ci, 65534, p)] => self.get_cell_paragraph_ref(sec, para, ci, 65534, p)
++                    .ok_or_else(|| JsValue::from_str("invalid trace caption"))?,
++                _ => self.resolve_control_para(sec, para, &path)?,
++            };
++            if old.controls.is_empty() { continue; }
++            if copy.is_none() { copy = Some(self.fork_collab_document()?); }
++            let scratch = copy.as_mut().unwrap();
++            let target = match path.as_slice() {
++                &[(ci, 65534, p)] => scratch.get_cell_paragraph_mut(sec, para, ci, 65534, p)?,
++                _ => DocumentCore::resolve_cell_paragraph_mut(&mut scratch.document.sections[sec], para, &path)?,
++            };
++            target.ctrl_data_records = (0..target.controls.len()).map(|ci| {
++                let mut tag = Vec::with_capacity(8);
++                tag.extend_from_slice(&(index as u32).to_le_bytes());
++                tag.extend_from_slice(&(ci as u32).to_le_bytes());
++                Some(tag)
++            }).collect();
++        }
++        Ok(copy)
++    }
++
++    #[wasm_bindgen(js_name = readCollabControlTrace)]
++    pub fn read_collab_control_trace(&self, section: u32, host: u32, path_json: &str, last: u32) -> Result<String, JsValue> {
++        let mut path = DocumentCore::parse_cell_path(path_json)?;
++        if path.len() > 16 { return Err(JsValue::from_str("invalid trace path")); }
++        let mut result = Vec::new();
++        let first = path.last().map_or(host as usize, |s| s.2);
++        for index in first..=last as usize {
++            let mut para = host as usize;
++            if let Some(step) = path.last_mut() { step.2 = index; } else { para = index; }
++            let p = match path.as_slice() {
++                &[(ci, 65534, p)] => self.get_cell_paragraph_ref(section as usize, para, ci, 65534, p)
++                    .ok_or_else(|| JsValue::from_str("invalid trace caption"))?,
++                _ => self.resolve_control_para(section as usize, para, &path)?,
++            };
++            for (ci, record) in p.ctrl_data_records.iter().take(p.controls.len()).enumerate() {
++                if let Some(tag) = record {
++                    if tag.len() != 8 { return Err(JsValue::from_str("invalid relocation tag")); }
++                    let origin = u32::from_le_bytes(tag[..4].try_into().unwrap());
++                    let control = u32::from_le_bytes(tag[4..].try_into().unwrap());
++                    result.push((origin, control, index, ci));
++                }
++            }
++        }
++        serde_json::to_string(&result).map_err(|e| JsValue::from_str(&e.to_string()))
++    }
++
+     /// Replace only the optimistic model, not the user's fonts or clipboard.
