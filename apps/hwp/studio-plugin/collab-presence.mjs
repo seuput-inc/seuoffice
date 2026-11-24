@@ -1,3 +1,4 @@
+/* global document */
 import { presenceLabel } from '@seuoffice/web-platform/presence'
 import { parseHwpPosition, sameHwpContainer } from '../src/shared/collab-text.ts'
 
