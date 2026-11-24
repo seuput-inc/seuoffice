@@ -81,9 +81,11 @@ for (const [mode, format] of [
           () => true,
           () => true,
         ).store
-      : memoryHistoryStore(
-          () => true,
-          () => true,
+      : withoutCheckpoints(
+          memoryHistoryStore(
+            () => true,
+            () => true,
+          ),
         )
     let renders = 0
     const server = db
@@ -174,7 +176,8 @@ for (const [mode, format] of [
         'too_large',
       )
 
-      // This batch fits by itself, but 255 more operations would exceed 256 in the prefix.
+      // This batch fits by itself, but 255 more operations would exceed 256 in the prefix, and
+      // neither store keeps HWP checkpoints.
       const refusal = await submit(3, 2, Array(255).fill(op), 'error')
       assert.ok(['too_large', 'schema_mismatch'].includes(refusal.code))
       assert.match(editor.reason(), /HWP.*history/i)
@@ -217,6 +220,95 @@ for (const [mode, format] of [
     }
   })
 }
+
+/** A retained store as a host may write one: without the optional HWP checkpoint pair. */
+function withoutCheckpoints(store) {
+  const { writeHwpCheckpoint, readHwpCheckpoint, ...plain } = store
+  assert.equal(typeof writeHwpCheckpoint, 'function')
+  assert.equal(typeof readHwpCheckpoint, 'function')
+  return plain
+}
+
+function splice(offset, text) {
+  const at = { section: 0, paragraph: 1, path: [], offset }
+  return { kind: 'splice', from: at, to: at, text }
+}
+
+for (const format of ['hwp', 'hwpx']) {
+  test(`bytes: ${format} history continues past the replay limits from a checkpoint the renderer reopened`, async () => {
+    const store = memoryHistoryStore(
+      () => true,
+      () => true,
+    )
+    const server = createHistoryServer({
+      store,
+      render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
+    })
+    try {
+      const bytes = sources.get(format)
+      const editor = socket(server, format, bytes)
+      await editor.hello()
+      const { epoch } = await editor.reply(bytes, 'welcome')
+      const submit = (seq, base, ops) => editor.reply({ t: 'submit', seq, base, ops }, 'ack')
+      assert.deepEqual(await submit(1, 0, [splice(1, 'B')]), { t: 'ack', seq: 1, v: 1 })
+      // 1 + 256 ops exceed one replay window; the server keeps the file at version 1 and goes on.
+      assert.deepEqual(await submit(2, 1, Array(256).fill(splice(2, 'C'))), {
+        t: 'ack',
+        seq: 2,
+        v: 2,
+      })
+      assert.equal((await store.readHwpCheckpoint(p.documentId, epoch, 2)).version, 1)
+      for (const [version, text] of [
+        [1, 'AB'],
+        [2, 'AB' + 'C'.repeat(256)],
+      ]) {
+        const file = await server.exportHistory(p, { epoch, version })
+        const reopened = new HwpDocument(file.bytes)
+        try {
+          assert.equal(reopened.getTextRange(0, 1, 0, text.length), text)
+        } finally {
+          reopened.free()
+        }
+      }
+      await assert.rejects(
+        server.undoHistory(p, {
+          requestId: 'before-checkpoint',
+          expected: { epoch, version: 2 },
+          target: { epoch, v: 1, index: 0 },
+        }),
+        /older than the saved history point/,
+      )
+    } finally {
+      await server.close()
+    }
+  })
+}
+
+test('stream: an editor without the export grant still submits HWP edits', async () => {
+  const db = new DatabaseSync(':memory:')
+  const { store } = createStreamStore(
+    db,
+    (_p, action) => action !== 'export',
+    () => true,
+  )
+  const server = createHistoryServer({ store, renderStream: renderHistory })
+  try {
+    const bytes = sources.get('hwpx')
+    const editor = socket(server, 'hwpx', bytes)
+    await editor.hello()
+    await editor.reply(bytes, 'welcome')
+    for (const [seq, text] of [
+      [1, 'B'],
+      [2, 'C'],
+    ]) {
+      const submit = { t: 'submit', seq, base: seq - 1, ops: [splice(seq, text)] }
+      assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq, v: seq })
+    }
+  } finally {
+    await server.close()
+    db.close()
+  }
+})
 
 test('a legacy byte store cannot seed HWP without promising exact undo writes', async () => {
   const { exactHistoryChange, ...legacy } = memoryHistoryStore(() => true)

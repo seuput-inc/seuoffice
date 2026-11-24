@@ -6,6 +6,7 @@ import type {
   HistoryArtifact,
   HistoryCommand,
   HistoryReceipt,
+  HwpCheckpoint,
   RetainedHistoryStore,
   UndoTargetPolicy,
 } from './history.js'
@@ -167,6 +168,8 @@ export function memoryHistoryStore(
   const revisions = new Map<string, HistoryArtifact>()
   const receipts = new Map<string, { intent: string; receipt: HistoryReceipt }>()
   const undone = new Set<string>()
+  /** Per epoch, in ascending version order. */
+  const checkpoints = new Map<string, HwpCheckpoint[]>()
   const key = (...parts: string[]) => JSON.stringify(parts)
 
   function allowed(p: Principal, action: HistoryAction): void {
@@ -303,6 +306,23 @@ export function memoryHistoryStore(
       const revision = revisions.get(key(p.documentId, revisionId))
       if (!revision) throw new Error('revision unavailable')
       return structuredClone(revision)
+    },
+    async writeHwpCheckpoint(documentId, epochId, { version, baseHash, base }) {
+      const id = key(documentId, epochId)
+      const epoch = archive.get(id)
+      if (!epoch || !Number.isSafeInteger(version) || version < 1 || version > epoch.log.length)
+        throw new Error('checkpoint outside its epoch')
+      const list = checkpoints.get(id) ?? []
+      if (list.some((kept) => kept.version === version)) return
+      list.push({ version, baseHash, base: new Uint8Array(base) })
+      list.sort((a, b) => a.version - b.version)
+      checkpoints.set(id, list)
+    },
+    async readHwpCheckpoint(documentId, epochId, atMost) {
+      const list = checkpoints.get(key(documentId, epochId)) ?? []
+      let found: HwpCheckpoint | undefined
+      for (const kept of list) if (kept.version <= atMost) found = kept
+      return found ? { ...found, base: new Uint8Array(found.base) } : null
     },
   }
 }

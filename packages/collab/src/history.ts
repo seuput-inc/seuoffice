@@ -13,8 +13,13 @@ export interface HistoryRequest {
   epoch: string
   format: Format
   baseHash: string
-  /** Exactly versions 1 through `version`, from the named epoch. */
+  /** Exactly versions `start + 1` through `version`, from the named epoch. */
   changes: Change[]
+  /**
+   * The versions the base file already contains: 0 for the epoch's first file, or the version
+   * of a retained HWP checkpoint. Absent means 0.
+   */
+  start?: number
   version: number
   undo?: HistoryOpId
 }
@@ -99,6 +104,7 @@ export function checkHistoryHeader(request: Omit<HistoryRequest, 'changes'>, for
     !request ||
     !id(request.epoch) ||
     !count(request.version) ||
+    (request.start !== undefined && (!count(request.start) || request.start > request.version)) ||
     !request.format ||
     !id(request.format.name) ||
     !count(request.format.schema) ||
@@ -114,7 +120,7 @@ export function checkHistoryHeader(request: Omit<HistoryRequest, 'changes'>, for
     (!target ||
       target.epoch !== request.epoch ||
       !count(target.v) ||
-      target.v < 1 ||
+      target.v <= (request.start ?? 0) ||
       target.v > request.version ||
       !count(target.index))
   )
@@ -144,12 +150,13 @@ export function checkHistoryChange(
 }
 
 export function checkPrefix(request: HistoryRequest, format: Format): void {
-  if (!Array.isArray(request?.changes) || request.changes.length !== request.version)
+  const start = request?.start ?? 0
+  if (!Array.isArray(request?.changes) || request.changes.length !== request.version - start)
     invalid('incomplete history prefix')
   checkHistoryHeader(request, format)
   const seen = new Map<string, Set<number>>()
   for (let i = 0; i < request.changes.length; i++)
-    checkHistoryChange(request.changes[i]!, i + 1, seen, request.undo)
+    checkHistoryChange(request.changes[i]!, start + i + 1, seen, request.undo)
 }
 
 /** The caller owns a fresh editor displaying these base bytes and disposes it even on failure. */

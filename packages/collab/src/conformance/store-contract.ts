@@ -6,6 +6,7 @@
  */
 
 import type { Change, Format, Json } from '../model.js'
+import type { HwpCheckpoint } from '../server/history.js'
 import type { AppendRequest, AppendResult, CollabStore, EpochHead } from '../server/store.js'
 
 export interface StoreContractCase {
@@ -23,6 +24,12 @@ export interface StoreContractOptions {
   reopen?: ((store: CollabStore) => CollabStore | Promise<CollabStore>) | undefined
   /** concurrent calls in the race cases; default 16 */
   concurrency?: number | undefined
+  /**
+   * The store implements the optional HWP checkpoint pair of a retained history store
+   * (`writeHwpCheckpoint`, `readHwpCheckpoint`). Leave it out for a store without them; those
+   * cases are skipped and HWP history refuses at its replay limits.
+   */
+  checkpoints?: boolean | undefined
 }
 
 const FORMAT: Format = { name: 'store-contract', schema: 1 }
@@ -172,6 +179,37 @@ function largeOp(): Json {
   return { text, nested: [1, -2.5, 1e21, null, true, false, { deep: [[], {}, ''] }], n: 0 }
 }
 
+type CheckpointStore = CollabStore & {
+  writeHwpCheckpoint(documentId: string, epochId: string, checkpoint: HwpCheckpoint): Promise<void>
+  readHwpCheckpoint(
+    documentId: string,
+    epochId: string,
+    atMost: number,
+  ): Promise<HwpCheckpoint | null>
+}
+
+/** The optional HWP checkpoint pair of a retained history store, or null when it keeps none. */
+function checkpointsOf(store: CollabStore): CheckpointStore | null {
+  return 'writeHwpCheckpoint' in store &&
+    typeof store.writeHwpCheckpoint === 'function' &&
+    'readHwpCheckpoint' in store &&
+    typeof store.readHwpCheckpoint === 'function'
+    ? (store as CheckpointStore)
+    : null
+}
+
+function expectCheckpoint(
+  found: HwpCheckpoint | null,
+  version: number,
+  bytes: Uint8Array,
+  what: string,
+): void {
+  check(found !== null, `${what}: no checkpoint`)
+  check(found.version === version, `${what}: version ${found.version}, expected ${version}`)
+  check(found.baseHash === HASH, `${what}: another hash`)
+  check(sameBytes(found.base, bytes), `${what}: other bytes`)
+}
+
 export function storeContract(
   makeStore: () => CollabStore | Promise<CollabStore>,
   options: StoreContractOptions = {},
@@ -179,7 +217,93 @@ export function storeContract(
   const concurrency = options.concurrency ?? 16
   const reopen = options.reopen
 
-  const cases: (Omit<StoreContractCase, 'skip'> & { needsReopen?: true })[] = [
+  const cases: (Omit<StoreContractCase, 'skip'> & {
+    needsReopen?: true
+    needsCheckpoints?: true
+  })[] = [
+    {
+      name: 'HWP checkpoints come as a pair: both methods or neither',
+      async run() {
+        const store = await makeStore()
+        const methods = ['writeHwpCheckpoint', 'readHwpCheckpoint'].filter(
+          (name) => name in store && typeof Reflect.get(store, name) === 'function',
+        )
+        check(methods.length !== 1, `only ${methods[0]} is implemented`)
+      },
+    },
+    {
+      name: 'an HWP checkpoint is first-wins and immutable, found at or below a version, and outlives drop',
+      needsCheckpoints: true,
+      async run() {
+        const store = checkpointsOf(await makeStore())
+        check(store !== null, 'checkpoints is set but the store lacks the method pair')
+        const { documentId, epochId } = await opened(store)
+        await appendAll(store, documentId, epochId, 6)
+        const two = base(40)
+        const five = base(50)
+        await store.writeHwpCheckpoint(documentId, epochId, {
+          version: 2,
+          baseHash: HASH,
+          base: two,
+        })
+        await store.writeHwpCheckpoint(documentId, epochId, {
+          version: 5,
+          baseHash: HASH,
+          base: five,
+        })
+        await store.writeHwpCheckpoint(documentId, epochId, {
+          version: 2,
+          baseHash: HASH,
+          base: base(60),
+        })
+        two.fill(0)
+        check(
+          (await store.readHwpCheckpoint(documentId, epochId, 1)) === null,
+          'a checkpoint below the first one',
+        )
+        expectCheckpoint(await store.readHwpCheckpoint(documentId, epochId, 2), 2, base(40), 'at 2')
+        expectCheckpoint(await store.readHwpCheckpoint(documentId, epochId, 4), 2, base(40), 'at 4')
+        expectCheckpoint(await store.readHwpCheckpoint(documentId, epochId, 6), 5, base(50), 'at 6')
+        await store.drop(documentId, epochId)
+        expectCheckpoint(
+          await store.readHwpCheckpoint(documentId, epochId, 6),
+          5,
+          base(50),
+          'after drop',
+        )
+      },
+    },
+    {
+      name: 'concurrent HWP checkpoint writes for one version keep exactly one of them',
+      needsCheckpoints: true,
+      async run() {
+        const store = checkpointsOf(await makeStore())
+        check(store !== null, 'checkpoints is set but the store lacks the method pair')
+        const { documentId, epochId } = await opened(store)
+        await appendAll(store, documentId, epochId, 3)
+        const candidates = Array.from({ length: concurrency }, (_, i) => base(20 + i))
+        await Promise.all(
+          candidates.map((bytes) =>
+            store.writeHwpCheckpoint(documentId, epochId, {
+              version: 3,
+              baseHash: HASH,
+              base: bytes,
+            }),
+          ),
+        )
+        const first = await store.readHwpCheckpoint(documentId, epochId, 3)
+        check(
+          first !== null && candidates.some((bytes) => sameBytes(first.base, bytes)),
+          'the kept checkpoint is none of the writes',
+        )
+        expectCheckpoint(
+          await store.readHwpCheckpoint(documentId, epochId, 9),
+          3,
+          first.base,
+          'again',
+        )
+      },
+    },
     {
       name: 'load finds nothing on a new document, then the head of the epoch create made',
       async run() {
@@ -549,8 +673,13 @@ export function storeContract(
     },
   ]
 
-  return cases.map(({ needsReopen, ...each }) => ({
+  return cases.map(({ needsReopen, needsCheckpoints, ...each }) => ({
     ...each,
-    skip: needsReopen && !reopen ? 'the store lives in one process: no reopen given' : undefined,
+    skip:
+      needsReopen && !reopen
+        ? 'the store lives in one process: no reopen given'
+        : needsCheckpoints && !options.checkpoints
+          ? 'the store keeps no HWP checkpoints: checkpoints not set'
+          : undefined,
   }))
 }

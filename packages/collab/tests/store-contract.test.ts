@@ -1,10 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { storeContract, type StoreContractCase } from '../src/conformance/index'
+import type { HwpCheckpoint } from '../src/server/history'
 import type { Change } from '../src/model'
-import { memoryStore, type CollabStore, type NewEpoch } from '../src/server/store'
+import {
+  memoryHistoryStore,
+  memoryStore,
+  type CollabStore,
+  type NewEpoch,
+} from '../src/server/store'
 
 describe('memoryStore() keeps the store contract', () => {
   for (const each of storeContract(() => memoryStore())) {
+    it.skipIf(each.skip !== undefined)(each.name, each.run)
+  }
+})
+
+describe('memoryHistoryStore() keeps the store contract with HWP checkpoints', () => {
+  for (const each of storeContract(() => memoryHistoryStore(() => true), { checkpoints: true })) {
     it.skipIf(each.skip !== undefined)(each.name, each.run)
   }
 })
@@ -111,18 +123,45 @@ async function failing(cases: StoreContractCase[]): Promise<Map<string, string>>
   return failed
 }
 
+const checkpointCases = [
+  'an HWP checkpoint is first-wins and immutable, found at or below a version, and outlives drop',
+  'concurrent HWP checkpoint writes for one version keep exactly one of them',
+]
+
 describe('the store contract kit', () => {
   it('passes a correct store, the second-instance case included', async () => {
     const { make, reopen } = factory({})
     const cases = storeContract(make, { reopen })
-    expect(cases.every((each) => each.skip === undefined)).toBe(true)
+    expect(cases.filter((each) => each.skip).map((each) => each.name)).toEqual(checkpointCases)
     expect([...(await failing(cases)).keys()]).toEqual([])
   })
 
   it('skips the second-instance case for a store without reopen, and says why', () => {
     const skipped = storeContract(() => memoryStore()).filter((each) => each.skip)
     expect(skipped.map((each) => each.name)).toEqual([
+      ...checkpointCases,
       'a second instance over the same data sees the same epoch and shares its guarantees',
+    ])
+  })
+
+  it('fails a store whose HWP checkpoint write replaces an earlier one', async () => {
+    const make = () => {
+      const store = memoryHistoryStore(() => true)
+      const kept = new Map<string, HwpCheckpoint>()
+      store.writeHwpCheckpoint = async (documentId, epochId, checkpoint) => {
+        kept.set(JSON.stringify([documentId, epochId, checkpoint.version]), checkpoint)
+      }
+      store.readHwpCheckpoint = async (documentId, epochId, atMost) => {
+        for (let v = atMost; v > 0; v--) {
+          const found = kept.get(JSON.stringify([documentId, epochId, v]))
+          if (found) return found
+        }
+        return null
+      }
+      return store
+    }
+    expect([...(await failing(storeContract(make, { checkpoints: true }))).keys()]).toEqual([
+      checkpointCases[0],
     ])
   })
 

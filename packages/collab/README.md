@@ -124,6 +124,15 @@ describe('our CollabStore', () => {
 
 외부 바이트 이력 저장소에서 한글 공동 편집을 받으려면 `exactHistoryChange: true`를 선언하고, 선택 취소를 쓸 때 서버가 검사한 `write.change`를 저자와 식별자까지 그대로 기록해야 한다. 새 식별자나 다른 저자를 붙이면 검사한 크기와 실제 이력 크기가 달라질 수 있다.
 
+**한글 기록 저장 지점(선택).** 바이트 이력 저장소는 `writeHwpCheckpoint`와 `readHwpCheckpoint`를 함께 구현할 수 있다. 하나만 구현하면 계약 위반이다. 둘 다 없으면 지금처럼 한 epoch의 한글 기록이 재생 한도(변경 128개·연산 256개·요청 JSON 256 KiB)에 닿는 제출에서 `too_large`로 그 편집기의 세션을 끝낸다. 둘 다 있으면 서버가 한도에 닿는 제출 직전에 현재 머리 버전의 파일을 렌더러로 만들고, 그 파일을 빈 변경으로 다시 렌더해 바이트가 같을 때만(새 epoch 기준 파일과 같은 입장 검사) `writeHwpCheckpoint`로 남긴 뒤 그 지점부터 다음 변경을 재생한다. 이후 승인·내보내기·복원·선택 취소는 요청 버전 이하의 가장 가까운 저장 지점을 기준 파일로, 요청의 `start`를 그 버전으로 두고 `start + 1`부터의 변경만 보낸다. 저장 지점 이하 연산의 선택 취소는 거절한다.
+
+- `writeHwpCheckpoint(documentId, epochId, { version, baseHash, base })`: 버전마다 처음 쓴 것만 남기고 바꾸지 않는다(동시 쓰기도 하나만 남는다). epoch의 머리 버전 이하만 받는다.
+- `readHwpCheckpoint(documentId, epochId, atMost)`: `atMost` 이하에서 가장 높은 버전의 저장 지점, 없으면 `null`. epoch을 `drop`한 뒤에도 읽힌다.
+- 둘 다 신뢰된 서버 내부 호출이라 사용자 권한을 묻지 않는다. 저장 지점을 만들지 못하면(렌더러가 자기 결과를 다시 열지 못하거나 쓰기가 실패) 그 제출은 `schema_mismatch`로 거절되고 세션이 끝난다. 페이지는 이유와 내려받기 버튼을 보인다.
+- `storeContract(make, { checkpoints: true })`가 이 약속을 검사한다. 스트림 이력 저장소(`renderStream`)는 아직 저장 지점을 쓰지 않는다.
+
+한글 편집기는 연산 하나가 인코딩해 192 KiB(그림 약 144 KB)를 넘거나, HWP 문서에 WebP 그림을 넣는 편집을 보내기 전에 거절한다. 소켓 제출의 한글 승인은 바이트·스트림 방식 모두 epoch 자체 기록을 읽으므로 편집 권한만 있으면 되고 이력 내보내기 권한은 묻지 않는다.
+
 [DOCX 호스트 예제](examples/docx-history-host.ts)는 인증한 소켓과 이력 명령이 같은 서버를 쓰게 하고, 호스트의 브라우저에서 만든 파일을 다시 열어 본다. 예제의 `memoryHistoryStore(authorize)`는 `idle`, `reset`, `diverged`로 현재 에포크를 닫아도 기준 파일과 변경을 보관한다. 프로세스를 끄면 이력·결과·새 판이 모두 사라진다. 운영 호스트는 내구성 저장소, 보존 기간, 용량 제한을 정해야 한다.
 
 예제를 쓰려면 [작업자 페이지](examples/history-worker.html) 옆의 `embed/`에 같은 판 `@seuoffice/embed`의 `dist/`를 서빙한다. `workerPageUrl`에는 이 페이지의 절대 주소를, `officeBaseUrl`에는 웹 묶음의 루트 주소를 넣는다. 두 주소의 출처가 다르면 웹 묶음의 `embed-origins.json`에서 작업자 출처를 허용한다.

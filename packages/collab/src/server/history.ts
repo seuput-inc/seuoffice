@@ -62,6 +62,25 @@ export type HistoryWrite =
   | { command: { kind: 'restore' } & RestoreRequest; artifact: HistoryArtifact }
   | { command: { kind: 'undo' } & UndoRequest; compensation: Json[]; change?: Change }
 
+/** The file at `version` of one HWP epoch, produced by the renderer and admitted like a base. */
+export interface HwpCheckpoint {
+  version: number
+  baseHash: string
+  base: Uint8Array
+}
+
+/** Where an HWP replay starts: the epoch's base (start 0) or a checkpoint, and changes already read. */
+interface ReplaySource {
+  base: Uint8Array
+  baseHash: string
+  start: number
+  changes?: Change[]
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, i) => byte === b[i])
+}
+
 /** Trusted persistence port. Never map these methods directly to an HTTP or socket handler. */
 export interface RetainedHistoryStore extends CollabStore {
   /** Opt in only if commitHistory appends write.change verbatim when supplied, including its id and author. */
@@ -84,6 +103,19 @@ export interface RetainedHistoryStore extends CollabStore {
    * and record the receipt. A fork adds a revision; it never updates a current revision pointer. */
   commitHistory(principal: Principal, write: HistoryWrite): Promise<HistoryReceipt>
   readRevision(principal: Principal, revisionId: string): Promise<HistoryArtifact>
+  /**
+   * Optional, together with readHwpCheckpoint. Keep the file at `checkpoint.version` of the
+   * named epoch for good. First write wins: a later write for the same version changes nothing.
+   * Without the pair, HWP retained history refuses a change once its epoch passes the replay
+   * limits, and the editor's session ends there.
+   */
+  writeHwpCheckpoint?(documentId: string, epochId: string, checkpoint: HwpCheckpoint): Promise<void>
+  /** The checkpoint with the highest version at or below `atMost`, or null; also after drop. */
+  readHwpCheckpoint?(
+    documentId: string,
+    epochId: string,
+    atMost: number,
+  ): Promise<HwpCheckpoint | null>
 }
 
 export interface HistoryServer<Artifact = HistoryArtifact> extends CollabServer {
@@ -141,64 +173,178 @@ export function createHistoryServer(
     return work.finally(() => staging.delete(work))
   }
 
-  async function admitHwpHistory(
-    p: Principal,
-    candidate: HwpHistoryCandidate,
-    retained?: { base: Uint8Array; changes: Change[] },
-  ): Promise<HwpHistoryRefusal | undefined> {
-    shutdown.signal.throwIfAborted()
-    const next = 'next' in candidate ? candidate.next : undefined
-    const { id: epoch, format, baseHash } = candidate
-    const version = next?.v ?? 0
-    const header = { epoch, version, format, baseHash }
-    if ('renderStream' in options)
-      return admitHwpStream(options, p, candidate, header, shutdown.signal)
-    if (options.store.exactHistoryChange !== true) return 'exact_write_required'
-    if (version > HWP_REPLAY.changes || (next && next.ops.length > HWP_REPLAY.ops))
-      return 'too_large'
+  const byteMode = 'renderStream' in options ? null : options
 
-    const seed = 'base' in candidate ? candidate.base : undefined
-    const base = seed ?? retained?.base ?? (await store.readBase(p.documentId, epoch))
-    if (base.byteLength > HWP_REPLAY.fileBytes) return 'too_large'
-    if (!seed && !retained && (await sha256(base)) !== baseHash) return 'schema_mismatch'
-    const request: HistoryRequest = { ...header, changes: [] }
+  /** Both checkpoint methods, or none: without them HWP history refuses at the replay limits. */
+  function checkpointStore() {
+    const s = byteMode?.store
+    return typeof s?.writeHwpCheckpoint === 'function' && typeof s.readHwpCheckpoint === 'function'
+      ? (s as Required<Pick<RetainedHistoryStore, 'writeHwpCheckpoint' | 'readHwpCheckpoint'>>)
+      : null
+  }
+
+  /** The newest retained file at or below `atMost`, or null when the epoch's own base is newest. */
+  async function latestCheckpoint(
+    documentId: string,
+    epoch: string,
+    atMost: number,
+  ): Promise<ReplaySource | null> {
+    const checkpoints = checkpointStore()
+    if (!checkpoints || atMost < 1) return null
+    const found = await checkpoints.readHwpCheckpoint(documentId, epoch, atMost)
+    if (!found) return null
+    const { version, baseHash, base } = found
+    if (
+      !Number.isSafeInteger(version) ||
+      version < 1 ||
+      version > atMost ||
+      typeof baseHash !== 'string' ||
+      !(base instanceof Uint8Array)
+    )
+      throw new Error('invalid HWP checkpoint')
+    return { base, baseHash, start: version }
+  }
+
+  /** The replay request for versions `source.start + 1` through `version`, within the limits. */
+  async function replayPrefix(
+    documentId: string,
+    { id: epoch, format }: HwpHistoryCandidate,
+    version: number,
+    source: ReplaySource,
+    next?: Change,
+  ): Promise<{ base: Uint8Array; request: HistoryRequest } | HwpHistoryRefusal> {
+    const { base, baseHash, start } = source
+    if (version - start > HWP_REPLAY.changes || base.byteLength > HWP_REPLAY.fileBytes)
+      return 'too_large'
+    if ((await sha256(base)) !== baseHash) return 'schema_mismatch'
+    const request: HistoryRequest = { epoch, version, format, baseHash, changes: [] }
+    if (start) request.start = start
     let bytes = utf8Length(JSON.stringify(request))
     let ops = 0
-    for (let v = 1; v <= version; v++) {
+    for (let v = start + 1; v <= version; v++) {
       // Older epochs need not meet today's byte budget. Read only one stored change at a time.
       shutdown.signal.throwIfAborted()
       const frame =
-        v === version
+        v === version && next
           ? next
-          : retained
-            ? retained.changes[v - 1]
-            : (await store.read(p.documentId, epoch, v - 1, 1))[0]
+          : source.changes
+            ? source.changes[v - start - 1]
+            : (await store.read(documentId, epoch, v - 1, 1))[0]
       if (frame?.v !== v || !Array.isArray(frame.ops)) return 'schema_mismatch'
       if ((ops += frame.ops.length) > HWP_REPLAY.ops) return 'too_large'
       try {
-        bytes += utf8Length(JSON.stringify(frame)) + (v > 1 ? 1 : 0)
+        bytes += utf8Length(JSON.stringify(frame)) + (v > start + 1 ? 1 : 0)
       } catch {
         return 'schema_mismatch'
       }
       if (bytes > HWP_REPLAY.historyBytes) return 'too_large'
       request.changes.push(frame)
     }
+    return { base, request }
+  }
+
+  async function renderHwp(
+    base: Uint8Array,
+    request: HistoryRequest,
+  ): Promise<HistoryResult | HwpHistoryRefusal> {
     try {
-      checkPrefix(request, format)
+      checkPrefix(request, request.format)
       shutdown.signal.throwIfAborted()
-      const result = await options.render(base, request)
+      const result = await byteMode!.render(base, request)
       assertHistoryResult(result, false)
       if (result.bytes.byteLength > HWP_REPLAY.fileBytes) return 'too_large'
-      if (!result.fileName.toLowerCase().endsWith(`.${format.name}`)) return 'schema_mismatch'
-      if (
-        seed &&
-        (result.bytes.length !== seed.length || !result.bytes.every((b, i) => b === seed[i]))
-      )
+      if (!result.fileName.toLowerCase().endsWith(`.${request.format.name}`))
         return 'schema_mismatch'
+      return result
     } catch {
       shutdown.signal.throwIfAborted()
       return 'schema_mismatch'
     }
+  }
+
+  /**
+   * Retain the file at `head` so later changes replay from it. The renderer must reopen the file
+   * it produced unchanged, the same admission a new epoch's base passes.
+   */
+  async function writeCheckpoint(
+    documentId: string,
+    candidate: HwpHistoryCandidate,
+    head: number,
+    from: ReplaySource,
+  ): Promise<ReplaySource | HwpHistoryRefusal> {
+    const checkpoints = checkpointStore()
+    if (!checkpoints || head <= from.start) return 'too_large'
+    const prefix = await replayPrefix(documentId, candidate, head, from)
+    if (typeof prefix === 'string') return prefix
+    const file = await renderHwp(prefix.base, prefix.request)
+    if (typeof file === 'string') return file
+    const baseHash = await sha256(file.bytes)
+    const reopened = await renderHwp(file.bytes, {
+      ...prefix.request,
+      baseHash,
+      start: head,
+      changes: [],
+    })
+    if (typeof reopened === 'string') return reopened
+    if (!sameBytes(reopened.bytes, file.bytes)) return 'schema_mismatch'
+    shutdown.signal.throwIfAborted()
+    // A failed write ends this editor's session with a reason instead of a reconnect loop.
+    let kept: ReplaySource | null
+    try {
+      await checkpoints.writeHwpCheckpoint(documentId, candidate.id, {
+        version: head,
+        baseHash,
+        base: file.bytes,
+      })
+      // First write wins: replay from whatever the store kept for this version.
+      kept = await latestCheckpoint(documentId, candidate.id, head)
+    } catch {
+      shutdown.signal.throwIfAborted()
+      return 'schema_mismatch'
+    }
+    return kept?.start === head ? kept : 'schema_mismatch'
+  }
+
+  async function admitHwpHistory(
+    p: Principal,
+    candidate: HwpHistoryCandidate,
+    retained?: ReplaySource,
+  ): Promise<HwpHistoryRefusal | undefined> {
+    shutdown.signal.throwIfAborted()
+    const next = 'next' in candidate ? candidate.next : undefined
+    const { id: epoch, format, baseHash } = candidate
+    const version = next?.v ?? 0
+    if ('renderStream' in options)
+      return admitHwpStream(
+        options,
+        p,
+        candidate,
+        { epoch, version, format, baseHash },
+        shutdown.signal,
+      )
+    if (options.store.exactHistoryChange !== true) return 'exact_write_required'
+    if (next && next.ops.length > HWP_REPLAY.ops) return 'too_large'
+
+    const seed = 'base' in candidate ? candidate.base : undefined
+    const from: ReplaySource = seed
+      ? { base: seed, baseHash, start: 0, changes: [] }
+      : (retained ??
+        (await latestCheckpoint(p.documentId, epoch, version - 1)) ?? {
+          base: await store.readBase(p.documentId, epoch),
+          baseHash,
+          start: 0,
+        })
+    let prefix = await replayPrefix(p.documentId, candidate, version, from, next)
+    if (prefix === 'too_large' && next && !seed) {
+      // The replay window is full: continue from a retained file of the current head.
+      const checkpoint = await writeCheckpoint(p.documentId, candidate, version - 1, from)
+      if (typeof checkpoint === 'string') return checkpoint
+      prefix = await replayPrefix(p.documentId, candidate, version, checkpoint, next)
+    }
+    if (typeof prefix === 'string') return prefix
+    const result = await renderHwp(prefix.base, prefix.request)
+    if (typeof result === 'string') return result
+    if (seed && !sameBytes(result.bytes, seed)) return 'schema_mismatch'
     shutdown.signal.throwIfAborted()
     return undefined
   }
@@ -229,13 +375,33 @@ export function createHistoryServer(
       request.baseHash !== (await sha256(baseBytes))
     )
       throw new Error('invalid retained history')
-    const prefix = undo ? { ...request, undo } : request
+    const checkpoint = isHwpHistory(request.format)
+      ? await latestCheckpoint(p.documentId, source.epoch, source.version)
+      : null
+    if (checkpoint && undo && undo.v <= checkpoint.start)
+      throw new HistoryError(
+        'unsupported',
+        'This edit is older than the saved history point and can no longer be undone on its own',
+      )
+    // Replay from the newest checkpoint at or below the point; the file is the same.
+    const replay: ReplaySource = checkpoint
+      ? { ...checkpoint, changes: request.changes.slice(checkpoint.start) }
+      : { base: baseBytes, baseHash: request.baseHash, start: 0, changes: request.changes }
+    const prefix: HistoryRequest = {
+      ...request,
+      baseHash: replay.baseHash,
+      changes: replay.changes!,
+      ...(replay.start ? { start: replay.start } : {}),
+      ...(undo ? { undo } : {}),
+    }
     checkPrefix(prefix, request.format)
     if (undo) await store.authorizeUndoTarget(p, undo)
     const hwpUndo = undo && isHwpHistory(request.format)
     if (hwpUndo && bytes.store.exactHistoryChange !== true)
       throw new HistoryError('unsupported', 'HWP undo requires exact history writes')
-    const result = await bytes.render(baseBytes, prefix)
+    if (checkpoint && (await sha256(checkpoint.base)) !== checkpoint.baseHash)
+      throw new Error('invalid retained history')
+    const result = await bytes.render(replay.base, prefix)
     assertHistoryResult(result, !!undo)
     if (hwpUndo) {
       const change: Change = {
@@ -248,7 +414,7 @@ export function createHistoryServer(
       const refused = await admitHwpHistory(
         p,
         { id: source.epoch, format: request.format, baseHash: request.baseHash, next: change },
-        { base: baseBytes, changes: request.changes },
+        replay,
       )
       if (refused)
         throw new HistoryError('unsupported', `HWP compensation cannot be replayed (${refused})`)

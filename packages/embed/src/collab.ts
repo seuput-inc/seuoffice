@@ -33,6 +33,8 @@ export interface HistoryRequest {
   format: { name: string; schema: number }
   baseHash: string
   changes: { v: number; client: string; seq: number; author: string; ops: HistoryJson[] }[]
+  /** Versions the base already contains; changes run from `start + 1`. Absent means 0. */
+  start?: number
   version: number
   undo?: { epoch: string; v: number; index: number }
 }
