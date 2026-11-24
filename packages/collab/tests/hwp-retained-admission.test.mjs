@@ -390,6 +390,46 @@ test('stream: two pictures that overflow one replay request continue from a chec
   }
 })
 
+test('bytes: run-heavy changes past the renderer node budget continue from a checkpoint', async () => {
+  const store = memoryHistoryStore(
+    () => true,
+    () => true,
+  )
+  const server = createHistoryServer({
+    store,
+    render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
+  })
+  try {
+    const bytes = sources.get('hwp')
+    const editor = socket(server, 'hwp', bytes)
+    await editor.hello()
+    const { epoch } = await editor.reply(bytes, 'welcome')
+    // 4,000 one-character runs are about 12,000 JSON nodes: two changes pass the renderer's
+    // 16,384 while staying far below its change, op and text limits.
+    const runs = (count) => ({
+      kind: 'restoreText',
+      at: { section: 0, paragraph: 1, path: [], offset: 1 },
+      text: 'x'.repeat(count),
+      runs: Array.from({ length: count }, (_, i) => [i, 0]),
+    })
+    for (const seq of [1, 2]) {
+      const submit = { t: 'submit', seq, base: seq - 1, ops: [runs(4000)] }
+      assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq, v: seq })
+    }
+    assert.equal(editor.reason(), undefined)
+    assert.equal((await store.readHwpCheckpoint(p.documentId, epoch, 2)).version, 1)
+    const file = await server.exportHistory(p, { epoch, version: 2 })
+    const reopened = new HwpDocument(file.bytes)
+    try {
+      assert.equal(reopened.getTextRange(0, 1, 0, 8001), 'A' + 'x'.repeat(8000))
+    } finally {
+      reopened.free()
+    }
+  } finally {
+    await server.close()
+  }
+})
+
 test('a legacy byte store cannot seed HWP without promising exact undo writes', async () => {
   const { exactHistoryChange, ...legacy } = memoryHistoryStore(() => true)
   assert.equal(exactHistoryChange, true)
