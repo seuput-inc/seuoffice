@@ -30,6 +30,7 @@ import { build } from 'vite'
 import {
   AGENT_PLUGIN_MODULE,
   CLIPBOARD_HTML_MODULE,
+  COLLAB_INPUT_MODULE,
   DIALOGS_MODULE,
   FORMAT_COPY_MODULE,
   HANCOM_KEYS_MODULE,
@@ -126,8 +127,12 @@ function stampValue() {
     hash.update(file)
     hash.update(readFileSync(join(PLUGIN_DIR, file)))
   }
+  // Shared runtime sources imported by the in-frame presence adapter.
+  hash.update(readFileSync(join(APP, 'src/shared/collab-text.ts')))
+  hash.update(readFileSync(require.resolve('@seuoffice/web-platform/presence')))
   hash.update(HANJA_COMMIT)
   // and so is the engine: a rebuilt WASM must reach the studio
+  hash.update(readFileSync(join(CORE_DIR, 'rhwp.js')))
   hash.update(readFileSync(join(CORE_DIR, 'rhwp_bg.wasm')))
   return hash.digest('hex')
 }
@@ -253,6 +258,7 @@ async function buildStudio() {
         [HANCOM_KEYS_MODULE]: HANCOM_KEYS,
         [FORMAT_COPY_MODULE]: FORMAT_COPY,
         [CLIPBOARD_HTML_MODULE]: CLIPBOARD_HTML,
+        [COLLAB_INPUT_MODULE]: join(PLUGIN_DIR, 'collab-input.mjs'),
         [PC_FONTS_MODULE]: PC_FONTS,
         [READ_ONLY_MODULE]: READ_ONLY,
         [DIALOGS_MODULE]: DIALOGS,

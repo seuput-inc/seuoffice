@@ -24,6 +24,7 @@ import { documentStats, engineChars, engineLength, engineSlice } from './documen
 import { installDialogTheme } from './dialog-theme.mjs'
 import { missingFonts, setMissingFontLabels, whenPcFontsSettled } from './pc-fonts.mjs'
 import { measureTab, NESTED_CONTROLS_TRIED } from './measure-tab.mjs'
+import { studioCollab } from './collab-input.mjs'
 
 export const AGENT_PLUGIN_ID = 'ieum-agent'
 
@@ -4348,6 +4349,7 @@ export const agentPlugin = {
   },
 
   activate(host) {
+    studioCollab?.attachHost(host)
     // The app's dialog skin (studio-plugin/dialog-theme.mjs). It is installed
     // when the plugin comes up, not when the AI panel opens: a settings dialog
     // can be opened on a document the panel never touched.

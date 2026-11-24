@@ -47,6 +47,32 @@ function selection(doc, anchor, head) {
   return { anchor, head }
 }
 
+export function validateHwpSelection(doc, at) {
+  try {
+    return selection(doc, parseHwpPosition(at?.anchor), parseHwpPosition(at?.head))
+  } catch {
+    return null
+  }
+}
+
+export function readHwpSelection(input, doc) {
+  const cursor = input?.cursor
+  if (
+    !cursor ||
+    input.active === false ||
+    input.formOverlay ||
+    input.isComposing ||
+    input.isInSeparateCaretSpace() ||
+    cursor.isInCellSelectionMode() ||
+    cursor.isInTableObjectSelection() ||
+    cursor.isInPictureObjectSelection()
+  )
+    return null
+  const range = cursor.getSelection()
+  const head = studioPosition(range ? range.focus : cursor.getPosition())
+  return selection(doc, range ? studioPosition(range.anchor) : head, head)
+}
+
 function rangeRects(doc, input, anchor, head) {
   const order =
     anchor.section - head.section ||
@@ -144,7 +170,7 @@ function peerMarks(doc, peer, input, zoom, contentWidth) {
     Object.keys(place).length !== 2
   )
     return null
-  const at = selection(doc, parseHwpPosition(place.anchor), parseHwpPosition(place.head))
+  const at = validateHwpSelection(doc, place)
   if (!at) return null
   const { anchor, head } = at
   const rects = rangeRects(doc, input, anchor, head)
@@ -300,23 +326,7 @@ export function bindHwpPresence(host, publish) {
     read() {
       if (disposed || !services) return null
       try {
-        const input = services.getInputHandler()
-        const cursor = input?.cursor
-        if (
-          !cursor ||
-          input.active === false ||
-          input.formOverlay ||
-          input.isComposing ||
-          input.isInSeparateCaretSpace() ||
-          cursor.isInCellSelectionMode() ||
-          cursor.isInTableObjectSelection() ||
-          cursor.isInPictureObjectSelection()
-        )
-          return null
-        const range = cursor.getSelection()
-        const head = studioPosition(range ? range.focus : cursor.getPosition())
-        const anchor = range ? studioPosition(range.anchor) : head
-        return host.read((doc) => selection(doc, anchor, head))
+        return host.read((doc) => readHwpSelection(services.getInputHandler(), doc))
       } catch {
         return null
       }

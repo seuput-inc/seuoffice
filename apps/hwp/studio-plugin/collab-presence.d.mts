@@ -24,3 +24,8 @@ export interface HwpPresenceHost {
 }
 
 export declare function bindHwpPresence(host: HwpPresenceHost, publish: () => void): HwpPresence
+export declare function validateHwpSelection(
+  doc: HwpDocument,
+  selection: unknown,
+): HwpSelection | null
+export declare function readHwpSelection(input: unknown, doc: HwpDocument): HwpSelection | null

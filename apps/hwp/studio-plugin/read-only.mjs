@@ -68,6 +68,10 @@ export function readOnlyAllows(commandId) {
 const READING_CALL =
   /^(?:__|get|render|export|hitTest|search|has|is[A-Z]|clipboard(?:Has|Is)|copy|measure|page(?:Count|Has)|navigate|moveVertical|logicalTo|textTo|fontMissing|fontSupports|ordinaryTextFont|canvasMetrics|collectCanvas|selectCanvas|capture|discard|saveSnapshot|snapshotCapacity|listCharts|findNearest|findNext|set(?:ActiveField|CaretPosition|Show|ClipEnabled|Dpi|FallbackFont|FontEnvironment|ObservedFontFallbacks|ExactFontInstance|Hangul2024Compat|AnnotateMetricFont|FileName)|set_|clear(?:ActiveField|Clipboard|ExactFontInstance|MetafileFonts|NativePuaFonts)|register|prepareNativeOtfFonts|buildFontEnvironment|(?:begin|step|flush|cancel)DeferredPagination|(?:begin|end)Batch|convertToEditable|free$|constructor$)/
 
+export function isStudioReadCall(key) {
+  return READING_CALL.test(key)
+}
+
 /** The engine document behind a guard that throws on every call that would change it. */
 export function readOnlyDocument(doc) {
   const calls = Object.getPrototypeOf(doc)
@@ -75,7 +79,7 @@ export function readOnlyDocument(doc) {
     get(target, key, receiver) {
       const value = Reflect.get(target, key, receiver)
       if (typeof key !== 'string' || typeof value !== 'function') return value
-      if (!Object.hasOwn(calls, key) || READING_CALL.test(key)) return value
+      if (!Object.hasOwn(calls, key) || isStudioReadCall(key)) return value
       return () => {
         throw new Error(`read-only document: ${key} would change it`)
       }

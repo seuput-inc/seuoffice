@@ -206,6 +206,8 @@ export { PC_FONTS_MODULE }
 
 /** Module specifier the studio-read-only-* patches import; build-studio.mjs aliases it. */
 export { READ_ONLY_MODULE }
+export const COLLAB_INPUT_MODULE = '@seuoffice/studio-collab-input'
+const COLLAB_IMPORT = `import { studioCollab } from '${COLLAB_INPUT_MODULE}';`
 
 /** Module specifier the studio-dialogs-* patches import; build-studio.mjs aliases it. */
 export { DIALOGS_MODULE }
@@ -1333,6 +1335,104 @@ const PATCHES = {
       },
     ],
   },
+  'studio-collab-connect': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]main\.ts$/,
+    find: 'const wasm = new WasmBridge();',
+    replace: `${COLLAB_IMPORT}\nconst wasm = new WasmBridge();\nstudioCollab?.connect(wasm);`,
+  },
+  'studio-collab-document': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]core[\\/]wasm-bridge\.ts$/,
+    edits: [
+      {
+        find: `import { STUDIO_READ_ONLY, readOnlyDocument } from '${READ_ONLY_MODULE}';`,
+        replace: `${COLLAB_IMPORT}\nimport { STUDIO_READ_ONLY, readOnlyDocument } from '${READ_ONLY_MODULE}';`,
+      },
+      {
+        find: '    this.doc = STUDIO_READ_ONLY ? readOnlyDocument(nextDoc) : nextDoc;',
+        replace: '    this.doc = studioCollab ? studioCollab.wrap(this, nextDoc) : STUDIO_READ_ONLY ? readOnlyDocument(nextDoc) : nextDoc;',
+      },
+      {
+        find: '      this.doc = HwpDocument.createEmpty();',
+        replace: '      const empty = HwpDocument.createEmpty();\n      this.doc = studioCollab ? studioCollab.wrap(this, empty) : empty;',
+      },
+    ],
+  },
+  'studio-collab-commands': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]command[\\/]dispatcher\.ts$/,
+    edits: [
+      {
+        find: `import { STUDIO_READ_ONLY, readOnlyAllows } from '${READ_ONLY_MODULE}';`,
+        replace: `${COLLAB_IMPORT}\nimport { STUDIO_READ_ONLY, readOnlyAllows } from '${READ_ONLY_MODULE}';`,
+      },
+      {
+        find: '  if (STUDIO_READ_ONLY && !readOnlyAllows(commandId)) return true;',
+        replace: '  if ((STUDIO_READ_ONLY || studioCollab?.locked) && !readOnlyAllows(commandId)) return true;',
+      },
+    ],
+  },
+  'studio-collab-pointer': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]engine[\\/]input-handler-mouse\.ts$/,
+    edits: [
+      {
+        find: `import { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
+        replace: `${COLLAB_IMPORT}\nimport { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
+      },
+      {
+        find: '  if (!STUDIO_READ_ONLY && !this.cursor.isInHeaderFooter()) {',
+        replace: '  if (!STUDIO_READ_ONLY && !studioCollab?.locked && !this.cursor.isInHeaderFooter()) {',
+      },
+      {
+        find: '  if (STUDIO_READ_ONLY || !this.active || !this.contextMenu) return;',
+        replace: '  if (STUDIO_READ_ONLY || studioCollab?.locked || !this.active || !this.contextMenu) return;',
+      },
+    ],
+  },
+  'studio-collab-input': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]engine[\\/]input-handler\.ts$/,
+    edits: [
+      {
+        find: `import { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
+        replace: `${COLLAB_IMPORT}\nimport { STUDIO_READ_ONLY } from '${READ_ONLY_MODULE}';`,
+      },
+      { find: '    if (STUDIO_READ_ONLY) return;', replace: '    if (STUDIO_READ_ONLY || studioCollab?.locked) return;' },
+      { find: '    if (STUDIO_READ_ONLY) return false;', replace: '    if (STUDIO_READ_ONLY || studioCollab?.locked) return false;' },
+      {
+        find: '  private onCompositionStartBound: () => void;',
+        replace: '  private disposeCollabInput?: () => void;\n  private onCompositionStartBound: () => void;',
+      },
+      {
+        find: '    this.onInputBound = this.onInput.bind(this);',
+        replace: [
+          '    this.disposeCollabInput = studioCollab?.bindInput(this, (text: string) => {',
+          '      this.textarea.value = text;',
+          '      _text.onInput.call(this, undefined, true);',
+          '    });',
+          '    this.onInputBound = this.onInput.bind(this);',
+        ].join('\n'),
+      },
+      {
+        find: "    this.textarea.removeEventListener('input', this.onInputBound);",
+        replace: "    this.disposeCollabInput?.();\n    this.textarea.removeEventListener('input', this.onInputBound);",
+      },
+    ],
+  },
+  'studio-collab-commit-ime': {
+    file: /[\\/]rhwp-studio[\\/]src[\\/]engine[\\/]input-handler-text\.ts$/,
+    edits: [
+      {
+        find: 'export function onInput(this: any, e?: InputEvent): void {',
+        replace: 'export function onInput(this: any, e?: InputEvent, committedComposition = false): void {',
+      },
+      {
+        find: '  const text = normalizeTextNewlines(quickCorrectTyped(this, this.textarea.value, e?.inputType));',
+        replace: '  const text = normalizeTextNewlines(committedComposition ? this.textarea.value : quickCorrectTyped(this, this.textarea.value, e?.inputType));',
+      },
+      {
+        find: '  if (this._isIOS && !this.isComposing) {',
+        replace: '  if (!committedComposition && this._isIOS && !this.isComposing) {',
+      },
+    ],
+  },
   'studio-read-only-pointer': {
     file: /[\\/]rhwp-studio[\\/]src[\\/]engine[\\/]input-handler-mouse\.ts$/,
     edits: [
@@ -1536,6 +1636,12 @@ export const STUDIO_PATCHES = /** @type {const} */ ([
   'studio-ai-run-lock',
   'studio-read-only-document',
   'studio-read-only-pointer',
+  'studio-collab-connect',
+  'studio-collab-document',
+  'studio-collab-commands',
+  'studio-collab-pointer',
+  'studio-collab-input',
+  'studio-collab-commit-ime',
   'studio-dialogs-input-handler',
   'studio-dialogs-main',
   'studio-dialogs-bookmark',
@@ -1583,6 +1689,9 @@ export const pluginHooks = [
       'getCellTableContext()',
       'getExcludedCells()',
       'isInPictureObjectSelection(): boolean',
+      'getSelection():',
+      'invalidateFocusedCellCursorGeometry(): void',
+      'isInTableObjectSelection(): boolean',
       // word and paragraph selection in a header, footer or footnote being edited
       'isInHeaderFooter(): boolean',
       "get headerFooterMode(): 'none' | 'header' | 'footer'",
@@ -1618,6 +1727,11 @@ export const pluginHooks = [
       'updateCaret(',
       'private virtualScroll: VirtualScroll',
       'private emitCursorFormatState(): void',
+      'private restoreEditContextAfterHistory(',
+      'private resetDerivedStateAfterHistoryJump()',
+      'private removeFormOverlay()',
+      'private afterEdit(',
+      'private updateSelection()',
     ],
   },
   {
