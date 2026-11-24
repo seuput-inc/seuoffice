@@ -222,7 +222,9 @@ if [ "$installed" = 1 ]; then /bin/rm -rf "$previous" "$staging"; fi
 
 /**
  * Starts the swap detached, so it outlives the app it is waiting for.
- * Returns false when the script could not be started.
+ * Returns false when the script could not be started. `open` hands its
+ * environment to the app it starts, so the engine file this version named for
+ * its workers (SEUOFFICE_WASM, a chunk of this app.asar) is left out.
  */
 export function startMacSwap(options: {
   pid: number
@@ -233,6 +235,7 @@ export function startMacSwap(options: {
   spawnProgram?: typeof spawn
 }): boolean {
   const { pid, bundle, staged, logFile, opener = '/usr/bin/open', spawnProgram = spawn } = options
+  const { SEUOFFICE_WASM: _ownEngine, ...env } = process.env
   try {
     const child = spawnProgram(
       '/bin/sh',
@@ -248,7 +251,7 @@ export function startMacSwap(options: {
         logFile,
         opener,
       ],
-      { detached: true, stdio: 'ignore' },
+      { detached: true, stdio: 'ignore', env },
     )
     // a failed start is reported here, never as an uncaught error event
     child.on('error', () => {})
