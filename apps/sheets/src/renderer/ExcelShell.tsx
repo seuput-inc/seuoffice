@@ -5021,14 +5021,16 @@ function CopyButton({ text }: { readonly text: string }): React.JSX.Element {
     }
   }
   const copy = (): void => {
+    // undefined on a page that is not a secure context (plain http)
+    const written = navigator.clipboard?.writeText(text)
     // the press's activation outlasts the refusal, so the copy command still counts as the person's
-    navigator.clipboard
-      .writeText(text)
-      .then(
-        () => true,
-        () => copyBySelection(),
-      )
-      .then((copied) => setState(copied ? 'copied' : 'failed'))
+    const copied = written
+      ? written.then(
+          () => true,
+          () => copyBySelection(),
+        )
+      : Promise.resolve(copyBySelection())
+    void copied.then((done) => setState(done ? 'copied' : 'failed'))
   }
   return (
     <button type="button" onClick={copy}>

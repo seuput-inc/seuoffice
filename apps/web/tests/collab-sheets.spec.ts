@@ -699,10 +699,13 @@ test('an edit that arrives under an unconfirmed row insert of this page says so 
   expect(cells.get('H11'), shown).toBe('below')
 })
 
-test('entries cancelled one after another each keep their notice', async ({ browser }) => {
+test('entries cancelled one after another each keep their notice, copied even where the async clipboard is missing', async ({
+  browser,
+}) => {
   const documentId = freshDocument()
   const writer = await open(browser, documentId, 'writer')
   const typist = await open(browser, documentId, 'typist')
+  await typist.page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
   await typeInto(typist, 'H8', 'ready')
   await settled([writer, typist])
   const editor = typist.frame.locator('[id="__editor___INTERNAL_EDITOR__DOCS_NORMAL"]')
@@ -716,6 +719,17 @@ test('entries cancelled one after another each keep their notice', async ({ brow
   const first = typist.frame.getByRole('status').filter({ hasText: 'first' })
   await expect(first).toBeVisible()
   await expect(typist.frame.getByRole('status').filter({ hasText: 'second' })).toBeVisible()
+
+  // as on a plain http page: no navigator.clipboard at all
+  await typist.page.evaluate(() => navigator.clipboard.writeText('before'))
+  await typist.page
+    .locator('#viewer iframe')
+    .evaluate((iframe: HTMLIFrameElement) =>
+      Object.defineProperty(iframe.contentWindow!.navigator, 'clipboard', { value: undefined }),
+    )
+  await first.getByRole('button', { name: '복사', exact: true }).click()
+  await expect(first.getByRole('button', { name: '복사됨', exact: true })).toBeVisible()
+  expect(await typist.page.evaluate(() => navigator.clipboard.readText())).toBe('first')
 })
 
 test('a cell that moves or goes away while this page types in it is never written over', async ({
