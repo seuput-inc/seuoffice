@@ -39,7 +39,7 @@ hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
  src/parser/hwpx/foreign.rs                     | 333 +++++++++++++++++++++++++
  src/parser/hwpx/header.rs                      |   1 +
  src/parser/hwpx/mod.rs                         |   1 +
- src/parser/hwpx/section.rs                     |  52 +++-
+ src/parser/hwpx/section.rs                     |  57 ++++-
  src/parser/hwpx/utils.rs                       |   2 +-
  src/scaffold/builder.rs                        |   1 +
  src/serializer/body_text.rs                    |  46 +++-
@@ -48,8 +48,8 @@ hp:grid@strikeContinue, hh:paraPr@textDir도 원문 값으로 남긴다.
  src/serializer/hwpx/section.rs                 |  52 +++-
  src/serializer/hwpx/table.rs                   |   4 +
  tests/cases/unknown_paragraph_records.rs       | 244 ++++++++++++++++++
- tests/cases/unknown_paragraph_xml.rs           | 271 ++++++++++++++++++++
- 22 files changed, 1182 insertions(+), 28 deletions(-)
+ tests/cases/unknown_paragraph_xml.rs           | 291 +++++++++++++++++++++
+ 22 files changed, 1207 insertions(+), 28 deletions(-)
 
 diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
 index 73e938d4d..d4b140a0b 100644
@@ -770,7 +770,7 @@ index a63957573..70c66e34b 100644
  pub mod reader;
  pub mod section;
 diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
-index 2b75c684e..039941a74 100644
+index 2b75c684e..85f7177c7 100644
 --- a/src/parser/hwpx/section.rs
 +++ b/src/parser/hwpx/section.rs
 @@ -58,6 +58,7 @@ pub fn parse_hwpx_section(xml: &str) -> Result<Section, HwpxError> {
@@ -877,24 +877,43 @@ index 2b75c684e..039941a74 100644
                  }
              }
              Ok(Event::Eof) => break,
-@@ -2506,6 +2541,17 @@ fn parse_table(
+@@ -2499,6 +2534,10 @@ fn parse_table(
+                         let caption = parse_caption(ce, reader)?;
+                         table.caption = Some(caption);
+                     }
++                    b"label" => {
++                        table.hwpx_label = Some(table_label(ce));
++                        skip_element(reader, b"label")?;
++                    }
+                     _ => {}
+                 }
+             }
+@@ -2506,6 +2545,7 @@ fn parse_table(
                  let cname = ce.name();
                  let local = local_name(cname.as_ref());
                  match local {
-+                    b"label" => {
-+                        let attrs = ce.attributes().flatten();
-+                        table.hwpx_label = Some(
-+                            attrs
-+                                .map(|a| {
-+                                    let key: &str = a.key.as_ref();
-+                                    (key.to_string(), attr_str(&a))
-+                                })
-+                                .collect(),
-+                        );
-+                    }
++                    b"label" => table.hwpx_label = Some(table_label(ce)),
                      b"sz" => {
                          for attr in ce.attributes().flatten() {
                              match attr.key.as_ref().as_bytes() {
+@@ -2672,6 +2712,17 @@ fn parse_table(
+     Ok(table)
+ }
+ 
++/// `<hp:label>` attributes as in the source, whether written self-closing or paired.
++fn table_label(e: &quick_xml::events::BytesStart) -> Vec<(String, String)> {
++    e.attributes()
++        .flatten()
++        .map(|a| {
++            let key: &str = a.key.as_ref();
++            (key.to_string(), attr_str(&a))
++        })
++        .collect()
++}
++
+ fn parse_size_criterion(value: &str, allow_column_para: bool) -> SizeCriterion {
+     match value {
+         "PAPER" => SizeCriterion::Paper,
 diff --git a/src/parser/hwpx/utils.rs b/src/parser/hwpx/utils.rs
 index c23203ede..bb6a6ccd5 100644
 --- a/src/parser/hwpx/utils.rs
@@ -1453,10 +1472,10 @@ index 000000000..e8f3a5eda
 +}
 diff --git a/tests/cases/unknown_paragraph_xml.rs b/tests/cases/unknown_paragraph_xml.rs
 new file mode 100644
-index 000000000..6de898335
+index 000000000..b26427a18
 --- /dev/null
 +++ b/tests/cases/unknown_paragraph_xml.rs
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,291 @@
 +//! HWPX markup outside the OWPML namespaces in a paragraph (attributes of `<hp:p>`,
 +//! elements under `<hp:p>` or `<hp:run>`) stays with that paragraph through edits elsewhere,
 +//! save and reopen. Text inside such an element is not paragraph text.
@@ -1727,6 +1746,26 @@ index 000000000..6de898335
 +        reopened.document().sections[0].paragraphs[0].text,
 +        "first paragraph"
 +    );
++}
++
++#[test]
++fn table_label_survives_a_save_in_both_tag_forms() {
++    let mut core = two_paragraphs();
++    core.create_table_native(0, 1, 0, 1, 1).unwrap();
++    let bytes = core.export_hwpx_native().unwrap();
++    let xml = section_xml(&bytes);
++    for label in [
++        r#"<hp:label topmargin="3826" labelcols="2"/>"#,
++        r#"<hp:label topmargin="3826" labelcols="2"></hp:label>"#,
++    ] {
++        let source = xml.replacen("</hp:tbl>", &format!("{label}</hp:tbl>"), 1);
++        let core = DocumentCore::from_bytes(&with_section_xml(&bytes, &source)).unwrap();
++        let (out, _) = saved(&core);
++        assert!(
++            out.contains(r#"<hp:label topmargin="3826" labelcols="2""#),
++            "{label}: {out}"
++        );
++    }
 +}
 -- 
 2.50.1
