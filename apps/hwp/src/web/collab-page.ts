@@ -83,6 +83,9 @@ export async function openHwpCollabPage(
       onDraftLost(text) {
         if (activeMount() === active) active.binding?.callbacks.onDraftLost?.(text)
       },
+      onCaretLost() {
+        if (activeMount() === active) active.binding?.callbacks.onCaretLost?.()
+      },
     }
   }
   const requireNoDraft = () => {

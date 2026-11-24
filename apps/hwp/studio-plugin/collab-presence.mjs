@@ -74,6 +74,14 @@ export function readHwpSelection(input, doc) {
   return selection(doc, range ? studioPosition(range.anchor) : head, head)
 }
 
+/** The plain caret behind a selection readHwpSelection cannot express, such as a selected object. */
+export function readHwpCaret(input, doc) {
+  const cursor = input?.cursor
+  if (!cursor || input.isInSeparateCaretSpace()) return null
+  const at = studioPosition(cursor.getPosition())
+  return selection(doc, at, at)
+}
+
 function rangeRects(doc, input, anchor, head) {
   const order =
     anchor.section - head.section ||

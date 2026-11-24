@@ -55,6 +55,7 @@ function editor(
   const batches: string[][] = []
   let staged: string[]
   const lost = vi.fn<(text: string) => void>()
+  const caretLost = vi.fn()
   let controls!: HwpStudioControls
   if (opts.registered !== false) {
     const owner = parent as unknown as Window
@@ -80,6 +81,7 @@ function editor(
           order.push(pending)
         },
         onDraftLost: lost,
+        onCaretLost: caretLost,
         onMutation: (_doc, method, _args, call) => {
           if (method === 'restoreSnapshot') throw new Error('No collaborative inverse')
           staged.push(method)
@@ -225,6 +227,7 @@ function editor(
     batches,
     text,
     lost,
+    caretLost,
   }
 }
 
@@ -384,6 +387,39 @@ describe('Studio collaboration input', () => {
     expect(e.ih.afterEdit).toHaveBeenCalledOnce()
     presence.dispose()
     expect(presence.read()).toBeNull()
+  })
+
+  it('keeps the caret behind a selected picture through a remote replay', () => {
+    const e = editor()
+    e.controls.setEditable(true)
+    e.cursor.isInPictureObjectSelection = () => true
+    e.controls.replay(
+      (doc) => doc.insertText(0, 0, 0, 'x'),
+      (sel) => {
+        expect(sel).toEqual({ anchor: at(1), head: at(1) })
+        return { anchor: at(2), head: at(2) }
+      },
+    )
+    e.cursor.isInPictureObjectSelection = () => false
+    e.input('!')
+    expect(e.text()).toBe('xA!B')
+    expect(e.caretLost).not.toHaveBeenCalled()
+  })
+
+  it('locks input with a notice when a replay removes the caret place, until the user clicks', () => {
+    const e = editor()
+    e.controls.setEditable(true)
+    e.controls.replay(
+      (doc) => doc.insertText(0, 0, 0, 'x'),
+      () => null,
+    )
+    expect(e.caretLost).toHaveBeenCalledOnce()
+    expect(e.session.locked).toBe(true)
+    expect(() => e.doc.insertText(0, 0, 0, '!')).toThrow(/read-only/)
+    e.frame.document.dispatchEvent(new e.parent.Event('pointerdown'))
+    expect(e.session.locked).toBe(false)
+    e.input('!')
+    expect(e.text()).toBe('!xAB')
   })
 
   it('rebuilds both ends in the inner table without confusing the owner paragraph with the cell paragraph', () => {

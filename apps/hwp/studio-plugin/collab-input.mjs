@@ -1,5 +1,10 @@
 import { wrapHwpMutations } from './collab-capture.mjs'
-import { bindHwpPresence, readHwpSelection, validateHwpSelection } from './collab-presence.mjs'
+import {
+  bindHwpPresence,
+  readHwpCaret,
+  readHwpSelection,
+  validateHwpSelection,
+} from './collab-presence.mjs'
 import { askedReadOnly, readOnlyDocument } from './read-only.mjs'
 
 /** The parent registers before creating the frame and accepts only its own editor's contentWindow. */
@@ -25,6 +30,8 @@ export function createStudioCollab(win) {
   let editable = false
   let closed = false
   let replaying = false
+  // A replay that cannot place the caret keeps input locked until the user clicks a new place.
+  let stranded = false
   let command
   function run(action) {
     try {
@@ -99,7 +106,7 @@ export function createStudioCollab(win) {
     }
     return result
   }
-  const locked = () => closed || replaying || viewer || !editable || !callbacks
+  const locked = () => closed || replaying || stranded || viewer || !editable || !callbacks
   const controls = Object.freeze({
     setEditable(next) {
       editable = next === true && !viewer && !closed
@@ -121,7 +128,7 @@ export function createStudioCollab(win) {
       return controls.withDocument((doc) => {
         let before
         try {
-          before = readHwpSelection(handler, doc)
+          before = readHwpSelection(handler, doc) ?? readHwpCaret(handler, doc)
         } catch {
           before = null
         }
@@ -133,7 +140,13 @@ export function createStudioCollab(win) {
           return result
         } finally {
           try {
-            if (!mapped) input.cancel()
+            if (!mapped) {
+              input.cancel()
+              if (editable && !stranded) {
+                stranded = true
+                callbacks?.onCaretLost?.()
+              }
+            }
             restoreSelection(handler, mapped)
           } finally {
             replaying = false
@@ -151,6 +164,13 @@ export function createStudioCollab(win) {
     win.removeEventListener('pagehide', shutdown)
   }
   win.addEventListener('pagehide', shutdown)
+  win.document.addEventListener(
+    'pointerdown',
+    () => {
+      stranded = false
+    },
+    true,
+  )
   return {
     get locked() {
       return Boolean(locked() || input?.buffering())
