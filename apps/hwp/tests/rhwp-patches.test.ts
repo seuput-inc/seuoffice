@@ -842,6 +842,7 @@ describe('the studio source the build fetched', () => {
   const files = [
     'src/main.ts',
     'src/embed/protocol.ts',
+    'src/core/document-dirty-state.ts',
     'src/core/wasm-bridge.ts',
     'src/engine/input-handler.ts',
     'src/engine/input-handler-keyboard.ts',
