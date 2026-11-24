@@ -157,3 +157,42 @@ it('keeps text inside foreign elements bound on the run or by default out of the
   expect(out.getElementsByTagNameNS('urn:vendor', 'note')).toHaveLength(1)
   expect(out.getElementsByTagNameNS('urn:vendor2', 'note')).toHaveLength(1)
 })
+
+it('keeps text inside a foreign element of a table cell bound on the enclosing run out', async () => {
+  const doc = new HwpDocument(new Uint8Array(readFileSync(BLANK)))
+  let source: Uint8Array
+  try {
+    doc.insertText(0, 0, 0, 'front')
+    doc.splitParagraph(0, 0, 5)
+    doc.createTable(0, 1, 0, 1, 1)
+    doc.insertTextInCell(0, 1, 0, 0, 0, 0, 'cell')
+    source = doc.exportHwpx()
+  } finally {
+    doc.free()
+  }
+  const zip = await JSZip.loadAsync(source)
+  let xml = await zip.files[SECTION_XML].async('string')
+  const t = '<hp:t>cell</hp:t>'
+  const at = xml.indexOf(t) + t.length
+  // the run of the body paragraph that holds the table, not the cell's own run
+  const run = xml.lastIndexOf('<hp:run', xml.lastIndexOf('<hp:tbl', at)) + '<hp:run'.length
+  const foreign = '<x:note><hp:t>leak</hp:t></x:note>'
+  xml = `${xml.slice(0, run)} xmlns:x="urn:vendor"${xml.slice(run, at)}${foreign}${xml.slice(at)}`
+  zip.file(SECTION_XML, xml)
+
+  const edited = new HwpDocument(await zip.generateAsync({ type: 'uint8array' }))
+  let saved: Uint8Array
+  try {
+    const length = edited.getCellParagraphLength(0, 1, 0, 0, 0)
+    expect(edited.getTextInCell(0, 1, 0, 0, 0, 0, length)).toBe('cell')
+    saved = edited.exportHwpx()
+  } finally {
+    edited.free()
+  }
+  const out = new new JSDOM().window.DOMParser().parseFromString(
+    await (await JSZip.loadAsync(saved)).files[SECTION_XML].async('string'),
+    'application/xml',
+  )
+  expect(out.getElementsByTagName('parsererror')).toHaveLength(0)
+  expect(out.getElementsByTagNameNS('urn:vendor', 'note')).toHaveLength(1)
+})
