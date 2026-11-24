@@ -79,7 +79,7 @@ new file mode 100644
 +        if !super::is_single_text_fragment(&c.paragraphs) { return Err(invalid()); }
 +        let p = &c.paragraphs[0];
 +        let n = p.char_offsets.len();
-+        if p.text.len() > 262144 || p.char_shapes.len() > 512 || n.saturating_mul(p.char_shapes.len()) > 2_000_000
++        if !p.unknown_records.is_empty() || p.foreign_xml.is_some() || p.text.len() > 262144 || p.char_shapes.len() > 512 || n.saturating_mul(p.char_shapes.len()) > 2_000_000
 +            || n != p.text.chars().count() || p.char_offsets.windows(2).any(|w| w[0] >= w[1]) { return Err(invalid()); }
 +        let mut runs = Vec::with_capacity(p.char_shapes.len());
 +        for r in &p.char_shapes {

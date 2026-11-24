@@ -1,8 +1,11 @@
+// @vitest-environment node
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import init, { HwpDocument } from '@rhwp/core'
+import JSZip from 'jszip'
 import { beforeAll, expect, it } from 'vitest'
+import { openHwp, recordsOf, rewriteStreams, SECTION, streamOf } from '../src/main/hwp5-file'
 import { applyHwpOp, decodeHwpOp, encodeHwpOp } from '../src/shared/collab-editor-ops'
 import { rebaseHwpOps } from '../src/shared/collab-transform'
 import type { HwpTextSplice } from '../src/shared/collab-text'
@@ -74,3 +77,100 @@ it.each(['hwp', 'hwpx'] as const)(
     }
   },
 )
+
+function digest(bytes: Uint8Array) {
+  const doc = new HwpDocument(bytes)
+  try {
+    return fingerprint(doc)
+  } finally {
+    doc.free()
+  }
+}
+
+it('distinguishes the payload and anchor of an opaque HWP paragraph record', () => {
+  const seed = HwpDocument.createEmpty()
+  try {
+    seed.createBlankDocument()
+    seed.splitParagraph(0, 0, seed.getParagraphLength(0, 0))
+    seed.insertText(0, 1, 0, '보존')
+    const source = seed.exportHwp()
+    const withRecord = (after: number, byte: number) => {
+      const opened = openHwp(source)!
+      const path = SECTION(0)
+      const data = streamOf(opened, path)!
+      const { end } = recordsOf(data)!
+        .filter(({ tag }) => tag === after)
+        .at(-1)!
+      const record = Buffer.alloc(5)
+      record.writeUInt32LE(0x3fe | (1 << 10) | (1 << 20))
+      record[4] = byte
+      const changed = Buffer.concat([data.subarray(0, end), record, data.subarray(end)])
+      return rewriteStreams(opened, new Map([[path, changed]]))!
+    }
+    const opaque = withRecord(67, 1)
+    const afterText = digest(opaque)
+    expect(digest(withRecord(67, 2))).not.toBe(afterText)
+    expect(digest(withRecord(66, 1))).not.toBe(afterText)
+    for (const bytes of [source, opaque]) {
+      const doc = new HwpDocument(bytes)
+      try {
+        doc.copySelection(0, 1, 0, 1, 2)
+        if (bytes === source) {
+          expect(JSON.parse(doc.getCollabClipboardText()).text).toBe('보존')
+        } else {
+          expect(() => doc.getCollabClipboardText()).toThrow()
+        }
+      } finally {
+        doc.free()
+      }
+    }
+  } finally {
+    seed.free()
+  }
+})
+
+it('fingerprints each retained HWPX field and resolves inherited namespace bindings', async () => {
+  const seed = HwpDocument.createEmpty()
+  try {
+    seed.createBlankDocument()
+    seed.createTable(0, 0, 0, 1, 1)
+    const source = seed.exportHwpx()
+    const section = 'Contents/section0.xml'
+    const change = async (part: string, mutate: (xml: string) => string) => {
+      const zip = await JSZip.loadAsync(source)
+      const original = await zip.file(part)!.async('string')
+      const changed = mutate(original)
+      expect(changed).not.toBe(original)
+      zip.file(part, changed, { createFolders: false })
+      return digest(await zip.generateAsync({ type: 'uint8array' }))
+    }
+    for (const [part, marker, first, second] of [
+      [section, '<hp:grid ', '<hp:grid strikeContinue="0" ', '<hp:grid strikeContinue="1" '],
+      [
+        section,
+        '</hp:tbl>',
+        '<hp:label topMargin="1"/></hp:tbl>',
+        '<hp:label topMargin="2"/></hp:tbl>',
+      ],
+      [
+        'Contents/header.xml',
+        '<hh:paraPr ',
+        '<hh:paraPr textDir="LTR" ',
+        '<hh:paraPr textDir="RTL" ',
+      ],
+    ] as const) {
+      expect(await change(part, (xml) => xml.replace(marker, first))).not.toBe(
+        await change(part, (xml) => xml.replace(marker, second)),
+      )
+    }
+    const attribute = (xml: string, uri: string, local: boolean) =>
+      xml
+        .replace(local ? '<hp:p ' : '<hs:sec ', `$&xmlns:x="${uri}" `)
+        .replace('<hp:p ', '<hp:p x:mark="1" ')
+    const inherited = await change(section, (xml) => attribute(xml, 'urn:one', false))
+    expect(await change(section, (xml) => attribute(xml, 'urn:one', true))).toBe(inherited)
+    expect(await change(section, (xml) => attribute(xml, 'urn:two', false))).not.toBe(inherited)
+  } finally {
+    seed.free()
+  }
+})

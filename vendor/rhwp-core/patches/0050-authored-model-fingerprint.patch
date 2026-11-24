@@ -8,7 +8,7 @@ diff --git a/src/model/raw_provenance/authored.rs b/src/model/raw_provenance/aut
 new file mode 100644
 --- /dev/null
 +++ b/src/model/raw_provenance/authored.rs
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,389 @@
 +//! The live editing model, not the editor's measured lines or its source-stream caches.
 +//! The session admits original file bytes separately. Never substitute them for live state.
 +
@@ -22,7 +22,7 @@ new file mode 100644
 +    header_footer::{Footer, Header, MasterPage},
 +    image::Picture,
 +    page::PageDef,
-+    paragraph::Paragraph,
++    paragraph::{Paragraph, UnknownRecord},
 +    provenance::SourceProvenance,
 +    section_tail::SectionTail,
 +    shape::*,
@@ -115,10 +115,11 @@ new file mode 100644
 +record!(Bullet { raw_data, attr, width_adjust, text_distance, char_shape_id, bullet_char,
 +    image_bullet, hwpx_image_without_ref, image_data, check_bullet_char, raw_para_head });
 +record!(RawRecord { tag_id, level } bytes { data });
++record!(UnknownRecord { after, depth, tag_id } bytes { data });
 +record!(Section {} nested { section_def, paragraphs, trailing_lists } omit { raw_stream,
 +    raw_provenance });
 +record!(SectionTail {} nested { records } omit { memo_seal, projection_seal });
-+record!(SectionDef { flags, column_spacing, line_grid, char_grid, default_tab_spacing, page_num,
++record!(SectionDef { flags, column_spacing, line_grid, char_grid, hwpx_grid_strike_continue, default_tab_spacing, page_num,
 +    page_num_type, picture_num, table_num, equation_num, footnote_shape, endnote_shape,
 +    page_border_fill, hide_header, hide_footer, hide_master_page, hide_border, hide_fill,
 +    first_page_border, first_page_fill, hide_empty_line, text_direction, outline_numbering_id,
@@ -133,16 +134,16 @@ new file mode 100644
 +record!(Paragraph { char_count, control_mask, para_shape_id, style_id, column_type,
 +    raw_break_type, page_break_synthesized, text, char_offsets, literal_figure_spaces,
 +    nb_space_control_indices, char_shapes, hwpx_axis_shift, range_tags, field_ranges,
-+    orphan_field_ends, ctrl_data_records, char_count_msb, has_para_text, tab_extended,
++    orphan_field_ends, ctrl_data_records, foreign_xml, char_count_msb, has_para_text, tab_extended,
 +    title_marks, markpen_marks, numbering_restart, editor_created_empty } bytes { raw_header_extra }
-+    nested { controls }
++    nested { controls, unknown_records }
 +    omit { line_segs, hwp3_saved_space_corrections, layout_space_metrics,
 +    layout_object_projection, layout_float_band, layout_field_values, layout_only_fill_lines,
 +    source_line_seg_vertical_pos, layout_rebased_body_axis, layout_cell_grid,
 +    stored_text_partition_dirty, cell_format_vpos_dirty, cell_vpos_reset, stored_flow_shifted,
 +    numbering_marker });
 +record!(Table { attr, row_count, col_count, cell_spacing, padding, row_sizes, border_fill_id,
-+    zones, page_break, repeat_header, outer_margin_left, outer_margin_right, outer_margin_top,
++    zones, hwpx_label, page_break, repeat_header, outer_margin_left, outer_margin_right, outer_margin_top,
 +    outer_margin_bottom, raw_table_record_attr } bytes { raw_table_record_extra } nested { cells,
 +    caption } omit { cell_grid, layout_page_break_cache, raw_ctrl_seal, height_projection } via
 +    table_header { common, raw_ctrl_data });
@@ -260,7 +261,7 @@ new file mode 100644
 +        let Self { header, doc_properties, doc_info, sections, preview, bin_data_content,
 +            extra_streams, hwpx_aux_entries, is_hwp3_variant, is_hwpx_variant, provenance } = self;
 +        let mut out = DigestWriter::new();
-+        out.value("rhwp-authored-v1");
++        out.value("rhwp-authored-v2");
 +        header.authored(&mut out);
 +        doc_properties.authored(&mut out);
 +        doc_info.authored(&mut out);

@@ -136,7 +136,7 @@ new file mode 100644
 +        layout_only_fill_lines, source_line_seg_vertical_pos, editor_created_empty,
 +        layout_rebased_body_axis, layout_cell_grid, range_tags, field_ranges, orphan_field_ends,
 +        controls, ctrl_data_records, char_count_msb: _, raw_header_extra, has_para_text,
-+        tab_extended, title_marks, markpen_marks, numbering_restart,
++        unknown_records, foreign_xml, tab_extended, title_marks, markpen_marks, numbering_restart,
 +        stored_text_partition_dirty: _, cell_format_vpos_dirty: _, cell_vpos_reset,
 +        stored_flow_shifted, numbering_marker: _,
 +    } = p;
@@ -151,7 +151,7 @@ new file mode 100644
 +        || !range_tags.is_empty() || !field_ranges.is_empty() || !orphan_field_ends.is_empty()
 +        || !controls.is_empty() || !ctrl_data_records.is_empty() || !tab_extended.is_empty()
 +        || !title_marks.is_empty() || !markpen_marks.is_empty() || numbering_restart.is_some()
-+        || *cell_vpos_reset == Some(true) || *stored_flow_shifted
++        || !unknown_records.is_empty() || foreign_xml.is_some() || *cell_vpos_reset == Some(true) || *stored_flow_shifted
 +    {
 +        return None;
 +    }

@@ -8,8 +8,8 @@ diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.
 --- a/src/diagnostics/ir_field_sweep.rs
 +++ b/src/diagnostics/ir_field_sweep.rs
 @@ -956,6 +956,7 @@
-         raw_table_record_attr,
          raw_table_record_extra,
+         hwpx_label,
          layout_page_break_cache: _,
 +        height_projection: _,
      } = a;
@@ -31,16 +31,16 @@ diff --git a/src/document_core/commands/object_ops/table.rs b/src/document_core/
 --- a/src/document_core/commands/object_ops/table.rs
 +++ b/src/document_core/commands/object_ops/table.rs
 @@ -700,6 +700,7 @@
-             // [#3570] 한컴은 TABLE 레코드를 zone 개수까지만 쓴다 — 여분 2바이트 없음.
              raw_table_record_extra: Vec::new(),
+             hwpx_label: None,
              layout_page_break_cache: Default::default(),
 +            height_projection: None,
          };
          table.rebuild_grid();
  
 @@ -1089,6 +1090,7 @@
-             // [#3570] 한컴은 TABLE 레코드를 zone 개수까지만 쓴다 — 여분 2바이트 없음.
              raw_table_record_extra: Vec::new(),
+             hwpx_label: None,
              layout_page_break_cache: Default::default(),
 +            height_projection: None,
          };
@@ -199,8 +199,8 @@ diff --git a/src/document_core/html_table_import.rs b/src/document_core/html_tab
 --- a/src/document_core/html_table_import.rs
 +++ b/src/document_core/html_table_import.rs
 @@ -644,6 +644,7 @@
-             raw_table_record_attr: tbl_rec_attr,
              raw_table_record_extra: vec![0u8; 2], // 표준 추가 2바이트
+             hwpx_label: None,
              layout_page_break_cache: Default::default(),
 +            height_projection: None,
          };
@@ -491,8 +491,8 @@ diff --git a/src/scaffold/builder.rs b/src/scaffold/builder.rs
 --- a/src/scaffold/builder.rs
 +++ b/src/scaffold/builder.rs
 @@ -471,6 +471,7 @@
-         raw_table_record_attr: 0x0000_0006, // bits 0-1 = 2(나눔, 행 단위 = HWPX CELL), bit2 = repeat_header
          raw_table_record_extra: Vec::new(),
+         hwpx_label: None,
          layout_page_break_cache: Default::default(),
 +        height_projection: None,
      };

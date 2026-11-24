@@ -3,12 +3,16 @@ import { gunzipSync } from 'node:zlib'
 import type { HistoryRequest, Json } from '@seuoffice/collab/client'
 import { renderHistory } from '@seuoffice/history-renderer'
 import JSZip from 'jszip'
+import { SaxesParser } from 'saxes'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { HwpDocument, initSync } from '../../../vendor/rhwp-core/rhwp.js'
 import { render } from './render'
 
 type Format = 'hwp' | 'hwpx'
 const base = new Map<Format, Uint8Array>()
+const section = 'Contents/section0.xml'
+const header = 'Contents/header.xml'
+let table: Uint8Array
 beforeAll(async () => {
   // Load the engine from the installed renderer, including when the tests run outside this checkout.
   const url = new URL('rhwp-engine.js', import.meta.resolve('@seuoffice/history-renderer'))
@@ -21,6 +25,8 @@ beforeAll(async () => {
     doc.insertText(0, 1, 0, '한🙂글')
     base.set('hwp', doc.exportHwp())
     base.set('hwpx', doc.exportHwpx())
+    expect(JSON.parse(doc.createTable(0, 0, doc.textToLogicalOffset(0, 0, 0), 1, 1)).ok).toBe(true)
+    table = doc.exportHwpx()
   } finally {
     doc.free()
   }
@@ -54,6 +60,46 @@ function expectText(bytes: Uint8Array, name: Format, ...paragraphs: string[]) {
   } finally {
     reopened.free()
   }
+}
+
+async function replaceXml(zip: JSZip, part: string, before: string, after: string) {
+  const xml = await zip.file(part)!.async('string')
+  expect(xml).toContain(before)
+  zip.file(part, xml.replace(before, after), { createFolders: false })
+}
+
+async function expectLayout(bytes: Uint8Array) {
+  const zip = await JSZip.loadAsync(bytes)
+  const found: string[][] = []
+  for (const part of [header, section]) {
+    const parser = new SaxesParser({ xmlns: true })
+    const parents: string[] = []
+    parser.on('opentag', (tag) => {
+      const attr = (key: string) => tag.attributes[key]?.value
+      if (
+        tag.uri === 'http://www.hancom.co.kr/hwpml/2011/head' &&
+        tag.local === 'paraPr' &&
+        attr('textDir')
+      )
+        found.push([part, parents.at(-1)!, tag.local, attr('id')!, attr('textDir')!])
+      if (tag.uri === 'http://www.hancom.co.kr/hwpml/2011/paragraph') {
+        if (tag.local === 'grid')
+          found.push([part, parents.at(-1)!, tag.local, attr('strikeContinue')!])
+        if (tag.local === 'label')
+          found.push([part, parents.at(-1)!, tag.local, attr('topmargin')!, attr('labelcols')!])
+      }
+      parents.push(tag.local)
+    })
+    parser.on('closetag', () => {
+      parents.pop()
+    })
+    parser.write(await zip.file(part)!.async('string')).close()
+  }
+  expect(found).toEqual([
+    [header, 'paraProperties', 'paraPr', '0', 'LTR'],
+    [section, 'secPr', 'grid', '1'],
+    [section, 'tbl', 'label', '3826', '2'],
+  ])
 }
 
 const formats = ['hwp', 'hwpx'] as const
@@ -133,6 +179,47 @@ describe.each(formats)('%s retained history in the Deno sandbox', (name) => {
     })
   }, 20_000)
 })
+
+it('retains HWPX layout fields after unrelated body edits and replay of their compensation', async () => {
+  const zip = await JSZip.loadAsync(table)
+  await replaceXml(zip, header, '<hh:paraPr ', '<hh:paraPr textDir="LTR" ')
+  await replaceXml(zip, section, '<hp:grid ', '<hp:grid strikeContinue="1" ')
+  await replaceXml(zip, section, '</hp:tbl>', '<hp:label topmargin="3826" labelcols="2"/></hp:tbl>')
+  const source = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+  const zero = await render(source, request('hwpx', source))
+  expect(Buffer.compare(zero.bytes, source)).toBe(0)
+  const ops = [splice(0, 1, '새', 2), splice(3, 3, '!', 2)]
+  const prefix = request('hwpx', source, ...ops)
+  const edited = await render(source, prefix)
+  expectText(edited.bytes, 'hwpx', '', '새🙂글!')
+  await expectLayout(edited.bytes)
+  const undone = await render(source, { ...prefix, undo: { epoch: prefix.epoch, v: 1, index: 0 } })
+  expect(undone.compensation).toEqual([splice(0, 1, '한', 2)])
+  const appended = await render(source, request('hwpx', source, ...ops, ...undone.compensation!))
+  for (const result of [undone, appended]) {
+    expectText(result.bytes, 'hwpx', '', '한🙂글!')
+    await expectLayout(result.bytes)
+  }
+}, 60_000)
+
+it.each([
+  ['<hp:p ', '<hp:p data-sample="보관" '],
+  ['<hp:p ', '<hp:p xmlns:x="urn:example:note" x:mark="보관" '],
+  ['</hp:p>', '<x:note xmlns:x="urn:example:note">보관</x:note></hp:p>'],
+  ['</hp:run>', '<x:note xmlns:x="urn:example:note">보관</x:note></hp:run>'],
+  ['</hp:tbl>', '<hp:label data-sample="보관"/></hp:tbl>'],
+])(
+  'refuses opaque HWPX markup at admission (%s, %s)',
+  async (before, after) => {
+    const zip = await JSZip.loadAsync(table)
+    await replaceXml(zip, section, before, after)
+    const source = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+    await expect(render(source, request('hwpx', source))).rejects.toMatchObject({
+      code: 'unsupported',
+    })
+  },
+  20_000,
+)
 
 it('does not dispatch unknown wire operations or pretend unsupported undo succeeded', async () => {
   const source = base.get('hwp')!
