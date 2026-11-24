@@ -3380,6 +3380,20 @@ th[data-rev-fmt] {
   text-overflow: ellipsis;
 }
 
+.docs-presence-layer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  pointer-events: none;
+  user-select: none;
+  z-index: 2;
+}
+
+.docs-presence-caret {
+  position: absolute;
+  border-inline-start: 2px solid;
+}
+
 .page-wrap {
   position: relative;
   min-height: var(--page-h, 1056px);
@@ -12402,6 +12416,7 @@ body.docs-crop-active
   .ai-dock,
   .nav-pane,
   .paste-chip,
+  .docs-presence-layer,
   .ai-ask-pop,
   .ruler,
   .find-panel {

@@ -17,18 +17,52 @@ function bodySelection(at: Json, end: number): at is BodySelection {
 function caret(peer: PresenceMark): HTMLElement {
   const span = document.createElement('span')
   span.className = 'docs-presence-caret'
-  span.style.cssText = `position:relative;pointer-events:none;user-select:none;border-inline-start:2px solid ${peer.color};margin-inline-start:-2px`
+  span.hidden = true
+  span.style.borderInlineStartColor = peer.color
   const label = presenceLabel(peer)
   label.style.insetInlineStart = '0'
   label.style.bottom = '100%'
-  // The name is UI, not part of the paragraph's searchable or selectable text.
-  span.attachShadow({ mode: 'open' }).append(label)
+  span.append(label)
   return span
 }
 
 export function docsPresence({ editor }: { editor: Editor }, publish: () => void) {
   const key = new PluginKey<DecorationSet>('docsPeerSelection')
   const doc = editor.view.dom.ownerDocument
+  // Measure the layer itself: the page can be zoomed, clipped or scrolled by an ancestor.
+  const layer = doc.createElement('div')
+  layer.className = 'docs-presence-layer'
+  editor.view.dom.after(layer)
+  let carets: { head: number; el: HTMLElement }[] = []
+  let frame = 0
+  const place = () => {
+    frame = 0
+    const rect = layer.getBoundingClientRect()
+    if (!rect.width) return
+    const scale = rect.width / layer.offsetWidth
+    for (const { head, el } of carets) {
+      el.hidden = !editor.state.doc.resolve(head).parent.isTextblock
+      if (el.hidden) continue
+      const { left, top, bottom } = editor.view.coordsAtPos(head)
+      el.style.left = `${(left - rect.left) / scale}px`
+      el.style.top = `${(top - rect.top) / scale}px`
+      el.style.height = `${(bottom - top) / scale}px`
+    }
+  }
+  const schedule = () => {
+    if (carets.length && !frame) frame = requestAnimationFrame(place)
+  }
+  const resize = new ResizeObserver(schedule)
+  resize.observe(editor.view.dom)
+  doc.addEventListener('scroll', schedule, true)
+  doc.fonts.addEventListener('loadingdone', schedule)
+  editor.on('transaction', ({ transaction, appendedTransactions }) => {
+    for (const caret of carets) {
+      caret.head = transaction.mapping.map(caret.head, -1)
+      for (const tr of appendedTransactions) caret.head = tr.mapping.map(caret.head, -1)
+    }
+    schedule()
+  })
   const viewerSelectionChanged = () => {
     if (!editor.isEditable) publish()
   }
@@ -48,6 +82,11 @@ export function docsPresence({ editor }: { editor: Editor }, publish: () => void
   editor.on('destroy', () => {
     unsubscribe()
     doc.removeEventListener('selectionchange', viewerSelectionChanged)
+    doc.removeEventListener('scroll', schedule, true)
+    doc.fonts.removeEventListener('loadingdone', schedule)
+    resize.disconnect()
+    cancelAnimationFrame(frame)
+    layer.remove()
   })
 
   let drawId = 0
@@ -81,6 +120,7 @@ export function docsPresence({ editor }: { editor: Editor }, publish: () => void
       queueMicrotask(() => {
         if (id !== drawId || editor.isDestroyed) return
         const marks: Decoration[] = []
+        carets = []
         for (const peer of body === editor.state.doc ? peers : []) {
           if (!bodySelection(peer.at, body.content.size)) continue
           const { anchor, head } = peer.at
@@ -92,18 +132,14 @@ export function docsPresence({ editor }: { editor: Editor }, publish: () => void
               }),
             )
           }
-          marks.push(
-            Decoration.widget(head, () => caret(peer), {
-              side: -1,
-              ignoreSelection: true,
-              key: JSON.stringify([peer.client, peer.name, peer.color]),
-            }),
-          )
+          if (body.resolve(head).parent.isTextblock) carets.push({ head, el: caret(peer) })
         }
         const next = DecorationSet.create(body, marks)
         if (next !== key.getState(editor.state)) {
           editor.view.dispatch(editor.state.tr.setMeta(key, next))
         }
+        layer.replaceChildren(...carets.map(({ el }) => el))
+        schedule()
       })
     },
   }
