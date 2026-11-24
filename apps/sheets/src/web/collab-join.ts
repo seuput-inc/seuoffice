@@ -154,15 +154,16 @@ function keepingCellDraft(runtime: UniverRuntime): {
   beforeRemote: (mutation: Mutation) => void
   around: (integrate: SheetsCollabAdapter['integrate']) => SheetsCollabAdapter['integrate']
 } {
-  const injector = runtime.univer.__getInjector()
-  const bridge = injector.get(IEditorBridgeService)
-  const commands = injector.get(ICommandService)
+  // looked up when an edit first arrives: joining the session touches none of Univer's editor
+  let services: ReturnType<typeof editorServices> | undefined
+  const use = () => (services ??= editorServices(runtime))
   // null outside an `integrate` that keeps a draft
   let watch: DraftWatch | null = null
 
   const beforeRemote = (mutation: Mutation): void => {
-    const at = watch && bridge.getEditLocation()
-    if (!watch || !at) return
+    if (!watch) return
+    const at = use().bridge.getEditLocation()
+    if (!at) return
     watch.remoteNext = mutation.id
     if (watch.parked) return
     if (writesCell(mutation, at.sheetId, at.row, at.column)) watch.written = true
@@ -170,6 +171,7 @@ function keepingCellDraft(runtime: UniverRuntime): {
 
   // before each line change runs: Univer moves the location along it afterwards
   const beforeLines = (id: string, params: Mutation['params']): void => {
+    const { bridge } = use()
     const remote = watch!.remoteNext === id
     watch!.remoteNext = null
     const kind = AXIS_OF[id]
@@ -198,6 +200,7 @@ function keepingCellDraft(runtime: UniverRuntime): {
   const around =
     (integrate: SheetsCollabAdapter['integrate']): SheetsCollabAdapter['integrate'] =>
     (remote, local) => {
+      const { injector, bridge, commands } = use()
       const draft = bridge.isVisible().visible ? bridge.getEditLocation() : null
       if (!draft) return integrate(remote, local)
       const { unitId } = draft
@@ -249,6 +252,15 @@ function keepingCellDraft(runtime: UniverRuntime): {
       return rebuilt
     }
   return { beforeRemote, around }
+}
+
+function editorServices(runtime: UniverRuntime) {
+  const injector = runtime.univer.__getInjector()
+  return {
+    injector,
+    bridge: injector.get(IEditorBridgeService),
+    commands: injector.get(ICommandService),
+  }
 }
 
 export function joinSheetsCollab(
