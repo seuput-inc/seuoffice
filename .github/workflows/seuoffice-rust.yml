@@ -879,7 +879,17 @@ jobs:
       - name: wasm-pack 0.15.0
         run: cargo install --locked wasm-pack --version 0.15.0
       - name: Build vendor/rhwp-core
-        run: node tools/build-rhwp-core.mjs
+        run: node tools/build-rhwp-core.mjs --keep
+      # the cases our patches add run against the patched source the build used; upstream's
+      # own suites stay upstream's
+      - name: Patch cases
+        working-directory: node_modules/.cache/rhwp-core/v0.9.0
+        run: |
+          for case in unknown_paragraph_records unknown_paragraph_xml; do
+            printf '\n[[test]]\nname = "%s"\npath = "tests/cases/%s.rs"\n' "$case" "$case" >> Cargo.toml
+          done
+          cargo test --locked --no-default-features \
+            --test unknown_paragraph_records --test unknown_paragraph_xml
       - name: What was built
         run: |
           sha256sum vendor/rhwp-core/rhwp_bg.wasm
