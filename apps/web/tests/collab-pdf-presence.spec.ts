@@ -107,14 +107,20 @@ test('a PDF viewer and editor see named selections on their own page layout with
     )
     await bobPage.click({ position: { x: 370 * zoom, y: 138 * zoom } })
     await expect(bobPage.locator('.pdf-markup-selected')).toBeVisible()
+    // Alice's page swaps Bob's mark for the new one in a single task; measure what it shows
+    // now in one read, never through a label found before the swap.
     await expect
       .poll(() =>
-        label(alice, 'Bob').evaluate((el) => {
-          const box = el.parentElement!.getBoundingClientRect()
-          const page = el.closest('.pdf-page')!.getBoundingClientRect()
+        alice.frame.locator('.pdf-page[data-page="0"]').evaluate((page) => {
+          const tag = [...page.querySelectorAll('[data-presence-client]')].find((el) =>
+            el.textContent?.includes('Bob'),
+          )
+          if (!tag?.parentElement) return Infinity
+          const box = tag.parentElement.getBoundingClientRect()
+          const area = page.getBoundingClientRect()
           return (
-            Math.abs((box.left - page.left) / page.width - 320 / 500) +
-            Math.abs(box.width / page.width - 100 / 500)
+            Math.abs((box.left - area.left) / area.width - 320 / 500) +
+            Math.abs(box.width / area.width - 100 / 500)
           )
         }),
       )
