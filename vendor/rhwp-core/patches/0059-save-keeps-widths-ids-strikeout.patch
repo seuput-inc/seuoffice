@@ -1,0 +1,623 @@
+diff --git a/src/diagnostics/ir_field_sweep.rs b/src/diagnostics/ir_field_sweep.rs
+index 1db6b2fc9..b48481401 100644
+--- a/src/diagnostics/ir_field_sweep.rs
++++ b/src/diagnostics/ir_field_sweep.rs
+@@ -656,6 +656,8 @@ fn sweep_paragraph(base: &str, a: &Paragraph, b: &Paragraph, out: &mut Divergenc
+         foreign_xml,
+         char_count_msb,
+         raw_header_extra,
++        // where the HWPX id came from, not content
++        hwpx_id_from_source: _,
+         has_para_text,
+         tab_extended,
+         title_marks,
+@@ -1039,6 +1041,8 @@ fn sweep_cell(base: &str, a: &Cell, b: &Cell, out: &mut DivergenceCollector) {
+         raw_list_extra,
+         field_name,
+         dirty_flag,
++        // the width a save writes for layout's widening, derived on load
++        stored_width: _,
+     } = a;
+ 
+     macro_rules! f {
+diff --git a/src/document_core/commands/clipboard.rs b/src/document_core/commands/clipboard.rs
+index fd3ad5925..58a425bc7 100644
+--- a/src/document_core/commands/clipboard.rs
++++ b/src/document_core/commands/clipboard.rs
+@@ -154,6 +154,8 @@ pub(super) fn strip_structural_controls_for_text_clipboard(para: &mut Paragraph)
+     // would otherwise write a second copy of it.
+     para.unknown_records.clear();
+     para.foreign_xml = None;
++    // nor its file's paragraph id, which the pasted copy would repeat
++    para.hwpx_id_from_source = false;
+     let leading_defs = para
+         .controls
+         .iter()
+diff --git a/src/document_core/queries/collab_text_undo.rs b/src/document_core/queries/collab_text_undo.rs
+index 2e12e0dae..07dfe2952 100644
+--- a/src/document_core/queries/collab_text_undo.rs
++++ b/src/document_core/queries/collab_text_undo.rs
+@@ -137,7 +137,7 @@ fn plain_text_context(p: &Paragraph, shape_count: usize) -> Option<TextContext<'
+         controls, ctrl_data_records, char_count_msb: _, raw_header_extra, has_para_text,
+         unknown_records, foreign_xml, tab_extended, title_marks, markpen_marks, numbering_restart,
+         stored_text_partition_dirty: _, cell_format_vpos_dirty: _, cell_vpos_reset,
+-        stored_flow_shifted, numbering_marker: _,
++        stored_flow_shifted, numbering_marker: _, hwpx_id_from_source,
+     } = p;
+     // Imported paragraphs (even ones with synthetic-looking tags) may have original line
+     // partitions, raw records or an empty PARA_TEXT. Accept only known editor-created text.
+@@ -151,6 +151,7 @@ fn plain_text_context(p: &Paragraph, shape_count: usize) -> Option<TextContext<'
+         || !controls.is_empty() || !ctrl_data_records.is_empty() || !tab_extended.is_empty()
+         || !title_marks.is_empty() || !markpen_marks.is_empty() || numbering_restart.is_some()
+         || !unknown_records.is_empty() || foreign_xml.is_some() || *cell_vpos_reset == Some(true) || *stored_flow_shifted
++        || *hwpx_id_from_source
+     {
+         return None;
+     }
+diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
+index efe5073c2..508530ffd 100644
+--- a/src/model/paragraph.rs
++++ b/src/model/paragraph.rs
+@@ -292,6 +292,10 @@ pub struct Paragraph {
+     /// HWP5 저장기는 실제 배열 길이로 count 필드를 재생성하고 이 구간을 쓰지 않는다.
+     /// raw_header_extra[6..]은 instanceId 및 변경추적 suffix로 보존한다.
+     pub raw_header_extra: Vec<u8>,
++    /// `raw_header_extra[6..10]` is the `<hp:p id>` the HWPX file gave this paragraph: an
++    /// HWPX save writes it back. A paragraph the editor makes has a fresh id instead.
++    #[serde(skip)]
++    pub hwpx_id_from_source: bool,
+     /// 원본에 PARA_TEXT 레코드가 존재했는지 (라운드트립 보존용)
+     pub has_para_text: bool,
+     /// TAB 확장 데이터 (라운드트립 보존용)
+@@ -413,6 +417,9 @@ pub struct ParaMeta {
+     pub numbering_restart: Option<NumberingRestart>,
+     /// PARA_HEADER tail — instanceId 및 변경추적 suffix라 문단마다 고유하다.
+     pub raw_header_extra: Vec<u8>,
++    /// [`Paragraph::hwpx_id_from_source`] of the removed paragraph.
++    #[serde(default)]
++    pub hwpx_id_from_source: bool,
+     /// TAB 확장 데이터 — 문단 전체가 통째로 이동하므로 분할 없이 그대로 옮긴다.
+     pub tab_extended: Vec<[u16; 7]>,
+     /// The removed paragraph's own unmodelled records and foreign HWPX markup: the undo
+@@ -706,6 +713,15 @@ fn keeps_boundary_text_outside(control: Option<&Control>) -> bool {
+ }
+ 
+ impl Paragraph {
++    /// The `<hp:p id>` the HWPX file gave this paragraph, while it still has it.
++    pub fn source_hwpx_id(&self) -> Option<u32> {
++        if !self.hwpx_id_from_source {
++            return None;
++        }
++        let id = self.raw_header_extra.get(6..10)?;
++        Some(u32::from_le_bytes([id[0], id[1], id[2], id[3]]))
++    }
++
+     /// 재구성된 본문 축에서 단일 표가 저장 줄의 물리 상자 전체를 소유한다.
+     pub(crate) fn rebased_single_table_row(&self) -> bool {
+         self.layout_rebased_body_axis
+@@ -2187,6 +2203,7 @@ impl Paragraph {
+             raw_break_type: self.raw_break_type,
+             numbering_restart: self.numbering_restart,
+             raw_header_extra: self.raw_header_extra.clone(),
++            hwpx_id_from_source: self.hwpx_id_from_source,
+             tab_extended: self.tab_extended.clone(),
+             unknown_records: self.unknown_records.clone(),
+             foreign_xml: self.foreign_xml.clone(),
+@@ -2218,6 +2235,7 @@ impl Paragraph {
+         self.raw_break_type = meta.raw_break_type;
+         self.numbering_restart = meta.numbering_restart;
+         self.raw_header_extra = meta.raw_header_extra;
++        self.hwpx_id_from_source = meta.hwpx_id_from_source;
+         self.tab_extended = meta.tab_extended;
+         self.unknown_records = meta.unknown_records;
+         self.foreign_xml = meta.foreign_xml;
+@@ -2679,6 +2697,7 @@ impl Paragraph {
+             foreign_xml: None,
+             char_count_msb: false,
+             raw_header_extra: new_raw_header_extra,
++            hwpx_id_from_source: false,
+             has_para_text: new_has_para_text,
+             tab_extended: new_tab_extended,
+             title_marks: new_title_marks,
+diff --git a/src/model/raw_provenance/authored.rs b/src/model/raw_provenance/authored.rs
+index 68c0eb656..6bbcefc05 100644
+--- a/src/model/raw_provenance/authored.rs
++++ b/src/model/raw_provenance/authored.rs
+@@ -130,7 +130,7 @@ record!(Paragraph { char_count, control_mask, para_shape_id, style_id, column_ty
+     layout_object_projection, layout_float_band, layout_field_values, layout_only_fill_lines,
+     source_line_seg_vertical_pos, layout_rebased_body_axis, layout_cell_grid,
+     stored_text_partition_dirty, cell_format_vpos_dirty, cell_vpos_reset, stored_flow_shifted,
+-    numbering_marker });
++    numbering_marker, hwpx_id_from_source });
+ record!(Table { attr, row_count, col_count, cell_spacing, padding, row_sizes, border_fill_id,
+     zones, hwpx_label, page_break, repeat_header, outer_margin_left, outer_margin_right, outer_margin_top,
+     outer_margin_bottom, raw_table_record_attr } bytes { raw_table_record_extra } nested { cells,
+@@ -138,7 +138,8 @@ record!(Table { attr, row_count, col_count, cell_spacing, padding, row_sizes, bo
+     table_header { common, raw_ctrl_data });
+ record!(Cell { col, row, col_span, row_span, width, height, padding, border_fill_id,
+     list_header_width_ref, text_direction, line_wrap, vertical_align, apply_inner_margin,
+-    is_header, field_name, dirty_flag } bytes { raw_list_extra } nested { paragraphs });
++    is_header, field_name, dirty_flag } bytes { raw_list_extra } nested { paragraphs }
++    omit { stored_width });
+ record!(Header { apply_to, raw_attr, list_attr, text_width, text_height, text_ref, num_ref } bytes
+     { raw_ctrl_extra } nested { paragraphs });
+ record!(Footer { apply_to, raw_attr, list_attr, text_width, text_height, text_ref, num_ref } bytes
+diff --git a/src/model/table.rs b/src/model/table.rs
+index a35a56319..cb9708d29 100644
+--- a/src/model/table.rs
++++ b/src/model/table.rs
+@@ -196,6 +196,11 @@ pub struct Cell {
+     /// HWPX `<hp:tc dirty>` 속성 (편집기 캐시 무효화 표시, 라운드트립 보존용).
+     /// HWP5 바이너리에는 대응 비트가 없어 list_header_width_ref 재사용 대상에서 제외한다.
+     pub dirty_flag: bool,
++    /// The width the file stored and the one `Table::restore_stored_cell_frame_widths`
++    /// widened the cell to for layout: a save writes the stored width while the cell still
++    /// has the widened one, so an untouched table keeps the widths it was written with.
++    #[serde(skip)]
++    pub stored_width: Option<(HwpUnit, HwpUnit)>,
+ }
+ 
+ /// 표 셀 행/열 바꿈 복사 데이터.
+@@ -243,6 +248,14 @@ pub enum VerticalAlign {
+ }
+ 
+ impl Cell {
++    /// The width a save writes: the stored one while layout's widening is all that changed.
++    pub fn saved_width(&self) -> HwpUnit {
++        match self.stored_width {
++            Some((stored, widened)) if self.width == widened => stored,
++            _ => self.width,
++        }
++    }
++
+     pub fn set_apply_inner_margin(&mut self, value: bool) {
+         self.apply_inner_margin = value;
+         self.set_list_header_flag(CELL_FLAG_HAS_MARGIN, value);
+@@ -580,6 +593,7 @@ impl Cell {
+             raw_list_extra: template.raw_list_extra.clone(),
+             field_name: None,
+             dirty_flag: false,
++            stored_width: None,
+             paragraphs: vec![para],
+         }
+     }
+@@ -752,6 +766,7 @@ impl Table {
+             let delta = i64::from(width) - i64::from(cell.width);
+             if delta > 0 {
+                 cell.shift_text_area_width(delta);
++                cell.stored_width = Some((cell.width, width));
+                 cell.width = width;
+             }
+         }
+diff --git a/src/parser/hwpx/header.rs b/src/parser/hwpx/header.rs
+index 4c90f13c7..fb92fa580 100644
+--- a/src/parser/hwpx/header.rs
++++ b/src/parser/hwpx/header.rs
+@@ -834,6 +834,10 @@ fn parse_char_shape(
+                                             "SLIM_THICK_SLIM" => 10,
+                                             "WAVE" => 11,
+                                             "DOUBLE_WAVE" => 12,
++                                            // Hangul's placeholder for "no strikeout",
++                                            // line kind 15 (3D) in HWP 5: kept so a
++                                            // save writes it back.
++                                            "3D" => 15,
+                                             _ => 0,
+                                         };
+                                     }
+diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
+index c2f0a872a..840b13fb2 100644
+--- a/src/parser/hwpx/section.rs
++++ b/src/parser/hwpx/section.rs
+@@ -1314,6 +1314,7 @@ fn parse_paragraph_body(
+     header_extra.extend_from_slice(&[0u8; 6]); // numCharShapes/numRangeTags/numLineSegs 자리
+     header_extra.extend_from_slice(&hp_p_id.to_le_bytes()); // instanceId
+     para.raw_header_extra = header_extra;
++    para.hwpx_id_from_source = true;
+ 
+     Ok((para, sec_def))
+ }
+diff --git a/src/serializer/control.rs b/src/serializer/control.rs
+index f3951a26b..928d2fb5b 100644
+--- a/src/serializer/control.rs
++++ b/src/serializer/control.rs
+@@ -1023,7 +1023,7 @@ fn write_cell_list<W: std::io::Write>(cell: &Cell, w: &mut ByteWriter<W>) -> std
+     w.write_u16(cell.row)?;
+     w.write_u16(cell.col_span)?;
+     w.write_u16(cell.row_span)?;
+-    w.write_u32(cell.width)?;
++    w.write_u32(cell.saved_width())?;
+     w.write_u32(cell.height)?;
+     w.write_i16(cell.padding.left)?;
+     w.write_i16(cell.padding.right)?;
+@@ -1036,7 +1036,17 @@ fn write_cell_list<W: std::io::Write>(cell: &Cell, w: &mut ByteWriter<W>) -> std
+     // [#1808] 모델의 field_name 과 raw_list_extra 인코딩이 일치하면 원본 보존,
+     // 불일치(HWPX 출처 셀 필드, 편집기 변경)면 한컴 계약대로 재구성한다.
+     if !cell.raw_list_extra.is_empty() && raw_cell_field_name_matches(cell) {
+-        w.write_bytes(&cell.raw_list_extra)?;
++        // The text area width moved with layout's widening of the cell and goes back with it.
++        let widening = i64::from(cell.width) - i64::from(cell.saved_width());
++        if widening > 0 && cell.raw_list_extra.len() >= 2 {
++            let text_width =
++                i64::from(u16::from_le_bytes([cell.raw_list_extra[0], cell.raw_list_extra[1]]));
++            let stored = u16::try_from((text_width - widening).max(0)).unwrap_or(u16::MAX);
++            w.write_bytes(&stored.to_le_bytes())?;
++            w.write_bytes(&cell.raw_list_extra[2..])?;
++        } else {
++            w.write_bytes(&cell.raw_list_extra)?;
++        }
+     } else {
+         write_cell_list_extra(cell, w)?;
+     }
+@@ -1079,7 +1089,7 @@ fn write_cell_list_extra<W: std::io::Write>(
+     let width_bytes: [u8; 4] = if cell.raw_list_extra.len() >= 4 {
+         cell.raw_list_extra[0..4].try_into().unwrap()
+     } else {
+-        cell.width.to_le_bytes()
++        cell.saved_width().to_le_bytes()
+     };
+     w.write_bytes(&width_bytes)?;
+     if let Some(name) = cell.field_name.as_deref().filter(|name| !name.is_empty()) {
+diff --git a/src/serializer/hwpx/char_shape_tables/line_shape.rs b/src/serializer/hwpx/char_shape_tables/line_shape.rs
+index 145d4f24b..34ae21fb8 100644
+--- a/src/serializer/hwpx/char_shape_tables/line_shape.rs
++++ b/src/serializer/hwpx/char_shape_tables/line_shape.rs
+@@ -45,10 +45,13 @@ pub fn line_shape_str(shape: u8) -> &'static str {
+         .unwrap_or("SOLID")
+ }
+ 
+-/// 취소선 방출. 꺼져 있으면 반드시 `NONE`.
++/// Strikeout token: `NONE` when off, except Hangul's no-strikeout placeholder (line kind 15),
++/// which is written back as the `3D` it reads.
+ pub fn strike_shape_str(strikethrough: bool, shape: u8) -> &'static str {
+     if strikethrough {
+         line_shape_str(shape)
++    } else if shape == 15 {
++        "3D"
+     } else {
+         STRIKE_SHAPE_NONE
+     }
+diff --git a/src/serializer/hwpx/context.rs b/src/serializer/hwpx/context.rs
+index 035e14252..c11f83d84 100644
+--- a/src/serializer/hwpx/context.rs
++++ b/src/serializer/hwpx/context.rs
+@@ -141,6 +141,8 @@ pub struct SerializeContext {
+     pub(crate) para_page_num_pos_emitted: bool,
+     /// 문서 전역 문단 ID 카운터 — `<hp:p id="...">` 에 발급한다.
+     para_id_counter: u32,
++    /// `<hp:p id>` values paragraphs keep from their HWPX file; fresh ids skip them.
++    source_para_ids: HashSet<u32>,
+     /// HWP3 전용 Hyperlink control을 HWPX `fieldBegin`으로 승격할 때 쓰는 ID.
+     /// HWP3 원본에는 HWPX field ID가 없으므로, 기존 Field ID와 충돌 가능성이 낮은
+     /// 상위 범위를 문서 내에서 단조 감소시켜 링크마다 다른 값을 발급한다.
+@@ -200,6 +202,7 @@ impl Default for SerializeContext {
+             chart_entries: Vec::new(),
+             para_page_num_pos_emitted: false,
+             para_id_counter: 0,
++            source_para_ids: HashSet::new(),
+             generated_hyperlink_id: u32::MAX,
+             sub_list_depth: 0,
+             body_coldef_template_pending: false,
+@@ -265,6 +268,28 @@ impl SerializeContext {
+             || doc.provenance.hwpx_lineage)
+             && !rhwp_origin_marker;
+ 
++        for section in &doc.sections {
++            let masters = section
++                .section_def
++                .master_pages
++                .iter()
++                .map(|master| &master.paragraphs[..]);
++            for paragraphs in std::iter::once(&section.paragraphs[..]).chain(masters) {
++                let _ = crate::model::identity::walk::walk_ref(
++                    paragraphs,
++                    &crate::storage::Unbounded,
++                    |node| {
++                        if let crate::model::identity::walk::RefNode::Paragraph(p) = node {
++                            if let Some(id) = p.source_hwpx_id() {
++                                ctx.source_para_ids.insert(id);
++                            }
++                        }
++                        Ok(())
++                    },
++                );
++            }
++        }
++
+         // CharShape, ParaShape, BorderFill, TabDef, Numbering, Style, Font
+         // 목록은 배열 인덱스가 곧 HWPX `id` 속성이 된다.
+         for (idx, _) in doc.doc_info.char_shapes.iter().enumerate() {
+@@ -702,6 +727,19 @@ impl SerializeContext {
+         id
+     }
+ 
++    /// `<hp:p id>` of `p`: the id its HWPX file gave it, else a fresh one that no paragraph
++    /// keeping its file's id has.
++    pub fn para_id(&mut self, p: &crate::model::paragraph::Paragraph) -> u32 {
++        if let Some(id) = p.source_hwpx_id() {
++            return id;
++        }
++        let mut id = self.next_para_id();
++        while self.source_para_ids.contains(&id) {
++            id = self.next_para_id();
++        }
++        id
++    }
++
+     /// [Issue #1933] 스타일 목록 밖 styleIDRef 를 기본 스타일(0)로 강등한다.
+     ///
+     /// 일부 생성기 산출물(보도자료 계열)은 header 스타일 목록에 없는 style_id 를
+diff --git a/src/serializer/hwpx/master_page.rs b/src/serializer/hwpx/master_page.rs
+index 62c3afa3c..d770b5e3c 100644
+--- a/src/serializer/hwpx/master_page.rs
++++ b/src/serializer/hwpx/master_page.rs
+@@ -86,7 +86,7 @@ where
+             render_paragraph_parts_with_storage(p, vert_cursor, ctx, storage)?;
+         ctx.check_storage()?;
+         vert_cursor = advance;
+-        let pid = ctx.next_para_id();
++        let pid = ctx.para_id(p);
+         let sid = ctx.effective_style_id(p.style_id);
+         storage
+             .push_str(
+diff --git a/src/serializer/hwpx/section.rs b/src/serializer/hwpx/section.rs
+index 8ea729494..3380a15e4 100644
+--- a/src/serializer/hwpx/section.rs
++++ b/src/serializer/hwpx/section.rs
+@@ -823,7 +823,7 @@ where
+         // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
+         // (#1933) 본문 경로는 종전에 style_id 를 reference 하지 않았다 — emit 만
+         // 강등해 미등록 ID 방출을 막고, 참조 집합/assert 동작은 종전 유지한다.
+-        let pid = ctx.next_para_id();
++        let pid = ctx.para_id(p);
+         let sid = ctx.effective_style_id(p.style_id);
+         let new_p_tag = render_hp_p_open_with_storage(p, pid, sid, storage)?;
+         out = xml_replacen(out, TEMPLATE_FIRST_P_TAG, &new_p_tag, 1, storage)?;
+@@ -892,7 +892,7 @@ where
+                 render_paragraph_parts_with_storage(p, vert_cursor, ctx, storage)?;
+             ctx.check_storage()?;
+             vert_cursor = advance;
+-            let pid = ctx.next_para_id();
++            let pid = ctx.para_id(p);
+             let sid = ctx.effective_style_id(p.style_id);
+             storage
+                 .push_str(
+@@ -3531,7 +3531,7 @@ where
+                         let (runs, linesegs, advance) =
+                             render_paragraph_parts_with_storage(para, vert_cursor, ctx, storage)?;
+                         vert_cursor = advance;
+-                        let pid = ctx.next_para_id();
++                        let pid = ctx.para_id(para);
+                         storage
+                             .push_str(
+                                 out,
+@@ -4088,7 +4088,7 @@ where
+         let (runs, linesegs, advance) =
+             render_paragraph_parts_with_storage(p, vert_cursor, ctx, storage)?;
+         vert_cursor = advance;
+-        let pid = ctx.next_para_id();
++        let pid = ctx.para_id(p);
+         let sid = ctx.effective_style_id(p.style_id);
+         storage
+             .push_str(
+@@ -4998,7 +4998,7 @@ where
+         let (runs, linesegs, advance) =
+             render_paragraph_parts_with_storage(p, vert_cursor, ctx, storage)?;
+         vert_cursor = advance;
+-        let pid = ctx.next_para_id();
++        let pid = ctx.para_id(p);
+         let sid = ctx.effective_style_id(p.style_id);
+         storage
+             .push_str(
+@@ -5052,7 +5052,7 @@ where
+         let (runs, linesegs, advance) =
+             render_paragraph_parts_with_storage(p, vert_cursor, ctx, storage)?;
+         vert_cursor = advance;
+-        let pid = ctx.next_para_id();
++        let pid = ctx.para_id(p);
+         storage
+             .push_str(
+                 &mut out,
+diff --git a/src/serializer/hwpx/shape.rs b/src/serializer/hwpx/shape.rs
+index df9946944..39996dfba 100644
+--- a/src/serializer/hwpx/shape.rs
++++ b/src/serializer/hwpx/shape.rs
+@@ -737,7 +737,7 @@ where
+             let (runs, linesegs, advance) =
+                 render_paragraph_parts_with_storage(para, vert_cursor, ctx, storage)?;
+             vert_cursor = advance;
+-            let pid = ctx.next_para_id();
++            let pid = ctx.para_id(para);
+             let mut p_xml = render_hp_p_open_with_storage(para, pid, sid, storage)?;
+             storage.push_str(&mut p_xml, &runs).map_err(xml_error)?;
+             storage.push_str(&mut p_xml, &linesegs).map_err(xml_error)?;
+diff --git a/src/serializer/hwpx/table.rs b/src/serializer/hwpx/table.rs
+index 597250630..ce12663c8 100644
+--- a/src/serializer/hwpx/table.rs
++++ b/src/serializer/hwpx/table.rs
+@@ -518,7 +518,7 @@ where
+             let (runs, linesegs, advance) =
+                 render_paragraph_parts_with_storage(para, vert_cursor, ctx, storage)?;
+             vert_cursor = advance;
+-            let pid = ctx.next_para_id();
++            let pid = ctx.para_id(para);
+             let mut p_xml = render_hp_p_open_with_storage(para, pid, sid, storage)?;
+             // [#5873] 셀 안 구역 나누기 — #4056 의 본문 경로와 같은 보완.
+             if let Some(crate::model::control::Control::SectionDef(sd)) = para
+@@ -679,7 +679,7 @@ pub(super) fn write_cell_sz_with_storage<W: Write, S: crate::storage::Storage>(
+ where
+     S::Error: std::fmt::Display,
+ {
+-    let w_s = xml_value(storage, cell.width)?;
++    let w_s = xml_value(storage, cell.saved_width())?;
+     let h_s = xml_value(storage, cell.height)?;
+     empty_tag_with_storage(
+         w,
+diff --git a/tests/cases/kept_on_save.rs b/tests/cases/kept_on_save.rs
+new file mode 100644
+index 000000000..5fc37530c
+--- /dev/null
++++ b/tests/cases/kept_on_save.rs
+@@ -0,0 +1,163 @@
++//! A save keeps what the edit did not touch: the streams of a file the strict compound-file
++//! reader refuses, and in an HWPX the paragraph ids and Hangul's "no strikeout" placeholder.
++#![cfg(not(target_arch = "wasm32"))]
++
++use std::io::{Cursor, Read, Write};
++
++use rhwp::document_core::DocumentCore;
++use rhwp::parser::cfb_reader::CfbReader;
++
++const FREE: u32 = 0xFFFF_FFFF;
++const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
++const VENDOR: &str = "/Vendor/Opaque";
++const PAYLOAD: &[u8] = b"vendor-opaque-stream";
++const SECTION: &str = "Contents/section0.xml";
++const HEADER: &str = "Contents/header.xml";
++const HANGUL_ID: &str = "2147483648";
++
++fn two_paragraphs() -> DocumentCore {
++    let mut core = DocumentCore::new_empty();
++    core.create_blank_document_native().unwrap();
++    core.insert_text_native(0, 0, 0, "first paragraph").unwrap();
++    core.split_paragraph_native(0, 0, 15, None).unwrap();
++    core.insert_text_native(0, 1, 0, "second paragraph")
++        .unwrap();
++    core
++}
++
++/// Every stream of a compound file, by path.
++fn streams(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
++    let mut file = cfb::CompoundFile::open(Cursor::new(bytes.to_vec())).unwrap();
++    let paths: Vec<_> = file
++        .walk()
++        .filter(|entry| entry.is_stream())
++        .map(|entry| entry.path().to_path_buf())
++        .collect();
++    paths
++        .into_iter()
++        .map(|path| {
++            let mut data = Vec::new();
++            file.open_stream(&path)
++                .unwrap()
++                .read_to_end(&mut data)
++                .unwrap();
++            (path.to_string_lossy().replace('\\', "/"), data)
++        })
++        .collect()
++}
++
++/// The editor's document with a vendor stream in a storage of its own, its unused FAT slots
++/// marked "end of chain" as some writers leave them, and its stream paths (read before the
++/// slots change: the strict reader refuses the result).
++fn lenient_file() -> (Vec<u8>, Vec<String>) {
++    let bytes = two_paragraphs().export_hwp_native().unwrap();
++    let mut file = cfb::CompoundFile::open(Cursor::new(bytes)).unwrap();
++    file.create_storage("/Vendor").unwrap();
++    file.create_stream(VENDOR)
++        .unwrap()
++        .write_all(PAYLOAD)
++        .unwrap();
++    file.flush().unwrap();
++    let mut bytes = file.into_inner().into_inner();
++    let paths = streams(&bytes).into_iter().map(|(path, _)| path).collect();
++    let sector = 1usize << u16::from_le_bytes([bytes[30], bytes[31]]);
++    let first_fat = u32::from_le_bytes(bytes[76..80].try_into().unwrap()) as usize;
++    let fat = (first_fat + 1) * sector;
++    for at in (fat..fat + sector).step_by(4) {
++        if u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) == FREE {
++            bytes[at..at + 4].copy_from_slice(&END_OF_CHAIN.to_le_bytes());
++        }
++    }
++    (bytes, paths)
++}
++
++#[test]
++fn a_file_the_strict_reader_refuses_keeps_its_streams_through_an_edit() {
++    let (source, paths) = lenient_file();
++    assert!(
++        CfbReader::open(&source).is_err(),
++        "the case needs the lenient reader"
++    );
++    let mut core = DocumentCore::from_bytes(&source).unwrap();
++    core.insert_text_native(0, 1, 0, "x").unwrap();
++    let saved = streams(&core.export_hwp_native().unwrap());
++
++    for path in paths {
++        assert!(saved.iter().any(|(p, _)| *p == path), "{path} lost: {saved:?}");
++    }
++    let vendor = saved.iter().find(|(p, _)| p == VENDOR).unwrap();
++    assert_eq!(vendor.1, PAYLOAD);
++}
++
++fn part(bytes: &[u8], name: &str) -> String {
++    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
++    let mut xml = String::new();
++    zip.by_name(name).unwrap().read_to_string(&mut xml).unwrap();
++    xml
++}
++
++fn with_parts(bytes: &[u8], parts: &[(&str, &str)]) -> Vec<u8> {
++    let mut input = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
++    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
++    for i in 0..input.len() {
++        let mut entry = input.by_index(i).unwrap();
++        let mut data = Vec::new();
++        entry.read_to_end(&mut data).unwrap();
++        let name = entry.name().unwrap().to_string();
++        if let Some((_, xml)) = parts.iter().find(|(part, _)| *part == name) {
++            data = xml.as_bytes().to_vec();
++        }
++        output
++            .start_file(
++                name,
++                zip::write::SimpleFileOptions::default().compression_method(entry.compression()),
++            )
++            .unwrap();
++        output.write_all(&data).unwrap();
++    }
++    output.finish().unwrap().into_inner()
++}
++
++/// The `<hp:p id>` values in document order.
++fn paragraph_ids(xml: &str) -> Vec<String> {
++    const OPEN: &str = "<hp:p id=\"";
++    xml.match_indices(OPEN)
++        .map(|(at, _)| {
++            let rest = &xml[at + OPEN.len()..];
++            rest[..rest.find('"').unwrap()].to_string()
++        })
++        .collect()
++}
++
++#[test]
++fn hwpx_save_keeps_paragraph_ids_and_the_no_strikeout_placeholder() {
++    let bytes = two_paragraphs().export_hwpx_native().unwrap();
++    // ids as Hangul writes them: repeated rather than numbered
++    let mut section = part(&bytes, SECTION);
++    let mut at = 0;
++    while let Some(found) = section[at..].find("<hp:p id=\"") {
++        let start = at + found + "<hp:p id=\"".len();
++        let end = start + section[start..].find('"').unwrap();
++        section.replace_range(start..end, HANGUL_ID);
++        at = start + HANGUL_ID.len();
++    }
++    let header = part(&bytes, HEADER).replacen(
++        r#"<hh:strikeout shape="NONE""#,
++        r#"<hh:strikeout shape="3D""#,
++        1,
++    );
++    let source = with_parts(&bytes, &[(SECTION, &section), (HEADER, &header)]);
++    let before = paragraph_ids(&section);
++
++    let mut core = DocumentCore::from_bytes(&source).unwrap();
++    let end = "second paragraph".len();
++    core.insert_text_native(0, 1, end, "x").unwrap();
++    core.split_paragraph_native(0, 1, end + 1, None).unwrap();
++    let saved = core.export_hwpx_native().unwrap();
++
++    let ids = paragraph_ids(&part(&saved, SECTION));
++    assert_eq!(ids.len(), before.len() + 1, "{ids:?}");
++    let kept = ids.iter().filter(|id| *id == HANGUL_ID).count();
++    assert_eq!(kept, before.len(), "{ids:?}");
++    assert!(part(&saved, HEADER).contains(r#"<hh:strikeout shape="3D""#));
++}
