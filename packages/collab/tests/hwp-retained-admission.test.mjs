@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
+import { crc32, deflateSync } from 'node:zlib'
 import { createHistoryServer, memoryHistoryStore } from '@seuoffice/collab/server'
 import { renderBytes, renderHistory } from '@seuoffice/history-renderer'
 import { createStreamStore } from '../../history-renderer/examples/stream-store.mjs'
@@ -75,18 +76,18 @@ for (const [mode, format] of [
 ]) {
   test(`${mode}: admit only restorable ${format} socket history, without rejecting retries`, async () => {
     const db = mode === 'stream' ? new DatabaseSync(':memory:') : null
-    const store = db
-      ? createStreamStore(
-          db,
-          () => true,
-          () => true,
-        ).store
-      : withoutCheckpoints(
-          memoryHistoryStore(
+    const store = withoutCheckpoints(
+      db
+        ? createStreamStore(
+            db,
+            () => true,
+            () => true,
+          ).store
+        : memoryHistoryStore(
             () => true,
             () => true,
           ),
-        )
+    )
     let renders = 0
     const server = db
       ? createHistoryServer({
@@ -303,6 +304,85 @@ test('stream: an editor without the export grant still submits HWP edits', async
     ]) {
       const submit = { t: 'submit', seq, base: seq - 1, ops: [splice(seq, text)] }
       assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq, v: seq })
+    }
+  } finally {
+    await server.close()
+    db.close()
+  }
+})
+
+/** A PNG of random pixels, so its size is about `side * side * 3` bytes. */
+function noisePng(side) {
+  const chunk = (type, data) => {
+    const head = Buffer.alloc(8)
+    head.writeUInt32BE(data.length)
+    head.write(type, 4, 'ascii')
+    const crc = Buffer.alloc(4)
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])))
+    return Buffer.concat([head, data, crc])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(side, 0)
+  ihdr.writeUInt32BE(side, 4)
+  ihdr.set([8, 2, 0, 0, 0], 8)
+  const rows = Buffer.alloc((side * 3 + 1) * side)
+  for (let i = 0; i < rows.length; i++) rows[i] = i % (side * 3 + 1) ? (i * 7919) % 251 : 0
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(rows, { level: 0 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
+function picture(png, side) {
+  return {
+    kind: 'insertCellPicture',
+    at: { section: 0, paragraph: 1, path: [], offset: 0 },
+    anchor: 'paper',
+    data: png.toString('base64'),
+    extension: 'png',
+    description: '',
+    width: side * 75,
+    height: side * 75,
+    naturalWidthPx: side,
+    naturalHeightPx: side,
+    offsetXHu: null,
+    offsetYHu: null,
+  }
+}
+
+test('stream: two pictures that overflow one replay request continue from a checkpoint', async () => {
+  const db = new DatabaseSync(':memory:')
+  const { store } = createStreamStore(
+    db,
+    () => true,
+    () => true,
+  )
+  const server = createHistoryServer({ store, renderStream: renderHistory })
+  try {
+    const bytes = sources.get('hwpx')
+    const editor = socket(server, 'hwpx', bytes)
+    await editor.hello()
+    const { epoch } = await editor.reply(bytes, 'welcome')
+    // About 140 KB and 100 KB: each fits one request, together they pass its 256 KiB of text.
+    const sides = [216, 182]
+    for (const [i, side] of sides.entries()) {
+      const png = noisePng(side)
+      assert.ok(png.length > (i ? 95_000 : 135_000), `picture ${i + 1} is ${png.length} B`)
+      const submit = { t: 'submit', seq: i + 1, base: i, ops: [picture(png, side)] }
+      assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq: i + 1, v: i + 1 })
+    }
+    assert.equal(editor.reason(), undefined)
+    assert.equal((await store.readHwpCheckpoint(p.documentId, epoch, 2)).version, 1)
+    const artifact = await server.exportHistory(p, { epoch, version: 2 })
+    try {
+      const chunks = []
+      for await (const chunk of artifact.open()) chunks.push(chunk)
+      const parts = Object.keys(unzipSync(Buffer.concat(chunks)))
+      assert.equal(parts.filter((name) => name.startsWith('BinData/')).length, 2)
+    } finally {
+      await artifact.dispose()
     }
   } finally {
     await server.close()

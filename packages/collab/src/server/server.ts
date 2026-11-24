@@ -110,13 +110,16 @@ export type HwpHistoryCandidate = Pick<NewEpoch, 'id' | 'format' | 'baseHash'> &
 export type HwpHistoryRefusal =
   'schema_mismatch' | 'too_large' | 'exact_write_required' | 'forbidden'
 
+/** What the history renderer accepts in one HWP request (history-renderer request.ts). */
 export const HWP_REPLAY = {
   fileBytes: 2 * 1024 * 1024,
-  historyBytes: 1024 * 1024,
-  // The byte renderer accepts 256 KiB of strings and keys per request; JSON bytes bound them.
-  byteRequestBytes: 256 * 1024,
   changes: 128,
   ops: 256,
+  changeBytes: 256 * 1024,
+  nodes: 16_384,
+  depth: 32,
+  /** UTF-8 bytes of every string and object key */
+  textBytes: 256 * 1024,
 }
 
 const hwpRefusalReasons: Record<HwpHistoryRefusal, string> = {

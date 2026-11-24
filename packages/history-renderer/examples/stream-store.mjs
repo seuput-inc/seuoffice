@@ -47,6 +47,11 @@ export function createStreamStore(
       doc TEXT NOT NULL, epoch TEXT NOT NULL, v INTEGER NOT NULL, i INTEGER NOT NULL,
       PRIMARY KEY(doc,epoch,v,i), FOREIGN KEY(doc,epoch,v) REFERENCES frames(doc,epoch,v)
     ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS hwp_checkpoints (
+      doc TEXT NOT NULL, epoch TEXT NOT NULL, v INTEGER NOT NULL, base_hash TEXT NOT NULL,
+      object_id TEXT NOT NULL REFERENCES objects(id), PRIMARY KEY(doc,epoch,v),
+      FOREIGN KEY(doc,epoch) REFERENCES epochs(doc,epoch)
+    ) WITHOUT ROWID;
   `)
   const statements = new Map()
   function sql(query) {
@@ -150,6 +155,17 @@ export function createStreamStore(
   }
   const chunk = (id, n) =>
     sql('SELECT bytes FROM chunks WHERE object_id=? AND n=?').get(id, n)?.bytes
+  function whole(id) {
+    const { byte_length } = sql('SELECT byte_length FROM objects WHERE id=?').get(id)
+    const bytes = new Uint8Array(byte_length)
+    for (let n = 0, offset = 0; offset < byte_length; n++) {
+      const part = chunk(id, n)
+      if (!part?.length) throw new Error('object unavailable')
+      bytes.set(part, offset)
+      offset += part.length
+    }
+    return bytes
+  }
   function source(id, byteLength, check) {
     return {
       byteLength,
@@ -256,16 +272,39 @@ export function createStreamStore(
     },
     // Only the existing live socket protocol materializes a full base or parses its page of changes.
     async readBase(doc, epoch) {
-      const { base_id } = current(doc, epoch)
-      const { byte_length } = sql('SELECT byte_length FROM objects WHERE id=?').get(base_id)
-      const bytes = new Uint8Array(byte_length)
-      for (let n = 0, offset = 0; offset < byte_length; n++) {
-        const part = chunk(base_id, n)
-        if (!part?.length) throw new Error('base unavailable')
-        bytes.set(part, offset)
-        offset += part.length
-      }
-      return bytes
+      return whole(current(doc, epoch).base_id)
+    },
+    // HWP replay checkpoints: first write wins per version, and they outlive drop.
+    async writeHwpCheckpoint(doc, epoch, { version, baseHash, base }) {
+      transaction(() => {
+        const row = sql('SELECT head FROM epochs WHERE doc=? AND epoch=?').get(doc, epoch)
+        if (!row || !Number.isSafeInteger(version) || version < 1 || version > row.head)
+          throw new Error('checkpoint outside its epoch')
+        if (
+          sql('SELECT 1 FROM hwp_checkpoints WHERE doc=? AND epoch=? AND v=?').get(
+            doc,
+            epoch,
+            version,
+          )
+        )
+          return
+        const id = object(doc, 'base')
+        putBytes(id, 0, base)
+        sql('UPDATE objects SET byte_length=? WHERE id=?').run(base.byteLength, id)
+        sql('INSERT INTO hwp_checkpoints(doc,epoch,v,base_hash,object_id) VALUES(?,?,?,?,?)').run(
+          doc,
+          epoch,
+          version,
+          baseHash,
+          id,
+        )
+      })
+    },
+    async readHwpCheckpoint(doc, epoch, atMost) {
+      const row = sql(
+        'SELECT v,base_hash,object_id FROM hwp_checkpoints WHERE doc=? AND epoch=? AND v<=? ORDER BY v DESC LIMIT 1',
+      ).get(doc, epoch, atMost)
+      return row ? { version: row.v, baseHash: row.base_hash, base: whole(row.object_id) } : null
     },
     async read(doc, epoch, after, limit) {
       current(doc, epoch)

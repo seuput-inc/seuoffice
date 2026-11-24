@@ -2,8 +2,9 @@ import {
   assertHistoryCompensation,
   checkHistoryHeader,
   HistoryError,
-  type HistoryRequest,
   type HistoryOpId,
+  type HistoryRequest,
+  type HistoryResult,
 } from '../history.js'
 import type { Change, Format, Json } from '../model.js'
 import type {
@@ -13,15 +14,8 @@ import type {
   HistoryReceipt,
   RetainedHistoryStore,
 } from './history.js'
-import {
-  HWP_REPLAY,
-  isHwpHistory,
-  type HwpHistoryCandidate,
-  type HwpHistoryRefusal,
-  type Limits,
-  type Principal,
-} from './server.js'
-import { sha256 } from '../sha256.js'
+import type { HwpCheckpointStore, HwpRetained } from './hwp-history.js'
+import { HWP_REPLAY, isHwpHistory, type Limits, type Principal } from './server.js'
 import type { CollabStore } from './store.js'
 
 export interface HistoryByteSource {
@@ -41,23 +35,25 @@ export type StreamHistoryWrite =
   | { command: Extract<HistoryCommand, { kind: 'restore' }>; stage: HistoryStage; fileName: string }
   | { command: Extract<HistoryCommand, { kind: 'undo' }>; change: Change }
 
+/** One retained point as a stream store returns it. */
+export interface RetainedStream extends HistoryPoint {
+  format: Format
+  baseHash: string
+  source: HistoryByteSource
+  changes: AsyncIterable<Uint8Array>
+}
+
 export interface StreamHistoryStore
   extends
     CollabStore,
+    HwpCheckpointStore,
     Pick<RetainedHistoryStore, 'authorizeHistory' | 'authorizeUndoTarget' | 'historyReceipt'> {
   /** Return an immutable retained source, trusted coordinates and opaque Change frames for exactly 1..version. */
   readHistoryStream(
     principal: Principal,
     point: HistoryPoint,
     action: HistoryAction,
-  ): Promise<
-    HistoryPoint & {
-      format: Format
-      baseHash: string
-      source: HistoryByteSource
-      changes: AsyncIterable<Uint8Array>
-    }
-  >
+  ): Promise<RetainedStream>
   /** Allocate privately and capture the active epoch/head fence for exports (not the requested historical point). */
   createHistoryStage(principal: Principal, action: HistoryAction): Promise<HistoryStage>
   /** Atomically check signal, fence and read grant, then transfer stage ownership to a disposable reader. */
@@ -91,137 +87,95 @@ const MAX_FILE = 50 * 1024 * 1024
 const MAX_HISTORY = 32 * 1024 * 1024
 const MAX_FRAME = 256 * 1024
 const encoder = new TextEncoder()
+const decoder = new TextDecoder('utf-8', { fatal: true })
 const encode = (value: unknown) => encoder.encode(JSON.stringify(value))
 
-/**
- * Render the unpublished candidate. Count/discard its output; never create an export or revision.
- * Without `action` it admits a socket submit: like byte mode it reads the epoch's own log, so an
- * editor needs no history grant. With `action` it reads the retained history under that grant.
- */
-export async function admitHwpStream(
+/** Render a small HWP history through the stream renderer, keeping the whole file in memory. */
+export async function renderStreamBytes(
   options: StreamHistoryOptions,
-  p: Principal,
-  candidate: HwpHistoryCandidate,
-  header: Omit<HistoryRequest, 'changes'>,
+  base: Uint8Array,
+  request: HistoryRequest,
   signal: AbortSignal,
-  action?: HistoryAction,
-): Promise<HwpHistoryRefusal | undefined> {
-  const seed = 'base' in candidate ? candidate.base : undefined
-  const next = 'next' in candidate ? candidate.next : undefined
-  if (header.version > HWP_REPLAY.changes || (next && next.ops.length > HWP_REPLAY.ops))
-    return 'too_large'
-  let source: HistoryByteSource
-  let prefix: AsyncIterable<Uint8Array> | undefined
-  if (seed) {
-    source = {
-      byteLength: seed.byteLength,
-      async *open() {
-        yield seed
-      },
-    }
-  } else if (!action) {
-    const { store } = options
-    const base = await store.readBase(p.documentId, header.epoch)
-    if (base.byteLength > HWP_REPLAY.fileBytes) return 'too_large'
-    if ((await sha256(base)) !== header.baseHash) return 'schema_mismatch'
-    source = {
+  author?: string,
+): Promise<HistoryResult> {
+  const { changes, ...header } = request
+  const parts: Uint8Array[] = []
+  let size = 0
+  const result = await options.renderStream(
+    {
       byteLength: base.byteLength,
       async *open() {
         yield base
       },
-    }
-    prefix = (async function* () {
-      for (let v = 1; v < header.version; v++) {
-        const [change] = await store.read(p.documentId, header.epoch, v - 1, 1)
-        if (change?.v !== v)
-          throw new HistoryError('invalid_history', 'invalid HWP retained prefix')
-        yield encode(change)
-      }
-    })()
-  } else {
-    const point = { epoch: header.epoch, version: header.version - 1 }
-    const retained = await options.store
-      .readHistoryStream(p, point, action)
-      .catch(async (error) => {
-        try {
-          await options.store.authorizeHistory(p, action)
-        } catch {
-          return null
-        }
-        throw error
-      })
-    if (!retained) return 'forbidden'
-    if (
-      retained.epoch !== point.epoch ||
-      retained.version !== point.version ||
-      retained.baseHash !== header.baseHash ||
-      retained.format.name !== header.format.name ||
-      retained.format.schema !== header.format.schema
-    )
-      return 'schema_mismatch'
-    source = retained.source
-    prefix = retained.changes
-  }
-  if (source.byteLength > HWP_REPLAY.fileBytes) return 'too_large'
-  if (!Number.isSafeInteger(source.byteLength) || source.byteLength < 1) return 'schema_mismatch'
-  const encoded = encode(header)
-  let total = encoded.byteLength + ',"changes":[]'.length
-  let written = 0
-  let count = 0
-  let complete = false
-  let refusal: HwpHistoryRefusal | undefined
-  function overLimit(): never {
-    refusal = 'too_large'
-    throw new HistoryError('unsupported', 'HWP retained history exceeds replay limits')
-  }
-  async function* input() {
-    if (prefix) yield* prefix
-    if (next) yield encode(next)
-  }
-  async function* frames() {
-    for await (const bytes of input()) {
-      signal.throwIfAborted()
-      total += bytes.byteLength + (count ? 1 : 0)
-      if (bytes.byteLength > MAX_FRAME || total > HWP_REPLAY.historyBytes) overLimit()
-      if (!bytes.byteLength || ++count > header.version)
-        throw new HistoryError('invalid_history', 'invalid HWP retained prefix')
-      yield bytes
-    }
-    complete = count === header.version
-  }
-  try {
-    const result = await options.renderStream(
-      source,
-      encoded,
-      frames(),
-      {
-        async write(bytes) {
-          signal.throwIfAborted()
-          if (written + bytes.byteLength > HWP_REPLAY.fileBytes) overLimit()
-          if (seed && !bytes.every((value, i) => value === seed[written + i]))
-            throw new HistoryError('unsupported', 'HWP renderer changed the base file')
-          written += bytes.byteLength
-        },
-        async abort() {
-          written = 0
-        },
+    },
+    encode(header),
+    (async function* () {
+      for (const change of changes) yield encode(change)
+    })(),
+    {
+      async write(bytes) {
+        signal.throwIfAborted()
+        if ((size += bytes.byteLength) > HWP_REPLAY.fileBytes)
+          throw new HistoryError('unsupported', 'HWP output exceeds 2 MiB')
+        parts.push(new Uint8Array(bytes))
       },
-      signal,
-    )
+      async abort() {
+        parts.length = 0
+        size = 0
+      },
+    },
+    signal,
+    author,
+  )
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const part of parts) {
+    bytes.set(part, offset)
+    offset += part.byteLength
+  }
+  return {
+    fileName: result.fileName,
+    bytes,
+    ...(result.compensation === undefined ? {} : { compensation: result.compensation }),
+  }
+}
+
+/** Read a retained HWP point into memory: its base is at most 2 MiB, its log bounded like any stream. */
+async function retainedHwp(
+  retained: RetainedStream,
+  point: HistoryPoint,
+  signal: AbortSignal,
+): Promise<HwpRetained> {
+  const { source, format, baseHash } = retained
+  if (source.byteLength > HWP_REPLAY.fileBytes)
+    throw new HistoryError('unsupported', 'HWP source exceeds 2 MiB')
+  const base = new Uint8Array(source.byteLength)
+  let offset = 0
+  for await (const bytes of source.open()) {
+    signal.throwIfAborted()
+    if (offset + bytes.byteLength > base.byteLength)
+      throw new HistoryError('invalid_history', 'retained source is longer than declared')
+    base.set(bytes, offset)
+    offset += bytes.byteLength
+  }
+  if (offset !== base.byteLength)
+    throw new HistoryError('invalid_history', 'retained source is shorter than declared')
+  const changes: Change[] = []
+  let total = 0
+  for await (const bytes of retained.changes) {
     signal.throwIfAborted()
     if (
-      !refusal &&
-      complete &&
-      written &&
-      (!seed || written === seed.byteLength) &&
-      result.fileName.toLowerCase().endsWith(`.${header.format.name}`) &&
-      result.compensation === undefined
+      changes.length >= point.version ||
+      !bytes.byteLength ||
+      bytes.byteLength > MAX_FRAME ||
+      (total += bytes.byteLength) > MAX_HISTORY
     )
-      return undefined
-  } catch {
-    signal.throwIfAborted()
+      throw new HistoryError('invalid_history', 'invalid retained stream length')
+    changes.push(JSON.parse(decoder.decode(bytes)))
   }
-  return refusal ?? 'schema_mismatch'
+  if (changes.length !== point.version)
+    throw new HistoryError('invalid_history', 'incomplete retained stream')
+  return { format, baseHash, base, changes }
 }
 
 export async function withStreamHistory<T>(
@@ -231,6 +185,7 @@ export async function withStreamHistory<T>(
   action: HistoryAction,
   target: HistoryOpId | undefined,
   signal: AbortSignal,
+  hwp: (retained: HwpRetained) => Promise<{ file: HistoryResult; change?: Change }>,
   use: (stage: HistoryStage, fileName: string, change: Change | undefined) => Promise<T>,
 ): Promise<T> {
   const { store } = options
@@ -248,6 +203,13 @@ export async function withStreamHistory<T>(
     const header = { ...point, format: { name, schema }, baseHash: retained.baseHash }
     const request = target ? { ...header, undo: target } : header
     checkHistoryHeader(request, header.format)
+    if (isHwpHistory(header.format)) {
+      // HWP replays from its newest checkpoint, so the whole bounded window is read into memory.
+      const { file, change } = await hwp(await retainedHwp(retained, point, signal))
+      if (!change) await stage.write(file.bytes)
+      signal.throwIfAborted()
+      return await use(stage, file.fileName, change)
+    }
     const encoded = encode(request)
     const fixedBytes = ',"changes":[]'.length
     let logBytes = 0,
@@ -309,18 +271,6 @@ export async function withStreamHistory<T>(
       )
         throw new HistoryError('unsupported', 'appended change exceeds replay limits')
       await stage.abort()
-      if (isHwpHistory(header.format)) {
-        const refused = await admitHwpStream(
-          options,
-          p,
-          { id: point.epoch, format: header.format, baseHash: retained.baseHash, next: change },
-          { ...header, version: change.v },
-          signal,
-          action,
-        )
-        if (refused)
-          throw new HistoryError('unsupported', `HWP compensation cannot be replayed (${refused})`)
-      }
     }
     signal.throwIfAborted()
     return await use(stage, result.fileName, change)
