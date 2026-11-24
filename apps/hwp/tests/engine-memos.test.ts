@@ -1024,15 +1024,15 @@ describe('the engine writes Hancom memo identity', () => {
   const before: Record<string, Record<string, string>> = {
     'format-copy-table.hwp': {
       hwp: 'd90a4045fa4a1cb72fdb287580721a681ad73753519ff4eaa6b0816485b7a6df',
-      hwpx: 'fd609de6eb7029ba067921e4bdb61ae984dd6d5e2cd218dc1ec6f8873c3833fe',
+      hwpx: '263bd9e6ee782e8a7b9005a8ad6cfbd3c222b6abac3c1a16a4f9db9292da77fd',
       editedHwp: '78e031ac0f9c84936a696deb75b8dbf9e00d2e3c8b3052356d31a99b8ae666ab',
-      editedHwpx: 'd9ff2c5f2864868e5b301d280674222ff7c9753a34b744c3be034056bfd67315',
+      editedHwpx: '3574bccde4b1b9d3d342caad23397646c93940dec60f8299a7c5d7a84003d186',
     },
     'hancom-page-number-no-dash.hwpx': {
       hwp: 'c3e3c463c70d787ddf5e2a568bbb83da12df18d0284e373eb1799a6449578b96',
-      hwpx: 'ac5beb7f6aef8be99a73078250080f9c61bac821dac7b6d2d6d2c00ed16d8eef',
+      hwpx: '8d54248f82b7cb25472fcef85984c72562397020b5eabfbf17454128daed9960',
       editedHwp: '63a6d970a15095b535a882f4e87219f386716b0beb7c04a120cead28da4def5d',
-      editedHwpx: '7f04038cce8f8eab25bf35b70a940a7a2cc5e52e21fb362f4989281d617885e0',
+      editedHwpx: '2b28a56d5ad33395bd93f7ac799df20e45ab6a8ca106a9977e21a9e2153af71d',
     },
   }
 
@@ -1052,10 +1052,13 @@ describe('the engine writes Hancom memo identity', () => {
         const zip = await JSZip.loadAsync(bytes)
         const hash = createHash('sha256')
         for (const part of Object.keys(zip.files).sort()) {
-          let data = await zip.files[part].async('string')
-          if (part === 'Contents/header.xml') {
-            data = data.replace(/(<hh:paraPr [^>]*?) textDir="[^"]*"/g, '$1')
-          }
+          const data =
+            part === 'Contents/header.xml'
+              ? (await zip.files[part].async('string')).replace(
+                  /(<hh:paraPr [^>]*?) textDir="[^"]*"/g,
+                  '$1',
+                )
+              : await zip.files[part].async('uint8array')
           hash.update(part).update('\0').update(data).update('\0')
         }
         return hash.digest('hex')
@@ -1067,15 +1070,29 @@ describe('the engine writes Hancom memo identity', () => {
       }
       expect(open(name).getMemoList()).toBe('[]')
       const hwpx = open(name).exportHwpx()
+      const editedHwpx = edited().exportHwpx()
       expect({
         hwp: sha(open(name).exportHwp()),
         hwpx: await contentSha(hwpx),
         editedHwp: sha(edited().exportHwp()),
-        editedHwpx: await contentSha(edited().exportHwpx()),
+        editedHwpx: await contentSha(editedHwpx),
       }).toEqual(before[name])
-      if (name.endsWith('.hwpx')) {
-        const source = new Uint8Array(readFileSync(join(FIXTURES, name)))
-        expect(textDirs(await header(hwpx))).toEqual(textDirs(await header(source)))
+
+      const source = new Uint8Array(readFileSync(join(FIXTURES, name)))
+      for (const saved of [hwpx, editedHwpx]) {
+        // the package starts with an uncompressed `mimetype` entry
+        const zip = Buffer.from(saved)
+        expect([
+          zip.readUInt32LE(0),
+          zip.readUInt16LE(8),
+          zip.toString('latin1', 30, 30 + zip.readUInt16LE(26)),
+        ]).toEqual([0x04034b50, 0, 'mimetype'])
+        // textDir comes from an HWPX source only, value for value
+        expect(textDirs(await header(saved))).toEqual(
+          name.endsWith('.hwpx')
+            ? textDirs(await header(source))
+            : textDirs(await header(saved)).map((entry) => entry.replace(/:.*$/, ':undefined')),
+        )
       }
     },
   )
