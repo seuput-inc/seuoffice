@@ -19,7 +19,15 @@ import * as CFB from 'cfb'
 import JSZip from 'jszip'
 import { beforeAll, describe, expect, it } from 'vitest'
 import init, { HwpDocument } from '@rhwp/core'
-import { DOC_INFO, openHwp, pathsOf, recordsOf, streamOf } from '../src/main/hwp5-file'
+import {
+  DOC_INFO,
+  LIST_HEADER,
+  openHwp,
+  pathsOf,
+  recordsOf,
+  SECTION,
+  streamOf,
+} from '../src/main/hwp5-file'
 import type { OpenedHwp } from '../src/main/hwp5-file'
 import { openHwpFromBytes } from '../src/web/open-hwp'
 import { webSaveBytes } from '../src/web/save-hwp'
@@ -37,9 +45,14 @@ beforeAll(async () => {
 })
 
 /** The file as the web save writes it after `edit`, through the same checks and fixes. */
-function saved(name: string, format: 'hwp' | 'hwpx', edit: (doc: HwpDocument) => void) {
+function saved(
+  name: string,
+  format: 'hwp' | 'hwpx',
+  edit: (doc: HwpDocument) => void,
+  bytes = fixture(name),
+) {
   const opened = openHwpFromBytes(
-    { id: name, fileName: name, bytes: fixture(name), virtualPath: `/web/${name}` },
+    { id: name, fileName: name, bytes, virtualPath: `/web/${name}` },
     true,
   )
   if (!opened) throw new Error('open failed')
@@ -162,4 +175,114 @@ describe('an HWPX save', () => {
     expect(after.paragraphIds.slice(0, -1)).toEqual(before.paragraphIds)
     expect(before.paragraphIds).not.toContain(fresh)
   })
+})
+
+/** The body paragraph whose first control is the document's first table. */
+function tableParagraph(doc: HwpDocument) {
+  for (let para = 0; para < doc.getParagraphCount(0); para++) {
+    try {
+      doc.getTableDimensions(0, para, 0)
+      return para
+    } catch {
+      // no table in this paragraph
+    }
+  }
+  throw new Error('no table')
+}
+
+/** `para-float-tail-table.hwpx` with its parts changed by `change`, repacked. */
+async function changedHwpx(change: (part: string, xml: string) => string) {
+  const zip = await JSZip.loadAsync(fixture('para-float-tail-table.hwpx'))
+  for (const part of ['Contents/section0.xml', 'Contents/header.xml']) {
+    zip.file(part, change(part, await zip.files[part]!.async('string')))
+  }
+  return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+}
+
+describe('an edit next to what a save keeps', () => {
+  const name = 'para-float-tail-table.hwpx'
+
+  it('saves a row inserted under a widened cell at the width the file stored', async () => {
+    // the table cut to its widened cell alone: one column, whose width layout widens
+    const oneColumn = await changedHwpx((part, xml) => {
+      if (part !== 'Contents/section0.xml') return xml
+      const firstRow = xml.indexOf('<hp:tr>', xml.indexOf('<hp:tbl '))
+      const cut = xml.slice(0, firstRow) + xml.slice(xml.indexOf('<hp:tr>', firstRow + 1))
+      return cut
+        .replace(/(<hp:tbl [^>]*)rowCnt="2" colCnt="2"/, '$1rowCnt="1" colCnt="1"')
+        .replace(
+          '<hp:cellAddr colAddr="0" rowAddr="1"/><hp:cellSpan colSpan="2"',
+          '<hp:cellAddr colAddr="0" rowAddr="0"/><hp:cellSpan colSpan="1"',
+        )
+    })
+    expect((await hwpxFacts(oneColumn)).cellWidths).toEqual(['40535'])
+    const after = saved(
+      name,
+      'hwpx',
+      (doc) => doc.insertTableRow(0, tableParagraph(doc), 0, 0, true),
+      oneColumn,
+    )
+    expect((await hwpxFacts(after)).cellWidths).toEqual(['40535', '40535'])
+  })
+
+  it('keeps a strikeout turned on over the no-strikeout placeholder through an HWP save', async () => {
+    const placeholders = await changedHwpx((part, xml) =>
+      part === 'Contents/header.xml'
+        ? xml.replaceAll('<hh:strikeout shape="NONE"', '<hh:strikeout shape="3D"')
+        : xml,
+    )
+    const hwp = saved(
+      name,
+      'hwp',
+      (doc) => {
+        expect(JSON.parse(doc.applyCharFormat(0, 0, 0, 1, '{"strikethrough":true}'))).toEqual({
+          ok: true,
+        })
+      },
+      placeholders,
+    )
+    const back = new HwpDocument(hwp)
+    try {
+      expect(JSON.parse(back.getCharPropertiesAt(0, 0, 0)).strikethrough).toBe(true)
+      expect(JSON.parse(back.getCharPropertiesAt(0, 0, 1)).strikethrough).toBe(false)
+    } finally {
+      back.free()
+    }
+  })
+
+  it('gives the paragraphs of a pasted table ids no other paragraph has', async () => {
+    const before = await hwpxFacts(fixture(name))
+    const after = await hwpxFacts(
+      saved(name, 'hwpx', (doc) => {
+        doc.copyControl(0, tableParagraph(doc), '[]', 0)
+        const para = doc.getParagraphCount(0) - 1
+        doc.pasteControl(0, para, doc.getParagraphLength(0, para))
+      }),
+    )
+    const fresh = after.paragraphIds.filter((id) => !before.paragraphIds.includes(id))
+    expect(after.paragraphIds.length - fresh.length).toBe(before.paragraphIds.length)
+    // the pasted table's three cell paragraphs and the paragraph that holds it
+    expect(new Set(fresh).size).toBeGreaterThanOrEqual(4)
+    expect(new Set(fresh).size).toBe(fresh.length)
+  })
+})
+
+/**
+ * `widened-cell.hwp` is `para-float-tail-table.hwpx` saved as HWP by the ieum.35 engine. Its
+ * two-column cell stores 40535 in LIST_HEADER, narrower than the table, so the engine widens it
+ * on open, as it does for the HWPX.
+ */
+it('keeps the LIST_HEADER of a widened HWP cell through a save after typing at the end', () => {
+  const cells = (bytes: Uint8Array) => {
+    const opened = openHwp(bytes)
+    const section = opened && streamOf(opened, SECTION(0))
+    const records = section && recordsOf(section)
+    if (!section || !records) throw new Error('unreadable section')
+    return records
+      .filter((r) => r.tag === LIST_HEADER)
+      .map((r) => section.subarray(r.body, r.end).toString('hex'))
+  }
+  const before = cells(fixture('widened-cell.hwp'))
+  expect(before.length).toBeGreaterThanOrEqual(3)
+  expect(cells(saved('widened-cell.hwp', 'hwp', typeAtEnd))).toEqual(before)
 })
