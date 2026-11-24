@@ -8,6 +8,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import JSZip from 'jszip'
+import { JSDOM } from 'jsdom'
 import { beforeAll, expect, it } from 'vitest'
 import init, { HwpDocument } from '@rhwp/core'
 
@@ -62,3 +63,37 @@ it.each(fixtures)('%s keeps its element and attribute kinds on a no-edit save', 
   )
   expect(lost).toEqual([])
 })
+
+const SECTION_XML = 'Contents/section0.xml'
+
+/** Each table's id and its label's attributes, in document order. */
+async function labelsOf(bytes: Uint8Array): Promise<[string | null, [string, string][]][]> {
+  const xml = await (await JSZip.loadAsync(bytes)).files[SECTION_XML].async('string')
+  const doc = new new JSDOM().window.DOMParser().parseFromString(xml, 'application/xml')
+  return [...doc.getElementsByTagNameNS('*', 'label')].map((label) => [
+    label.parentElement?.getAttribute('id') ?? null,
+    [...label.attributes].map((a): [string, string] => [a.name, a.value]),
+  ])
+}
+
+it.each(['self-closing', 'paired'])(
+  'keeps a %s table label with its values on its own table',
+  async (form) => {
+    const zip = await JSZip.loadAsync(readFileSync(join(FIXTURES, 'title-table-zone-fill.hwpx')))
+    let xml = await zip.files[SECTION_XML].async('string')
+    if (form === 'paired')
+      xml = xml.replace(/<hp:label ([^>]*?)\s*\/>/g, '<hp:label $1></hp:label>')
+    zip.file(SECTION_XML, xml)
+    const source = await zip.generateAsync({ type: 'uint8array' })
+    const doc = new HwpDocument(source)
+    let saved: Uint8Array
+    try {
+      saved = doc.exportHwpx()
+    } finally {
+      doc.free()
+    }
+    const before = await labelsOf(source)
+    expect(before).toHaveLength(3)
+    expect(await labelsOf(saved)).toEqual(before)
+  },
+)
