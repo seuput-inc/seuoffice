@@ -1,6 +1,6 @@
 import type { HistoryOpId } from '../history.js'
 import type { Change, Format, Json } from '../model.js'
-import type { Principal } from './server.js'
+import { isHwpHistory, type Principal } from './server.js'
 import type {
   HistoryAction,
   HistoryArtifact,
@@ -223,6 +223,7 @@ export function memoryHistoryStore(
   })
   return {
     ...store,
+    exactHistoryChange: true,
     async authorizeHistory(p, action) {
       allowed(p, action)
     },
@@ -271,16 +272,26 @@ export function memoryHistoryStore(
         const { epoch, v, index } = write.command.target
         const target = JSON.stringify([p.documentId, epoch, v, index])
         if (undone.has(target)) throw new Error('target already undone')
-        const client = `history:${crypto.randomUUID()}`
+        if (isHwpHistory(live.format) && !write.change) throw new Error('missing exact HWP change')
         const version = live.log.length + 1
-        live.log.push({
+        const change = write.change ?? {
           v: version,
-          client,
+          client: `history:${crypto.randomUUID()}`,
           seq: 1,
           author: p.userId,
-          ops: structuredClone(write.compensation),
-        })
-        live.submits.set(`${client}\n1`, version)
+          ops: write.compensation,
+        }
+        const submit = `${change.client}\n${change.seq}`
+        if (
+          change.v !== version ||
+          change.author !== p.userId ||
+          change.seq !== 1 ||
+          !change.client.startsWith('history:') ||
+          live.submits.has(submit)
+        )
+          throw new Error('invalid compensation change')
+        live.log.push({ ...change, ops: structuredClone(change.ops) })
+        live.submits.set(submit, version)
         undone.add(target)
         receipt = { kind: 'undone', version }
       }

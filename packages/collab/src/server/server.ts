@@ -14,7 +14,7 @@
 import { systemClock, type Clock } from '../clock.js'
 import { deferred } from '../deferred.js'
 import { MAX_CHANGE_BYTES, MAX_PRESENCE_BYTES, PRESENCE_INTERVAL_MS } from '../limits.js'
-import type { Change, Peer } from '../model.js'
+import type { Change, Format, Peer } from '../model.js'
 import { sha256 } from '../sha256.js'
 import {
   encodePresence,
@@ -29,7 +29,7 @@ import {
   type SubmitFrame,
 } from '../wire.js'
 import { decideHello, decideSubmit, type HelloDecision } from './decide.js'
-import type { AppendResult, CollabStore, EpochHead } from './store.js'
+import type { AppendRequest, AppendResult, CollabStore, EpochHead, NewEpoch } from './store.js'
 import type { HistoryReceipt } from './history.js'
 
 /** Who is on the other end of a socket; the host authenticated the upgrade and decides it */
@@ -105,8 +105,36 @@ export interface CollabServer {
   close(): Promise<void>
 }
 
+export type HwpHistoryCandidate = Pick<NewEpoch, 'id' | 'format' | 'baseHash'> &
+  ({ base: Uint8Array } | { next: Change })
+export type HwpHistoryRefusal =
+  'schema_mismatch' | 'too_large' | 'exact_write_required' | 'forbidden'
+
+export const HWP_REPLAY = {
+  fileBytes: 2 * 1024 * 1024,
+  historyBytes: 1024 * 1024,
+  changes: 128,
+  ops: 256,
+}
+
+const hwpRefusalReasons: Record<HwpHistoryRefusal, string> = {
+  too_large: 'HWP retained history exceeds its replay limits',
+  schema_mismatch: 'HWP source or edit cannot be replayed within the retained history profile',
+  exact_write_required:
+    'HWP retained history requires a store that can commit the exact undo change',
+  forbidden: 'HWP retained history could not read the authorized replay prefix',
+}
+
+export function isHwpHistory(format: Format): boolean {
+  return format.name === 'hwp' || format.name === 'hwpx'
+}
+
 export interface ServerCoreOptions extends CollabServerOptions {
   clock?: Clock | undefined
+  admitHwpHistory?: (
+    principal: Principal,
+    candidate: HwpHistoryCandidate,
+  ) => Promise<HwpHistoryRefusal | undefined>
 }
 
 /** The server plus what the conformance kit needs to step it deterministically */
@@ -187,6 +215,7 @@ export function createServerCore({
   store,
   limits: overrides,
   clock = systemClock,
+  admitHwpHistory,
 }: ServerCoreOptions): ServerCore {
   const limits: Limits = { ...DEFAULT_LIMITS, ...overrides }
   const docs = new Map<string, Doc>()
@@ -335,9 +364,14 @@ export function createServerCore({
     }
   }
 
-  async function reject(doc: Doc, conn: Conn, code: ErrorCode): Promise<void> {
+  async function reject(
+    doc: Doc,
+    conn: Conn,
+    code: ErrorCode,
+    reason: string = code,
+  ): Promise<void> {
     send(conn, { t: 'error', code })
-    conn.socket.close(4000, code)
+    conn.socket.close(4000, reason)
     await remove(doc, conn)
   }
 
@@ -495,21 +529,71 @@ export function createServerCore({
     }
   }
 
+  function hwpAdmission(conn: Conn) {
+    return admitHwpHistory && conn.hello && isHwpHistory(conn.hello.format)
+      ? admitHwpHistory
+      : undefined
+  }
+
+  function rejectHistory(doc: Doc, conn: Conn, refusal: HwpHistoryRefusal) {
+    const code = refusal === 'exact_write_required' ? 'schema_mismatch' : refusal
+    return reject(doc, conn, code, hwpRefusalReasons[refusal])
+  }
+
   async function onBase(doc: Doc, conn: Conn, bytes: Uint8Array): Promise<void> {
     if (conn.stage !== 'seeding') return reject(doc, conn, 'bad_frame')
     const hello = conn.hello!
-    if ((await sha256(bytes)) !== hello.fileHash) return reject(doc, conn, 'bad_frame')
-    // A copy: the socket library may reuse the buffer it handed over
-    const base = new Uint8Array(bytes)
-    await store.create(doc.id, {
-      id: crypto.randomUUID(),
-      format: hello.format,
-      baseHash: hello.fileHash,
-      base,
-    })
+    // Hash and render the same snapshot; the socket library may reuse the buffer.
+    const admit = hwpAdmission(conn)
+    const base =
+      admit && bytes.byteLength > HWP_REPLAY.fileBytes ? undefined : new Uint8Array(bytes)
+    if (!admit || !(await store.load(doc.id))) {
+      if (!base) return rejectHistory(doc, conn, 'too_large')
+      if ((await sha256(base)) !== hello.fileHash) return reject(doc, conn, 'bad_frame')
+      const epoch = {
+        id: crypto.randomUUID(),
+        format: hello.format,
+        baseHash: hello.fileHash,
+        base,
+      }
+      const refused = admit && (await admit(conn.principal, epoch))
+      if (!refused) await store.create(doc.id, epoch)
+      else if (!(await store.load(doc.id))) return rejectHistory(doc, conn, refused)
+    }
     endSeeding(doc)
     await forSocket(doc, conn, () => answerHello(doc, conn))
     await answerWaiting(doc)
+  }
+
+  async function append(
+    doc: Doc,
+    conn: Conn,
+    change: AppendRequest,
+  ): Promise<AppendResult | HwpHistoryRefusal> {
+    const id = conn.epoch!
+    const admit = hwpAdmission(conn)
+    if (admit) {
+      const epoch = await store.load(doc.id)
+      if (epoch?.id !== id) return { kind: 'gone' }
+      const { base, client, seq, author, ops } = change
+      if (epoch.head > 0) {
+        // A strictly older base can never append. The store still returns the original
+        // duplicate receipt before comparing heads, even for a retry at today's head.
+        const prior = await store.append(doc.id, id, { ...change, base: epoch.head - 1 })
+        if (prior.kind !== 'stale' || prior.head !== base) return prior
+      } else if (base !== 0) return { kind: 'stale', head: 0 }
+      const refused = await admit(conn.principal, {
+        ...epoch,
+        next: { v: base + 1, client, seq, author, ops },
+      })
+      if (refused) {
+        const current = await store.load(doc.id)
+        if (current?.id !== id) return { kind: 'gone' }
+        if (current.head === base) return refused
+        // A competing writer won during render. Let the store answer stale or duplicate.
+      }
+    }
+    return store.append(doc.id, id, change)
   }
 
   async function onSubmit(doc: Doc, conn: Conn, submit: SubmitFrame): Promise<void> {
@@ -520,13 +604,14 @@ export function createServerCore({
     }
     const decision = decideSubmit(sender, submit)
     if (decision.kind === 'reject') return reject(doc, conn, decision.code)
-    let result: AppendResult
+    let result: AppendResult | HwpHistoryRefusal
     try {
-      result = await store.append(doc.id, conn.epoch!, decision.change)
+      result = await append(doc, conn, decision.change)
     } catch {
       // Appended or not, the client finds out when it resumes: a duplicate submit is acked
       return abort(doc, conn)
     }
+    if (typeof result === 'string') return rejectHistory(doc, conn, result)
     switch (result.kind) {
       case 'appended': {
         const { client, seq, author, ops } = decision.change
