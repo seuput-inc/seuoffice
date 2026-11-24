@@ -92,10 +92,13 @@ export const nameBox = (frame: FrameLocator) =>
 /**
  * Select `cell` of a sheet through the name box, as a person does, and wait until the grid took
  * the jump. The reference is typed in lower case: the box writes it back in upper case only once
- * the selection moved, and keys typed before that go to the cell selected until then.
+ * the selection moved, and keys typed before that go to the cell selected until then. The box
+ * shows before the grid has a selection, and stays empty until then: the grid's first selection
+ * writes over anything typed in it, so wait until it shows a cell, as a person would.
  */
 export async function selectCell(editor: CoEditor, cell: string, timeout?: number): Promise<void> {
   const box = nameBox(editor.frame)
+  await expect(box).not.toHaveValue('', { timeout: timeout ?? 10_000 })
   await box.fill(cell.toLowerCase(), { timeout })
   await box.press('Enter', { timeout })
   await expect(box).toHaveValue(cell, { timeout: timeout ?? 10_000 })

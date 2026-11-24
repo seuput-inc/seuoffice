@@ -363,7 +363,7 @@ describe('startMacSwap', () => {
         '/Users/me/Library/Application Support/IeumOffice/update-log.txt',
         '/usr/bin/open',
       ],
-      { detached: true, stdio: 'ignore' },
+      expect.objectContaining({ detached: true, stdio: 'ignore' }),
     )
     expect(child.unref).toHaveBeenCalled()
     // a late spawn error does not become an uncaught exception
@@ -480,5 +480,28 @@ describe.skipIf(process.platform === 'win32')('the swap script', () => {
     await runSwap(999_999)
     expect(installedVersion()).toBe('new')
     expect(opened()[0]).toBe(oddBundle)
+  })
+
+  // The swap reopens the app through `open`, which passes on its own environment
+  // (checked by hand on macOS 27): a value the old version set for itself, such
+  // as SEUOFFICE_WASM naming a chunk of the old app.asar, would reach the new one.
+  it('reopens the new version without the engine file the old one named', async () => {
+    writeFileSync(
+      opener,
+      `#!/bin/sh\nprintf '%s\\n' "\${SEUOFFICE_WASM-unset}" > "${join(root, 'opened')}"\n`,
+    )
+    const before = process.env.SEUOFFICE_WASM
+    process.env.SEUOFFICE_WASM = join(bundle, 'Contents/Resources/app.asar/out/main/old.wasm')
+    try {
+      expect(startMacSwap({ pid: 999_999, bundle, staged, logFile: log, opener })).toBe(true)
+    } finally {
+      if (before === undefined) delete process.env.SEUOFFICE_WASM
+      else process.env.SEUOFFICE_WASM = before
+    }
+    await vi.waitFor(() => expect(existsSync(join(root, 'opened'))).toBe(true), {
+      timeout: 10_000,
+      interval: 50,
+    })
+    expect(opened()).toEqual(['unset'])
   })
 })
