@@ -10,9 +10,11 @@ export const en = {
   collabKeptTarget:
     'Someone added content here first, so your deletion was not applied. Copy what you meant to delete:',
   collabCaretLost:
-    'Another edit removed the place your cursor was in. Click where you want to keep editing.',
+    'Another edit removed the place your cursor was in. Click where you want to keep editing, or move the cursor with the arrow keys.',
   collabHistoryStopped:
-    'Co-editing stopped: the server could not add this change to the edit history (it could not make a history checkpoint, or the history reached its limit). Download keeps what you see now on this computer.',
+    'Co-editing stopped: the server could not add this change to the edit history (it could not make a history checkpoint, or could not replay the history). Download keeps what you see now on this computer.',
+  collabAdapterStopped:
+    'Co-editing stopped: this change could not be shared (the edit history reached its limit, or the editor could not process the change). Download keeps what you see now on this computer.',
   collabStopped: 'Co-editing ended. Download keeps what you see now on this computer.',
   collabDownload: 'Download',
   collabDownloadFailed: 'The file could not be made.',

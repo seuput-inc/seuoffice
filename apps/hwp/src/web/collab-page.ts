@@ -214,11 +214,15 @@ export async function openHwpCollabPage(
         const active = activeMount()
         const binding = active?.binding
         if (next.phase !== 'failed' || !binding) return
-        // The server answers a history it cannot extend with too_large (adapter) or schema_mismatch.
-        const history = next.failure === 'adapter' || next.failure === 'schema_mismatch'
-        active.recovery.stopped(t(history ? 'collabHistoryStopped' : 'collabStopped'), () =>
-          downloadLocal(binding),
-        )
+        // schema_mismatch after joining is the server refusing to extend the history; adapter
+        // covers both a too_large refusal and a local adapter failure, which the page cannot tell apart.
+        const reason =
+          next.failure === 'schema_mismatch'
+            ? 'collabHistoryStopped'
+            : next.failure === 'adapter'
+              ? 'collabAdapterStopped'
+              : 'collabStopped'
+        active.recovery.stopped(t(reason), () => downloadLocal(binding))
       },
       presence: (_token, publish) => {
         const active = activeMount()
