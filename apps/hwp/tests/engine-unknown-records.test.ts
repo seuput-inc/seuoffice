@@ -1,5 +1,5 @@
 /**
- * Records the engine does not model survive an edit elsewhere and the web save
+ * Records and markup the engine does not model survive an edit elsewhere and the save
  * (vendor/rhwp-core/patches/0047).
  *
  * `opaque-record.hwp` is the editor's `blank.hwp` with two paragraphs written by the engine
@@ -9,6 +9,8 @@
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+import JSZip from 'jszip'
+import { JSDOM } from 'jsdom'
 import { beforeAll, expect, it } from 'vitest'
 import init, { HwpDocument } from '@rhwp/core'
 import { openHwp, PARA_HEADER, recordsOf, SECTION, streamOf } from '../src/main/hwp5-file'
@@ -17,6 +19,8 @@ import { webSaveBytes } from '../src/web/save-hwp'
 
 const require = createRequire(import.meta.url)
 const FIXTURE = join(__dirname, 'fixtures', 'opaque-record.hwp')
+const BLANK = join(__dirname, '..', 'src', 'renderer', 'assets', 'blank.hwp')
+const SECTION_XML = 'Contents/section0.xml'
 const OPAQUE = 0x3fe
 const PAYLOAD = Buffer.from('vendor-opaque-metadata')
 
@@ -61,4 +65,53 @@ it('keeps a record of an untouched paragraph through an edit and the web save', 
   if (!saved.ok) throw new Error(saved.error)
   expect(saved.tailsLost).toBe(false)
   expect(opaqueByParagraph(saved.bytes)).toEqual([[PAYLOAD], []])
+})
+
+/** Binds `ext` to `uri` on the paragraph holding `text`, with an attribute and a run child. */
+function addExtension(xml: string, text: string, uri: string, attr: string, child: string) {
+  const t = `<hp:t>${text}</hp:t>`
+  const at = xml.indexOf(t)
+  const p = xml.lastIndexOf('<hp:p ', at) + '<hp:p'.length
+  const withChild = `${xml.slice(0, at + t.length)}<ext:${child}/>${xml.slice(at + t.length)}`
+  return `${withChild.slice(0, p)} xmlns:ext="${uri}" ext:${attr}="1"${withChild.slice(p)}`
+}
+
+it('merging paragraphs that bind one prefix to different namespaces keeps every name', async () => {
+  const doc = new HwpDocument(new Uint8Array(readFileSync(BLANK)))
+  let source: Uint8Array
+  try {
+    doc.insertText(0, 0, 0, 'front')
+    doc.splitParagraph(0, 0, 5)
+    doc.insertText(0, 1, 0, 'back')
+    source = doc.exportHwpx()
+  } finally {
+    doc.free()
+  }
+  const zip = await JSZip.loadAsync(source)
+  let xml = await zip.files[SECTION_XML].async('string')
+  xml = addExtension(xml, 'front', 'urn:a', 'mark', 'noteA')
+  xml = addExtension(xml, 'back', 'urn:b', 'flag', 'noteB')
+  zip.file(SECTION_XML, xml)
+
+  const edited = new HwpDocument(await zip.generateAsync({ type: 'uint8array' }))
+  let saved: Uint8Array
+  try {
+    edited.mergeParagraph(0, 1)
+    saved = edited.exportHwpx()
+  } finally {
+    edited.free()
+  }
+  const out = await (await JSZip.loadAsync(saved)).files[SECTION_XML].async('string')
+  const parsed = new new JSDOM().window.DOMParser().parseFromString(out, 'application/xml')
+
+  expect(parsed.getElementsByTagName('parsererror')).toHaveLength(0)
+  const noteA = parsed.getElementsByTagNameNS('urn:a', 'noteA')
+  const noteB = parsed.getElementsByTagNameNS('urn:b', 'noteB')
+  expect([noteA.length, noteB.length]).toEqual([1, 1])
+  const p = noteA[0].closest('p')
+  expect(p?.contains(noteB[0])).toBe(true)
+  expect([p?.getAttributeNS('urn:a', 'mark'), p?.getAttributeNS('urn:b', 'flag')]).toEqual([
+    '1',
+    '1',
+  ])
 })
