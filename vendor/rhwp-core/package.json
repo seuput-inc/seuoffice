@@ -1,6 +1,6 @@
 {
   "name": "@rhwp/core",
-  "version": "0.9.0-ieum.31",
+  "version": "0.9.0-ieum.32",
   "description": "rhwp v0.9.0 HWP/HWPX engine (WebAssembly) rebuilt with the patches in ./patches",
   "private": true,
   "type": "module",
@@ -53,6 +53,7 @@
       "0044-cmap-range-entries-across-lines.patch",
       "0045-memo-date-local-offset-hook.patch",
       "0046-memo-authored-time.patch",
+      "0047-keep-unmodelled-paragraph-records.patch",
       "0048-authored-table-height.patch",
       "0049-collab-range-certification.patch",
       "0050-authored-model-fingerprint.patch",
