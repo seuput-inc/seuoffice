@@ -1,5 +1,6 @@
 import type { HwpDocument } from '@rhwp/core'
 import type { HwpPosition, HwpTextSplice } from './collab-text'
+import { hwpSplitOffset, writeHwpText } from './collab-text-native'
 
 function checked(result: string) {
   const reply = JSON.parse(result) as { ok: boolean; charOffset: number }
@@ -44,14 +45,16 @@ export function applyHwpText(doc: HwpDocument, op: HwpTextSplice): void {
   let offset = from.offset
   for (const [i, line] of lines.entries()) {
     if (i > 0) {
+      const logical = hwpSplitOffset(doc, {
+        section,
+        paragraph: cell ? paragraph : first + i - 1,
+        path: cellPath ?? path,
+        offset,
+      })
       checked(
         target === undefined
-          ? doc.splitParagraph(
-              section,
-              first + i - 1,
-              doc.textToLogicalOffset(section, first + i - 1, offset),
-            )
-          : doc.splitParagraphInCellByPath(section, paragraph, target, offset),
+          ? doc.splitParagraph(section, first + i - 1, logical)
+          : doc.splitParagraphInCellByPath(section, paragraph, target, logical),
       )
       if (cellPath) {
         cellPath[cellPath.length - 1]!.cellParaIndex = first + i
@@ -61,9 +64,11 @@ export function applyHwpText(doc: HwpDocument, op: HwpTextSplice): void {
     }
     if (!line) continue
     offset = checked(
-      target === undefined
-        ? doc.insertText(section, first + i, offset, line)
-        : doc.insertTextInCellByPath(section, paragraph, target, offset, line),
+      writeHwpText(
+        doc,
+        { section, paragraph: cell ? paragraph : first + i, path: cellPath ?? path, offset },
+        line,
+      ),
     ).charOffset
   }
 }

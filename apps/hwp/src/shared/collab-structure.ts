@@ -205,7 +205,7 @@ export function parseHwpStructure(value: unknown): HwpStructureOp | null {
     typeof data !== 'string' ||
     typeof description !== 'string' ||
     description.length > 4096 ||
-    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ud800-\udfff]/u.test(description) ||
+    /[^\t\n\r\u0020-\ud7ff\ue000-\u{10ffff}]/u.test(description) ||
     !integer(width, 1, 0x1000000) ||
     !integer(height, 1, 0x1000000) ||
     !integer(naturalWidthPx, 1, 65535) ||
@@ -263,6 +263,62 @@ export function captureHwpStructure(
   method: string,
   args: readonly unknown[],
 ): HwpStructureOp | null {
+  if (method === 'insertPictureEx') {
+    const [json, bytes] = args
+    if (args.length !== 2 || typeof json !== 'string' || json.length > 16384) return null
+    try {
+      const v = JSON.parse(json)
+      // The native options reader uses the first occurrence; JSON.parse alone accepts the last.
+      if (
+        !v ||
+        typeof v !== 'object' ||
+        Array.isArray(v) ||
+        JSON.stringify(v) !== json ||
+        Object.keys(v).some(
+          (k) =>
+            ![
+              'sectionIdx',
+              'paraIdx',
+              'charOffset',
+              'cellPath',
+              'width',
+              'height',
+              'naturalWidthPx',
+              'naturalHeightPx',
+              'extension',
+              'description',
+              'paperOffsetXHu',
+              'paperOffsetYHu',
+            ].includes(k),
+        )
+      )
+        return null
+      const path = v.cellPath ?? ''
+      if (
+        typeof path !== 'string' ||
+        path.length > 4096 ||
+        (path && JSON.stringify(JSON.parse(path)) !== path)
+      )
+        return null
+      return captureHwpStructure(doc, 'insertPicture', [
+        v.sectionIdx ?? 0,
+        v.paraIdx ?? 0,
+        v.charOffset ?? 0,
+        path,
+        bytes,
+        v.width,
+        v.height,
+        v.naturalWidthPx,
+        v.naturalHeightPx,
+        v.extension,
+        v.description ?? '',
+        v.paperOffsetXHu,
+        v.paperOffsetYHu,
+      ])
+    } catch {
+      return null
+    }
+  }
   let value: unknown
   const [section, paragraph] = args
   if (method === 'deleteTableRow' && args.length === 4) {

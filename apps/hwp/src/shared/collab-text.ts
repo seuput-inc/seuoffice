@@ -27,6 +27,7 @@ const MAX_INDEX = 0x7fffffff
 const MAX_PATH = 16
 const MAX_OPS = 256
 const MAX_TEXT = 256 * 1024 // UTF-16 units on the wire, not editor offsets.
+export const invalidHwpText = /[^\t\n\u0020-\ud7ff\ue000-\u{10ffff}]/u
 
 function index(n: unknown): n is number {
   return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX_INDEX
@@ -96,7 +97,7 @@ export function parseHwpTextSplice(value: unknown): HwpTextSplice | null {
   )
     return null
   // CR is normalized by rhwp. A lone surrogate would be replaced on entry to WASM.
-  if (/[\u0000-\u0008\u000b-\u001f\ud800-\udfff]/u.test(text)) return null
+  if (invalidHwpText.test(text)) return null
   const from = parseHwpPosition(value.from)
   const to = parseHwpPosition(value.to)
   if (!from || !to || !sameHwpContainer(from, to)) return null
