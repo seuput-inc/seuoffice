@@ -127,11 +127,18 @@ function studio(nestedFixture = false) {
       page.requestAnimationFrame(() => resolve())
       return promise
     },
-    caret: () => content.querySelector<HTMLElement>('.hwp-presence-caret'),
+    caret: () => page.document.querySelector<HTMLElement>('.hwp-presence-caret'),
   }
 }
 
 describe('HWP peer presence on a read-only Studio host', () => {
+  it('never inserts peer marks into the Studio scroll or editing surface', () => {
+    const { bridge, content, page } = studio()
+    bridge.draw([peer])
+    expect(page.document.querySelector('[data-presence-client]')?.textContent).toBe(peer.name)
+    expect(content.parentElement!.querySelector('[data-presence-client]') !== null).toBe(false)
+  })
+
   it('publishes the logical caret or directed range, never hit-test coordinates or selected text', () => {
     const { bridge, state, emit, publish } = studio()
     expect(bridge.read()).toEqual({ anchor: body(0, 2), head: body(0, 2) })
@@ -149,7 +156,7 @@ describe('HWP peer presence on a read-only Studio host', () => {
   })
 
   it('reads and paints a backward selection in the inner table of a Hancom document', () => {
-    const { bridge, state, content, doc, caret } = studio(true)
+    const { bridge, state, page, doc, caret } = studio(true)
     state.head = {
       sectionIndex: 0,
       paragraphIndex: 0,
@@ -168,13 +175,13 @@ describe('HWP peer presence on a read-only Studio host', () => {
       doc.getSelectionRectsInCellByPath(0, 2, JSON.stringify(path), 0, 1, 0, 4),
     )
     expect(ranges.length).toBeGreaterThan(0)
-    const boxes = content.querySelectorAll<HTMLElement>('.hwp-presence-range')
+    const boxes = page.document.querySelectorAll<HTMLElement>('.hwp-presence-range')
     expect(boxes).toHaveLength(ranges.length)
     expect(boxes[0].style.width).toBe(`${ranges[0].width}px`)
     expect(boxes[0].style.height).toBe(`${ranges[0].height}px`)
     expect(caret()?.querySelector('span')?.textContent).toBe(peer.name)
     expect(caret()?.querySelector('span')?.dataset.presenceClient).toBe(peer.client)
-    expect(content.querySelector('img, [data-spoof]')).toBeNull()
+    expect(page.document.querySelector('img, [data-spoof]')).toBeNull()
     expect(caret()?.style.backgroundColor).toBe('rgb(18, 97, 160)')
     expect(caret()?.querySelector('span')?.style.backgroundColor).toBe('rgb(18, 97, 160)')
     expect(bridge.read()).toEqual(selection)
@@ -201,7 +208,7 @@ describe('HWP peer presence on a read-only Studio host', () => {
       expect(parseFloat(caret()!.style.left)).toBeCloseTo(state.left + rect.x * state.zoom)
       expect(parseFloat(caret()!.style.top)).toBeCloseTo(state.top + rect.y * state.zoom)
       expect(parseFloat(caret()!.style.height)).toBeCloseTo(rect.height * state.zoom)
-      expect(content.querySelectorAll('.hwp-presence-range').length).toBeGreaterThanOrEqual(2)
+      expect(page.document.querySelectorAll('.hwp-presence-range').length).toBeGreaterThanOrEqual(2)
     }
     assertBounds()
     state.zoom = 1.5
@@ -220,13 +227,13 @@ describe('HWP peer presence on a read-only Studio host', () => {
   })
 
   it('projects the two sides of a backward body selection in their respective sections', () => {
-    const { bridge, state, doc, content } = studio()
+    const { bridge, state, doc, page } = studio()
     doc.splitSection(0, 1, 0)
     state.anchor = { sectionIndex: 1, paragraphIndex: 0, charOffset: 3 }
     const selection = { anchor: { ...body(0, 3), section: 1 }, head: body(0, 2) }
     expect(bridge.read()).toEqual(selection)
     bridge.draw([{ ...peer, at: selection }])
-    const boxes = [...content.querySelectorAll<HTMLElement>('.hwp-presence-range')]
+    const boxes = [...page.document.querySelectorAll<HTMLElement>('.hwp-presence-range')]
     const rects = [
       ...JSON.parse(doc.getSelectionRects(0, 0, 2, 0, 4)),
       ...JSON.parse(doc.getSelectionRects(1, 0, 0, 0, 3)),
@@ -239,24 +246,24 @@ describe('HWP peer presence on a read-only Studio host', () => {
   })
 
   it('includes Studio’s table boxes in body ranges, but never paints a partly unresolved range', () => {
-    const { bridge, state, content } = studio()
+    const { bridge, state, page } = studio()
     const range = { ...peer, at: { anchor: body(0, 0), head: body(1, 2) } }
     state.bodyTables = [{ pageIndex: 0, x: 60, y: 80, width: 175, height: 45 }]
     bridge.draw([range])
-    const table = [...content.querySelectorAll<HTMLElement>('.hwp-presence-range')].find(
+    const table = [...page.document.querySelectorAll<HTMLElement>('.hwp-presence-range')].find(
       (el) => el.style.width === '175px',
     )
     expect(table?.style.left).toBe(`${state.left + 60}px`)
     state.bodyTables[0].x = NaN
     bridge.draw([range])
-    expect(content.childElementCount).toBe(0)
+    expect(page.document.querySelectorAll('.hwp-presence')).toHaveLength(0)
   })
 
   it('removes only unresolved, malformed or unsupported peers and never falls back to a body caret', async () => {
-    const { bridge, content, caret, emit, frame, state } = studio()
+    const { bridge, page, caret, emit, frame, state } = studio()
     const valid = { ...peer, client: 'valid', name: '별' }
     bridge.draw([valid, peer])
-    expect(content.querySelectorAll('[data-presence-client]')).toHaveLength(2)
+    expect(page.document.querySelectorAll('[data-presence-client]')).toHaveLength(2)
     for (const invalid of [
       { ...peer, color: '#1261a0;background-image:url(https://invalid.test/x)' },
       { ...peer, at: null },
@@ -266,8 +273,8 @@ describe('HWP peer presence on a read-only Studio host', () => {
       { ...peer, at: { anchor: nested(1), head: nested(2) } },
     ]) {
       bridge.draw([valid, invalid])
-      expect(content.textContent).toBe(valid.name)
-      expect(content.querySelectorAll('[data-presence-client]')).toHaveLength(1)
+      expect(page.document.body.textContent).toBe(valid.name)
+      expect(page.document.querySelectorAll('[data-presence-client]')).toHaveLength(1)
     }
     state.pageReady = false
     emit('document-layout-refreshed')
@@ -276,19 +283,19 @@ describe('HWP peer presence on a read-only Studio host', () => {
     state.pageReady = true
     emit('document-layout-refreshed')
     await frame()
-    expect(content.textContent).toBe(valid.name)
+    expect(page.document.body.textContent).toBe(valid.name)
     emit('zoom-changed')
     bridge.draw([]) // A leave or joinPageCollab's buffer/unclean-version gate.
-    expect(content.childElementCount).toBe(0)
+    expect(page.document.querySelectorAll('.hwp-presence')).toHaveLength(0)
     await frame()
     emit('document-layout-refreshed')
-    expect(content.childElementCount).toBe(0)
+    expect(page.document.querySelectorAll('.hwp-presence')).toHaveLength(0)
   })
 
   it('unsubscribes and cannot revive a queued mark after disposal', async () => {
-    const { bridge, content, frame, emit, publish } = studio()
+    const { bridge, page, frame, emit, publish } = studio()
     bridge.draw([peer])
-    expect(content.textContent).toBe(peer.name)
+    expect(page.document.body.textContent).toBe(peer.name)
     emit('viewport-resize')
     bridge.dispose()
     bridge.dispose()
@@ -297,7 +304,7 @@ describe('HWP peer presence on a read-only Studio host', () => {
     emit('document-layout-refreshed')
     await frame()
     expect(bridge.read()).toBeNull()
-    expect(content.childElementCount).toBe(0)
+    expect(page.document.querySelectorAll('.hwp-presence')).toHaveLength(0)
     expect(publish).not.toHaveBeenCalled()
   })
 })

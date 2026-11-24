@@ -220,35 +220,50 @@ export function bindHwpPresence(host, publish) {
   }
 
   const content = document.getElementById('scroll-content')
+  const scrolling = document.getElementById('scroll-container')
   const win = document.defaultView
   const layer = document.createElement('div')
   layer.className = 'hwp-presence'
   layer.style.cssText =
-    'position:absolute;inset:0;overflow:hidden;pointer-events:none;user-select:none;z-index:4'
+    'position:fixed;overflow:hidden;pointer-events:none;user-select:none;z-index:4'
+  layer.setAttribute('aria-hidden', 'true')
+  const plane = document.createElement('div')
+  plane.style.position = 'absolute'
+  layer.append(plane)
   let peers = []
   let frame = null
   let disposed = false
 
   function render() {
     layer.remove()
-    layer.replaceChildren()
-    if (!content?.isConnected || !peers.length || !services) return
+    plane.replaceChildren()
+    if (!content?.isConnected || !scrolling?.isConnected || !peers.length || !services) return
     try {
       const input = services.getInputHandler()
       const zoom = services.getViewportManager()?.getZoom()
       if (!input?.virtualScroll || !Number.isFinite(zoom) || zoom <= 0) return
       const width = content.clientWidth
+      const viewport = scrolling.getBoundingClientRect()
+      const origin = content.getBoundingClientRect()
+      const left = viewport.left + scrolling.clientLeft
+      const top = viewport.top + scrolling.clientTop
+      Object.assign(layer.style, {
+        left: `${left}px`, top: `${top}px`,
+        width: `${scrolling.clientWidth}px`, height: `${scrolling.clientHeight}px`,
+      })
+      plane.style.left = `${origin.left + content.clientLeft - left}px`
+      plane.style.top = `${origin.top + content.clientTop - top}px`
       host.read((doc) => {
         for (const peer of peers) {
           try {
             const group = peerMarks(doc, peer, input, zoom, width)
-            if (group) layer.append(group)
+            if (group) plane.append(group)
           } catch {
             // An unresolved path or a page awaiting layout has no mark.
           }
         }
       })
-      if (layer.childElementCount) content.append(layer)
+      if (plane.childElementCount) document.body.append(layer)
     } catch {
       // The document or its viewport was released.
     }
@@ -305,7 +320,6 @@ export function bindHwpPresence(host, publish) {
   }
   const observer = win.ResizeObserver && new win.ResizeObserver(layoutChanged)
   if (content) observer?.observe(content)
-  const scrolling = document.getElementById('scroll-container')
   scrolling?.addEventListener('scroll', layoutChanged, { passive: true })
   win.addEventListener('pagehide', dispose)
 
