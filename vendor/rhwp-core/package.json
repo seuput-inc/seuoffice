@@ -1,6 +1,6 @@
 {
   "name": "@rhwp/core",
-  "version": "0.9.0-ieum.29",
+  "version": "0.9.0-ieum.30",
   "description": "rhwp v0.9.0 HWP/HWPX engine (WebAssembly) rebuilt with the patches in ./patches",
   "private": true,
   "type": "module",
@@ -54,7 +54,11 @@
       "0045-memo-date-local-offset-hook.patch",
       "0046-memo-authored-time.patch",
       "0048-authored-table-height.patch",
-      "0049-collab-range-certification.patch"
+      "0049-collab-range-certification.patch",
+      "0050-authored-model-fingerprint.patch",
+      "0051-collab-source-proof.patch",
+      "0052-collab-text-position.patch",
+      "0053-collab-confirmed-model.patch"
     ],
     "wasmPack": "0.15.0",
     "wasmSha256": "930fa4ef2f7c5bd5099b56b0497dc016692e307aec59514409f696d3221b3136"

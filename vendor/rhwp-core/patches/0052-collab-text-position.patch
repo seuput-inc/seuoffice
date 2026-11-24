@@ -1,0 +1,140 @@
+diff --git a/src/document_core/commands/text_editing.rs b/src/document_core/commands/text_editing.rs
+--- a/src/document_core/commands/text_editing.rs
++++ b/src/document_core/commands/text_editing.rs
+@@ -24,6 +24,7 @@
+ use crate::renderer::pagination::PageItem;
+ use crate::renderer::style_resolver::ResolvedStyleSet;
+ 
++mod collab_text;
+ mod stored_vertical_frame;
+ use stored_vertical_frame::StoredVerticalFrame;
+ 
+diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
+--- a/src/model/paragraph.rs
++++ b/src/model/paragraph.rs
+@@ -897,6 +897,10 @@
+         }
+ 
+         positions
++    }
++
++    pub(crate) fn collab_split_scalar(&self, logical: usize) -> usize {
++        self.split_text_pos_for_logical_offset(logical, &self.split_logical_control_positions())
+     }
+ 
+     fn split_text_pos_for_logical_offset(
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -1745,6 +1745,18 @@
+             text,
+         )
+         .map_err(|e| e.into())
++    }
++
++    #[wasm_bindgen(js_name = getCollabTextPosition)]
++    pub fn get_collab_text_position(&self, section: u32, paragraph: u32, path: &str, offset: u32, axis: &str) -> Result<String, JsValue> {
++        let path = DocumentCore::parse_cell_path(path)?;
++        self.core.collab_text_position(section as usize, paragraph as usize, &path, offset as usize, axis).map_err(Into::into)
++    }
++
++    #[wasm_bindgen(js_name = writeCollabText)]
++    pub fn write_collab_text(&mut self, section: u32, paragraph: u32, path: &str, offset: u32, count: u32, text: &str, mode: &str, field: Option<u32>) -> Result<String, JsValue> {
++        let path = DocumentCore::parse_cell_path(path)?;
++        self.core.write_collab_text_native(section as usize, paragraph as usize, &path, offset as usize, count as usize, text, mode, field.map(|n| n as usize)).map_err(Into::into)
+     }
+ 
+     /// 논리적 오프셋으로 텍스트를 삽입한다.
+diff --git a/src/document_core/commands/text_editing/collab_text.rs b/src/document_core/commands/text_editing/collab_text.rs
+new file mode 100644
+--- /dev/null
++++ b/src/document_core/commands/text_editing/collab_text.rs
+@@ -0,0 +1,88 @@
++use super::{active_field_control, logical_paragraph_length, logical_to_text_offset, text_to_split_logical_offset};
++use crate::document_core::{ActiveFieldInfo, DocumentCore};
++use crate::error::HwpError;
++use crate::model::control::{Control, FieldType};
++use crate::model::paragraph::Paragraph;
++
++type CellStep = (usize, usize, usize);
++
++fn invalid() -> HwpError {
++    HwpError::RenderError("Invalid collaborative text operand".into())
++}
++
++impl DocumentCore {
++    fn collab_text_target(&self, section: usize, paragraph: usize, path: &[CellStep]) -> Result<&Paragraph, HwpError> {
++        if path.len() > 16 { return Err(invalid()); }
++        if let &[(control, 65534, p)] = path {
++            return self.get_cell_paragraph_ref(section, paragraph, control, 65534, p).ok_or_else(invalid);
++        }
++        self.resolve_control_para(section, paragraph, path)
++    }
++
++    pub(crate) fn collab_text_position(&self, section: usize, paragraph: usize, path: &[CellStep], offset: usize, axis: &str) -> Result<String, HwpError> {
++        let p = self.collab_text_target(section, paragraph, path)?;
++        let length = p.text.chars().count();
++        let (scalar, after_inline) = match axis {
++            "scalar" | "local" | "toSplit" | "anchors" if offset <= length => (offset, false),
++            "caret" if path.is_empty() && offset <= logical_paragraph_length(p) => logical_to_text_offset(p, offset),
++            "split" if offset <= length + p.controls.iter().filter(|c| Paragraph::occupies_split_slot(c)).count() => (p.collab_split_scalar(offset), false),
++            _ => return Err(invalid()),
++        };
++        let split_before = if matches!(axis, "split" | "toSplit") {
++            text_to_split_logical_offset(p, scalar, false)
++        } else { scalar };
++        let field = active_field_control(self.active_field.as_ref(), section, paragraph, (!path.is_empty()).then_some(path));
++        let simple = p.field_ranges.is_empty() && p.orphan_field_ends.is_empty()
++            && !p.controls.iter().any(Paragraph::occupies_split_slot)
++            && !matches!(path, [(_, 65534, _)])
++            && (axis != "local" || self.picture_band_owning_body_paragraph(section, paragraph).is_none());
++        #[derive(serde::Serialize)]
++        #[serde(rename_all = "camelCase")]
++        struct Position {
++            scalar: usize, length: usize, split_before: usize, after_inline: bool,
++            simple: bool, field: Option<usize>, effect_offset: usize,
++            #[serde(skip_serializing_if = "Option::is_none")]
++            anchors: Option<Vec<usize>>,
++        }
++        let anchors = (axis == "anchors").then(|| {
++            let positions = p.control_text_positions();
++            p.controls.iter().enumerate()
++                .filter(|(i, c)| Paragraph::occupies_split_slot(c) && positions.get(*i) == Some(&scalar))
++                .map(|(i, _)| i).collect()
++        });
++        let appended = axis == "split" && path.is_empty() && offset == 0 &&
++            (super::is_empty_topbottom_table_anchor_for_enter(p) ||
++            super::square_ole_wrap_chain_for_enter(&self.document.sections[section].paragraphs, paragraph).is_some());
++        serde_json::to_string(&Position { scalar, length, split_before, after_inline, simple: simple && !appended,
++            field, effect_offset: if appended { length } else { scalar }, anchors }).map_err(|e| HwpError::RenderError(e.to_string()))
++    }
++
++    pub(crate) fn write_collab_text_native(&mut self, section: usize, paragraph: usize, path: &[CellStep], offset: usize, count: usize, text: &str, mode: &str, field: Option<usize>) -> Result<String, HwpError> {
++        let p = self.collab_text_target(section, paragraph, path)?;
++        let length = p.text.chars().count();
++        if offset > length || count > length - offset { return Err(invalid()); }
++        if let Some(ci) = field {
++            if !matches!(p.controls.get(ci), Some(Control::Field(f)) if f.field_type == FieldType::ClickHere)
++                || !p.field_ranges.iter().any(|r| r.control_idx == ci) { return Err(invalid()); }
++        }
++        if mode == "afterInline" {
++            let logical = crate::document_core::helpers::text_to_logical_offset(p, offset);
++            if !path.is_empty() || logical_to_text_offset(p, logical + 1) != (offset, true) { return Err(invalid()); }
++        }
++        // Field activation belongs to the local cursor, not the document being replayed.
++        let active = field.map(|control_idx| ActiveFieldInfo { section_idx: section, para_idx: paragraph, control_idx, cell_path: (!path.is_empty()).then(|| path.to_vec()) });
++        let switched = self.active_field != active;
++        let saved = std::mem::replace(&mut self.active_field, active);
++        if switched { self.invalidate_page_tree_cache(); }
++        let result = match (mode, path) {
++            ("insert" | "afterInline", []) if count == 0 => self.insert_text_at_caret_native(section, paragraph, offset, mode == "afterInline", text),
++            ("insert", _) if count == 0 => self.insert_text_in_cell_by_path(section, paragraph, path, offset, text),
++            ("bodyLocal", []) => self.replace_body_text_local_native(section, paragraph, offset, count, text),
++            ("cellReplace", &[(ci, cell, cp)]) => self.replace_text_in_cell_native_deferred_pagination(section, paragraph, ci, cell, cp, offset, count, text),
++            _ => Err(invalid()),
++        };
++        self.active_field = saved;
++        if switched { self.invalidate_page_tree_cache(); }
++        result
++    }
++}

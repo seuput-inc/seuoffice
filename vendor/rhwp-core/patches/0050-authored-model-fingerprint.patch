@@ -1,0 +1,480 @@
+Subject: [PATCH] Fingerprint the live authored HWP/HWPX model
+
+Uses the existing framed binary digest encoding. Peers compare this digest only
+after verifying the same original file and engine. Preserve both native table
+height fields across layout projection; they can disagree in the source.
+
+diff --git a/src/model/raw_provenance/authored.rs b/src/model/raw_provenance/authored.rs
+new file mode 100644
+--- /dev/null
++++ b/src/model/raw_provenance/authored.rs
+@@ -0,0 +1,388 @@
++//! The live editing model, not the editor's measured lines or its source-stream caches.
++//! The session admits original file bytes separately. Never substitute them for live state.
++
++use super::digest_encoding::DigestWriter;
++use crate::model::{
++    bin_data::{BinDataBytes, BinDataContent, MAX_BIN_DATA_BYTES},
++    control::{CharOverlap, Control, Field, HiddenComment, UnknownControl},
++    document::{DocInfo, DocProperties, Document, FileHeader, HwpVersion, Preview, PreviewImage,
++        RawRecord, Section, SectionDef},
++    footnote::{Endnote, Footnote},
++    header_footer::{Footer, Header, MasterPage},
++    image::Picture,
++    page::PageDef,
++    paragraph::Paragraph,
++    provenance::SourceProvenance,
++    section_tail::SectionTail,
++    shape::*,
++    style::{Bullet, Font},
++    table::{Cell, Table},
++};
++use serde::{Serialize, Serializer};
++
++impl DigestWriter {
++    fn value(&mut self, value: &(impl Serialize + ?Sized)) {
++        value.serialize(self).expect("typed model field has an infallible binary encoding");
++    }
++
++    fn blob(&mut self, bytes: &[u8]) {
++        self.serialize_bytes(bytes).expect("byte slice encoding is infallible");
++    }
++}
++
++trait Authored {
++    fn authored(&self, out: &mut DigestWriter);
++}
++
++impl<T: Authored> Authored for Vec<T> {
++    fn authored(&self, out: &mut DigestWriter) {
++        out.value(&(self.len() as u64));
++        for item in self { item.authored(out); }
++    }
++}
++
++impl<T: Authored> Authored for Option<T> {
++    fn authored(&self, out: &mut DigestWriter) {
++        out.value(&self.is_some());
++        if let Some(item) = self { item.authored(out); }
++    }
++}
++
++// Exhaustive destructuring forces new fields on these owners to be classified.
++macro_rules! record {
++    ($name:ident { $($value:ident),* } $(bytes { $($bytes:ident),* })?
++        $(nested { $($nested:ident),* })? $(omit { $($omit:ident),* })?
++        $(via $func:ident { $($more:ident),* })?) => {
++        impl Authored for $name {
++            fn authored(&self, out: &mut DigestWriter) {
++                let Self { $($value,)* $($($bytes,)*)? $($($nested,)*)?
++                    $($($omit: _,)*)? $($($more,)*)? } = self;
++                $(out.value($value);)*
++                $($(out.blob($bytes);)*)?
++                $($($nested.authored(out);)*)?
++                $($func(out, self, $($more),*);)?
++            }
++        }
++    };
++}
++
++// Enum tags and sequence lengths frame nested values independently of their contents.
++macro_rules! variants {
++    ($name:ident { $($leaf:ident),* } nested { $($child:ident),* }) => {
++        impl Authored for $name {
++            fn authored(&self, out: &mut DigestWriter) {
++                match self {
++                    $(Self::$leaf(v) => { out.value(stringify!($leaf)); out.value(v); },)*
++                    $(Self::$child(v) => { out.value(stringify!($child)); v.authored(out); },)*
++                }
++            }
++        }
++    };
++}
++
++variants!(Control { ColumnDef, AutoNumber, NewNumber, PageNumberPos, Bookmark, IndexMark,
++    PageNumCtrl, Hyperlink, Ruby, PageHide, Equation, Form } nested { SectionDef, Table,
++    Shape, Picture, Header, Footer, Footnote, Endnote, CharOverlap, HiddenComment, Field, Unknown });
++variants!(ShapeObject {} nested { Line, Rectangle, Ellipse, Arc, Polygon, Curve, Group,
++    Picture, Chart, Ole });
++
++record!(FileHeader { flags, compressed, encrypted, distribution, raw_data } nested { version });
++record!(HwpVersion { major, minor, build, revision });
++record!(Preview { text } nested { image });
++record!(PreviewImage {} bytes { data } via preview_format { format });
++record!(SourceProvenance { hwp3_lineage, hwpx_lineage } omit { hft_ascii_halfwidth_witnessed,
++    stored_rows_before_hancom_2020 } via source_format { format });
++record!(DocProperties { section_count, page_start_num, footnote_start_num, endnote_start_num,
++    picture_start_num, table_start_num, equation_start_num } omit { caret_list_id, caret_para_id,
++    caret_char_pos } via properties_raw { raw_data });
++record!(DocInfo { bin_data_list, border_fills, char_shapes, tab_defs, numberings, para_shapes,
++    styles, print_method, bullet_count, memo_shape_count, memo_properties_xml,
++    distribute_doc_data_removed, hwpx_head_tail, hwpml_version } nested { font_faces, bullets,
++    extra_records } omit { raw_stream, raw_stream_dirty, raw_provenance });
++record!(Font { raw_data, name, alt_type, is_embedded, bin_item_id_ref, resolved_bin_data_id,
++    alt_name, type_info, default_name, subst_font, native_program });
++record!(Bullet { raw_data, attr, width_adjust, text_distance, char_shape_id, bullet_char,
++    image_bullet, hwpx_image_without_ref, image_data, check_bullet_char, raw_para_head });
++record!(RawRecord { tag_id, level } bytes { data });
++record!(Section {} nested { section_def, paragraphs, trailing_lists } omit { raw_stream,
++    raw_provenance });
++record!(SectionTail {} nested { records } omit { memo_seal, projection_seal });
++record!(SectionDef { flags, column_spacing, line_grid, char_grid, default_tab_spacing, page_num,
++    page_num_type, picture_num, table_num, equation_num, footnote_shape, endnote_shape,
++    page_border_fill, hide_header, hide_footer, hide_master_page, hide_border, hide_fill,
++    first_page_border, first_page_fill, hide_empty_line, text_direction, outline_numbering_id,
++    memo_shape_id, extra_page_border_fills } bytes { raw_ctrl_extra } nested { page_def,
++    master_pages, extra_child_records });
++record!(PageDef { width, height, margin_left, margin_right, margin_top, margin_bottom,
++    margin_header, margin_footer, margin_gutter, attr, landscape, binding } omit {
++    pagination_bottom_tolerance });
++record!(MasterPage { apply_to, is_extension, overlap, replace_base, ext_flags, page_front,
++    text_width, text_height, text_ref, num_ref, text_direction, hwpx_page_number,
++    optional_page_number } bytes { raw_list_header } nested { paragraphs });
++record!(Paragraph { char_count, control_mask, para_shape_id, style_id, column_type,
++    raw_break_type, page_break_synthesized, text, char_offsets, literal_figure_spaces,
++    nb_space_control_indices, char_shapes, hwpx_axis_shift, range_tags, field_ranges,
++    orphan_field_ends, ctrl_data_records, char_count_msb, has_para_text, tab_extended,
++    title_marks, markpen_marks, numbering_restart, editor_created_empty } bytes { raw_header_extra }
++    nested { controls }
++    omit { line_segs, hwp3_saved_space_corrections, layout_space_metrics,
++    layout_object_projection, layout_float_band, layout_field_values, layout_only_fill_lines,
++    source_line_seg_vertical_pos, layout_rebased_body_axis, layout_cell_grid,
++    stored_text_partition_dirty, cell_format_vpos_dirty, cell_vpos_reset, stored_flow_shifted,
++    numbering_marker });
++record!(Table { attr, row_count, col_count, cell_spacing, padding, row_sizes, border_fill_id,
++    zones, page_break, repeat_header, outer_margin_left, outer_margin_right, outer_margin_top,
++    outer_margin_bottom, raw_table_record_attr } bytes { raw_table_record_extra } nested { cells,
++    caption } omit { cell_grid, layout_page_break_cache, raw_ctrl_seal, height_projection } via
++    table_header { common, raw_ctrl_data });
++record!(Cell { col, row, col_span, row_span, width, height, padding, border_fill_id,
++    list_header_width_ref, text_direction, line_wrap, vertical_align, apply_inner_margin,
++    is_header, field_name, dirty_flag } bytes { raw_list_extra } nested { paragraphs });
++record!(Header { apply_to, raw_attr, list_attr, text_width, text_height, text_ref, num_ref } bytes
++    { raw_ctrl_extra } nested { paragraphs });
++record!(Footer { apply_to, raw_attr, list_attr, text_width, text_height, text_ref, num_ref } bytes
++    { raw_ctrl_extra } nested { paragraphs });
++record!(Footnote { number, before_decoration_letter, after_decoration_letter, number_shape,
++    instance_id, list_header_property, decoration_is_user_char } nested { paragraphs });
++record!(Endnote { number, before_decoration_letter, after_decoration_letter, number_shape,
++    instance_id, list_header_property, decoration_is_user_char } nested { paragraphs });
++record!(CharOverlap { chars, border_type, inner_char_size, expansion, char_shape_ids,
++    hwp_wire_chars });
++record!(HiddenComment {} nested { paragraphs });
++record!(Field { field_type, command, properties, extra_properties, field_id, ctrl_id, raw_type,
++    instance_id, ctrl_data_name, memo_index, memo_text_direction, raw_parameters_xml, parameters,
++    hyperlink_format, guide_residue } nested { memo_paragraphs });
++record!(UnknownControl { ctrl_id });
++record!(Picture { common, border_paint_fingerprint, border_color, border_width, border_attr,
++    border_x, border_y, crop, padding, image_attr, href, border_opacity, instance_id, effects,
++    img_dim, reverse, lock } bytes { raw_picture_extra } nested { shape_attr, caption });
++record!(ShapeComponentAttr { ctrl_id, is_two_ctrl_id, offset_x, offset_y, group_level,
++    local_file_version, original_width, original_height, original_width_was_zero,
++    original_height_was_zero, current_width, current_height, current_width_was_zero,
++    current_height_was_zero, flip, horz_flip, vert_flip, rotation_angle, rotate_image,
++    rotation_center, render_tx, render_ty, render_sx, render_sy, render_b, render_c, ctrl_data }
++    bytes { raw_rendering });
++record!(DrawingObjAttr { border_line, fill, shadow_type, shadow_color, shadow_offset_x,
++    shadow_offset_y, inst_id, shadow_alpha } nested { shape_attr, text_box, caption });
++record!(TextBox { paint_clip, list_attr, vertical_all, vertical_align, margin_left, margin_right,
++    margin_top, margin_bottom, text_margin_explicit, max_width } bytes { raw_list_header_extra }
++    nested { paragraphs });
++record!(Caption { direction, vert_align, width, spacing, max_width, include_margin } nested {
++    paragraphs });
++record!(LineShape { common, start, end, started_right_or_bottom, connector } nested { drawing });
++record!(RectangleShape { common, round_rate, x_coords, y_coords } nested { drawing });
++record!(EllipseShape { common, attr, center, axis1, axis2, start1, end1, start2, end2 } nested {
++    drawing });
++record!(ArcShape { common, arc_type, center, axis1, axis2 } nested { drawing });
++record!(PolygonShape { common, points } bytes { raw_trailing } nested { drawing,
++    affine_edit_reference });
++record!(PolygonAffineEditReference { width, height, rotation, horz_flip, vert_flip, matrix });
++record!(CurveShape { common, points } bytes { segment_types } nested { drawing });
++record!(GroupShape { common } nested { shape_attr, children, caption });
++record!(ChartShape { common, chart_type, title, legend, x_axis, y_axis, series } bytes {
++    raw_chart_data } nested { drawing, caption });
++record!(OleShape { common, extent_x, extent_y, flags, drawing_aspect, bin_data_id, preview,
++    chart_id_ref, hwpx_ole_id } bytes { raw_tag_data } nested { drawing, caption,
++    chart_switch_fallback } omit { raw_tag_seal });
++
++impl<T: Authored> Authored for Box<T> {
++    fn authored(&self, out: &mut DigestWriter) { (**self).authored(out); }
++}
++
++fn preview_format(out: &mut DigestWriter, _: &PreviewImage, format: &crate::model::document::PreviewImageFormat) {
++    out.value(&(*format as u8));
++}
++
++fn source_format(out: &mut DigestWriter, _: &SourceProvenance, format: &crate::model::provenance::SourceFormat) {
++    out.value(&(*format as u8));
++}
++
++fn properties_raw(out: &mut DigestWriter, _: &DocProperties, raw: &Option<Vec<u8>>) {
++    out.value(&raw.is_some());
++    if let Some(raw) = raw {
++        // HWP DOCUMENT_PROPERTIES stores the local caret in bytes 14..26.
++        out.value(&(raw.len() as u64));
++        out.blob(&raw[..14.min(raw.len())]);
++        out.blob(raw.get(26..).unwrap_or_default());
++    }
++}
++
++fn table_header(out: &mut DigestWriter, table: &Table, common: &CommonObjAttr, raw: &[u8]) {
++    macro_rules! except_height {
++        ($($field:ident),+) => {{
++            let CommonObjAttr { height: _, $($field),+ } = common;
++            $(out.value($field);)+
++        }};
++    }
++    except_height!(
++        cell_frame_paint, cell_border_paint, outside_cell_border_paint, ctrl_id, attr,
++        vertical_offset, horizontal_offset, width, z_order, margin, instance_id,
++        prevent_page_break, treat_as_char, flow_with_text, allow_overlap,
++        affect_line_spacing, size_protect, hwp5_gen_shape_attr_bit28, vert_rel_to,
++        vert_align, horz_rel_to, horz_align, text_wrap, text_flow, width_criterion,
++        height_criterion, description, numbering_type, drop_cap_style, raw_extra, locked
++    );
++    out.value(&table.authored_height());
++    out.value(&table.authored_raw_height());
++    let height = common_obj_offsets::HEIGHT;
++    if raw.len() >= height.end {
++        out.blob(&raw[..height.start]);
++        out.blob(&raw[height.end..]);
++    } else {
++        out.blob(raw);
++    }
++}
++
++fn named_parts(out: &mut DigestWriter, parts: &[(String, Vec<u8>)]) {
++    let mut parts: Vec<_> = parts.iter().collect();
++    // Preserve order between duplicate paths: the first match is observable.
++    parts.sort_by(|a, b| a.0.cmp(&b.0));
++    out.value(&(parts.len() as u64));
++    for (path, bytes) in parts {
++        out.value(path);
++        out.blob(bytes);
++    }
++}
++
++impl Document {
++    pub fn collab_fingerprint(&self) -> Result<String, &'static str> {
++        let Self { header, doc_properties, doc_info, sections, preview, bin_data_content,
++            extra_streams, hwpx_aux_entries, is_hwp3_variant, is_hwpx_variant, provenance } = self;
++        let mut out = DigestWriter::new();
++        out.value("rhwp-authored-v1");
++        header.authored(&mut out);
++        doc_properties.authored(&mut out);
++        doc_info.authored(&mut out);
++        sections.authored(&mut out);
++        preview.authored(&mut out);
++        out.value(&(bin_data_content.len() as u64));
++        for BinDataContent { id, extension, data } in bin_data_content {
++            out.value(id);
++            out.value(extension);
++            match data {
++                BinDataBytes::Loaded(bytes) => out.blob(bytes),
++                BinDataBytes::Lazy { .. } => {
++                    let bytes = data.load_limited_shared(MAX_BIN_DATA_BYTES)
++                        .ok_or("Cannot fingerprint unreadable or oversized BinData")?;
++                    out.blob(&bytes);
++                }
++            }
++        }
++        named_parts(&mut out, extra_streams);
++        named_parts(&mut out, hwpx_aux_entries);
++        out.value(is_hwp3_variant);
++        out.value(is_hwpx_variant);
++        provenance.authored(&mut out);
++        Ok(blake3::Hash::from_bytes(out.finish()).to_hex().to_string())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::model::{control::FormObject, paragraph::LineSeg};
++
++    fn document(control: Control) -> Document {
++        Document { sections: vec![Section { paragraphs: vec![Paragraph {
++            controls: vec![control], ..Default::default()
++        }], ..Default::default() }], ..Default::default() }
++    }
++
++    fn printed(doc: &Document) -> String { doc.collab_fingerprint().unwrap() }
++    fn table(doc: &mut Document) -> &mut Table {
++        let Control::Table(t) = &mut doc.sections[0].paragraphs[0].controls[0] else { panic!() };
++        t
++    }
++
++    #[test]
++    fn collab_fingerprint_ignores_local_measurement_but_distinguishes_both_height_owners() {
++        let mut t = Table { raw_ctrl_data: vec![0; 24], ..Default::default() };
++        t.set_authored_height(1200);
++        t.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&1250u32.to_le_bytes());
++        let mut doc = document(Control::Table(Box::new(t)));
++        let before = printed(&doc);
++        for measured in [3000, 4000, 1200] {
++            table(&mut doc).project_layout_height(measured);
++            doc.sections[0].paragraphs[0].line_segs.push(LineSeg {
++                vertical_pos: measured as i32, ..Default::default()
++            });
++            doc.doc_properties.caret_char_pos += 1;
++            doc.sections[0].raw_stream = Some(vec![measured as u8]);
++            assert_eq!(printed(&doc), before);
++        }
++        let mut other = doc.clone();
++        table(&mut other).set_authored_height(1200);
++        assert_ne!(printed(&other), before, "the original raw height was not 1200");
++        table(&mut doc).set_authored_height(1900);
++        assert_ne!(printed(&doc), printed(&other));
++        let width = printed(&doc);
++        table(&mut doc).common.width += 1;
++        assert_ne!(printed(&doc), width);
++    }
++
++    #[test]
++    fn collab_fingerprint_sees_nested_skipped_bytes_and_xml_and_typed_parameters() {
++        let mut picture = Picture::default();
++        picture.shape_attr.ctrl_data = Some(vec![0xab]);
++        let mut nested = Paragraph::default();
++        nested.controls.push(Control::Shape(Box::new(ShapeObject::Picture(Box::new(picture)))));
++        let mut doc = document(Control::Field(Field { memo_paragraphs: vec![nested],
++            raw_parameters_xml: Some("<hp:parameters/>".into()), ..Default::default() }));
++        let a = printed(&doc);
++        fn body(d: &mut Document) -> &mut Field {
++            let Control::Field(f) = &mut d.sections[0].paragraphs[0].controls[0] else { panic!() };
++            f
++        }
++        let f = body(&mut doc);
++        let Control::Shape(s) = &mut f.memo_paragraphs[0].controls[0] else { panic!() };
++        let ShapeObject::Picture(p) = &mut **s else { panic!() };
++        p.shape_attr.ctrl_data.as_mut().unwrap()[0] ^= 1;
++        let b = printed(&doc);
++        assert_ne!(a, b);
++        body(&mut doc).raw_parameters_xml = Some("<hp:parameters foo='x'/>".into());
++        let c = printed(&doc);
++        assert_ne!(b, c);
++        body(&mut doc).parameters.name = Some("named".into());
++        assert_ne!(c, printed(&doc), "raw XML must not shadow the editable parameter tree");
++    }
++
++    #[test]
++    fn collab_fingerprint_hashes_resource_contents_not_map_order_or_resolver_identity() {
++        fn sample(reverse: bool) -> Document {
++            let mut f = FormObject::default();
++            let mut keys = ["alpha", "beta"];
++            if reverse { keys.reverse(); }
++            for k in keys { f.properties.insert(k.into(), k.into()); }
++            let mut d = document(Control::Form(Box::new(f)));
++            for k in keys { d.extra_streams.push((k.into(), k.as_bytes().to_vec())); }
++            d.bin_data_content.push(BinDataContent { id: 1, extension: "png".into(),
++                data: if reverse { BinDataBytes::from_shared(vec![1,2,3]) }
++                    else { vec![1,2,3].into() } });
++            d
++        }
++        let mut d = sample(false);
++        let original = printed(&d);
++        assert_eq!(original, printed(&sample(true)));
++        d.bin_data_content[0].data = vec![3,2,1].into();
++        assert_ne!(original, printed(&d));
++    }
++
++    #[test]
++    fn collab_fingerprint_denies_unreadable_binary_instead_of_hashing_an_empty_placeholder() {
++        use crate::model::bin_data::BinDataResolver;
++        #[derive(Debug)]
++        struct Unreadable;
++        impl BinDataResolver for Unreadable {
++            fn resolve(&self, _: &str) -> Vec<u8> { panic!("unbounded materialization") }
++        }
++        let mut doc = Document::default();
++        doc.bin_data_content.push(BinDataContent {
++            id: 1,
++            extension: "ole".into(),
++            data: BinDataBytes::Lazy {
++                resolver: std::sync::Arc::new(Unreadable), key: "object".into(),
++            },
++        });
++        assert!(doc.collab_fingerprint().is_err());
++    }
++}
+diff --git a/src/model/raw_provenance/digest_encoding.rs b/src/model/raw_provenance/digest_encoding.rs
+--- a/src/model/raw_provenance/digest_encoding.rs
++++ b/src/model/raw_provenance/digest_encoding.rs
+@@ -37,6 +37,12 @@
+     }
+ 
+     fn write(&mut self, bytes: &[u8]) {
++        if bytes.len() >= FLUSH_AT {
++            self.hasher.update(&self.buffer);
++            self.buffer.clear();
++            self.hasher.update(bytes);
++            return;
++        }
+         self.buffer.extend_from_slice(bytes);
+         if self.buffer.len() >= FLUSH_AT {
+             self.hasher.update(&self.buffer);
+diff --git a/src/model/raw_provenance.rs b/src/model/raw_provenance.rs
+--- a/src/model/raw_provenance.rs
++++ b/src/model/raw_provenance.rs
+@@ -41,6 +41,7 @@
+ //! Section(`raw_stream`)·본문 컨트롤 raw 레코드의 같은 계약은 #4488·#4495 가
+ //! 별도로 다룬다 — 스트림·소유자가 다르다.
+ 
++mod authored;
+ mod digest_encoding;
+ 
+ use serde::Serialize;
+diff --git a/src/model/table.rs b/src/model/table.rs
+--- a/src/model/table.rs
++++ b/src/model/table.rs
+@@ -100,6 +100,7 @@
+ #[derive(Debug, Clone, Copy)]
+ pub struct TableHeightProjection {
+     authored: HwpUnit,
++    authored_raw: Option<u32>,
+     projected: HwpUnit,
+ }
+ 
+@@ -1455,6 +1456,15 @@
+             .map_or(self.common.height, |p| p.authored)
+     }
+ 
++    pub(crate) fn authored_raw_height(&self) -> Option<u32> {
++        let bytes = self.raw_ctrl_data.get(common_obj_offsets::HEIGHT)?;
++        let current = u32::from_le_bytes(bytes.try_into().ok()?);
++        self.height_projection
++            .filter(|p| p.projected == current)
++            .and_then(|p| p.authored_raw)
++            .or(Some(current))
++    }
++
+     pub fn set_authored_height(&mut self, height: HwpUnit) {
+         self.height_projection = None;
+         self.write_ctrl_height(height);
+@@ -1462,8 +1472,9 @@
+ 
+     pub(crate) fn project_layout_height(&mut self, projected: HwpUnit) {
+         let authored = self.authored_height();
+-        self.height_projection = (authored != projected)
+-            .then_some(TableHeightProjection { authored, projected });
++        let authored_raw = self.authored_raw_height();
++        self.height_projection = (authored != projected || authored_raw.is_some_and(|v| v != projected))
++            .then_some(TableHeightProjection { authored, authored_raw, projected });
+         self.write_ctrl_height(projected);
+     }
+ 
+diff --git a/src/wasm_api.rs b/src/wasm_api.rs
+--- a/src/wasm_api.rs
++++ b/src/wasm_api.rs
+@@ -1672,6 +1672,11 @@
+     #[wasm_bindgen(js_name = getDocumentInfo)]
+     pub fn get_document_info(&self) -> String {
+         self.core.get_document_info()
++    }
++
++    #[wasm_bindgen(js_name = getCollabFingerprint)]
++    pub fn get_collab_fingerprint(&self) -> Result<String, JsValue> {
++        self.document().collab_fingerprint().map_err(JsValue::from_str)
+     }
+ 
+     /// 특정 페이지의 텍스트 레이아웃 정보를 JSON 문자열로 반환한다.
