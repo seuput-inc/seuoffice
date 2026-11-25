@@ -209,6 +209,17 @@ describe('HWP history file boundary', () => {
     }
   })
 
+  it('opens a Hancom HWPX whose deflated parts carry the fast-compression flag', async () => {
+    const source = fixture('para-float-tail-table.hwpx')
+    // General-purpose bit 2 with deflate only names the speed the writer chose.
+    const flags = []
+    for (let at = source.indexOf('PK\x01\x02'); at >= 0; at = source.indexOf('PK\x01\x02', at + 4))
+      flags.push(source.readUInt16LE(at + 8))
+    expect(flags).toContain(4)
+    const opened = await openHwpFile('hwpx', source, HwpDocument)
+    opened.doc.free()
+  })
+
   it('will not admit an unmodelled extra HWPX memo as if it were absent', async () => {
     const file = await changedHwpx(async (zip) => {
       const xml = await zip.file('Contents/section0.xml')!.async('string')

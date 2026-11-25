@@ -1,0 +1,118 @@
+diff --git a/src/parser/hwpx/section.rs b/src/parser/hwpx/section.rs
+index 840b13fb2..e5e68e371 100644
+--- a/src/parser/hwpx/section.rs
++++ b/src/parser/hwpx/section.rs
+@@ -1028,7 +1028,16 @@ fn parse_paragraph_body(
+                             }
+                         }
+                         let utf16_pos = calc_utf16_len_from_parts(&text_parts);
+-                        char_shape_changes.push((utf16_pos, current_char_shape_id));
++                        // Hancom writes the section head run, then the same shape again as an empty
++                        // run: the template handoff of the run-start arm, one entry, so a save does
++                        // not write the shape as a second empty run.
++                        let template_sec_pr_handoff = preceding_run_had_sec_pr
++                            && preceding_run_char_shape_id == Some(current_char_shape_id);
++                        if !template_sec_pr_handoff {
++                            char_shape_changes.push((utf16_pos, current_char_shape_id));
++                        }
++                        preceding_run_had_sec_pr = false;
++                        preceding_run_char_shape_id = Some(current_char_shape_id);
+                     }
+                     b"lineBreak" | b"softHyphen" => {
+                         text_parts.push("\n".to_string());
+diff --git a/tests/cases/hwpx_section_head_empty_run.rs b/tests/cases/hwpx_section_head_empty_run.rs
+new file mode 100644
+index 000000000..b344ef4de
+--- /dev/null
++++ b/tests/cases/hwpx_section_head_empty_run.rs
+@@ -0,0 +1,90 @@
++//! Hancom Office writes a section's first paragraph as the section head run (`hp:secPr` and the
++//! column definition), then the same character shape once more as an empty run, then the text.
++//! A save writes that empty run once and keeps the text in its own shape.
++#![cfg(not(target_arch = "wasm32"))]
++
++use std::io::{Cursor, Read, Write};
++
++use rhwp::document_core::DocumentCore;
++
++const SECTION: &str = "Contents/section0.xml";
++
++fn section_xml(bytes: &[u8]) -> String {
++    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
++    let mut xml = String::new();
++    zip.by_name(SECTION)
++        .unwrap()
++        .read_to_string(&mut xml)
++        .unwrap();
++    xml
++}
++
++fn with_section_xml(bytes: &[u8], xml: &str) -> Vec<u8> {
++    let mut input = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
++    let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
++    for i in 0..input.len() {
++        let mut entry = input.by_index(i).unwrap();
++        let mut data = Vec::new();
++        entry.read_to_end(&mut data).unwrap();
++        let name = entry.name().unwrap().to_string();
++        if name == SECTION {
++            data = xml.as_bytes().to_vec();
++        }
++        output
++            .start_file(
++                name,
++                zip::write::SimpleFileOptions::default().compression_method(entry.compression()),
++            )
++            .unwrap();
++        output.write_all(&data).unwrap();
++    }
++    output.finish().unwrap().into_inner()
++}
++
++/// A blank document whose first paragraph is the head run in shape 1, an empty run in shape
++/// `empty`, and the text "A" in shape `text`, as Hancom Office lays it out.
++fn hancom_head(empty: u32, text: u32) -> Vec<u8> {
++    let mut core = DocumentCore::new_empty();
++    core.create_blank_document_native().unwrap();
++    core.insert_text_native(0, 0, 0, "A").unwrap();
++    let bytes = core.export_hwpx_native().unwrap();
++    let xml = section_xml(&bytes);
++    let head = r#"<hp:run charPrIDRef="0"><hp:secPr "#;
++    let body = r#"</hp:run><hp:run charPrIDRef="0"><hp:t>A</hp:t></hp:run>"#;
++    assert_eq!(xml.matches(head).count(), 1, "{xml}");
++    assert_eq!(xml.matches(body).count(), 1, "{xml}");
++    let xml = xml
++        .replace(head, r#"<hp:run charPrIDRef="1"><hp:secPr "#)
++        .replace(
++            body,
++            &format!(
++                r#"</hp:run><hp:run charPrIDRef="{empty}"/><hp:run charPrIDRef="{text}"><hp:t>A</hp:t></hp:run>"#
++            ),
++        );
++    with_section_xml(&bytes, &xml)
++}
++
++fn saved(bytes: &[u8]) -> Vec<u8> {
++    DocumentCore::from_bytes(bytes)
++        .unwrap()
++        .export_hwpx_native()
++        .unwrap()
++}
++
++#[test]
++fn the_empty_run_after_the_section_head_is_written_once() {
++    let once = saved(&hancom_head(1, 0));
++    let xml = section_xml(&once);
++    // the head run and the one empty run
++    assert_eq!(xml.matches(r#"<hp:run charPrIDRef="1""#).count(), 2, "{xml}");
++    assert!(xml.contains(r#"<hp:run charPrIDRef="0"><hp:t>A</hp:t></hp:run>"#), "{xml}");
++    // a second save writes the same paragraph
++    assert_eq!(section_xml(&saved(&once)), xml);
++}
++
++#[test]
++fn text_after_an_empty_run_of_another_shape_keeps_its_own_shape() {
++    let xml = section_xml(&saved(&hancom_head(2, 1)));
++    assert!(xml.contains(r#"<hp:run charPrIDRef="1"><hp:t>A</hp:t></hp:run>"#), "{xml}");
++    assert!(!xml.contains(r#"<hp:run charPrIDRef="2"><hp:t>A</hp:t>"#), "{xml}");
++}

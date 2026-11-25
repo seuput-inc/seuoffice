@@ -86,6 +86,19 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, i) => byte === b[i])
 }
 
+/** `detail` is a fixed phrase the editor may show; `cause` is host text kept for the host's log. */
+function refuse(
+  refused: HwpHistoryRefusal['refused'],
+  detail: string,
+  cause?: unknown,
+): HwpHistoryRefusal {
+  return cause === undefined ? { refused, detail } : { refused, detail, cause: String(cause) }
+}
+
+function isRefusal<T extends object>(value: T | HwpHistoryRefusal): value is HwpHistoryRefusal {
+  return 'refused' in value
+}
+
 /** Whether the renderer accepts `request`: the same counts, node, depth and text budget it checks. */
 export function fitsHwpReplay(request: HistoryRequest): boolean {
   if (request.changes.length > HWP_REPLAY.changes) return false
@@ -149,9 +162,12 @@ export function createHwpHistory({
     undo?: HistoryOpId,
   ): Promise<{ base: Uint8Array; request: HistoryRequest } | HwpHistoryRefusal> {
     const { base, baseHash, start } = from
-    if (version - start > HWP_REPLAY.changes || base.byteLength > HWP_REPLAY.fileBytes)
-      return 'too_large'
-    if ((await sha256(base)) !== baseHash) return 'schema_mismatch'
+    if (version - start > HWP_REPLAY.changes)
+      return refuse('too_large', `more than ${HWP_REPLAY.changes} changes after the replay start`)
+    if (base.byteLength > HWP_REPLAY.fileBytes)
+      return refuse('too_large', `the replay start file exceeds ${HWP_REPLAY.fileBytes} bytes`)
+    if ((await sha256(base)) !== baseHash)
+      return refuse('schema_mismatch', 'the stored replay start does not match its hash')
     const changes: Change[] = []
     for (let v = start + 1; v <= version; v++) {
       signal.throwIfAborted()
@@ -161,7 +177,8 @@ export function createHwpHistory({
           : from.changes
             ? from.changes[v - start - 1]
             : (await store.read(documentId, epoch, v - 1, 1))[0]
-      if (frame?.v !== v || !Array.isArray(frame.ops)) return 'schema_mismatch'
+      if (frame?.v !== v || !Array.isArray(frame.ops))
+        return refuse('schema_mismatch', `the store returned no change ${v}`)
       changes.push({ ...frame, v: v - start })
     }
     const request: HistoryRequest = {
@@ -173,9 +190,10 @@ export function createHwpHistory({
       ...(undo ? { undo: { ...undo, v: undo.v - start } } : {}),
     }
     try {
-      if (!fitsHwpReplay(request)) return 'too_large'
+      if (!fitsHwpReplay(request))
+        return refuse('too_large', 'the changes exceed the renderer request limits')
     } catch {
-      return 'schema_mismatch'
+      return refuse('schema_mismatch', 'the changes are not plain JSON')
     }
     return { base, request }
   }
@@ -189,13 +207,19 @@ export function createHwpHistory({
       signal.throwIfAborted()
       const result = await render(base, request)
       assertHistoryResult(result, false)
-      if (result.bytes.byteLength > HWP_REPLAY.fileBytes) return 'too_large'
+      if (result.bytes.byteLength > HWP_REPLAY.fileBytes)
+        return refuse('too_large', `the rendered file exceeds ${HWP_REPLAY.fileBytes} bytes`)
       if (!result.fileName.toLowerCase().endsWith(`.${request.format.name}`))
-        return 'schema_mismatch'
+        return refuse('schema_mismatch', 'the renderer returned another format', result.fileName)
       return result
-    } catch {
+    } catch (error) {
       signal.throwIfAborted()
-      return 'schema_mismatch'
+      // A renderer from another copy of this package throws its own HistoryError class.
+      const { code } = (error ?? {}) as { code?: unknown }
+      if (code === 'unavailable') return refuse('unavailable', 'the renderer could not run', error)
+      const named = ['invalid_history', 'unsupported', 'conflict'].includes(String(code))
+      const which = named ? String(code) : 'error'
+      return refuse('schema_mismatch', `the renderer refused it (${which})`, error)
     }
   }
 
@@ -209,11 +233,13 @@ export function createHwpHistory({
     head: number,
     from: Window,
   ): Promise<{ window: Window; keep(): Promise<Window | HwpHistoryRefusal> } | HwpHistoryRefusal> {
-    if (!checkpoints || head <= from.start) return 'too_large'
+    if (!checkpoints)
+      return refuse('too_large', 'the replay limits are reached and the store keeps no checkpoints')
+    if (head <= from.start) return refuse('too_large', 'one change exceeds the replay limits')
     const built = await prefix(documentId, candidate, head, from)
-    if (typeof built === 'string') return built
+    if (isRefusal(built)) return built
     const file = await renderChecked(built.base, built.request)
-    if (typeof file === 'string') return file
+    if (isRefusal(file)) return file
     const baseHash = await sha256(file.bytes)
     const reopened = await renderChecked(file.bytes, {
       epoch: candidate.id,
@@ -222,8 +248,9 @@ export function createHwpHistory({
       baseHash,
       changes: [],
     })
-    if (typeof reopened === 'string') return reopened
-    if (!sameBytes(reopened.bytes, file.bytes)) return 'schema_mismatch'
+    if (isRefusal(reopened)) return reopened
+    if (!sameBytes(reopened.bytes, file.bytes))
+      return refuse('schema_mismatch', 'the renderer did not reopen its checkpoint unchanged')
     const window = { base: file.bytes, baseHash, start: head }
     return {
       window,
@@ -238,16 +265,18 @@ export function createHwpHistory({
           })
           // First write wins: replay from whatever the store kept for this version.
           const kept = await latest(documentId, candidate.id, head)
-          return kept?.start === head ? kept : 'schema_mismatch'
-        } catch {
+          return kept?.start === head
+            ? kept
+            : refuse('schema_mismatch', 'the store did not keep the checkpoint')
+        } catch (error) {
           signal.throwIfAborted()
-          return 'schema_mismatch'
+          return refuse('schema_mismatch', 'the store could not keep a history checkpoint', error)
         }
       },
     }
   }
 
-  /** Admit a new epoch base, or the next change on top of the retained head. */
+  /** Admit a new epoch base, the next change on top of the retained head, or the head itself. */
   async function admit(
     p: Principal,
     candidate: HwpHistoryCandidate,
@@ -255,30 +284,33 @@ export function createHwpHistory({
   ): Promise<HwpHistoryRefusal | undefined> {
     signal.throwIfAborted()
     const next = 'next' in candidate ? candidate.next : undefined
-    const version = next?.v ?? 0
-    if (next && next.ops.length > HWP_REPLAY.ops) return 'too_large'
+    const version = next ? next.v : 'head' in candidate ? candidate.head : 0
+    const replayed = next ? version - 1 : version
+    if (next && next.ops.length > HWP_REPLAY.ops)
+      return refuse('too_large', `one change has more than ${HWP_REPLAY.ops} operations`)
     const seed = 'base' in candidate ? candidate.base : undefined
     const from: Window = seed
       ? { base: seed, baseHash: candidate.baseHash, start: 0, changes: [] }
       : (retained ??
-        (await latest(p.documentId, candidate.id, version - 1)) ?? {
+        (await latest(p.documentId, candidate.id, replayed)) ?? {
           base: await store.readBase(p.documentId, candidate.id),
           baseHash: candidate.baseHash,
           start: 0,
         })
     let built = await prefix(p.documentId, candidate, version, from, next)
-    if (built === 'too_large' && next && !seed) {
+    if (isRefusal(built) && built.refused === 'too_large' && next && !seed) {
       // The replay window is full: continue from a retained file of the current head.
       const checkpoint = await checkpointAt(p.documentId, candidate, version - 1, from)
-      if (typeof checkpoint === 'string') return checkpoint
+      if (isRefusal(checkpoint)) return checkpoint
       const kept = await checkpoint.keep()
-      if (typeof kept === 'string') return kept
+      if (isRefusal(kept)) return kept
       built = await prefix(p.documentId, candidate, version, kept, next)
     }
-    if (typeof built === 'string') return built
+    if (isRefusal(built)) return built
     const result = await renderChecked(built.base, built.request)
-    if (typeof result === 'string') return result
-    if (seed && !sameBytes(result.bytes, seed)) return 'schema_mismatch'
+    if (isRefusal(result)) return result
+    if (seed && !sameBytes(result.bytes, seed))
+      return refuse('schema_mismatch', 'the renderer changed the file it opened without edits')
     signal.throwIfAborted()
     return undefined
   }
@@ -291,10 +323,10 @@ export function createHwpHistory({
     undo: HistoryOpId | undefined,
   ): Promise<HistoryResult> {
     const built = await prefix(p.documentId, candidate, version, window, undefined, undo)
-    if (built === 'too_large')
-      throw new HistoryError('unsupported', 'HWP history exceeds its replay limits')
-    if (typeof built === 'string')
-      throw new HistoryError('invalid_history', 'invalid retained HWP history')
+    if (isRefusal(built))
+      throw built.refused === 'too_large'
+        ? new HistoryError('unsupported', 'HWP history exceeds its replay limits')
+        : new HistoryError('invalid_history', 'invalid retained HWP history')
     const result = await render(built.base, built.request, undo ? p.userId : undefined)
     assertHistoryResult(result, !!undo)
     return result
@@ -325,10 +357,13 @@ export function createHwpHistory({
     try {
       file = await renderWindow(p, candidate, point.version, window, undo)
     } catch (error) {
-      if (!undo || !(error instanceof HistoryError) || error.code !== 'unsupported') throw error
+      // A sandbox limit on the full window may also pass on the narrower one.
+      const narrowing =
+        error instanceof HistoryError && ['unsupported', 'unavailable'].includes(error.code)
+      if (!undo || !narrowing) throw error
       if (undo.v - 1 <= window.start) throw error
       const narrow = await checkpointAt(p.documentId, candidate, undo.v - 1, window)
-      if (typeof narrow === 'string') throw error
+      if (isRefusal(narrow)) throw error
       window = sliced(narrow.window)
       file = await renderWindow(p, candidate, point.version, window, undo)
       narrowed = narrow.keep
@@ -341,16 +376,19 @@ export function createHwpHistory({
       author: p.userId,
       ops: file.compensation!,
     }
-    const refused = await admit(p, { ...candidate, next: change }, window)
-    if (refused)
-      throw new HistoryError('unsupported', `HWP compensation cannot be replayed (${refused})`)
+    const refusal = await admit(p, { ...candidate, next: change }, window)
+    if (refusal)
+      throw new HistoryError(
+        'unsupported',
+        `HWP compensation cannot be replayed (${refusal.refused}: ${refusal.detail})`,
+      )
     if (!narrowed) return { file, change }
     const keep = narrowed
     return {
       file,
       change,
       async keep() {
-        for (let attempt = 0; attempt < 2; attempt++) if (typeof (await keep()) !== 'string') return
+        for (let attempt = 0; attempt < 2; attempt++) if (!isRefusal(await keep())) return
         throw new HistoryError(
           'unsupported',
           'This edit could not be undone because the saved history point it needs could not be stored; nothing was changed',

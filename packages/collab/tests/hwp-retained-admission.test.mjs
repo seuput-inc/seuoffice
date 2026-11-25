@@ -7,7 +7,11 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
 import { crc32, deflateSync } from 'node:zlib'
-import { createHistoryServer, memoryHistoryStore } from '@seuoffice/collab/server'
+import {
+  createCollabServer,
+  createHistoryServer,
+  memoryHistoryStore,
+} from '@seuoffice/collab/server'
 import { renderBytes, renderHistory } from '@seuoffice/history-renderer'
 import { createStreamStore } from '../../history-renderer/examples/stream-store.mjs'
 import { HwpDocument, initSync } from '../../../vendor/rhwp-core/rhwp.js'
@@ -28,7 +32,7 @@ try {
   source.free()
 }
 
-function socket(server, format, bytes) {
+function socket(server, format, bytes, principal = p) {
   const events = new EventEmitter()
   let receive
   let reason
@@ -47,7 +51,7 @@ function socket(server, format, bytes) {
       },
       onClose() {},
     },
-    p,
+    principal,
   )
   const reply = async (input, event) => {
     const next = once(events, event, { signal: AbortSignal.timeout(20_000) })
@@ -430,21 +434,216 @@ test('bytes: run-heavy changes past the renderer node budget continue from a che
   }
 })
 
-test('a legacy byte store cannot seed HWP without promising exact undo writes', async () => {
-  const { exactHistoryChange, ...legacy } = memoryHistoryStore(() => true)
-  assert.equal(exactHistoryChange, true)
+const blank = await readFile(
+  new URL('../../../apps/hwp/src/renderer/assets/blank.hwp', import.meta.url),
+)
+const at = (paragraph, offset) => ({ section: 0, paragraph, path: [], offset })
+// What the HWP editor sends for its first keys on its blank document: Hangul composition, a
+// syllable, a paragraph split and a key on the new paragraph (captureHwpText of Studio's calls).
+const typing = [
+  { kind: 'splice', from: at(0, 0), to: at(0, 0), text: 'ㄱ' },
+  { kind: 'nativeText', at: at(0, 0), action: 'bodyLocal', count: 1, text: '가', field: null },
+  { kind: 'splice', from: at(0, 1), to: at(0, 1), text: '나' },
+  { kind: 'splice', from: at(0, 2), to: at(0, 2), text: '\n' },
+  { kind: 'splice', from: at(1, 0), to: at(1, 0), text: '다' },
+]
+
+function reopened(bytes, read) {
+  const doc = new HwpDocument(bytes)
+  try {
+    return read(doc)
+  } finally {
+    doc.free()
+  }
+}
+
+test('bytes: two editors type on the editor blank HWP past the first key, then export and undo', async () => {
+  const store = memoryHistoryStore(
+    () => true,
+    () => true,
+  )
   const server = createHistoryServer({
-    store: legacy,
+    store,
     render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
   })
   try {
-    const bytes = sources.get('hwp')
-    const editor = socket(server, 'hwp', bytes)
-    await editor.hello()
-    assert.equal((await editor.reply(bytes, 'error')).code, 'schema_mismatch')
-    assert.match(editor.reason(), /exact undo change/)
-    assert.equal(await legacy.load(p.documentId), null)
+    const alice = socket(server, 'hwp', blank, { ...p, userId: 'alice', name: 'Alice' })
+    await alice.hello()
+    const { epoch } = await alice.reply(blank, 'welcome')
+    const bob = socket(server, 'hwp', blank, { ...p, userId: 'bob', name: 'Bob' })
+    await bob.hello('welcome')
+    const seqs = new Map()
+    for (const [i, op] of typing.entries()) {
+      const editor = i === 2 || i === 4 ? bob : alice
+      const seq = (seqs.get(editor) ?? 0) + 1
+      seqs.set(editor, seq)
+      const submit = { t: 'submit', seq, base: i, ops: [op] }
+      assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq, v: i + 1 })
+    }
+    const text = ({ bytes }) =>
+      reopened(bytes, (doc) => [doc.getTextRange(0, 0, 0, 2), doc.getTextRange(0, 1, 0, 1)])
+    assert.deepEqual(text(await server.exportHistory(p, { epoch, version: 5 })), ['가나', '다'])
+    const undo = {
+      requestId: 'undo-da',
+      expected: { epoch, version: 5 },
+      target: { epoch, v: 5, index: 0 },
+    }
+    assert.deepEqual(await server.undoHistory({ ...p, userId: 'bob' }, undo), {
+      kind: 'undone',
+      version: 6,
+    })
+    const after = await server.exportHistory(p, { epoch, version: 6 })
+    assert.equal(
+      reopened(after.bytes, (doc) => doc.getParagraphLength(0, 1)),
+      0,
+    )
   } finally {
     await server.close()
   }
 })
+
+// As a host that creates the epoch row over HTTP before the editors' sockets join: the first
+// socket finds an existing epoch, so no base upload is admitted before the first edit.
+for (const exact of [false, true]) {
+  test(`bytes: two editors co-edit an epoch the host created at upload, on a store ${exact ? 'with' : 'without'} exact history writes`, async () => {
+    const { exactHistoryChange, ...plain } = memoryHistoryStore(
+      () => true,
+      () => true,
+    )
+    assert.equal(exactHistoryChange, true)
+    const store = exact ? { ...plain, exactHistoryChange } : plain
+    const baseHash = createHash('sha256').update(blank).digest('hex')
+    const format = { name: 'hwp', schema: 1 }
+    await store.create(p.documentId, { id: 'upload', format, baseHash, base: blank })
+    const server = createHistoryServer({
+      store,
+      render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
+    })
+    try {
+      const alice = socket(server, 'hwp', blank, { ...p, userId: 'alice' })
+      await alice.hello('welcome')
+      const bob = socket(server, 'hwp', blank, { ...p, userId: 'bob' })
+      await bob.hello('welcome')
+      const seqs = new Map()
+      for (const [i, op] of typing.entries()) {
+        const editor = i === 2 || i === 4 ? bob : alice
+        const seq = (seqs.get(editor) ?? 0) + 1
+        seqs.set(editor, seq)
+        const submit = { t: 'submit', seq, base: i, ops: [op] }
+        assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq, v: i + 1 })
+      }
+      const text = (version) =>
+        server
+          .exportHistory(p, { epoch: 'upload', version })
+          .then(({ bytes }) =>
+            reopened(bytes, (doc) => [doc.getTextRange(0, 0, 0, 2), doc.getParagraphLength(0, 1)]),
+          )
+      assert.deepEqual(await text(5), ['가나', 1])
+      const undo = server.undoHistory(
+        { ...p, userId: 'bob' },
+        {
+          requestId: 'undo-da',
+          expected: { epoch: 'upload', version: 5 },
+          target: { epoch: 'upload', v: 5, index: 0 },
+        },
+      )
+      if (exact) {
+        assert.deepEqual(await undo, { kind: 'undone', version: 6 })
+        assert.deepEqual(await text(6), ['가나', 0])
+      } else {
+        // Undo appends a change the server made; only a store that records it verbatim may.
+        await assert.rejects(undo, /exact history writes/)
+        assert.equal((await store.load(p.documentId)).head, 5)
+      }
+      assert.equal(alice.reason(), undefined)
+      assert.equal(bob.reason(), undefined)
+    } finally {
+      await server.close()
+    }
+  })
+}
+
+test('bytes: an editor joining an epoch the renderer cannot replay is refused at join with the reason', async () => {
+  const store = memoryHistoryStore(() => true)
+  const opaque = await readFile(
+    new URL('../../../apps/hwp/tests/fixtures/collab-opaque-record.hwp', import.meta.url),
+  )
+  const plain = createCollabServer({ store })
+  const seeder = socket(plain, 'hwp', opaque)
+  await seeder.hello()
+  await seeder.reply(opaque, 'welcome')
+  await plain.close()
+  const server = createHistoryServer({
+    store,
+    render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
+  })
+  try {
+    const refusal = await socket(server, 'hwp', opaque).hello('error')
+    assert.equal(refusal.code, 'schema_mismatch')
+    assert.match(refusal.reason, /existing session cannot be replayed: the renderer refused it/)
+  } finally {
+    await server.close()
+  }
+})
+
+// Hancom Office files: its version, print settings, compatibility options, metadata and numbering
+// or bullet definitions are copied by every save and must come back from history unchanged.
+for (const name of ['title-table-zone-fill', 'para-float-tail-table']) {
+  test(`bytes: Hancom ${name}.hwpx co-edits and its history export keeps every copied part`, async () => {
+    const source = await readFile(
+      new URL(`../../../apps/hwp/tests/fixtures/${name}.hwpx`, import.meta.url),
+    )
+    const copied = (bytes) => {
+      const parts = unzipSync(bytes)
+      const head = strFromU8(parts['Contents/header.xml'])
+      return [
+        strFromU8(parts['version.xml']),
+        strFromU8(parts['settings.xml']),
+        /<hh:numberings[\s\S]*?<\/hh:numberings>/.exec(head)?.[0],
+        /<hh:bullets[\s\S]*?<\/hh:bullets>/.exec(head)?.[0],
+        head.slice(head.indexOf('</hh:refList>')),
+        /<opf:metadata[\s\S]*?<\/opf:metadata>/.exec(strFromU8(parts['Contents/content.hpf']))?.[0],
+      ]
+    }
+    assert.match(copied(source)[0], /application="Hancom Office Hangul"/)
+    const store = memoryHistoryStore(
+      () => true,
+      () => true,
+    )
+    const server = createHistoryServer({
+      store,
+      render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
+    })
+    try {
+      const editor = socket(server, 'hwpx', source)
+      await editor.hello()
+      const { epoch } = await editor.reply(source, 'welcome')
+      const paragraph = (headType) => ({
+        kind: 'command',
+        action: 'paragraph',
+        at: at(0, 0),
+        props: { headType, paraLevel: 1 },
+      })
+      // Typing, then paragraph heads that refer to the numbering and bullet definitions by id.
+      const ops = [{ ...typing[0], text: '공' }, paragraph('Number'), paragraph('Bullet')]
+      for (const [i, op] of ops.entries()) {
+        const submit = { t: 'submit', seq: i + 1, base: i, ops: [op] }
+        assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq: i + 1, v: i + 1 })
+      }
+      const file = await server.exportHistory(p, { epoch, version: 3 })
+      assert.equal(
+        reopened(file.bytes, (doc) => doc.getTextRange(0, 0, 0, 1)),
+        '공',
+      )
+      // The heads were applied: the first paragraph now uses a new paragraph shape.
+      const head = (bytes) =>
+        /<hp:p [^>]*paraPrIDRef="(\d+)"/.exec(
+          strFromU8(unzipSync(bytes)['Contents/section0.xml']),
+        )[1]
+      assert.notEqual(head(file.bytes), head(source))
+      assert.deepEqual(copied(file.bytes), copied(source))
+    } finally {
+      await server.close()
+    }
+  })
+}

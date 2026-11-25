@@ -222,7 +222,9 @@ export async function openHwpCollabPage(
             : next.failure === 'adapter'
               ? 'collabAdapterStopped'
               : 'collabStopped'
-        active.recovery.stopped(t(reason), () => downloadLocal(binding))
+        // The server's sentence names the cause, such as the history store or renderer refusing.
+        const message = next.detail ? `${t(reason)} (${next.detail})` : t(reason)
+        active.recovery.stopped(message, () => downloadLocal(binding))
       },
       presence: (_token, publish) => {
         const active = activeMount()

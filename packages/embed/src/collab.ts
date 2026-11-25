@@ -47,6 +47,8 @@ export interface HistoryResult {
 export type CollabStatus = {
   phase: 'joining' | 'live' | 'offline' | 'failed'
   failure?: 'schema_mismatch' | 'reset' | 'diverged' | 'superseded' | 'forbidden' | 'adapter'
+  /** why the session failed, when the server said: a sentence for people, in English */
+  detail?: string
   canEdit: boolean
   version: number
   saved: number

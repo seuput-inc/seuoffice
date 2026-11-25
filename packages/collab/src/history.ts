@@ -26,9 +26,13 @@ export interface HistoryResult {
   compensation?: Json[]
 }
 
+/**
+ * `unavailable`: the renderer could not run at all (a crash, timeout or resource limit), so the
+ * same request may succeed later; the other codes are answers about the history itself.
+ */
 export class HistoryError extends Error {
   constructor(
-    readonly code: 'invalid_history' | 'unsupported' | 'conflict',
+    readonly code: 'invalid_history' | 'unsupported' | 'conflict' | 'unavailable',
     detail?: string,
   ) {
     super(detail ?? code)
