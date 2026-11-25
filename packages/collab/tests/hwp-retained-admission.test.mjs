@@ -502,50 +502,66 @@ test('bytes: two editors type on the editor blank HWP past the first key, then e
   }
 })
 
-test('bytes: a byte store without exact history writes co-edits an epoch the host created at upload', async () => {
-  const { exactHistoryChange, ...legacy } = memoryHistoryStore(() => true)
-  assert.equal(exactHistoryChange, true)
-  const baseHash = createHash('sha256').update(blank).digest('hex')
-  await legacy.create(p.documentId, {
-    id: 'upload',
-    format: { name: 'hwp', schema: 1 },
-    baseHash,
-    base: blank,
-  })
-  const server = createHistoryServer({
-    store: legacy,
-    render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
-  })
-  try {
-    const alice = socket(server, 'hwp', blank, { ...p, userId: 'alice' })
-    await alice.hello('welcome')
-    const bob = socket(server, 'hwp', blank, { ...p, userId: 'bob' })
-    await bob.hello('welcome')
-    for (const [i, op] of typing.slice(0, 3).entries()) {
-      const submit = { t: 'submit', seq: i + 1, base: i, ops: [op] }
-      assert.deepEqual(await alice.reply(submit, 'ack'), { t: 'ack', seq: i + 1, v: i + 1 })
-    }
-    const file = await server.exportHistory(p, { epoch: 'upload', version: 3 })
-    assert.equal(
-      reopened(file.bytes, (doc) => doc.getTextRange(0, 0, 0, 2)),
-      '가나',
+// As a host that creates the epoch row over HTTP before the editors' sockets join: the first
+// socket finds an existing epoch, so no base upload is admitted before the first edit.
+for (const exact of [false, true]) {
+  test(`bytes: two editors co-edit an epoch the host created at upload, on a store ${exact ? 'with' : 'without'} exact history writes`, async () => {
+    const { exactHistoryChange, ...plain } = memoryHistoryStore(
+      () => true,
+      () => true,
     )
-    await assert.rejects(
-      server.undoHistory(
-        { ...p, userId: 'alice' },
+    assert.equal(exactHistoryChange, true)
+    const store = exact ? { ...plain, exactHistoryChange } : plain
+    const baseHash = createHash('sha256').update(blank).digest('hex')
+    const format = { name: 'hwp', schema: 1 }
+    await store.create(p.documentId, { id: 'upload', format, baseHash, base: blank })
+    const server = createHistoryServer({
+      store,
+      render: (base, request) => renderBytes(base, Buffer.from(JSON.stringify(request))),
+    })
+    try {
+      const alice = socket(server, 'hwp', blank, { ...p, userId: 'alice' })
+      await alice.hello('welcome')
+      const bob = socket(server, 'hwp', blank, { ...p, userId: 'bob' })
+      await bob.hello('welcome')
+      const seqs = new Map()
+      for (const [i, op] of typing.entries()) {
+        const editor = i === 2 || i === 4 ? bob : alice
+        const seq = (seqs.get(editor) ?? 0) + 1
+        seqs.set(editor, seq)
+        const submit = { t: 'submit', seq, base: i, ops: [op] }
+        assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq, v: i + 1 })
+      }
+      const text = (version) =>
+        server
+          .exportHistory(p, { epoch: 'upload', version })
+          .then(({ bytes }) =>
+            reopened(bytes, (doc) => [doc.getTextRange(0, 0, 0, 2), doc.getParagraphLength(0, 1)]),
+          )
+      assert.deepEqual(await text(5), ['가나', 1])
+      const undo = server.undoHistory(
+        { ...p, userId: 'bob' },
         {
-          requestId: 'undo-na',
-          expected: { epoch: 'upload', version: 3 },
-          target: { epoch: 'upload', v: 3, index: 0 },
+          requestId: 'undo-da',
+          expected: { epoch: 'upload', version: 5 },
+          target: { epoch: 'upload', v: 5, index: 0 },
         },
-      ),
-      /exact history writes/,
-    )
-    assert.equal(alice.reason(), undefined)
-  } finally {
-    await server.close()
-  }
-})
+      )
+      if (exact) {
+        assert.deepEqual(await undo, { kind: 'undone', version: 6 })
+        assert.deepEqual(await text(6), ['가나', 0])
+      } else {
+        // Undo appends a change the server made; only a store that records it verbatim may.
+        await assert.rejects(undo, /exact history writes/)
+        assert.equal((await store.load(p.documentId)).head, 5)
+      }
+      assert.equal(alice.reason(), undefined)
+      assert.equal(bob.reason(), undefined)
+    } finally {
+      await server.close()
+    }
+  })
+}
 
 test('bytes: an editor joining an epoch the renderer cannot replay is refused at join with the reason', async () => {
   const store = memoryHistoryStore(() => true)
