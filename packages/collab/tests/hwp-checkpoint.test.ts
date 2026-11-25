@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
+import { deferred } from '../src/deferred'
 import { checkPrefix, HistoryError, type HistoryRequest, type HistoryResult } from '../src/history'
 import type { Json } from '../src/model'
 import { sha256 } from '../src/sha256'
@@ -397,12 +398,12 @@ describe('HWP epochs this history server did not start', () => {
     const socket = new Socket()
     server.accept(socket, { ...p, userId, name: userId, canEdit })
     socket.receive({ t: 'hello', p: 1, format, fileHash: await sha256(file) })
-    await vi.waitFor(() => expect(answer(socket) ?? socket.frames[0]).toBeDefined())
+    await vi.waitFor(() => expect(socket.frames[0] ?? socket.closed).toBeDefined())
     if (socket.frames[0]?.t === 'need_base') socket.receive(file)
-    await vi.waitFor(() => expect(answer(socket)).toBeDefined())
+    await vi.waitFor(() => expect(answer(socket) ?? socket.closed).toBeDefined())
     return socket
   }
-  /** What the server answered the hello with. */
+  /** What the server answered the hello with; undefined when it only closed the socket. */
   function answer(socket: Socket) {
     return socket.frames.find((f) => f.t === 'welcome' || f.t === 'error')
   }
@@ -462,6 +463,88 @@ describe('HWP epochs this history server did not start', () => {
       const viewer = await join(server, file, 'bob', false)
       expect(answer(viewer)).toMatchObject({ t: 'welcome', head: 2, canEdit: false })
       expect((await store.load(p.documentId))!.head).toBe(2)
+    } finally {
+      await server.close()
+    }
+  })
+
+  /** What a renderer throws when it could not run at all: a crash, timeout or resource limit. */
+  const unavailable = () =>
+    Object.assign(new Error('sandbox failed or exceeded its limits'), { code: 'unavailable' })
+
+  it('lets editors reconnect when the renderer could not run, and refuses after three attempts in a row', async () => {
+    const store = memoryHistoryStore(() => true)
+    const file = await begun(store, 'base:', 1, 'a server without history')
+    const { render } = renderer(true)
+    let failures = 2
+    const server = createHistoryServer({
+      store,
+      render: (bytes, request) =>
+        failures-- > 0 ? Promise.reject(unavailable()) : render(bytes, request),
+    })
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const editor = await join(server, file, 'alice')
+        // No error frame: the client takes the closed socket for a dropped connection and joins again.
+        expect(editor.frames).toEqual([])
+        expect(editor.closed).toBe('internal error')
+      }
+      const alice = await join(server, file, 'alice')
+      expect(answer(alice)).toMatchObject({ t: 'welcome', head: 1 })
+      failures = 1
+      alice.receive({ t: 'submit', seq: 1, base: 1, ops: [{ t: 'a' }] })
+      await vi.waitFor(() => expect(alice.closed).toBe('internal error'))
+      expect(alice.frames.some((f) => f.t === 'error' || f.t === 'ack')).toBe(false)
+      expect((await store.load(p.documentId))!.head).toBe(1)
+    } finally {
+      await server.close()
+    }
+
+    const stuck = createHistoryServer({ store, render: () => Promise.reject(unavailable()) })
+    try {
+      for (let attempt = 0; attempt < 2; attempt++)
+        expect((await join(stuck, file, 'alice')).closed).toBe('internal error')
+      const editor = await join(stuck, file, 'alice')
+      expect(answer(editor)).toMatchObject({ t: 'error', code: 'schema_mismatch' })
+      expect(answer(editor)!.reason).toMatch(/the renderer could not run 3 times in a row$/)
+    } finally {
+      await stuck.close()
+    }
+  })
+
+  it('renders at most four HWP admissions at once across documents', async () => {
+    const store = memoryHistoryStore(() => true)
+    const bytes = encode('base:')
+    const fileHash = await sha256(bytes)
+    for (let i = 0; i < 6; i++)
+      await store.create(`doc${i}`, { id: `e${i}`, format, baseHash: fileHash, base: bytes })
+    const { render } = renderer(true)
+    let running = 0
+    let most = 0
+    const { promise: gate, resolve: release } = deferred<void>()
+    const server = createHistoryServer({
+      store,
+      async render(base, request) {
+        most = Math.max(most, ++running)
+        await gate
+        try {
+          return await render(base, request)
+        } finally {
+          running--
+        }
+      },
+    })
+    try {
+      const sockets = Array.from({ length: 6 }, (_, i) => {
+        const socket = new Socket()
+        server.accept(socket, { ...p, documentId: `doc${i}` })
+        socket.receive({ t: 'hello', p: 1, format, fileHash })
+        return socket
+      })
+      await vi.waitFor(() => expect(running).toBeGreaterThanOrEqual(4))
+      release()
+      for (const socket of sockets) await socket.next('welcome')
+      expect(most).toBe(4)
     } finally {
       await server.close()
     }
