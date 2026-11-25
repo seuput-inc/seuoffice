@@ -247,7 +247,7 @@ export function createHwpHistory({
     }
   }
 
-  /** Admit a new epoch base, or the next change on top of the retained head. */
+  /** Admit a new epoch base, the next change on top of the retained head, or the head itself. */
   async function admit(
     p: Principal,
     candidate: HwpHistoryCandidate,
@@ -255,13 +255,14 @@ export function createHwpHistory({
   ): Promise<HwpHistoryRefusal | undefined> {
     signal.throwIfAborted()
     const next = 'next' in candidate ? candidate.next : undefined
-    const version = next?.v ?? 0
+    const version = next ? next.v : 'head' in candidate ? candidate.head : 0
+    const replayed = next ? version - 1 : version
     if (next && next.ops.length > HWP_REPLAY.ops) return 'too_large'
     const seed = 'base' in candidate ? candidate.base : undefined
     const from: Window = seed
       ? { base: seed, baseHash: candidate.baseHash, start: 0, changes: [] }
       : (retained ??
-        (await latest(p.documentId, candidate.id, version - 1)) ?? {
+        (await latest(p.documentId, candidate.id, replayed)) ?? {
           base: await store.readBase(p.documentId, candidate.id),
           baseHash: candidate.baseHash,
           start: 0,

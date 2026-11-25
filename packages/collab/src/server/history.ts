@@ -158,8 +158,6 @@ export function createHistoryServer(
     candidate: HwpHistoryCandidate,
   ): Promise<HwpHistoryRefusal | undefined> {
     shutdown.signal.throwIfAborted()
-    if (!('renderStream' in options) && options.store.exactHistoryChange !== true)
-      return 'exact_write_required'
     return hwp.admit(p, candidate)
   }
 

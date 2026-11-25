@@ -105,10 +105,10 @@ export interface CollabServer {
   close(): Promise<void>
 }
 
+/** A new epoch's base, the next change on its head, or the head of an epoch an editor joins. */
 export type HwpHistoryCandidate = Pick<NewEpoch, 'id' | 'format' | 'baseHash'> &
-  ({ base: Uint8Array } | { next: Change })
-export type HwpHistoryRefusal =
-  'schema_mismatch' | 'too_large' | 'exact_write_required' | 'forbidden'
+  ({ base: Uint8Array } | { next: Change } | { head: number })
+export type HwpHistoryRefusal = 'schema_mismatch' | 'too_large' | 'forbidden'
 
 /** What the history renderer accepts in one HWP request (history-renderer request.ts). */
 export const HWP_REPLAY = {
@@ -127,8 +127,6 @@ export const HWP_REPLAY = {
 const hwpRefusalReasons: Record<HwpHistoryRefusal, string> = {
   too_large: 'HWP retained history exceeds its replay limits',
   schema_mismatch: 'HWP source or edit cannot be replayed within the retained history profile',
-  exact_write_required:
-    'HWP retained history requires a store that can commit the exact undo change',
   forbidden: 'HWP retained history could not read the authorized replay prefix',
 }
 
@@ -194,6 +192,8 @@ interface EpochState {
   fingerprints: Map<number, Map<string, string>>
   /** client id to the user it was issued to and the highest connection attempt welcomed */
   clients: Map<string, { user: string; attempt: number }>
+  /** HWP history replayed this epoch's head in this process, so its editors may join */
+  replayable: boolean
 }
 
 interface Doc {
@@ -326,7 +326,13 @@ export function createServerCore({
 
   function epochState(doc: Doc, epoch: EpochHead): EpochState {
     if (doc.epoch?.id !== epoch.id) {
-      doc.epoch = { id: epoch.id, saved: 0, fingerprints: new Map(), clients: new Map() }
+      doc.epoch = {
+        id: epoch.id,
+        saved: 0,
+        fingerprints: new Map(),
+        clients: new Map(),
+        replayable: false,
+      }
     }
     doc.epoch.saved = Math.max(doc.epoch.saved, epoch.saved)
     return doc.epoch
@@ -479,12 +485,20 @@ export function createServerCore({
     { epoch, client: resumed, attempt, start, sendBase }: Welcome,
   ): Promise<void> {
     const client = resumed ?? crypto.randomUUID()
+    const state = epochState(doc, epoch)
+    const admit = conn.principal.canEdit && !state.replayable ? hwpAdmission(conn) : undefined
+    if (admit) {
+      // Another process or a server without history started this epoch: an editor learns at
+      // join that it cannot be replayed, never on its first edit.
+      const refused = await admit(conn.principal, epoch)
+      if (refused) return rejectHistory(doc, conn, refused)
+      state.replayable = true
+    }
     // The fence in decideHello let only a newer attempt through, so any other socket of this
     // client belongs to a connection the client gave up
     for (const other of live(doc)) {
       if (other.client === client) await reject(doc, other, 'superseded')
     }
-    const state = epochState(doc, epoch)
     state.clients.set(client, { user: conn.principal.userId, attempt })
     if (sendBase) {
       const base = await store.readBase(doc.id, epoch.id)
@@ -543,8 +557,7 @@ export function createServerCore({
   }
 
   function rejectHistory(doc: Doc, conn: Conn, refusal: HwpHistoryRefusal) {
-    const code = refusal === 'exact_write_required' ? 'schema_mismatch' : refusal
-    return reject(doc, conn, code, hwpRefusalReasons[refusal])
+    return reject(doc, conn, refusal, hwpRefusalReasons[refusal])
   }
 
   async function onBase(doc: Doc, conn: Conn, bytes: Uint8Array): Promise<void> {
@@ -564,8 +577,12 @@ export function createServerCore({
         base,
       }
       const refused = admit && (await admit(conn.principal, epoch))
-      if (!refused) await store.create(doc.id, epoch)
-      else if (!(await store.load(doc.id))) return rejectHistory(doc, conn, refused)
+      if (refused) {
+        if (!(await store.load(doc.id))) return rejectHistory(doc, conn, refused)
+      } else if ((await store.create(doc.id, epoch)) === 'created' && admit) {
+        // The base was just replayed: its editors join without replaying it again.
+        epochState(doc, { ...epoch, head: 0, saved: 0 }).replayable = true
+      }
     }
     endSeeding(doc)
     await forSocket(doc, conn, () => answerHello(doc, conn))
