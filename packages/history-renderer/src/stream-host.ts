@@ -120,7 +120,10 @@ function recipe(output: Buffer, length: number, digest: string | undefined, mixe
       meta.error === 'conflict' ||
       meta.error === 'invalid_history'
     )
-      throw new HistoryError(meta.error)
+      throw new HistoryError(
+        meta.error,
+        typeof meta.detail === 'string' ? meta.detail.slice(0, 256) : undefined,
+      )
     invalid('unknown sandbox error')
   }
   if (

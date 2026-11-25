@@ -1,5 +1,6 @@
 import { HistoryError, type Json } from '@seuoffice/collab/client'
 import { formatAddress, parseAddress } from '@seuoffice/xlsx-gateway/domain/cell-address'
+import { literalCell } from '../../../apps/sheets/src/web/collab-literal'
 import { checkWireMutation } from '../../../apps/sheets/src/web/collab-wire-check'
 
 const setValues = 'sheet.mutation.set-range-values'
@@ -12,9 +13,10 @@ export function invalid(detail: string): never {
 export function unsupported(detail: string): never {
   throw new HistoryError('unsupported', detail)
 }
-export type Literal = string | number | null
+export type Literal = string | number | boolean | null
 // Keys are canonical A1 addresses or a named sheet-view property (neither is an address).
-export type Write = { sheet: string; key: string; value: Literal }
+// `whole`: Univer deletes the cell outright, its format included.
+export type Write = { sheet: string; key: string; value: Literal; whole?: true }
 export type SheetOp = { id: string; writes: Write[] }
 
 export function checkText(text: string) {
@@ -26,29 +28,11 @@ function record(value: Json | undefined): value is Record<string, Json> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-function literal(cell: Json): Literal {
-  if (
-    !record(cell) ||
-    Object.entries(cell).some(
-      ([k, v]) => k !== 'v' && k !== 't' && !(v === null && ['f', 'si', 'p'].includes(k)),
-    )
-  )
-    return unsupported('not a plain Sheets cell')
-  const { v, t } = cell
-  if (typeof v === 'string') {
-    // Without an explicit STRING, Univer may infer a different type.
-    if (
-      t !== 1 &&
-      (t !== undefined ||
-        (v.trim() !== '' && !Number.isNaN(Number(v))) ||
-        /^(true|false)$/i.test(v))
-    )
-      return unsupported('ambiguous Sheets text type')
-    return checkText(v)
-  }
-  if (typeof v === 'number' && (t === undefined || t === 2)) return v
-  if (v === null && t === undefined) return null
-  return unsupported('unsupported Sheets value')
+function literal(cell: Json): Pick<Write, 'value' | 'whole'> {
+  const { v, t, whole } = literalCell(cell)
+  if (whole) return { value: null, whole }
+  if (t === 3) return { value: v === 1 }
+  return { value: typeof v === 'string' ? checkText(v) : v }
 }
 
 export function decode(json: Json): SheetOp {
@@ -66,8 +50,13 @@ export function decode(json: Json): SheetOp {
     checkWireMutation(kind, params)
     const { subUnitId: sheet, trigger, cellValue } = params
     if (typeof sheet !== 'string') return invalid('missing Sheets subUnitId')
-    if (trigger !== undefined && trigger !== kind.replace('.mutation.', '.command.'))
-      return unsupported('not a direct Sheets mutation')
+    // A typed value or the Delete key (whose cells keep their format).
+    if (
+      trigger !== undefined &&
+      trigger !== kind.replace('.mutation.', '.command.') &&
+      !(kind === setValues && trigger === 'sheet.command.clear-selection-content')
+    )
+      return unsupported(`Sheets mutation from ${String(trigger).slice(0, 80)}`)
     if (kind !== setValues) {
       const key = kind === gridlines ? 'showGridlines' : 'rightToLeft'
       const value = params[key]
@@ -82,7 +71,7 @@ export function decode(json: Json): SheetOp {
       if (!record(columns)) return unsupported('not a Sheets row of literals')
       for (const [column, cell] of Object.entries(columns)) {
         if (+row >= 1000 || +column >= 26) return unsupported('outside the XLSX history grid')
-        writes.push({ sheet, key: formatAddress(+row, +column), value: literal(cell) })
+        writes.push({ sheet, key: formatAddress(+row, +column), ...literal(cell) })
       }
     }
     if (writes.length === start) return unsupported('empty Sheets write')
@@ -109,7 +98,11 @@ export function encode({ id, writes }: SheetOp): Json {
     const { row, column } = parseAddress(key)
     const cells = (matrix[row] ??= {})
     cells[column] =
-      value === null ? { v: null } : { v: value, t: typeof value === 'string' ? 1 : 2 }
+      value === null
+        ? { v: null }
+        : typeof value === 'boolean'
+          ? { v: value ? 1 : 0, t: 3 }
+          : { v: value, t: typeof value === 'string' ? 1 : 2 }
   }
   return { id, m }
 }

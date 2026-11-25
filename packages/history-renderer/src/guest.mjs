@@ -17,6 +17,8 @@ try {
   meta = {
     error:
       error?.code === 'unsupported' || error?.code === 'conflict' ? error.code : 'invalid_history',
+    // The renderer's own reason (never a stack): what it refused and why.
+    detail: error?.name === 'HistoryError' ? String(error.message).slice(0, 256) : undefined,
   }
 }
 const header = Buffer.from(JSON.stringify(meta))

@@ -30,7 +30,10 @@ export async function renderBytes(
     throw new HistoryError('invalid_history', 'invalid sandbox result')
   const meta = JSON.parse(output.toString('utf8', 4, end))
   if (meta.error === 'unsupported' || meta.error === 'conflict' || meta.error === 'invalid_history')
-    throw new HistoryError(meta.error)
+    throw new HistoryError(
+      meta.error,
+      typeof meta.detail === 'string' ? meta.detail.slice(0, 256) : undefined,
+    )
   const bytes = new Uint8Array(
     output.buffer.slice(output.byteOffset + end, output.byteOffset + output.length),
   )

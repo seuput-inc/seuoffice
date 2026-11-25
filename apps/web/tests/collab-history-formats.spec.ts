@@ -1,4 +1,5 @@
 import { test } from '@playwright/test'
+import { HistoryError } from '../../../packages/collab/src/client/index'
 import * as historyServer from '../../../packages/collab/src/server/index'
 import { examples, verifyHistory } from './collab-history-cases'
 import {
@@ -47,7 +48,8 @@ for (const example of examples) {
             history: JSON.stringify(history),
           },
         )
-        if (!result.ok) throw new Error(String(result.code))
+        // The page's renderer threw a HistoryError; carry its code to the server as one.
+        if (!result.ok) throw new HistoryError(result.code as HistoryError['code'])
         return {
           fileName: result.fileName,
           bytes: new Uint8Array(result.bytes),

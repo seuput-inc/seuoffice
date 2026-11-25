@@ -39,6 +39,8 @@ type Sheet = {
   edits: Map<string, Literal>
   locked: Set<string>
   ranges: RangeBounds[]
+  /** cells with their own format, or every cell once a row or column carries one */
+  formatted: Set<string> | 'all'
 }
 type SourceCells = Map<string, number | null | undefined>
 type Element = { name: string; attrs: Record<string, string>; children: Element[]; text: string }
@@ -366,6 +368,7 @@ function inspectSheet(
           ])
           if (!/^[1-9]\d*$/.test(min) || !/^[1-9]\d*$/.test(max) || +min > +max || +max > 26)
             unsupported('outside the XLSX history columns')
+          if (col.attrs.style !== undefined && col.attrs.style !== '0') sheet.formatted = 'all'
         }
         break
       case 'sheetFormatPr':
@@ -399,6 +402,7 @@ function inspectSheet(
     if (!r || !/^[1-9]\d{0,3}$/.test(r) || +r <= lastRow || +r > 1000)
       unsupported('unordered or out-of-grid XLSX row')
     lastRow = +r
+    if (row.attrs.customFormat === '1' || row.attrs.customFormat === 'true') sheet.formatted = 'all'
     let lastColumn = -1
     for (const cell of row.children) {
       const { r: address, s, t } = shape(cell, 'c', ['r', 't', 's'], ['is', 'v', 'f'])
@@ -416,6 +420,7 @@ function inspectSheet(
       addresses.set(address, undefined)
       lastColumn = pos.column
       if (s !== undefined && (!/^\d+$/.test(s) || +s >= styles)) invalid('invalid XLSX cell style')
+      if (s !== undefined && +s && sheet.formatted !== 'all') sheet.formatted.add(address)
       const formulas = cell.children.filter((item) => item.name === 'f')
       if (formulas.length) {
         const formula = one(cell, 'f')
@@ -584,6 +589,7 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
       edits: new Map(),
       locked: new Set(),
       ranges: [],
+      formatted: new Set(),
     }
     names.set(name.toLowerCase(), sheet)
     rels.delete(rid)
@@ -662,7 +668,7 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
       sheet.base.set(key, cell.value)
     }
   }
-  function writable({ sheet: id, key }: Write) {
+  function writable({ sheet: id, key, whole }: Write) {
     const sheet = sheets.get(id) ?? invalid('unknown Sheets subUnitId')
     if (key === 'showGridlines' || key === 'rightToLeft') return sheet
     const { row, column } = parseAddress(key)
@@ -677,6 +683,8 @@ export async function openXlsx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Sh
       )
     )
       unsupported('cannot edit a formula, its precedent, a merged or a nonliteral XLSX cell')
+    if (whole && (sheet.formatted === 'all' || sheet.formatted.has(key)))
+      unsupported('deleting a formatted Sheets cell also clears its format')
     return sheet
   }
   return {

@@ -16,6 +16,7 @@ import {
   type OpenedBook,
   workbookData,
 } from './collab/sheets-workbook'
+import { typedCell } from './collab/editor-wire'
 import { buildCompatibilityFixture } from './fixture-builder'
 
 afterEach(disposeAll)
@@ -134,4 +135,73 @@ it('rejects formulas and structural writes instead of treating them as independe
   }
   history.adapter.integrate([formula], [])
   expect(() => history.adapter.captureUndo!(literal)).toThrow(HistoryError)
+})
+
+/** What the cell editor sends for typed `text` (see collab/editor-wire.ts typedCell) */
+function typed(page: OpenedBook, id: string, column: number, text: string): Json {
+  expect(
+    page.edit(id, 'sheet.command.set-range-values', {
+      subUnitId: 's1',
+      range: { startRow: 0, endRow: 0, startColumn: column, endColumn: column },
+      value: { 0: { [column]: typedCell(text) } },
+    }),
+  ).toBe(true)
+  return page.adapter.encode(page.emitted.at(-1)!)
+}
+
+it('selectively undoes a typed text, number and boolean in the editor wire form', () => {
+  const base = fileOf(workbookData({ 0: { 0: { v: 'Old' } } }))
+  for (const [text, column] of [
+    ['Typed', 0],
+    ['22', 1],
+    ['TRUE', 2],
+  ] as const) {
+    const alice = openBook(base)
+    const op = typed(alice, `alice-${column}`, column, text)
+    const history = openBook(base)
+    const edit = history.adapter.decode(op)
+    const plan = history.adapter.captureUndo!(edit)
+    history.adapter.integrate([edit], [])
+    const undo = plan([])
+    expect(undo).toHaveLength(1)
+    history.adapter.integrate(
+      undo!.map((change) => history.adapter.decode(history.adapter.encode(change))),
+      [],
+    )
+    const cell = history.workbook.getSheetBySheetId('s1')!.getCellRaw(0, column)
+    expect(cell?.v ?? null).toBe(column === 0 ? 'Old' : null)
+  }
+})
+
+it('leaves a typed cell the same on an updated page and on a page that sends no applied type', () => {
+  const base = fileOf(workbookData())
+  for (const text of ['Hello', '22', '3.5', 'TRUE']) {
+    const updated = openBook(base)
+    const op = typed(updated, 'new', 0, text)
+    // A 0.12.58 page sent the cell as typed: no t, the value as text.
+    const old = {
+      id: 'old',
+      m: [
+        [
+          SET_RANGE_VALUES,
+          {
+            subUnitId: 's1',
+            trigger: 'sheet.command.set-range-values',
+            cellValue: { 0: { 0: typedCell(text) } },
+          },
+        ],
+      ],
+    }
+    const cells = [updated]
+    for (const wire of [op, old]) {
+      const peer = openBook(base)
+      peer.adapter.integrate([peer.adapter.decode(wire)], [])
+      cells.push(peer)
+    }
+    const [local, ...peers] = cells.map((page) => {
+      const { v, t } = page.workbook.getSheetBySheetId('s1')!.getCellRaw(0, 0) ?? {}
+      return { v, t }
+    })
+    for (const peer of peers) expect(peer, text).toEqual(local)
+  }
 })

@@ -4,6 +4,11 @@ import { render } from './render'
 import JSZip from 'jszip'
 import { SaxesParser } from 'saxes'
 import { describe, expect, it } from 'vitest'
+import {
+  editorCellOp,
+  editorClearOp,
+  typedCell,
+} from '../../../apps/sheets/tests/collab/editor-wire'
 
 const sheetNs = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 const relNs = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -304,7 +309,11 @@ describe('XLSX sheet-id and typed cell history', () => {
 
   const rejected: [string, Json, string][] = [
     ['coerced untyped string', cell('op', 'sheet-7', 0, { v: '007' }), 'unsupported'],
-    ['boolean type is not a number', cell('op', 'sheet-7', 0, { v: 1, t: 3 }), 'unsupported'],
+    [
+      'boolean type with a non-boolean value',
+      cell('op', 'sheet-7', 0, { v: 2, t: 3 }),
+      'unsupported',
+    ],
     ['nonliteral formula', cell('op', 'sheet-7', 0, { f: '=1+1' }), 'unsupported'],
     [
       'unexpected field on a view setting',
@@ -385,5 +394,78 @@ describe('XLSX sheet-id and typed cell history', () => {
     await expect(render(base, request(base, [[target]], 0))).rejects.toMatchObject({
       code: 'invalid_history',
     })
+  })
+})
+
+describe('XLSX ops in the Sheets editor wire form', () => {
+  it('replays and undoes typed cells whose format object is empty', async () => {
+    const base = await workbook()
+    const typed = await editorCellOp('alice', 'sheet-7', { 0: { 1: typedCell('Typed') } })
+    const peer = await editorCellOp('bob', 'sheet-7', { 0: { 2: typedCell('Peer') } })
+    const prefix = await render(base, request(base, [[typed]]))
+    expect(await reopened(prefix.bytes)).toEqual([{ A1: 41 }, { A1: 'Old', B1: 'Typed' }])
+    const undone = await render(base, request(base, [[typed], [peer]], 0))
+    expect(await reopened(undone.bytes)).toEqual([{ A1: 41 }, { A1: 'Old', C1: 'Peer' }])
+    const appended = await render(base, request(base, [[typed], [peer], undone.compensation!]))
+    expect(await reopened(appended.bytes)).toEqual(await reopened(undone.bytes))
+  })
+
+  it('writes numbers and booleans typed in the editor with the type the editor applied', async () => {
+    const base = await workbook()
+    const typed = await editorCellOp('alice', 'sheet-7', {
+      0: { 1: typedCell('22'), 2: typedCell('3.5'), 3: typedCell('TRUE') },
+    })
+    const peer = await editorCellOp('bob', 'sheet-7', { 0: { 4: typedCell('Peer') } })
+    const prefix = await render(base, request(base, [[typed]]))
+    const zip = await JSZip.loadAsync(prefix.bytes)
+    expect(await zip.file(paths[1]!)!.async('string')).toMatch(/<c r="D1" t="b"><v>1<\/v><\/c>/)
+    expect(await reopened(prefix.bytes)).toEqual([
+      { A1: 41 },
+      { A1: 'Old', B1: 22, C1: 3.5, D1: 1 },
+    ])
+    const undone = await render(base, request(base, [[typed], [peer]], 0))
+    expect(await reopened(undone.bytes)).toEqual([{ A1: 41 }, { A1: 'Old', E1: 'Peer' }])
+    // An op from a client that did not send the applied type stays ambiguous.
+    const untyped = cell('old', 'sheet-7', 1, typedCell('22'))
+    await expect(render(base, request(base, [[untyped]]))).rejects.toMatchObject({
+      code: 'unsupported',
+      message: 'ambiguous Sheets text type',
+    })
+  })
+
+  it('clears a cell with the Delete key op and restores it on undo', async () => {
+    const base = await workbook()
+    const cleared = await editorClearOp('alice', 'sheet-7', { 0: { 0: null } })
+    const prefix = await render(base, request(base, [[cleared]]))
+    expect(await reopened(prefix.bytes)).toEqual([{ A1: 41 }, {}])
+    const undone = await render(base, request(base, [[cleared]], 0))
+    expect(await reopened(undone.bytes)).toEqual([{ A1: 41 }, { A1: 'Old' }])
+  })
+
+  it('names the format it cannot write instead of dropping it', async () => {
+    const base = await workbook()
+    const bold = await editorCellOp('alice', 'sheet-7', {
+      0: { 1: { ...typedCell('Bold'), s: { bl: 1 } } },
+    })
+    await expect(render(base, request(base, [[bold]]))).rejects.toMatchObject({
+      code: 'unsupported',
+      message: 'Sheets cell format change: bl',
+    })
+    // A cell Univer deletes outright loses its format too; this row has one.
+    const formatted = await workbook(`<c r="A1"><v>1</v></c>`)
+    const zip = await JSZip.loadAsync(formatted)
+    const sheet = (await zip.file(paths[1]!)!.async('string')).replace(
+      '<row r="1">',
+      '<row r="1" s="0" customFormat="1">',
+    )
+    zip.file(paths[1]!, sheet)
+    const styled = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+    const removed = cell('alice', 'sheet-7', 0, null)
+    await expect(render(styled, request(styled, [[removed]]))).rejects.toMatchObject({
+      code: 'unsupported',
+      message: 'deleting a formatted Sheets cell also clears its format',
+    })
+    const plain = await render(base, request(base, [[removed]]))
+    expect(await reopened(plain.bytes)).toEqual([{ A1: 41 }, {}])
   })
 })

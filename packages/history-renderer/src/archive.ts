@@ -47,7 +47,8 @@ export async function openCheckedArchive(
     const local = buf.readUInt32LE(pos + 42)
     const descriptor = (flags & 8) !== 0
     if (
-      // Bits 1-2 of a deflated entry only name the writer's speed setting; Hancom Office sets them.
+      // Bits 1-2 of a deflated entry only name the writer's speed setting; Microsoft Office and
+      // Hancom Office set them.
       flags & ~(method === 8 ? 0x80e : 0x808) ||
       (method !== 0 && method !== 8) ||
       buf.readUInt16LE(pos + 30) ||
@@ -55,23 +56,31 @@ export async function openCheckedArchive(
       buf.readUInt16LE(pos + 34)
     )
       unsupported()
+    if (local + 30 > cd) invalid()
+    const extra = buf.readUInt16LE(local + 28)
     if (
       size > limits.maxPartBytes ||
       (total += size) > limits.maxTotalBytes ||
       (method === 0 && size !== packed) ||
       pos + 46 + nameLen > end ||
-      local + 30 + nameLen + packed > cd
+      local + 30 + nameLen + extra + packed > cd
     )
       invalid()
     if (
       buf.readUInt32LE(local) !== 0x04034b50 ||
-      buf.readUInt16LE(local + 28) ||
       buf.readUInt16LE(local + 26) !== nameLen ||
       buf.readUInt16LE(local + 6) !== flags ||
       buf.readUInt16LE(local + 8) !== method
     )
       invalid()
-    let localEnd = local + 30 + nameLen + packed
+    // Microsoft Office pads local headers with extra records (0xA220) that readers skip.
+    for (let at = local + 30 + nameLen, stop = at + extra; at < stop;) {
+      if (at + 4 > stop) invalid()
+      if (buf.readUInt16LE(at) === 1) unsupported()
+      at += 4 + buf.readUInt16LE(at + 2)
+      if (at > stop) invalid()
+    }
+    let localEnd = local + 30 + nameLen + extra + packed
     const declared = buf.subarray(pos + 16, pos + 28)
     if (descriptor) {
       if (

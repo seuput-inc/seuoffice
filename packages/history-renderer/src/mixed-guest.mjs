@@ -8,6 +8,7 @@ try {
 } catch (error) {
   result = {
     error: ['unsupported', 'conflict'].includes(error?.code) ? error.code : 'invalid_history',
+    detail: error?.name === 'HistoryError' ? String(error.message).slice(0, 256) : undefined,
   }
 }
 const writer = Deno.stdout.writable.getWriter()

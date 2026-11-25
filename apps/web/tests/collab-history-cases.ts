@@ -160,10 +160,10 @@ export async function verifyHistory(
         )
       }
       if (mode !== 'independent') {
-        await assert.rejects(
-          server.undoHistory(alice, undo),
-          mode === 'dependent' ? /conflict/ : /unsupported/,
-        )
+        // The message carries the renderer's reason; the code is the contract.
+        await assert.rejects(server.undoHistory(alice, undo), {
+          code: mode === 'dependent' ? 'conflict' : 'unsupported',
+        })
         assert.equal((await store.read(documentId, epoch, 0, 3)).length, 2)
         continue
       }

@@ -59,7 +59,23 @@ export async function render(
     ) {
       if (schema !== version) throw new HistoryError('unsupported', 'unsupported history schema')
       if (officeArchive) await checkArchive(bytes)
-      const adapter = await open(bytes)
+      const adapter = await open(bytes).catch((error: unknown) => {
+        // HWP refuses at version 0 by contract (its epochs are admitted that way). Elsewhere a
+        // base outside the editor model is still the file of version 0; its first edit is
+        // refused with the reason found here.
+        if (!(error instanceof HistoryError) || name === 'hwp' || name === 'hwpx') throw error
+        const refuse = (): never => {
+          throw error
+        }
+        const unmodelled: ByteHistoryAdapter<Op> = {
+          decode: refuse,
+          encode: refuse,
+          integrate: refuse,
+          captureUndo: refuse,
+          produceFile: async () => ({ fileName: `history.${name}`, bytes }),
+        }
+        return unmodelled
+      })
       const result = await replay(adapter, bytes, history).finally(() => adapter.dispose?.())
       if (result.bytes.byteLength > MAX_FILE)
         throw new HistoryError('unsupported', 'output exceeds 2 MiB')
