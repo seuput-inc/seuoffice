@@ -91,7 +91,12 @@ describe('HWPX source preservation before collaboration', () => {
     'generated-form-aligned-cells',
     'generated-form-tables',
     'generated-form-tables-hancom',
+    'header-footer-paper-shapes',
+    'header-footer-paper-tables',
+    'master-page-next-section',
     'paper-square-table-tac-host',
+    'paper-topbottom-box-stale-ladder',
+    'para-float-tail-table',
     'title-table-then-inline-table',
     'title-table-zone-fill',
   ])('admits %s, and a co-edited save keeps every part rhwp copies', async (name) => {

@@ -588,7 +588,7 @@ test('bytes: an editor joining an epoch the renderer cannot replay is refused at
 
 // Hancom Office files: its version, print settings, compatibility options, metadata and numbering
 // or bullet definitions are copied by every save and must come back from history unchanged.
-for (const name of ['title-table-zone-fill']) {
+for (const name of ['title-table-zone-fill', 'para-float-tail-table']) {
   test(`bytes: Hancom ${name}.hwpx co-edits and its history export keeps every copied part`, async () => {
     const source = await readFile(
       new URL(`../../../apps/hwp/tests/fixtures/${name}.hwpx`, import.meta.url),
