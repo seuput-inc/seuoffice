@@ -618,9 +618,19 @@ for (const name of ['title-table-zone-fill', 'para-float-tail-table']) {
       const editor = socket(server, 'hwpx', source)
       await editor.hello()
       const { epoch } = await editor.reply(source, 'welcome')
-      const submit = { t: 'submit', seq: 1, base: 0, ops: [{ ...typing[0], text: '공' }] }
-      assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq: 1, v: 1 })
-      const file = await server.exportHistory(p, { epoch, version: 1 })
+      const paragraph = (headType) => ({
+        kind: 'command',
+        action: 'paragraph',
+        at: at(0, 0),
+        props: { headType, paraLevel: 1 },
+      })
+      // Typing, then paragraph heads that refer to the numbering and bullet definitions by id.
+      const ops = [{ ...typing[0], text: '공' }, paragraph('Number'), paragraph('Bullet')]
+      for (const [i, op] of ops.entries()) {
+        const submit = { t: 'submit', seq: i + 1, base: i, ops: [op] }
+        assert.deepEqual(await editor.reply(submit, 'ack'), { t: 'ack', seq: i + 1, v: i + 1 })
+      }
+      const file = await server.exportHistory(p, { epoch, version: 3 })
       assert.equal(
         reopened(file.bytes, (doc) => doc.getTextRange(0, 0, 0, 1)),
         '공',
