@@ -52,3 +52,31 @@ jobs:
           name: web-test-results
           path: apps/web/test-results
           if-no-files-found: ignore
+
+  # The renderer replays every document inside a Deno sandbox that only starts
+  # where the package ships a runtime; these files run it on both Linux CPUs.
+  history-renderer:
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - run: npm ci --ignore-scripts
+      - run: npm run build:wasm
+      # the tests never read the shipped engine notices; the release job generates the real ones
+      - run: npm run build -w @seuoffice/history-renderer
+        env:
+          SEUOFFICE_WASM_NOTICES: ../../NOTICE
+      - run: npx vitest run tests/unit/sandbox-platform.test.ts tests/capabilities.test.ts tests/docx.test.ts tests/hwp-replay.test.ts
+        working-directory: packages/history-renderer

@@ -41,7 +41,8 @@
   },
   "optionalDependencies": {
     "@deno/darwin-arm64": "2.9.6",
-    "@deno/linux-arm64-glibc": "2.9.6"
+    "@deno/linux-arm64-glibc": "2.9.6",
+    "@deno/linux-x64-glibc": "2.9.6"
   },
   "devDependencies": {
     "@seuoffice/docx-engine": "*",
