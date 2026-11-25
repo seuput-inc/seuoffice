@@ -312,11 +312,8 @@ async function parseBody(zip: JSZip, bytes: Uint8Array) {
     })
     parser.write(await xmlPart(zip, path)).close()
   }
-  const parsed = await parseDocx(bytes)
-  // The editor expands an imported chunk with converters this sandbox does not have.
-  if (parsed.extras.elements.some((element) => element.name === 'w:altChunk'))
-    unsupported('a DOCX body with an imported chunk (w:altChunk)')
-  return parsed
+  // scanBody has refused every w:altChunk; no imported package reaches the engine.
+  return parseDocx(bytes, { expandAltChunks: false })
 }
 
 interface Paragraph {
@@ -373,6 +370,10 @@ function scanBody(xml: string): BodyXml {
   const dropped = new Set(['proofErr', 'lastRenderedPageBreak'])
   const start = () => xml.lastIndexOf('<', parser.position - 1)
   parser.on('opentag', (tag) => {
+    // The editor expands an imported chunk into blocks; its package is a ZIP inside the ZIP
+    // the archive gate never measured, so it is refused before the engine reads anything.
+    if (tag.uri === WORD && tag.local === 'altChunk')
+      unsupported('a DOCX body with an imported chunk (w:altChunk)')
     if (opaque) {
       if (++opaque + stack.length > 512) unsupported('DOCX body nests deeper than 512')
       return
