@@ -3,8 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { checkPrefix, HistoryError, type HistoryRequest, type HistoryResult } from '../src/history'
 import type { Json } from '../src/model'
 import { sha256 } from '../src/sha256'
-import { createHistoryServer, type RetainedHistoryStore } from '../src/server/history'
-import type { Principal, ServerSocket } from '../src/server/server'
+import {
+  createHistoryServer,
+  type HistoryServer,
+  type RetainedHistoryStore,
+} from '../src/server/history'
+import { createCollabServer, type Principal, type ServerSocket } from '../src/server/server'
 import { memoryHistoryStore } from '../src/server/store'
 import type {
   HistoryByteSource,
@@ -36,6 +40,8 @@ function renderer(reopen: boolean) {
   async function render(bytes: Uint8Array, request: HistoryRequest): Promise<HistoryResult> {
     checkPrefix(request, format)
     if ((await sha256(bytes)) !== request.baseHash) throw new Error('base hash')
+    if (text(bytes).startsWith('opaque:'))
+      throw new HistoryError('unsupported', 'a record the renderer cannot replay')
     if (request.changes.length > 128) throw new Error('renderer limit')
     if (request.undo && request.changes.length + 1 > 128)
       throw new HistoryError('unsupported', 'compensated prefix exceeds replay limits')
@@ -349,3 +355,88 @@ describe.each<Kind>(['bytes', 'stream'])(
     })
   },
 )
+
+describe('HWP epochs a server without history started', () => {
+  /** The epoch a co-editing server without history made from `file`, with `edits` single keys. */
+  async function earlier(store: RetainedHistoryStore, file: string, edits: number) {
+    const plain = createCollabServer({ store })
+    const socket = new Socket()
+    plain.accept(socket, p)
+    const bytes = encode(file)
+    const fileHash = await sha256(bytes)
+    socket.receive({ t: 'hello', p: 1, format, fileHash })
+    await socket.next('need_base')
+    socket.receive(bytes)
+    const epoch = String((await socket.next('welcome')).epoch)
+    for (let seq = 1; seq <= edits; seq++) {
+      socket.receive({ t: 'submit', seq, base: seq - 1, ops: [{ t: 'x' }] })
+      await socket.next('ack', seq)
+    }
+    await plain.close()
+    return { epoch, fileHash }
+  }
+
+  async function join(server: HistoryServer, fileHash: string, userId: string, canEdit = true) {
+    const socket = new Socket()
+    server.accept(socket, { ...p, userId, name: userId, canEdit })
+    socket.receive({ t: 'hello', p: 1, format, fileHash })
+    await vi.waitFor(() => expect(answer(socket)).toBeDefined())
+    return socket
+  }
+  /** What the server answered the hello with. */
+  function answer(socket: Socket) {
+    return socket.frames.find((f) => f.t === 'welcome' || f.t === 'error')
+  }
+
+  it('keeps two editors typing on a byte store without exact history writes, and refuses only HWP undo', async () => {
+    const { exactHistoryChange, ...legacy } = memoryHistoryStore(() => true)
+    expect(exactHistoryChange).toBe(true)
+    const { epoch, fileHash } = await earlier(legacy, 'base:', 1)
+    const { render } = renderer(true)
+    const server = createHistoryServer({ store: legacy, render })
+    try {
+      const alice = await join(server, fileHash, 'alice')
+      const bob = await join(server, fileHash, 'bob')
+      expect([answer(alice), answer(bob)]).toMatchObject([
+        { t: 'welcome', head: 1 },
+        { t: 'welcome', head: 1 },
+      ])
+      alice.receive({ t: 'submit', seq: 1, base: 1, ops: [{ t: 'a' }] })
+      expect(await alice.next('ack')).toMatchObject({ v: 2 })
+      bob.receive({ t: 'submit', seq: 1, base: 2, ops: [{ t: 'b' }] })
+      expect(await bob.next('ack')).toMatchObject({ v: 3 })
+      const file = await server.exportHistory(p, { epoch, version: 3 })
+      expect(text(file.bytes)).toBe('base:xab')
+      await expect(
+        server.undoHistory(p, {
+          requestId: 'undo-a',
+          expected: { epoch, version: 3 },
+          target: { epoch, v: 2, index: 0 },
+        }),
+      ).rejects.toThrow(/exact history writes/)
+      expect((await legacy.load(p.documentId))!.head).toBe(3)
+      expect([alice.closed, bob.closed]).toEqual([undefined, undefined])
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('refuses an editor at join, with a reason, when the renderer cannot replay the epoch', async () => {
+    const store = memoryHistoryStore(() => true)
+    const { fileHash } = await earlier(store, 'opaque:', 2)
+    const { render } = renderer(true)
+    const server = createHistoryServer({ store, render })
+    try {
+      const editor = await join(server, fileHash, 'alice')
+      expect(answer(editor)).toEqual({ t: 'error', code: 'schema_mismatch' })
+      expect(editor.frames.some((f) => f.t === 'welcome')).toBe(false)
+      expect(editor.closed).toMatch(/HWP/)
+      // A viewer sends no edits for the server to replay.
+      const viewer = await join(server, fileHash, 'bob', false)
+      expect(answer(viewer)).toMatchObject({ t: 'welcome', head: 2, canEdit: false })
+      expect((await store.load(p.documentId))!.head).toBe(2)
+    } finally {
+      await server.close()
+    }
+  })
+})
