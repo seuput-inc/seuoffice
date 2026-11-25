@@ -1,5 +1,14 @@
 import { HistoryError, type Json } from '@seuoffice/collab/client'
-import { mergeRPrModel, parseDocx, type Run } from '@seuoffice/docx-engine'
+import {
+  mergeRPrModel,
+  parseDocx,
+  symbolPuaChar,
+  withheldLabelOf,
+  type Block,
+  type EffectiveRPr,
+  type Run,
+  type TableCell,
+} from '@seuoffice/docx-engine'
 import JSZip from 'jszip'
 import { Schema, Slice, type Mark, type Node } from 'prosemirror-model'
 import { AddMarkStep, Mapping, RemoveMarkStep, ReplaceStep, type Step } from 'prosemirror-transform'
@@ -45,22 +54,87 @@ const styleFields = [
   'positionHalfPoints',
   'charSpacingTwips',
 ] as const
+const flag = (value: Json) => typeof value === 'boolean'
+const word = (pattern: RegExp) => (value: Json) => typeof value === 'string' && pattern.test(value)
+const jsonObject = (keys: readonly string[], value: (v: Json) => boolean) => (json: Json) => {
+  if (typeof json !== 'string' || json.length > 512) return false
+  try {
+    const parsed: unknown = JSON.parse(json)
+    return (
+      !!parsed &&
+      typeof parsed === 'object' &&
+      Object.entries(parsed).every(([k, v]) => keys.includes(k) && value(v as Json))
+    )
+  } catch {
+    return false
+  }
+}
+/**
+ * Attributes the editor copies from a run into docTextStyle besides styleFields (convert.ts
+ * runMarks). They take part in mark equality; the editor saves all but the display ones
+ * (kern, eaSlotEmpty, shadingDisplay, tblRun) back into the run (inlineToRuns).
+ */
+const carriedFields: Readonly<Record<string, (value: Json) => boolean>> = {
+  eaLang: word(/^[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8}){0,3}$/),
+  styleId: word(/^[\p{L}\p{N}_ .-]{1,253}$/u),
+  themeColor: word(/^[A-Za-z0-9]{1,32}$/),
+  themeRFonts: jsonObject(['font', 'fontAscii'], (v) => typeof v === 'string' && fontName.test(v)),
+  kernHalfPoints: (v) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 3276,
+  vanish: flag,
+  vanishOwn: flag,
+  rtl: flag,
+  kern: flag,
+  eaSlotEmpty: flag,
+  // An explicit off toggle (w:b w:val="0"): the editor paints it; its rawRPr keeps it.
+  boldOff: flag,
+  italicOff: flag,
+  shadingDisplay: word(/^[0-9a-f]{6}$/i),
+  tblRun: jsonObject(
+    ['sizeHalfPoints', 'fontAscii', 'caps', 'charSpacingTwips'],
+    (v) =>
+      (typeof v === 'number' && Number.isInteger(v) && Math.abs(v) <= 31680) ||
+      (typeof v === 'string' && (fontName.test(v) || /^(?:all|small|none)$/.test(v))),
+  ),
+}
+const markFields = [...styleFields, ...Object.keys(carriedFields)]
+// Editor attributes this reader never carries: their runs are not rewritten, so they stay null.
 const otherStyleFields = new Set(
   (
-    'eaSlotEmpty csFont charScaleEm charScaleX charScalePct kern kernHalfPoints shadingDisplay ' +
-    'textOutline textEffect glow bdr boldOff italicOff vanish vanishOwn eaLang cs rtl styleId themeRFonts themeColor ' +
-    'csSize csBold csItalic tblRun'
+    'csFont charScaleEm charScaleX charScalePct textOutline textEffect glow bdr cs ' +
+    'csSize csBold csItalic'
   ).split(' '),
 )
 type TextStep = ReplaceStep | AddMarkStep | RemoveMarkStep
-const paragraphSpec = { group: 'body', content: 'text*', attrs: { docxIndex: { default: null } } }
+// The Docs editor's document shape (renderer/editor/extensions.ts), down to what decides positions.
+// `source` names the XML paragraph a text block writes back to; null when it cannot be rewritten,
+// `locked` then says why and its content is a placeholder of the editor's size.
+const paragraphSpec = {
+  group: 'block',
+  content: 'inline*',
+  attrs: { source: { default: null }, locked: { default: null } },
+}
 const schema = new Schema({
   nodes: {
-    doc: { content: 'body+' },
+    doc: { content: 'block+' },
     docParagraph: paragraphSpec,
     docHeading: paragraphSpec,
     docListItem: paragraphSpec,
-    text: { inline: true },
+    docTable: { group: 'block', content: 'docTableRow+' },
+    docTableRow: { content: 'docTableCell+' },
+    docTableCell: { content: 'block+' },
+    // docProtected, docNestedTable and docCellBoxes: atoms the editor sizes as one position
+    docAtom: { group: 'block', atom: true },
+    text: { group: 'inline', inline: true },
+    hardBreak: {
+      group: 'inline',
+      inline: true,
+      attrs: Object.fromEntries(
+        ['pageBreak', 'colBreak', 'wrapBreak', 'mathBreak'].map((name) => [
+          name,
+          { default: false },
+        ]),
+      ),
+    },
   },
   marks: {
     bold: {},
@@ -68,7 +142,7 @@ const schema = new Schema({
     strike: {},
     underline: {},
     docTextStyle: {
-      attrs: Object.fromEntries(styleFields.map((name) => [name, { default: null }])),
+      attrs: Object.fromEntries(markFields.map((name) => [name, { default: null }])),
     },
   },
 })
@@ -215,81 +289,79 @@ async function checkPackage(zip: JSZip): Promise<void> {
   }
 }
 
-// Only the body, styles and numbering reach the engine; media and every other part do not.
-async function parseBody(zip: JSZip, body: string) {
-  const input = new JSZip()
-  input.file(MAIN, body)
-  const ns = 'application/vnd.openxmlformats-'
-  const relType = ns + 'package.relationships+xml'
-  const types = [
-    `<Default Extension="rels" ContentType="${relType}"/>`,
-    `<Override PartName="/${MAIN}" ContentType="${MAIN_TYPE}"/>`,
-  ]
-  const relations: string[] = []
+/**
+ * Read the package as the Docs editor does (parseDocx of the whole file), so its blocks, and with
+ * them every position, are the editor's. Styles and numbering are checked first: the engine
+ * resolves every run through them.
+ */
+async function parseBody(zip: JSZip, bytes: Uint8Array) {
   for (const [path, root] of Object.entries(wordParts)) {
     if (!zip.file(path)) continue
-    const xml = await xmlPart(zip, path)
     const parser = xmlReader()
     let depth = 0
     parser.on('opentag', (tag) => {
       if (depth === 0 && (tag.uri !== WORD || tag.local !== root))
         unsupported(`DOCX ${root} part has another root`)
       if (++depth > 32) unsupported(`DOCX ${root} part nests deeper than 32`)
-      // A picture bullet names media this reader does not load.
+      // A picture bullet sizes list markers from media.
       if (tag.uri === WORD && tag.local === 'numPicBullet')
         unsupported('DOCX numbering has picture bullets')
     })
     parser.on('closetag', () => {
       depth--
     })
-    parser.write(xml).close()
-    input.file(path, xml)
-    types.push(
-      `<Override PartName="/${path}" ContentType="${ns}officedocument.wordprocessingml.${root}+xml"/>`,
-    )
-    relations.push(`<Relationship Id="${root}" Type="${OFFICE}${root}" Target="${path.slice(5)}"/>`)
+    parser.write(await xmlPart(zip, path)).close()
   }
-  input.file(TYPES, `<Types xmlns="${OPC}content-types">${types.join('')}</Types>`)
-  input.file(
-    RELS,
-    `<Relationships xmlns="${OPC}relationships"><Relationship Id="main" Type="${OFFICE}officeDocument" Target="${MAIN}"/></Relationships>`,
-  )
-  input.file(
-    documentRels,
-    `<Relationships xmlns="${OPC}relationships">${relations.join('')}</Relationships>`,
-  )
-  return parseDocx(await input.generateAsync({ type: 'uint8array', compression: 'STORE' }), {
-    expandAltChunks: false,
-  })
+  const parsed = await parseDocx(bytes)
+  // The editor expands an imported chunk with converters this sandbox does not have.
+  if (parsed.extras.elements.some((element) => element.name === 'w:altChunk'))
+    unsupported('a DOCX body with an imported chunk (w:altChunk)')
+  return parsed
 }
 
 interface Paragraph {
   start: number
   end: number
   prefixEnd: number
+  /** the text the engine reads: w:t, a tab as \t, a break as \n, \f (page), \v (column) or \u001e */
   text: string
   /** collapsed bookmark pairs, written at the start of the paragraph when it is rewritten */
   anchors: string
+  /** why this paragraph cannot be written again from its runs */
+  problem?: string
+}
+interface Cell {
+  paragraphs: Paragraph[]
+  problem?: string
+}
+interface BodyXml {
+  /** paragraphs of the body and of its tables' cells, by the offset of their opening tag */
+  paragraphs: Map<number, Paragraph>
+  /** the body's tables, by offset: rows of cells */
+  tables: Map<number, Cell[][]>
 }
 
-// XML 1.0 scalars only. Docs normalizes line breaks and may decode a literal numeric reference again.
+// XML 1.0 scalars, and tabs. Docs normalizes line breaks and may decode a literal numeric reference again.
 function plainText(s: string): boolean {
-  return !/[^\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]|&#/u.test(s)
+  return !/[^\t\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]|&#/u.test(s)
 }
+
+// w:br by its w:type, as the engine reads it; with w:clear="all" a text wrapping break is \u001e
+const breaks: Readonly<Record<string, string>> = { page: '\f', column: '\v', textWrapping: '\n' }
 
 /**
- * Locate the body's top-level paragraphs. The root, the opening tag of each paragraph, its
- * pPr and the trailing sectPr are copied verbatim and never regenerated, so their content is
- * not interpreted here; runs are, because an edited paragraph is written again from them.
+ * Locate the paragraphs of the body and of its tables' cells. The root, the opening tag of each
+ * paragraph, its pPr, each run's rPr, tables and every other element are copied verbatim and not
+ * interpreted here; runs are read because an edited paragraph is written again from them.
  */
-function paragraphs(xml: string): Paragraph[] {
+function scanBody(xml: string): BodyXml {
   const parser = xmlReader()
   const stack: string[] = []
-  const result: Paragraph[] = []
+  const result: BodyXml = { paragraphs: new Map(), tables: new Map() }
   let paragraph: Paragraph | undefined
+  let table: Cell[][] | undefined
+  let cell: Cell | undefined
   let opaque = 0
-  let hasBody = false
-  let hasSection = false
   let preserve = false
   let hasRuns = false
   let hasPPr = false
@@ -299,40 +371,57 @@ function paragraphs(xml: string): Paragraph[] {
   // Spell-check marks and the cached page break position: Word recomputes both, so an
   // edited paragraph may be written without them.
   const dropped = new Set(['proofErr', 'lastRenderedPageBreak'])
+  const start = () => xml.lastIndexOf('<', parser.position - 1)
   parser.on('opentag', (tag) => {
     if (opaque) {
-      opaque++
+      if (++opaque + stack.length > 512) unsupported('DOCX body nests deeper than 512')
       return
     }
     const parent = stack.at(-1)
-    const name = tag.local
-    if (tag.uri !== WORD) unsupported(`DOCX body element ${tag.name} has no plain-text position`)
+    const name = tag.uri === WORD ? tag.local : `{${tag.uri}}${tag.local}`
     const attrs = Object.keys(tag.attributes).filter(
       (k) => k !== 'xmlns' && !k.startsWith('xmlns:'),
     )
+    stack.push(name)
     const id = tag.attributes['w:id']?.value
-    if (bookmark && !(parent === 'p' && name === 'bookmarkEnd' && id === bookmark.id))
-      unsupported('DOCX bookmark spans text')
-    if (!parent && name === 'document') {
-      // mc:Ignorable and other root attributes stay in the copied prefix.
-    } else if (parent === 'document' && name === 'body' && !hasBody && !attrs.length) {
-      hasBody = true
-    } else if (parent === 'body' && name === 'p' && !hasSection) {
-      if (result.length >= 4096) unsupported('too many DOCX paragraphs')
-      paragraph = {
-        start: xml.lastIndexOf('<', parser.position - 1),
-        prefixEnd: parser.position,
-        end: 0,
-        text: '',
-        anchors: '',
+    if (!paragraph) {
+      if (!parent) {
+        if (name !== 'document') unsupported('not a WordprocessingML document')
+      } else if (parent === 'document') {
+        if (name !== 'body') opaque = 1
+      } else if (name === 'p' && (parent === 'body' || (parent === 'tc' && cell))) {
+        if (result.paragraphs.size >= 16384) unsupported('too many DOCX paragraphs')
+        paragraph = { start: start(), prefixEnd: parser.position, end: 0, text: '', anchors: '' }
+        // Rewritten runs are spelled with the w prefix the paragraph's own scope binds.
+        if (tag.prefix !== 'w') paragraph.problem = 'a DOCX paragraph without the w prefix'
+        hasRuns = hasPPr = false
+        result.paragraphs.set(paragraph.start, paragraph)
+        cell?.paragraphs.push(paragraph)
+      } else if (name === 'tbl' && parent === 'body') {
+        table = []
+        result.tables.set(start(), table)
+      } else if (name === 'tr' && parent === 'tbl' && table && stack.length === 4) {
+        table.push([])
+      } else if (name === 'tc' && parent === 'tr' && table && stack.length === 5) {
+        cell = { paragraphs: [] }
+        table.at(-1)!.push(cell)
+      } else {
+        // A nested table is its own atom in the editor; a content control or other wrapper in a
+        // cell holds paragraphs the editor reads where this scan does not look.
+        if (parent === 'tc' && cell && name !== 'tcPr' && name !== 'tbl')
+          cell.problem ??= `w:${name} in a cell`
+        opaque = 1
       }
-      hasRuns = hasPPr = false
-      result.push(paragraph)
-    } else if (parent === 'p' && name === 'pPr' && !hasPPr && !hasRuns) {
-      hasPPr = true
+      return
+    }
+    const refuse = (problem: string) => {
+      paragraph!.problem ??= problem
       opaque = 1
-    } else if (parent === 'body' && name === 'sectPr' && !hasSection) {
-      hasSection = true
+    }
+    if (bookmark && !(parent === 'p' && name === 'bookmarkEnd' && id === bookmark.id))
+      refuse('a DOCX bookmark spans text')
+    else if (parent === 'p' && name === 'pPr' && !hasPPr && !hasRuns) {
+      hasPPr = true
       opaque = 1
     } else if (
       parent === 'p' &&
@@ -341,12 +430,12 @@ function paragraphs(xml: string): Paragraph[] {
     ) {
       hasRuns = true
       hasRPr = false
-      runStart = paragraph!.text.length
+      runStart = paragraph.text.length
     } else if (
       parent === 'r' &&
       name === 'rPr' &&
       !hasRPr &&
-      paragraph!.text.length === runStart &&
+      paragraph.text.length === runStart &&
       !attrs.length
     ) {
       // The engine keeps the whole rPr in Run.rawRPr; mergeRPrModel writes it back.
@@ -356,7 +445,7 @@ function paragraphs(xml: string): Paragraph[] {
       opaque = 1
     } else if (parent === 'p' && name === 'bookmarkStart' && id) {
       // Word's _GoBack is such a pair. The editor, too, writes bookmarks at the paragraph start.
-      bookmark = { id, start: xml.lastIndexOf('<', parser.position - 1) }
+      bookmark = { id, start: start() }
       opaque = 1
     } else if (parent === 'p' && name === 'bookmarkEnd' && bookmark) {
       opaque = 1
@@ -365,15 +454,27 @@ function paragraphs(xml: string): Paragraph[] {
       if (space !== undefined && space !== 'preserve' && space !== 'default')
         invalid('invalid xml:space')
       preserve = space === 'preserve'
-    } else {
-      unsupported(`DOCX ${parent ?? 'part'} element w:${name} is outside plain paragraph text`)
-    }
-    stack.push(name)
+    } else if (parent === 'r' && name === 'tab' && !attrs.length) {
+      paragraph.text += '\t'
+    } else if (parent === 'r' && name === 'cr' && !attrs.length) {
+      // A carriage return reads, and is written back, as a line break.
+      paragraph.text += '\n'
+    } else if (
+      parent === 'r' &&
+      name === 'br' &&
+      attrs.every((k) => k === 'w:type' || k === 'w:clear')
+    ) {
+      const type = tag.attributes['w:type']?.value ?? 'textWrapping'
+      const clear = tag.attributes['w:clear']?.value
+      if (clear === undefined && Object.hasOwn(breaks, type)) paragraph.text += breaks[type]
+      else if (clear === 'all' && type === 'textWrapping') paragraph.text += '\u001e'
+      else refuse('a DOCX break of another kind')
+    } else refuse(`w:${name} in a DOCX paragraph`)
   })
   parser.on('text', (s) => {
-    if (opaque) return
-    if (stack.at(-1) === 't' && paragraph) {
-      if (!plainText(s)) unsupported('nonliteral DOCX text')
+    if (opaque || !paragraph) return
+    if (stack.at(-1) === 't') {
+      if (!plainText(s)) paragraph.problem ??= 'nonliteral DOCX text'
       // build_run.rs uses wt_text: without xml:space, leading and trailing ASCII spaces disappear.
       let left = 0,
         right = s.length
@@ -382,26 +483,31 @@ function paragraphs(xml: string): Paragraph[] {
         while (right > left && s[right - 1] === ' ') right--
       }
       paragraph.text += s.slice(left, right)
-    } else if (/[^\t\n\r ]/.test(s)) invalid('text outside a DOCX run')
+    } else if (/[^\t\n\r ]/.test(s)) paragraph.problem ??= 'text outside a DOCX run'
   })
   parser.on('closetag', () => {
     if (opaque && --opaque) return
     const name = stack.pop()
-    if (name === 'r' && hasRPr && paragraph!.text.length === runStart)
-      unsupported('empty styled DOCX run')
-    if (name === 'pPr') paragraph!.prefixEnd = parser.position
-    if (name === 'bookmarkEnd') {
-      paragraph!.anchors += xml.slice(bookmark!.start, parser.position)
+    if (!paragraph) {
+      if (name === 'tc') cell = undefined
+      else if (name === 'tbl' && stack.length === 2) table = undefined
+      return
+    }
+    if (name === 'r' && hasRPr && paragraph.text.length === runStart)
+      paragraph.problem ??= 'an empty styled DOCX run'
+    if (name === 'pPr') paragraph.prefixEnd = parser.position
+    if (name === 'bookmarkEnd' && bookmark) {
+      paragraph.anchors += xml.slice(bookmark.start, parser.position)
       bookmark = undefined
     }
-    if (name === 'p' && paragraph) {
-      if (bookmark) unsupported('DOCX bookmark spans paragraphs')
+    if (name === 'p') {
+      if (bookmark) paragraph.problem ??= 'a DOCX bookmark spans paragraphs'
+      bookmark = undefined
       paragraph.end = parser.position
       paragraph = undefined
     }
   })
   parser.write(xml).close()
-  if (!result.length) unsupported('no plain DOCX paragraph')
   return result
 }
 
@@ -444,10 +550,13 @@ function readMark(json: Json | undefined, rawStyles: ReadonlySet<string>): Mark 
       } else if (key === 'dstrike') {
         if (value !== null && typeof value !== 'boolean')
           unsupported('unsupported DOCX double strike')
+      } else if (Object.hasOwn(carriedFields, key)) {
+        if (value !== null && !carriedFields[key]!(value))
+          unsupported(`unsupported DOCX text style ${key}`)
       } else if (value !== null || !otherStyleFields.has(key))
-        unsupported('unsupported DOCX text style')
+        unsupported(`unsupported DOCX text style ${key}`)
     }
-    if (!styleFields.some((key) => attrs[key] != null)) unsupported('empty DOCX text style')
+    if (!markFields.some((key) => attrs[key] != null)) unsupported('empty DOCX text style')
   }
   return schema.mark(json.type, attrs)
 }
@@ -496,10 +605,21 @@ function readStep(step: Json, rawStyles: ReadonlySet<string>): TextStep {
     }
     for (const node of slice.content) {
       if (!object(node) || typeof node.type !== 'string') return invalid('invalid DOCX node')
-      if (node.type !== 'text') return unsupported('not DOCX text')
-      fields(node, ['type', 'text', 'marks'])
-      if (typeof node.text !== 'string' || !node.text) return invalid('empty DOCX text node')
-      if (!plainText(node.text)) return unsupported('text has no literal DOCX representation')
+      if (node.type === 'hardBreak') {
+        // Shift+Enter, or a page or column break typed into the paragraph.
+        fields(node, ['type', 'attrs', 'marks'])
+        const attrs = node.attrs ?? {}
+        if (!object(attrs)) return invalid('invalid DOCX break')
+        fields(attrs, ['pageBreak', 'colBreak', 'wrapBreak', 'mathBreak'])
+        if (Object.values(attrs).some((on) => typeof on !== 'boolean'))
+          return invalid('invalid DOCX break')
+        if (attrs.mathBreak || Object.values(attrs).filter(Boolean).length > 1)
+          return unsupported('DOCX break of an equation or of two kinds')
+      } else if (node.type === 'text') {
+        fields(node, ['type', 'text', 'marks'])
+        if (typeof node.text !== 'string' || !node.text) return invalid('empty DOCX text node')
+        if (!plainText(node.text)) return unsupported('text has no literal DOCX representation')
+      } else return unsupported('not DOCX text')
       if (node.marks !== undefined) {
         if (!Array.isArray(node.marks)) return invalid('invalid DOCX marks')
         const seen = new Set<string>()
@@ -520,11 +640,11 @@ function checkRange(doc: Node, step: TextStep): void {
   const to = doc.resolve(step.to)
   if (!from.parent.isTextblock || !from.sameParent(to))
     unsupported('DOCX replace crosses paragraph structure')
+  if (from.parent.attrs.source === null)
+    unsupported(`cannot rewrite ${String(from.parent.attrs.locked)}`)
   for (const pos of [from, to]) {
-    if (
-      pos.textOffset &&
-      /^[\uDC00-\uDFFF]$/.test(pos.parent.child(pos.index()).text!.charAt(pos.textOffset))
-    )
+    const leaf = pos.textOffset ? pos.parent.child(pos.index()) : undefined
+    if (leaf && /^[\uDC00-\uDFFF]$/.test(leaf.text!.charAt(pos.textOffset)))
       unsupported('DOCX replace splits a Unicode scalar')
   }
 }
@@ -550,94 +670,401 @@ const runFields = new Set<string>([
   'effective',
   'fontCs',
   'csFont',
+  'eastAsiaLang',
+  'kernHalfPoints',
+  'vanish',
+  'vanishOwn',
+  'rtl',
+  'styleId',
+  'themeRFonts',
+  'themeColor',
+  'eaSlotEmpty',
+  'shadingDisplay',
   ...styleFields,
   ...toggles,
 ])
 
-function textNode(run: Run, rawStyles: Set<string>): Node {
+// The editor's hardBreak for each break character of a run (convert.ts runsToInline).
+const breakAttrs: Readonly<Record<string, Record<string, boolean>>> = {
+  '\n': {},
+  '\f': { pageBreak: true },
+  '\v': { colBreak: true },
+  '\u001e': { wrapBreak: true },
+}
+
+// The break characters the engine puts in a run's text for w:br and w:cr.
+// eslint-disable-next-line no-control-regex
+const breakChar = /([\n\f\v\u001e])/
+
+/** Why a run cannot be written again from its text and marks, if it cannot */
+function lossy(run: Run): string | undefined {
   if (
-    !run.text ||
-    !plainText(run.text) ||
+    !plainText(run.text.replace(new RegExp(breakChar.source, 'g'), '')) ||
     Object.keys(run).some((key) => !runFields.has(key)) ||
     run.effective?.cs ||
     (run.csFont !== undefined && textHasComplexScript(run.text)) ||
-    run.effective?.styleXor?.length ||
-    toggles.some((key) => run[key] === false)
+    run.effective?.styleXor?.length
   )
-    unsupported('DOCX run has no lossless text projection')
-  const marks = toggles.filter((key) => run[key]).map((key) => schema.mark(key))
-  if (styleFields.some((key) => run[key] !== undefined)) {
-    if (run.rawRPr) rawStyles.add(run.rawRPr)
-    const attrs = Object.fromEntries(styleFields.map((key) => [key, run[key] ?? null]))
-    marks.push(readMark({ type: 'docTextStyle', attrs }, rawStyles))
-  }
-  return schema.text(run.text, marks)
+    return 'a DOCX run with no lossless text projection'
+  // The editor marks a withheld run with its own mark, which this reader does not carry.
+  if (withheldLabelOf(run.rawRPr) !== null) return 'a DOCX run withheld from AI'
 }
 
+/** convert.ts tableStyleRunAttr: run properties a table style resolves, display only */
+function tableStyleRun(eff: EffectiveRPr | undefined): string | null {
+  if (!eff) return null
+  const by = (k: string) => eff.source[k] === 'tableStyle'
+  const t: Record<string, unknown> = {}
+  if (by('sizeHalfPoints')) t.sizeHalfPoints = eff.sizeHalfPoints
+  if (by('ascii') && eff.fonts.ascii) t.fontAscii = eff.fonts.ascii
+  if (by('caps')) t.caps = eff.caps
+  if (by('charSpacingTwips')) t.charSpacingTwips = eff.charSpacingTwips
+  return Object.keys(t).length > 0 ? JSON.stringify(t) : null
+}
+
+/** The marks the editor gives a run this reader accepts (convert.ts runMarks) */
+function runMarks(run: Run, rawStyles: ReadonlySet<string>): Mark[] {
+  const marks = toggles.filter((key) => run[key]).map((key) => schema.mark(key))
+  if (
+    run.color ||
+    run.sizeHalfPoints ||
+    run.font ||
+    run.fontAscii ||
+    run.charSpacingTwips !== undefined ||
+    run.kernHalfPoints !== undefined ||
+    run.highlight ||
+    run.shading ||
+    run.shadingDisplay ||
+    run.dstrike ||
+    run.positionHalfPoints ||
+    run.vertAlign ||
+    run.em ||
+    run.caps ||
+    run.vanish ||
+    run.bold === false ||
+    run.italic === false ||
+    run.eastAsiaLang ||
+    run.rtl !== undefined ||
+    run.styleId ||
+    run.rawRPr
+  ) {
+    const attrs: Record<string, Json> = Object.fromEntries(
+      styleFields.map((key) => [key, run[key] ?? null]),
+    )
+    Object.assign(attrs, {
+      eaLang: run.eastAsiaLang ?? null,
+      styleId: run.styleId ?? null,
+      themeColor: run.themeColor ?? null,
+      themeRFonts: run.themeRFonts ? JSON.stringify(run.themeRFonts) : null,
+      kernHalfPoints: run.kernHalfPoints ?? null,
+      kern:
+        run.kernHalfPoints === undefined
+          ? null
+          : run.kernHalfPoints > 0 &&
+            (run.sizeHalfPoints === undefined || run.sizeHalfPoints >= run.kernHalfPoints),
+      vanish: run.vanish ?? null,
+      vanishOwn: run.vanishOwn ?? null,
+      rtl: run.rtl ?? null,
+      eaSlotEmpty: run.eaSlotEmpty ?? null,
+      boldOff: run.bold === false || null,
+      italicOff: run.italic === false || null,
+      shadingDisplay: run.shadingDisplay ?? null,
+      tblRun: tableStyleRun(run.effective),
+    })
+    marks.push(readMark({ type: 'docTextStyle', attrs }, rawStyles))
+  }
+  return marks
+}
+
+/**
+ * The inline content the editor makes of `runs` (convert.ts runsToInline): its size in
+ * positions always, its nodes when every run is plain text, tabs and breaks.
+ */
+function inlineOf(runs: readonly Run[], rawStyles: Set<string>) {
+  const nodes: Node[] = []
+  let size = 0
+  let problem: string | undefined
+  for (const run of runs) {
+    if (run.rawRPr) rawStyles.add(run.rawRPr)
+    if (run.math || run.ruby || run.noteRef) {
+      size += run.math?.breakAfter ? 2 : 1
+      problem ??= 'an equation, ruby text or a note reference'
+      continue
+    }
+    if (run.sym) {
+      // The editor shows the private-use glyph instead when the symbol font covers it.
+      const glyph = symbolPuaChar(run.sym.char)
+      if (glyph && glyph.length !== run.text.length)
+        unsupported('a DOCX symbol whose editor length depends on installed fonts')
+      problem ??= 'a symbol character'
+    }
+    size += run.text.length + (run.image ? 1 : 0) + (run.xeTerm !== undefined ? 1 : 0)
+    problem ??= lossy(run)
+    if (problem) continue
+    try {
+      const marks = runMarks(run, rawStyles)
+      for (const segment of run.text.split(breakChar)) {
+        if (!segment) continue
+        const attrs = breakAttrs[segment]
+        nodes.push(
+          attrs ? schema.node('hardBreak', attrs, undefined, marks) : schema.text(segment, marks),
+        )
+      }
+    } catch (error) {
+      if (!(error instanceof HistoryError)) throw error
+      problem = error.message
+    }
+  }
+  return { nodes, size, problem }
+}
+
+/** A text block's text as the engine reads it back from the XML */
+function literal(node: Node): string {
+  let text = ''
+  node.forEach((leaf) => {
+    text += leaf.isText
+      ? leaf.text!
+      : leaf.attrs.pageBreak
+        ? '\f'
+        : leaf.attrs.colBreak
+          ? '\v'
+          : leaf.attrs.wrapBreak
+            ? '\u001e'
+            : '\n'
+  })
+  return text
+}
+
+function leafXml(leaf: Node): string {
+  if (!leaf.isText) {
+    const { pageBreak, colBreak, wrapBreak } = leaf.attrs
+    return pageBreak
+      ? '<w:br w:type="page"/>'
+      : colBreak
+        ? '<w:br w:type="column"/>'
+        : wrapBreak
+          ? '<w:br w:type="textWrapping" w:clear="all"/>'
+          : '<w:br/>'
+  }
+  return leaf
+    .text!.split('\t')
+    .map((part) =>
+      part
+        ? `<w:t xml:space="preserve">${part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</w:t>`
+        : '',
+    )
+    .join('<w:tab/>')
+}
+
+/** The rPr the editor writes for text with these marks (convert.ts inlineToRuns, then generate) */
 function runProperties(marks: readonly Mark[]): string {
   if (!marks.length) return ''
   const run: Run = { text: '' }
   for (const mark of marks) {
-    if (mark.type.name === 'docTextStyle') {
-      for (const key of styleFields) {
-        if (mark.attrs[key] != null) Reflect.set(run, key, mark.attrs[key])
-      }
-    } else {
+    if (mark.type.name !== 'docTextStyle') {
       for (const key of toggles) if (mark.type.name === key) run[key] = true
+      continue
     }
+    const a = mark.attrs
+    if (a.color) run.color = a.color
+    if (a.sizeHalfPoints) run.sizeHalfPoints = a.sizeHalfPoints
+    if (a.font) run.font = a.font
+    if (a.fontAscii) run.fontAscii = a.fontAscii
+    if (a.eastAsiaFont) run.eastAsiaFont = a.eastAsiaFont
+    if (a.charSpacingTwips != null) run.charSpacingTwips = a.charSpacingTwips
+    if (a.kernHalfPoints != null) run.kernHalfPoints = a.kernHalfPoints
+    if (a.highlight) run.highlight = a.highlight
+    if (a.shading) run.shading = a.shading
+    if (a.dstrike != null) run.dstrike = Boolean(a.dstrike)
+    if (a.positionHalfPoints) run.positionHalfPoints = a.positionHalfPoints
+    if (a.vertAlign) run.vertAlign = a.vertAlign
+    if (a.em) run.em = a.em
+    if (a.vanish) run.vanish = true
+    if (a.vanishOwn != null) run.vanishOwn = Boolean(a.vanishOwn)
+    if (a.caps) run.caps = a.caps
+    if (a.eaLang) run.eastAsiaLang = a.eaLang
+    if (a.rtl != null) run.rtl = Boolean(a.rtl)
+    if (a.styleId) run.styleId = a.styleId
+    if (a.rawRPr) run.rawRPr = a.rawRPr
+    if (a.themeRFonts) run.themeRFonts = JSON.parse(a.themeRFonts)
+    if (a.themeColor) run.themeColor = a.themeColor
   }
   return mergeRPrModel(run.rawRPr ?? '', run, false)
 }
 
-async function readBody(zip: JSZip) {
+/** Text blocks the renderer may write back, in document order */
+function editable(root: Node): Node[] {
+  const out: Node[] = []
+  root.descendants((node) => {
+    if (!node.isTextblock) return true
+    if (node.attrs.source !== null) out.push(node)
+    return false
+  })
+  return out
+}
+
+const textTypes: Readonly<Record<string, string>> = {
+  paragraph: 'docParagraph',
+  heading: 'docHeading',
+  listItem: 'docListItem',
+}
+
+/**
+ * The Docs editor's document (convert.ts blocksToPmDoc) with the positions it has. Paragraphs
+ * that are plain text, tabs and breaks in the XML hold their runs and can be written back;
+ * everything else keeps only its size.
+ */
+async function readBody(zip: JSZip, bytes: Uint8Array) {
   await checkPackage(zip)
   const xml = await xmlPart(zip, MAIN)
-  const source = paragraphs(xml)
-  const parsed = await parseBody(
-    zip,
-    xml.slice(0, source[source.length - 1]!.end) + '</w:body></w:document>',
-  )
-  const blocks = parsed.blocks.filter((block) => !block.hidden)
-  if (source.length !== blocks.length) unsupported('DOCX editor blocks differ from its paragraphs')
+  const body = scanBody(xml)
+  const parsed = await parseBody(zip, bytes)
+  const { elements } = parsed.extras
   const rawStyles = new Set<string>()
-  const base = schema.node(
-    'doc',
-    null,
-    blocks.map((block, index) => {
-      const part = source[index]!
-      const anchor = parsed.extras.elements[index]
-      if (
-        block.docxIndex !== index ||
-        anchor?.name !== 'w:p' ||
-        anchor.start !== part.start ||
-        anchor.end !== part.end
+  const sources: Paragraph[] = []
+  const owners = new Map<number | null, number>()
+  for (const block of parsed.blocks)
+    owners.set(block.docxIndex, (owners.get(block.docxIndex) ?? 0) + 1)
+  const paragraphAt = (index: number | null) => {
+    const element = index === null || owners.get(index) !== 1 ? undefined : elements[index]
+    const part = element?.name === 'w:p' ? body.paragraphs.get(element.start) : undefined
+    return part?.end === element?.end ? part : undefined
+  }
+  function textBlock(
+    type: string,
+    runs: readonly Run[],
+    part: Paragraph | undefined,
+    why?: string,
+  ) {
+    const inline = inlineOf(runs, rawStyles)
+    let locked = why ?? part?.problem ?? inline.problem
+    if (!part) locked ??= 'a DOCX paragraph the body XML does not hold as such'
+    if (!locked) {
+      const node = schema.node(type, { source: sources.length }, inline.nodes)
+      if (literal(node) === part!.text) {
+        sources.push(part!)
+        return node
+      }
+      locked = 'DOCX runs the editor reads differently from the XML'
+    }
+    // A placeholder of the editor's size: positions after it stay right, and no step may enter it.
+    return schema.node(
+      type,
+      { locked },
+      inline.size ? schema.text('-'.repeat(inline.size)) : undefined,
+    )
+  }
+  function table(block: Block) {
+    const model = block.table ?? { rows: [[{ paras: [''] }]] }
+    const element = block.docxIndex === null ? undefined : elements[block.docxIndex]
+    const xmlRows = element?.name === 'w:tbl' ? body.tables.get(element.start) : undefined
+    const aligned =
+      owners.get(block.docxIndex) === 1 &&
+      xmlRows?.length === model.rows.length &&
+      xmlRows.every((row, r) => row.length === model.rows[r]!.length)
+    // convert.ts tableModelToPmNode: a merged-away cell has no node where a rowspan covers it.
+    const columns = model.rows.map((row) => {
+      let column = 0
+      return row.map((cell) => (column += cell.colSpan ?? 1) - (cell.colSpan ?? 1))
+    })
+    const covered = model.rows.map(() => new Set<number>())
+    model.rows.forEach((row, r) =>
+      row.forEach((cell, c) => {
+        if (cell.vMerge !== 'restart') return
+        const at = columns[r]![c]!
+        for (let below = r + 1; below < model.rows.length; below++) {
+          const index = columns[below]!.indexOf(at)
+          if (index === -1 || model.rows[below]![index]!.vMerge !== 'continue') break
+          for (let column = at; column < at + (cell.colSpan ?? 1); column++)
+            covered[below]!.add(column)
+        }
+      }),
+    )
+    return schema.node(
+      'docTable',
+      null,
+      model.rows.map((row, r) =>
+        schema.node(
+          'docTableRow',
+          null,
+          row.flatMap((cell, c) => {
+            if (cell.vMerge === 'continue') {
+              if (covered[r]!.has(columns[r]![c]!)) return []
+              const gap = textBlock('docParagraph', [], undefined, 'a merged-away DOCX cell')
+              return [schema.node('docTableCell', null, [gap])]
+            }
+            return [
+              schema.node(
+                'docTableCell',
+                null,
+                cellContent(cell, aligned ? xmlRows[r]![c] : undefined),
+              ),
+            ]
+          }),
+        ),
+      ),
+    )
+  }
+  // convert.ts cellContentNodes: the cell's paragraphs, then nested tables and anchored boxes as
+  // atoms at their anchors; splitCellBoxGroup makes one atom of a group's page-placed boxes and
+  // one of the rest.
+  function cellContent(cell: TableCell, xmlCell: Cell | undefined) {
+    const rich = !!cell.richParas?.length
+    const paragraphs = rich
+      ? cell.richParas!
+      : (cell.paras.length ? cell.paras : ['']).map((text) => ({
+          runs: text ? [{ text }] : [],
+        }))
+    const why = !rich
+      ? 'a DOCX cell read without its runs'
+      : (xmlCell?.problem ??
+        (xmlCell?.paragraphs.length !== paragraphs.length
+          ? 'a DOCX cell whose paragraphs the editor reads differently'
+          : undefined))
+    const content = paragraphs.map((paragraph, i) =>
+      textBlock(
+        'list' in paragraph && paragraph.list ? 'docListItem' : 'docParagraph',
+        paragraph.runs,
+        why ? undefined : xmlCell!.paragraphs[i],
+        why,
+      ),
+    )
+    const inserts = (cell.nestedTables ?? []).map((_, i) =>
+      Math.min(cell.nestedTableAnchors?.[i] ?? content.length, content.length),
+    )
+    const groups = new Map<number, boolean[]>()
+    ;(cell.anchoredBoxes ?? []).forEach((box, i) => {
+      const at = Math.min(cell.anchoredBoxAnchors?.[i] ?? 0, content.length)
+      const onPage = !!box.outsideCell && !!box.floating && !!box.pageRelV
+      groups.set(at, [...(groups.get(at) ?? []), onPage])
+    })
+    for (const [at, group] of groups) {
+      if (group.includes(true)) inserts.push(at)
+      if (group.includes(false)) inserts.push(at)
+    }
+    inserts.sort((a, b) => a - b)
+    for (let i = inserts.length - 1; i >= 0; i--)
+      content.splice(inserts[i]!, 0, schema.node('docAtom'))
+    return content
+  }
+  const content: Node[] = []
+  for (const block of parsed.blocks) {
+    if (block.hidden) continue
+    if (Object.hasOwn(textTypes, block.type))
+      content.push(
+        textBlock(textTypes[block.type]!, block.runs ?? [], paragraphAt(block.docxIndex)),
       )
-        unsupported('ambiguous DOCX paragraph anchor')
-      const type =
-        block.type === 'paragraph'
-          ? 'docParagraph'
-          : block.type === 'heading'
-            ? 'docHeading'
-            : block.type === 'listItem'
-              ? 'docListItem'
-              : unsupported('DOCX block is not a text block')
-      const node = schema.node(
-        type,
-        { docxIndex: index },
-        (block.runs ?? []).map((run) => textNode(run, rawStyles)),
-      )
-      if (node.textContent !== part.text)
-        unsupported('DOCX editor text does not match literal runs')
-      return node
-    }),
-  )
-  return { xml, source, base, rawStyles }
+    else if (block.type === 'table') content.push(table(block))
+    else content.push(schema.node('docAtom'))
+  }
+  if (!content.length) content.push(textBlock('docParagraph', [], undefined, 'an empty DOCX body'))
+  return { xml, sources, base: schema.node('doc', null, content), rawStyles }
 }
 
 /** DOCX/schema 4. Shared ZIP admission must precede this reader. */
 export async function openDocx(bytes: Uint8Array): Promise<ByteHistoryAdapter<TextStep[]>> {
   const zip = await JSZip.loadAsync(bytes)
-  const { xml, source, base, rawStyles } = await readBody(zip)
+  const { xml, sources, base, rawStyles } = await readBody(zip, bytes)
   let doc = base
   return {
     decode: (json) => decode(json, rawStyles),
@@ -694,22 +1121,22 @@ export async function openDocx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Te
       }
     },
     async produceFile() {
+      const before = editable(base)
       const pieces: string[] = []
       let end = 0
       let runBytes = 0
-      doc.forEach((node, _offset, index) => {
-        if (node.eq(base.child(index))) return
-        const text = node.textContent
-        if (!plainText(text)) unsupported('DOCX text would change when reopened')
-        const part = source[index]!
-        const prefix = xml.slice(end, part.prefixEnd)
-        pieces.push(part.prefixEnd === part.end ? prefix.slice(0, -2) + '>' : prefix, part.anchors)
+      // Text blocks never change structure, so both lists hold the same blocks in order.
+      editable(doc).forEach((node, index) => {
+        if (node.eq(before[index]!)) return
+        const part = sources[node.attrs.source as number]!
+        const prefix = xml.slice(part.start, part.prefixEnd)
+        pieces.push(
+          xml.slice(end, part.start),
+          part.prefixEnd === part.end ? prefix.slice(0, -2) + '>' : prefix,
+          part.anchors,
+        )
         node.forEach((leaf) => {
-          const escaped = leaf
-            .text!.replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-          const run = `<w:r>${runProperties(leaf.marks)}<w:t xml:space="preserve">${escaped}</w:t></w:r>`
+          const run = `<w:r>${runProperties(leaf.marks)}${leafXml(leaf)}</w:r>`
           if ((runBytes += run.length) > PART_LIMIT) unsupported('DOCX XML exceeds part limit')
           pieces.push(run)
         })
@@ -728,4 +1155,9 @@ export async function openDocx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Te
       }
     },
   }
+}
+
+/** The document the renderer replays a DOCX history on, in the Docs editor's positions */
+export async function docxModel(bytes: Uint8Array): Promise<Node> {
+  return (await readBody(await JSZip.loadAsync(bytes), bytes)).base
 }

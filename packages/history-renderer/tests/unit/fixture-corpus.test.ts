@@ -20,6 +20,7 @@ import { PDFDocument } from 'pdf-lib'
 import { describe, expect, it } from 'vitest'
 import { applyOp } from '../../../../apps/slides/src/web/collab-ops'
 import { editorCellOp, typedCell } from '../../../../apps/sheets/tests/collab/editor-wire'
+import { docxModel } from '../../src/docx'
 import { render } from '../../src/replay'
 
 const root = join(import.meta.dirname, '../../../..')
@@ -80,7 +81,6 @@ interface Edit {
 }
 
 type PmJson = { type: string; text?: string; content?: PmJson[]; marks?: Json[] }
-const textBlocks = new Set(['docParagraph', 'docHeading', 'docListItem'])
 // The Docs file-to-editor conversion. A static import would type-check the Docs renderer here,
 // whose page globals clash with the Slides ones this package already type-checks.
 const convert: {
@@ -93,30 +93,102 @@ const convert: {
   ).href
 )
 
-/** Alice types at the start of the first editor paragraph, Bob at its end, as the Docs editor does */
-async function docxEdit(bytes: Uint8Array): Promise<Edit | undefined> {
+// The Docs schema (renderer/editor/extensions.ts): which node types are leaves, which hold content.
+const editorLeaves = new Set([
+  'hardBreak',
+  'docInlineImage',
+  'docInlineMath',
+  'docRuby',
+  'docNoteRef',
+  'docXeMark',
+  'docProtected',
+  'docNestedTable',
+  'docCellBoxes',
+])
+const editorTextBlocks = new Set(['docParagraph', 'docHeading', 'docListItem'])
+const editorContainers = new Set([
+  'docTable',
+  'docTableRow',
+  'docTableCell',
+  'docTableHeader',
+  ...editorTextBlocks,
+])
+
+function editorSize(node: PmJson): number {
+  if (node.type === 'text') return node.text!.length
+  if (editorLeaves.has(node.type)) return 1
+  if (!editorContainers.has(node.type)) throw new Error(`unknown Docs node ${node.type}`)
+  return 2 + (node.content ?? []).reduce((n, child) => n + editorSize(child), 0)
+}
+
+interface EditorBlock {
+  pos: number
+  size: number
+  path: string
+  node: PmJson
+}
+
+/** Every text block of the Docs editor's document, with its position */
+async function editorBlocks(bytes: Uint8Array) {
   const parsed = await parseDocx(bytes)
   const doc = convert.blocksToPmDoc(
     parsed.blocks,
     undefined,
     convert.pmDocOptions(parsed),
   ) as PmJson
-  const index = doc.content!.findIndex(
-    (node) =>
-      textBlocks.has(node.type) &&
-      !!node.content?.length &&
-      node.content.every((child) => child.type === 'text'),
-  )
-  if (index < 0) return undefined
-  let at = 0
-  for (const node of doc.content!.slice(0, index)) {
-    // Only text paragraphs have a size known without the editor schema.
-    if (!textBlocks.has(node.type) || node.content?.some((child) => child.type !== 'text'))
-      return undefined
-    at += 2 + (node.content ?? []).reduce((n, child) => n + child.text!.length, 0)
+  const blocks: EditorBlock[] = []
+  const walk = (nodes: PmJson[], start: number, path: string) => {
+    let pos = start
+    nodes.forEach((node, i) => {
+      const size = editorSize(node)
+      if (editorTextBlocks.has(node.type)) blocks.push({ pos, size, path: `${path}/${i}`, node })
+      else if (node.content) walk(node.content, pos + 1, `${path}/${i}`)
+      pos += size
+    })
   }
-  const paragraph = doc.content![index]!.content!
-  const text = paragraph.map((child) => child.text).join('')
+  walk(doc.content!, 0, '')
+  return { blocks, size: doc.content!.reduce((n, child) => n + editorSize(child), 0) }
+}
+
+const editorText = (node: PmJson) =>
+  (node.content ?? []).map((child) => (child.type === 'text' ? child.text : '\n')).join('')
+
+const plainMarks = new Set(['bold', 'italic', 'underline', 'strike', 'docTextStyle'])
+type MarkJson = { type: string; attrs?: Record<string, unknown> }
+// Complex-script runs: the editor resolves them through the cs chain this reader does not model.
+const plainMark = ({ type, attrs }: MarkJson) =>
+  plainMarks.has(type) && attrs?.csFont == null && attrs?.cs == null
+
+// Paragraphs whose text the editor reads differently from the file, or that the body does not hold
+// one to one: the renderer refuses them instead of rewriting them.
+const docxRefusals: Record<string, RegExp> = {
+  // Symbol-font private-use characters show as the font's glyphs.
+  'packages/docx-engine/tests/fixtures/truths/symbol-face-factors/probe.docx': /reads differently/,
+  // A paragraph with two w:pStyle and two w:rStyle.
+  'packages/docx-engine/tests/fixtures/truths/bidi-mark-cs-size-last-style-ref/probe.docx':
+    /does not hold as such/,
+}
+
+/**
+ * Alice types at the start of the last ordinary paragraph (text, tabs and line breaks in plain
+ * character formatting, wherever it is, after whatever the body holds before it), Bob at its end,
+ * as the Docs editor does.
+ */
+async function docxEdit(bytes: Uint8Array): Promise<Edit | undefined> {
+  const target = (await editorBlocks(bytes)).blocks
+    .reverse()
+    .find(
+      ({ node }) =>
+        !!node.content?.length &&
+        node.content.every(
+          (child) =>
+            (child.type === 'text' || child.type === 'hardBreak') &&
+            (child.marks ?? []).every((mark) => plainMark(mark as MarkJson)),
+        ),
+    )
+  if (!target) return undefined
+  const paragraph = target.node.content!
+  const text = editorText(target.node)
   // Typed text takes the marks of the text it is typed next to.
   const insert = (pos: number, typed: string, marks: Json[] | undefined): Json => ({
     kind: 'steps',
@@ -130,11 +202,11 @@ async function docxEdit(bytes: Uint8Array): Promise<Edit | undefined> {
     ],
   })
   return {
-    alice: insert(at + 1, 'A', paragraph[0]!.marks),
-    bob: insert(at + 2 + text.length, 'B', paragraph.at(-1)!.marks),
+    alice: insert(target.pos + 1, 'A', paragraph[0]!.marks),
+    bob: insert(target.pos + target.size, 'B', paragraph.at(-1)!.marks),
     async read(file) {
-      const shown = (await parseDocx(file)).blocks.filter((block) => !block.hidden)
-      return shown[index]!.runs!.map((run) => run.text).join('')
+      const block = (await editorBlocks(file)).blocks.find(({ path }) => path === target.path)
+      return block && editorText(block.node)
     },
     atAlice: 'A' + text,
     afterUndo: text + 'B',
@@ -234,6 +306,28 @@ describe.each([...tracked, ...generated].map((path) => [relative(root, path), pa
       expect(Buffer.compare(zero.bytes, bytes)).toBe(0)
     })
 
+    it.runIf(format === 'docx' && !encryptedPackage.test(path))(
+      'puts every paragraph where the Docs editor has it',
+      async () => {
+        const editor = await editorBlocks(bytes)
+        const doc = await docxModel(bytes)
+        const blocks: { pos: number; size: number; text?: string }[] = []
+        doc.descendants((node, pos) => {
+          if (!node.isTextblock) return true
+          const text = node.attrs.source === null ? undefined : editorText(node.toJSON())
+          blocks.push({ pos, size: node.nodeSize, ...(text === undefined ? {} : { text }) })
+          return false
+        })
+        expect(doc.content.size).toBe(editor.size)
+        expect(blocks.map(({ pos, size }) => [pos, size])).toEqual(
+          editor.blocks.map(({ pos, size }) => [pos, size]),
+        )
+        blocks.forEach(({ text }, i) => {
+          if (text !== undefined) expect(text).toBe(editorText(editor.blocks[i]!.node))
+        })
+      },
+    )
+
     it.skipIf(encryptedPackage.test(path))(
       'replays and selectively undoes an editor edit, or refuses it as unsupported',
       async () => {
@@ -246,7 +340,10 @@ describe.each([...tracked, ...generated].map((path) => [relative(root, path), pa
         } catch (error) {
           expect(error).toBeInstanceOf(HistoryError)
           expect(error).toMatchObject({ code: 'unsupported' })
-          expect(mustEdit.has(name), (error as Error).message).toBe(false)
+          // Typing into an ordinary paragraph works whatever else the document holds.
+          const message = (error as Error).message
+          if (docxRefusals[name]) expect(message).toMatch(docxRefusals[name])
+          else expect(mustEdit.has(name) || format === 'docx', message).toBe(false)
           return
         }
         expect(await edit.read(alice.bytes)).toEqual(edit.atAlice)

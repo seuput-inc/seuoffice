@@ -410,11 +410,87 @@ describe('DOCX schema 4 body text', () => {
     }
   })
 
-  it('rejects bodies with non-paragraph blocks or an unexpected package main relationship', async () => {
+  it('refuses a step into table structure and an unexpected package main relationship', async () => {
     for (const base of [await file('<w:tbl/>' + body), await file(body, 'elsewhere.xml')]) {
       await expect(render(base, request(base, [[replace(1, 1, 'X')]]))).rejects.toMatchObject({
         code: 'unsupported',
       })
     }
+  })
+
+  const insert = (at: number, content: Json[]): Json => ({
+    kind: 'steps',
+    steps: [{ stepType: 'replace', from: at, to: at, slice: { content } }],
+  })
+  const texts = async (bytes: Uint8Array) =>
+    (await parseDocx(bytes)).blocks
+      .filter((block) => !block.hidden)
+      .map((block) =>
+        block.type === 'table'
+          ? block.table!.rows.map((row) => row.map((cell) => cell.paras.join('|')))
+          : block.runs?.map((run) => run.text).join(''),
+      )
+
+  it('keeps tabs and line breaks around typed text, and writes a typed line break', async () => {
+    // Editor positions: a 1, tab 2, b 3, hardBreak 4, c 5, paragraph end 6.
+    const base = await buildDocx({
+      bodyXml:
+        '<w:p><w:r><w:t>a</w:t><w:tab/><w:t>b</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>c</w:t></w:r></w:p>',
+    })
+    const typed = insert(3, [{ type: 'text', text: 'X' }])
+    const out = await render(base, request(base, [[typed]]))
+    expect(await texts(out.bytes)).toEqual(['a\tXb\nc'])
+    expect((await reopen(out.bytes)).xml).toMatch(/<w:tab\/>.*<w:br\/>/)
+    const peer = insert(7, [{ type: 'text', text: 'Y' }])
+    const undone = await render(base, request(base, [[typed], [peer]], undo))
+    expect(await texts(undone.bytes)).toEqual(['a\tb\ncY'])
+    const appended = await render(base, request(base, [[typed], [peer], undone.compensation!]))
+    expect(await texts(appended.bytes)).toEqual(['a\tb\ncY'])
+    const shiftEnter = insert(2, [
+      { type: 'hardBreak', attrs: { pageBreak: false, colBreak: false, wrapBreak: false } },
+    ])
+    expect(await texts((await render(base, request(base, [[shiftEnter]]))).bytes)).toEqual([
+      'a\n\tb\nc',
+    ])
+  })
+
+  it('edits a table cell and a paragraph after the table, keeping the other cell as it was', async () => {
+    const cell = (text: string) => `<w:tc><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`
+    const table =
+      '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid>' +
+      `<w:tr>${cell('A1')}${cell('B1')}</w:tr></w:tbl>`
+    const base = await buildDocx({
+      bodyXml: `<w:p><w:r><w:t>before</w:t></w:r></w:p>${table}<w:p><w:r><w:t>after</w:t></w:r></w:p>`,
+    })
+    // before 0-8; table 8, row 9, cell 10, A1 at 12, cell 16, B1 at 18; after paragraph 24, text 25.
+    const inCell = insert(18, [{ type: 'text', text: 'X' }])
+    const after = insert(26, [{ type: 'text', text: 'Y' }])
+    const out = await render(base, request(base, [[inCell], [after]]))
+    expect(await texts(out.bytes)).toEqual(['before', [['A1', 'XB1']], 'Yafter'])
+    expect((await reopen(out.bytes)).xml).toContain(cell('A1'))
+    const undone = await render(base, request(base, [[inCell], [after]], undo))
+    expect(await texts(undone.bytes)).toEqual(['before', [['A1', 'B1']], 'Yafter'])
+    await expect(
+      render(base, request(base, [[insert(9, [{ type: 'text', text: 'Z' }])]])),
+    ).rejects.toMatchObject({ code: 'unsupported' })
+  })
+
+  it('writes back an East Asian language tag and an explicit italic off around typed text', async () => {
+    const base = await buildDocx({
+      bodyXml:
+        '<w:p><w:r><w:rPr><w:i w:val="0"/><w:lang w:eastAsia="ko-KR"/></w:rPr><w:t>가나</w:t></w:r></w:p>',
+    })
+    const out = await render(base, request(base, [[insert(2, [{ type: 'text', text: 'X' }])]]))
+    expect(
+      (await parseDocx(out.bytes)).blocks[0]!.runs!.map((run) => [
+        run.text,
+        run.italic,
+        run.eastAsiaLang,
+      ]),
+    ).toEqual([
+      ['가', false, 'ko-KR'],
+      ['X', undefined, undefined],
+      ['나', false, 'ko-KR'],
+    ])
   })
 })
