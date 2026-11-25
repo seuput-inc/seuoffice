@@ -1,14 +1,20 @@
-"""Generate the three producer fixtures into a caller-supplied test directory."""
+"""Generate the four producer fixtures into a caller-supplied test directory."""
 
 import sys
 from pathlib import Path
 
+from docx import Document
 from openpyxl import Workbook
 from pptx import Presentation
 from pypdf import PdfWriter
 
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
+
+document = Document()
+document.add_paragraph("base")
+document.add_paragraph("second")
+document.save(out / "plain.docx")
 
 book = Workbook()
 book.active.append(["base", 2])
