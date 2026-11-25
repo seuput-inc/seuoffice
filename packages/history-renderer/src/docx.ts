@@ -117,33 +117,19 @@ function manifest(xml: string, root: string, uri: string, child: (tag: SaxesTagN
   parser.write(xml).close()
 }
 
-const properties: Readonly<Record<string, string>> = {
-  'docProps/core.xml': OPC + 'relationships/metadata/core-properties',
-  'docProps/app.xml': OFFICE + 'extended-properties',
-  'docProps/custom.xml': OFFICE + 'custom-properties',
-}
-
 const documentRels = 'word/_rels/document.xml.rels'
+// The only parts the engine reads besides the body: they decide run properties and block types.
 const wordParts: Readonly<Record<string, string>> = {
   'word/styles.xml': 'styles',
   'word/numbering.xml': 'numbering',
 }
-function sidePart(name: string): string | undefined {
-  return /^word\/(header|footer)\d+\.xml$/.exec(name)?.[1]
-}
 
-async function checkPackage(zip: JSZip): Promise<Map<string, string>> {
-  // Do not send embedded packages or media that need host converters into the WASM parser.
-  for (const entry of Object.values(zip.files)) {
-    if (
-      !entry.dir &&
-      ![MAIN, TYPES, RELS, documentRels].includes(entry.name) &&
-      !Object.hasOwn(wordParts, entry.name) &&
-      !sidePart(entry.name) &&
-      !Object.hasOwn(properties, entry.name)
-    )
-      unsupported('DOCX parts outside the plain document profile')
-  }
+/**
+ * Check the package entries this reader depends on. Every other part and relationship
+ * (settings, theme, fonts, custom XML, thumbnails, headers, external links...) is never
+ * read or written: the output ZIP carries it unchanged.
+ */
+async function checkPackage(zip: JSZip): Promise<void> {
   const types = new Map<string, string>()
   manifest(
     await xmlPart(zip, TYPES),
@@ -158,21 +144,10 @@ async function checkPackage(zip: JSZip): Promise<Map<string, string>> {
             : undefined
       if (!key || !a.ContentType?.value || types.has(key.toLowerCase()))
         invalid('ambiguous DOCX content type')
-      if (
-        local === 'Default'
-          ? !/^[A-Za-z0-9]+$/.test(key)
-          : !key.startsWith('/') || !zip.file(key.slice(1))
-      )
-        invalid('invalid DOCX content type target')
       types.set(key.toLowerCase(), a.ContentType.value)
     },
   )
   if (types.get('/' + MAIN) !== MAIN_TYPE) unsupported('not a standard DOCX main part')
-  if (
-    (types.get('/' + RELS) ?? types.get('rels')) !==
-    'application/vnd.openxmlformats-package.relationships+xml'
-  )
-    invalid('invalid DOCX relationship content type')
   let office = false
   const ids = new Set<string>()
   manifest(
@@ -189,21 +164,18 @@ async function checkPackage(zip: JSZip): Promise<Map<string, string>> {
       )
         invalid('invalid DOCX package relationship')
       ids.add(a.Id.value)
-      const target = a.Target.value.replace(/^\//, '')
-      if (a.TargetMode && a.TargetMode.value !== 'Internal')
-        unsupported('external DOCX package relationship')
-      if (a.Type.value === OFFICE + 'officeDocument') {
-        if (office || target !== MAIN) unsupported('ambiguous DOCX main part')
-        office = true
-      } else if (!Object.hasOwn(properties, target) || properties[target] !== a.Type.value) {
-        unsupported('unsupported DOCX package relationship')
-      }
-      if (!zip.file(target)) invalid('missing DOCX relationship target')
+      if (a.Type.value !== OFFICE + 'officeDocument') return
+      if (
+        office ||
+        (a.TargetMode && a.TargetMode.value !== 'Internal') ||
+        a.Target.value.replace(/^\//, '') !== MAIN
+      )
+        unsupported('DOCX main part is not word/document.xml')
+      office = true
     },
   )
   if (!office) invalid('missing DOCX main relationship')
   const bound = new Set<string>()
-  const sides = new Map<string, string>()
   if (zip.file(documentRels)) {
     ids.clear()
     manifest(
@@ -220,16 +192,13 @@ async function checkPackage(zip: JSZip): Promise<Map<string, string>> {
         )
           invalid('invalid DOCX document relationship')
         ids.add(a.Id.value)
+        const kind = Object.values(wordParts).find((k) => a.Type!.value === OFFICE + k)
+        if (!kind) return
         const path = a.Target.value.startsWith('/')
           ? a.Target.value.slice(1)
           : 'word/' + a.Target.value
-        const kind = wordParts[path] ?? sidePart(path)
-        if (
-          (a.TargetMode && a.TargetMode.value !== 'Internal') ||
-          !kind ||
-          a.Type.value !== OFFICE + kind
-        )
-          unsupported('unsupported DOCX document relationship')
+        if ((a.TargetMode && a.TargetMode.value !== 'Internal') || wordParts[path] !== kind)
+          unsupported(`DOCX ${kind} part is not word/${kind}.xml`)
         if (
           !zip.file(path) ||
           bound.has(path) ||
@@ -238,18 +207,15 @@ async function checkPackage(zip: JSZip): Promise<Map<string, string>> {
         )
           invalid('invalid DOCX document part')
         bound.add(path)
-        if (sidePart(path)) sides.set(a.Id.value, kind)
       },
     )
   }
-  for (const name of Object.keys(zip.files)) {
-    if ((Object.hasOwn(wordParts, name) || sidePart(name)) && !bound.has(name))
-      invalid('unbound DOCX document part')
+  for (const name of Object.keys(wordParts)) {
+    if (zip.file(name) && !bound.has(name)) invalid('unbound DOCX document part')
   }
-  return sides
 }
 
-// Only stored XML reaches the engine; media, opaque sides and compressed inner packages do not.
+// Only the body, styles and numbering reach the engine; media and every other part do not.
 async function parseBody(zip: JSZip, body: string) {
   const input = new JSZip()
   input.file(MAIN, body)
@@ -260,36 +226,21 @@ async function parseBody(zip: JSZip, body: string) {
     `<Override PartName="/${MAIN}" ContentType="${MAIN_TYPE}"/>`,
   ]
   const relations: string[] = []
-  const words = new Set(
-    (
-      'style name basedOn next link aliases qFormat uiPriority semiHidden unhideWhenUsed ' +
-      'docDefaults rPrDefault pPrDefault pPr rPr pStyle outlineLvl jc ind spacing tabs tab keepNext keepLines ' +
-      'b i u strike color sz szCs lang rFonts abstractNum multiLevelType nsid tmpl lvl start numFmt lvlText ' +
-      'lvlJc num numId abstractNumId numPr ilvl lvlOverride startOverride'
-    ).split(' '),
-  )
   for (const [path, root] of Object.entries(wordParts)) {
     if (!zip.file(path)) continue
     const xml = await xmlPart(zip, path)
     const parser = xmlReader()
     let depth = 0
     parser.on('opentag', (tag) => {
-      if (
-        tag.uri !== WORD ||
-        tag.prefix !== 'w' ||
-        (depth === 0 ? tag.local !== root : !words.has(tag.local)) ||
-        ++depth > 32 ||
-        Object.values(tag.attributes).some(
-          (a) => !(a.prefix === 'xmlns' || a.uri === WORD) || /[<>]/.test(a.value),
-        )
-      )
-        unsupported('DOCX style or numbering part requires a richer reader')
+      if (depth === 0 && (tag.uri !== WORD || tag.local !== root))
+        unsupported(`DOCX ${root} part has another root`)
+      if (++depth > 32) unsupported(`DOCX ${root} part nests deeper than 32`)
+      // A picture bullet names media this reader does not load.
+      if (tag.uri === WORD && tag.local === 'numPicBullet')
+        unsupported('DOCX numbering has picture bullets')
     })
     parser.on('closetag', () => {
       depth--
-    })
-    parser.on('text', (value) => {
-      if (/\S/.test(value)) unsupported('non-property DOCX style or numbering payload')
     })
     parser.write(xml).close()
     input.file(path, xml)
@@ -317,6 +268,8 @@ interface Paragraph {
   end: number
   prefixEnd: number
   text: string
+  /** collapsed bookmark pairs, written at the start of the paragraph when it is rewritten */
+  anchors: string
 }
 
 // XML 1.0 scalars only. Docs normalizes line breaks and may decode a literal numeric reference again.
@@ -324,11 +277,17 @@ function plainText(s: string): boolean {
   return !/[^\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]|&#/u.test(s)
 }
 
-function paragraphs(xml: string, sides: ReadonlyMap<string, string>): Paragraph[] {
+/**
+ * Locate the body's top-level paragraphs. The root, the opening tag of each paragraph, its
+ * pPr and the trailing sectPr are copied verbatim and never regenerated, so their content is
+ * not interpreted here; runs are, because an edited paragraph is written again from them.
+ */
+function paragraphs(xml: string): Paragraph[] {
   const parser = xmlReader()
   const stack: string[] = []
   const result: Paragraph[] = []
   let paragraph: Paragraph | undefined
+  let opaque = 0
   let hasBody = false
   let hasSection = false
   let preserve = false
@@ -336,49 +295,53 @@ function paragraphs(xml: string, sides: ReadonlyMap<string, string>): Paragraph[
   let hasPPr = false
   let hasRPr = false
   let runStart = 0
-  const runProperties = new Set<string>()
+  let bookmark: { id: string; start: number } | undefined
+  // Spell-check marks and the cached page break position: Word recomputes both, so an
+  // edited paragraph may be written without them.
+  const dropped = new Set(['proofErr', 'lastRenderedPageBreak'])
   parser.on('opentag', (tag) => {
+    if (opaque) {
+      opaque++
+      return
+    }
     const parent = stack.at(-1)
     const name = tag.local
-    if (tag.prefix !== 'w' || tag.uri !== WORD) unsupported('DOCX body namespace')
-    const attrs = Object.keys(tag.attributes)
+    if (tag.uri !== WORD) unsupported(`DOCX body element ${tag.name} has no plain-text position`)
+    const attrs = Object.keys(tag.attributes).filter(
+      (k) => k !== 'xmlns' && !k.startsWith('xmlns:'),
+    )
+    const id = tag.attributes['w:id']?.value
+    if (bookmark && !(parent === 'p' && name === 'bookmarkEnd' && id === bookmark.id))
+      unsupported('DOCX bookmark spans text')
     if (!parent && name === 'document') {
-      if (attrs.some((k) => !k.startsWith('xmlns:'))) unsupported('DOCX document attributes')
+      // mc:Ignorable and other root attributes stay in the copied prefix.
     } else if (parent === 'document' && name === 'body' && !hasBody && !attrs.length) {
       hasBody = true
-    } else if (
-      parent === 'body' &&
-      name === 'p' &&
-      !hasSection &&
-      attrs.every(
-        (k) => /^w:rsid(?:R|RDefault|RPr|P)$/.test(k) || k === 'w14:paraId' || k === 'w14:textId',
-      )
-    ) {
+    } else if (parent === 'body' && name === 'p' && !hasSection) {
       if (result.length >= 4096) unsupported('too many DOCX paragraphs')
       paragraph = {
         start: xml.lastIndexOf('<', parser.position - 1),
         prefixEnd: parser.position,
         end: 0,
         text: '',
+        anchors: '',
       }
       hasRuns = hasPPr = false
       result.push(paragraph)
-    } else if (parent === 'p' && name === 'pPr' && !hasPPr && !hasRuns && !attrs.length) {
+    } else if (parent === 'p' && name === 'pPr' && !hasPPr && !hasRuns) {
       hasPPr = true
+      opaque = 1
+    } else if (parent === 'body' && name === 'sectPr' && !hasSection) {
+      hasSection = true
+      opaque = 1
     } else if (
-      (parent === 'pPr' &&
-        ['pStyle', 'jc', 'spacing', 'ind', 'keepNext', 'keepLines', 'outlineLvl', 'numPr'].includes(
-          name,
-        ) &&
-        attrs.every((k) => k.startsWith('w:'))) ||
-      (parent === 'numPr' && ['numId', 'ilvl'].includes(name) && attrs.every((k) => k === 'w:val'))
+      parent === 'p' &&
+      name === 'r' &&
+      attrs.every((k) => k === 'w:rsidR' || k === 'w:rsidRPr' || k === 'w:rsidDel')
     ) {
-      // The original pPr and paragraph opening tag are copied, never regenerated.
-    } else if (parent === 'p' && name === 'r' && !attrs.length) {
       hasRuns = true
       hasRPr = false
       runStart = paragraph!.text.length
-      runProperties.clear()
     } else if (
       parent === 'r' &&
       name === 'rPr' &&
@@ -386,72 +349,29 @@ function paragraphs(xml: string, sides: ReadonlyMap<string, string>): Paragraph[
       paragraph!.text.length === runStart &&
       !attrs.length
     ) {
+      // The engine keeps the whole rPr in Run.rawRPr; mergeRPrModel writes it back.
       hasRPr = true
-    } else if (
-      parent === 'rPr' &&
-      [
-        'b',
-        'i',
-        'u',
-        'strike',
-        'color',
-        'sz',
-        'szCs',
-        'highlight',
-        'vertAlign',
-        'position',
-        'spacing',
-        'em',
-        'caps',
-        'smallCaps',
-        'dstrike',
-        'rFonts',
-        'shd',
-      ].includes(name) &&
-      attrs.every((k) =>
-        name === 'rFonts'
-          ? ['w:ascii', 'w:hAnsi', 'w:eastAsia', 'w:cs'].includes(k)
-          : name === 'shd'
-            ? ['w:val', 'w:color', 'w:fill'].includes(k)
-            : k === 'w:val',
-      ) &&
-      !runProperties.has(name)
-    ) {
-      for (const k of attrs) {
-        const value = tag.attributes[k]!.value
-        if (!(name === 'rFonts' ? fontName : /^-?[a-z0-9]{1,32}$/i).test(value))
-          unsupported('nonliteral DOCX run property')
-      }
-      runProperties.add(name)
+      opaque = 1
+    } else if (dropped.has(name) && (parent === 'p' || parent === 'r')) {
+      opaque = 1
+    } else if (parent === 'p' && name === 'bookmarkStart' && id) {
+      // Word's _GoBack is such a pair. The editor, too, writes bookmarks at the paragraph start.
+      bookmark = { id, start: xml.lastIndexOf('<', parser.position - 1) }
+      opaque = 1
+    } else if (parent === 'p' && name === 'bookmarkEnd' && bookmark) {
+      opaque = 1
     } else if (parent === 'r' && name === 't' && attrs.every((k) => k === 'xml:space')) {
       const space = tag.attributes['xml:space']?.value
       if (space !== undefined && space !== 'preserve' && space !== 'default')
         invalid('invalid xml:space')
       preserve = space === 'preserve'
-    } else if (parent === 'body' && name === 'sectPr' && !hasSection && !attrs.length) {
-      hasSection = true
-    } else if (
-      parent === 'sectPr' &&
-      (name === 'headerReference' || name === 'footerReference') &&
-      attrs.every((k) => k === 'w:type' || k === 'r:id')
-    ) {
-      const id = tag.attributes['r:id']
-      if (
-        !id ||
-        id.uri !== OFFICE.slice(0, -1) ||
-        sides.get(id.value) !== name.replace('Reference', '')
-      )
-        invalid('invalid DOCX section relationship')
-    } else if (!(
-      parent === 'sectPr' &&
-      (name === 'pgSz' || name === 'pgMar') &&
-      attrs.every((k) => k.startsWith('w:'))
-    )) {
-      unsupported('DOCX body is not plain paragraphs')
+    } else {
+      unsupported(`DOCX ${parent ?? 'part'} element w:${name} is outside plain paragraph text`)
     }
     stack.push(name)
   })
   parser.on('text', (s) => {
+    if (opaque) return
     if (stack.at(-1) === 't' && paragraph) {
       if (!plainText(s)) unsupported('nonliteral DOCX text')
       // build_run.rs uses wt_text: without xml:space, leading and trailing ASCII spaces disappear.
@@ -465,11 +385,17 @@ function paragraphs(xml: string, sides: ReadonlyMap<string, string>): Paragraph[
     } else if (/[^\t\n\r ]/.test(s)) invalid('text outside a DOCX run')
   })
   parser.on('closetag', () => {
+    if (opaque && --opaque) return
     const name = stack.pop()
     if (name === 'r' && hasRPr && paragraph!.text.length === runStart)
       unsupported('empty styled DOCX run')
     if (name === 'pPr') paragraph!.prefixEnd = parser.position
+    if (name === 'bookmarkEnd') {
+      paragraph!.anchors += xml.slice(bookmark!.start, parser.position)
+      bookmark = undefined
+    }
     if (name === 'p' && paragraph) {
+      if (bookmark) unsupported('DOCX bookmark spans paragraphs')
       paragraph.end = parser.position
       paragraph = undefined
     }
@@ -663,12 +589,10 @@ function runProperties(marks: readonly Mark[]): string {
   return mergeRPrModel(run.rawRPr ?? '', run, false)
 }
 
-/** DOCX/schema 4. Shared ZIP admission must precede this reader. */
-export async function openDocx(bytes: Uint8Array): Promise<ByteHistoryAdapter<TextStep[]>> {
-  const zip = await JSZip.loadAsync(bytes)
-  const sides = await checkPackage(zip)
+async function readBody(zip: JSZip) {
+  await checkPackage(zip)
   const xml = await xmlPart(zip, MAIN)
-  const source = paragraphs(xml, sides)
+  const source = paragraphs(xml)
   const parsed = await parseBody(
     zip,
     xml.slice(0, source[source.length - 1]!.end) + '</w:body></w:document>',
@@ -707,6 +631,13 @@ export async function openDocx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Te
       return node
     }),
   )
+  return { xml, source, base, rawStyles }
+}
+
+/** DOCX/schema 4. Shared ZIP admission must precede this reader. */
+export async function openDocx(bytes: Uint8Array): Promise<ByteHistoryAdapter<TextStep[]>> {
+  const zip = await JSZip.loadAsync(bytes)
+  const { xml, source, base, rawStyles } = await readBody(zip)
   let doc = base
   return {
     decode: (json) => decode(json, rawStyles),
@@ -772,7 +703,7 @@ export async function openDocx(bytes: Uint8Array): Promise<ByteHistoryAdapter<Te
         if (!plainText(text)) unsupported('DOCX text would change when reopened')
         const part = source[index]!
         const prefix = xml.slice(end, part.prefixEnd)
-        pieces.push(part.prefixEnd === part.end ? prefix.slice(0, -2) + '>' : prefix)
+        pieces.push(part.prefixEnd === part.end ? prefix.slice(0, -2) + '>' : prefix, part.anchors)
         node.forEach((leaf) => {
           const escaped = leaf
             .text!.replace(/&/g, '&amp;')
