@@ -29,6 +29,31 @@ const flags = [
 ]
 const require = createRequire(import.meta.url)
 const exec = promisify(execFile)
+const runtimes = ['darwin-arm64', 'linux-arm64-glibc', 'linux-x64-glibc']
+
+/** The Deno package for this host; a musl host would only fail to exec the glibc binary. */
+export function denoPackage(
+  platform: string = process.platform,
+  arch: string = process.arch,
+  glibc: () => string | undefined = () => {
+    // @types/node declares the diagnostic report as a bare object.
+    const report = process.report.getReport() as { header?: { glibcVersionRuntime?: string } }
+    return report.header?.glibcVersionRuntime
+  },
+): string {
+  const target = platform === 'linux' ? `linux-${arch}-glibc` : `${platform}-${arch}`
+  if (!runtimes.includes(target))
+    throw new HistoryError(
+      'unsupported',
+      `sandbox has no runtime for ${platform} ${arch}; it requires Linux glibc on arm64 or x64, or macOS arm64`,
+    )
+  if (platform === 'linux' && !glibc())
+    throw new HistoryError(
+      'unsupported',
+      `sandbox requires glibc on Linux ${arch}; musl is not supported`,
+    )
+  return `@deno/${target}`
+}
 
 async function sandbox<T>(
   program: URL,
@@ -38,17 +63,10 @@ async function sandbox<T>(
     options: { cwd: string; env: NodeJS.ProcessEnv },
   ) => Promise<T>,
 ): Promise<T> {
-  const target =
-    process.platform === 'darwin'
-      ? 'darwin-arm64'
-      : process.platform === 'linux'
-        ? 'linux-arm64-glibc'
-        : undefined
-  if (!target || process.arch !== 'arm64')
-    throw new HistoryError('unsupported', 'sandbox requires arm64 Linux glibc or macOS')
+  const name = denoPackage()
   let bin
   try {
-    bin = require.resolve(`@deno/${target}/deno`)
+    bin = require.resolve(`${name}/deno`)
   } catch {
     throw new HistoryError('unsupported', 'sandbox runtime is not installed')
   }
