@@ -224,13 +224,14 @@ it('one authenticated owner handles mixed documents and failed commands', async 
     const drawing = await PDFDocument.create()
     drawing.addPage().drawEllipse({ x: 100, y: 120, xScale: 8, yScale: 12 })
     const unsupported = { ...pdf, id: 'ellipse', bytes: await drawing.save() }
-    seed(unsupported, [])
+    // Version 0 is the base itself; the PDF profile refuses the first edit.
+    seed(unsupported, [retained(frame(1, editor, pdf.alice))])
     await rejected(
       () =>
         server.restoreHistory(principal(unsupported.id), {
           ...fork,
-          expected: point(0),
-          source: point(0),
+          expected: point(1),
+          source: point(1),
         }),
       { code: 'unsupported' },
     )

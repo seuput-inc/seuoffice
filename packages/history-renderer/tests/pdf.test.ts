@@ -48,6 +48,8 @@ const turn = (id: string, k: number, was: number, v: number) => ({
   id,
   puts: [rotation(k, was, v)],
 })
+// Version 0 is the base itself; the profile gates the first edit.
+const retitle = { id: 'retitle', puts: [{ b: 'metadata', v: { title: 'Edited' } }] }
 const earlier = turn('earlier', 0, 0, 90)
 const chosen = turn('chosen', 0, 90, 180)
 const later = turn('later', 1, 0, 270)
@@ -260,7 +262,9 @@ describe('PDF history', () => {
     const orphan = await other.save()
     doc.catalog.set(PDFName.of('OpenAction'), doc.context.obj({ S: 'Named' }))
     for (const bytes of [badCount, orphan, await doc.save()]) {
-      await expect(render(bytes, request(bytes, []))).rejects.toMatchObject({ code: 'unsupported' })
+      await expect(render(bytes, request(bytes, [[retitle]]))).rejects.toMatchObject({
+        code: 'unsupported',
+      })
     }
   })
 
@@ -275,7 +279,9 @@ describe('PDF history', () => {
     giantInfo.setTitle('A'.repeat(256 * 1024))
     for (const bytes of [longPage, await giantInfo.save()]) {
       expect(bytes.length).toBeLessThan(32768)
-      await expect(render(bytes, request(bytes, []))).rejects.toMatchObject({ code: 'unsupported' })
+      await expect(render(bytes, request(bytes, [[retitle]]))).rejects.toMatchObject({
+        code: 'unsupported',
+      })
     }
   })
 
@@ -288,7 +294,9 @@ describe('PDF history', () => {
     ]) {
       expect(changed).not.toBe(text)
       const bytes = Buffer.from(changed, 'latin1')
-      await expect(render(bytes, request(bytes, []))).rejects.toMatchObject({ code: 'unsupported' })
+      await expect(render(bytes, request(bytes, [[retitle]]))).rejects.toMatchObject({
+        code: 'unsupported',
+      })
     }
   })
 })

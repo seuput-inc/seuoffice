@@ -8,8 +8,17 @@ function openPdf(base: Uint8Array) {
     epoch: 'admission',
     format: { name: 'pdf', schema: 2 },
     baseHash: createHash('sha256').update(base).digest('hex'),
-    version: 0,
-    changes: [],
+    // Version 0 is the base itself; the profile gates the first edit.
+    version: 1,
+    changes: [
+      {
+        v: 1,
+        client: 'admission',
+        author: 'admission',
+        seq: 1,
+        ops: [{ id: 'retitle', puts: [{ b: 'metadata', v: { title: 'Edited' } }] }],
+      },
+    ],
   })
 }
 

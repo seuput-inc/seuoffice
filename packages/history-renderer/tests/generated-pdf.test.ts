@@ -80,5 +80,9 @@ it.each([
   [pageTree, '0.0 0.0 14401 200'],
 ])('refuses out-of-profile page trees and boxes (%s, %s)', async (tree, box) => {
   const base = blankPdf(tree, box)
-  await expect(render(base, request(base))).rejects.toMatchObject({ code: 'unsupported' })
+  // Version 0 is the base itself; the profile gates the first edit.
+  const retitle = { id: 'retitle', puts: [{ b: 'metadata', v: { title: 'Edited' } }] }
+  await expect(render(base, request(base, [[retitle]]))).rejects.toMatchObject({
+    code: 'unsupported',
+  })
 })
