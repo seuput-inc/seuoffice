@@ -357,7 +357,10 @@ export function createHwpHistory({
     try {
       file = await renderWindow(p, candidate, point.version, window, undo)
     } catch (error) {
-      if (!undo || !(error instanceof HistoryError) || error.code !== 'unsupported') throw error
+      // A sandbox limit on the full window may also pass on the narrower one.
+      const narrowing =
+        error instanceof HistoryError && ['unsupported', 'unavailable'].includes(error.code)
+      if (!undo || !narrowing) throw error
       if (undo.v - 1 <= window.start) throw error
       const narrow = await checkpointAt(p.documentId, candidate, undo.v - 1, window)
       if (isRefusal(narrow)) throw error
