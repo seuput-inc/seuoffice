@@ -635,6 +635,12 @@ for (const name of ['title-table-zone-fill', 'para-float-tail-table']) {
         reopened(file.bytes, (doc) => doc.getTextRange(0, 0, 0, 1)),
         '공',
       )
+      // The heads were applied: the first paragraph now uses a new paragraph shape.
+      const head = (bytes) =>
+        /<hp:p [^>]*paraPrIDRef="(\d+)"/.exec(
+          strFromU8(unzipSync(bytes)['Contents/section0.xml']),
+        )[1]
+      assert.notEqual(head(file.bytes), head(source))
       assert.deepEqual(copied(file.bytes), copied(source))
     } finally {
       await server.close()
