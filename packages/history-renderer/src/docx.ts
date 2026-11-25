@@ -11,6 +11,8 @@ import {
 } from '@seuoffice/docx-engine'
 import JSZip from 'jszip'
 import { Schema, Slice, type Mark, type Node } from 'prosemirror-model'
+import { EditorState } from 'prosemirror-state'
+import { fixTables } from 'prosemirror-tables'
 import { AddMarkStep, Mapping, RemoveMarkStep, ReplaceStep, type Step } from 'prosemirror-transform'
 import { SaxesParser, type SaxesTagNS } from 'saxes'
 import { textHasComplexScript } from '../../docx-engine/src/xml-utils'
@@ -111,7 +113,11 @@ type TextStep = ReplaceStep | AddMarkStep | RemoveMarkStep
 const paragraphSpec = {
   group: 'block',
   content: 'inline*',
-  attrs: { source: { default: null }, locked: { default: null } },
+  attrs: {
+    source: { default: null },
+    // only fixTables makes a text block without naming why
+    locked: { default: 'a cell the Docs editor adds to an uneven table row' },
+  },
 }
 const schema = new Schema({
   nodes: {
@@ -119,9 +125,14 @@ const schema = new Schema({
     docParagraph: paragraphSpec,
     docHeading: paragraphSpec,
     docListItem: paragraphSpec,
-    docTable: { group: 'block', content: 'docTableRow+' },
-    docTableRow: { content: 'docTableCell+' },
-    docTableCell: { content: 'block+' },
+    // tableRole, colspan and rowspan: what prosemirror-tables' fixTables reads
+    docTable: { group: 'block', content: 'docTableRow+', tableRole: 'table' },
+    docTableRow: { content: 'docTableCell+', tableRole: 'row' },
+    docTableCell: {
+      content: 'block+',
+      tableRole: 'cell',
+      attrs: { colspan: { default: 1 }, rowspan: { default: 1 }, colwidth: { default: null } },
+    },
     // docProtected, docNestedTable and docCellBoxes: atoms the editor sizes as one position
     docAtom: { group: 'block', atom: true },
     text: { group: 'inline', inline: true },
@@ -331,11 +342,16 @@ interface Cell {
   paragraphs: Paragraph[]
   problem?: string
 }
+interface XmlTable {
+  rows: Cell[][]
+  /** an element between the table and its cells that the engine reads through or skips */
+  problem?: string
+}
 interface BodyXml {
   /** paragraphs of the body and of its tables' cells, by the offset of their opening tag */
   paragraphs: Map<number, Paragraph>
-  /** the body's tables, by offset: rows of cells */
-  tables: Map<number, Cell[][]>
+  /** the body's tables, by offset */
+  tables: Map<number, XmlTable>
 }
 
 // XML 1.0 scalars, and tabs. Docs normalizes line breaks and may decode a literal numeric reference again.
@@ -356,7 +372,7 @@ function scanBody(xml: string): BodyXml {
   const stack: string[] = []
   const result: BodyXml = { paragraphs: new Map(), tables: new Map() }
   let paragraph: Paragraph | undefined
-  let table: Cell[][] | undefined
+  let table: XmlTable | undefined
   let cell: Cell | undefined
   let opaque = 0
   let preserve = false
@@ -399,18 +415,25 @@ function scanBody(xml: string): BodyXml {
         result.paragraphs.set(paragraph.start, paragraph)
         cell?.paragraphs.push(paragraph)
       } else if (name === 'tbl' && parent === 'body') {
-        table = []
+        table = { rows: [] }
         result.tables.set(start(), table)
       } else if (name === 'tr' && parent === 'tbl' && table && stack.length === 4) {
-        table.push([])
+        table.rows.push([])
       } else if (name === 'tc' && parent === 'tr' && table && stack.length === 5) {
         cell = { paragraphs: [] }
-        table.at(-1)!.push(cell)
+        table.rows.at(-1)!.push(cell)
       } else {
         // A nested table is its own atom in the editor; a content control or other wrapper in a
         // cell holds paragraphs the editor reads where this scan does not look.
         if (parent === 'tc' && cell && name !== 'tcPr' && name !== 'tbl')
           cell.problem ??= `w:${name} in a cell`
+        // The engine takes rows and cells out of content controls (children_through_sdt).
+        if (
+          table &&
+          ((stack.length === 4 && name !== 'tblPr' && name !== 'tblGrid') ||
+            (stack.length === 5 && name !== 'trPr' && name !== 'tblPrEx'))
+        )
+          table.problem ??= `w:${name} in a table`
         opaque = 1
       }
       return
@@ -958,16 +981,32 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
   function table(block: Block) {
     const model = block.table ?? { rows: [[{ paras: [''] }]] }
     const element = block.docxIndex === null ? undefined : elements[block.docxIndex]
-    const xmlRows = element?.name === 'w:tbl' ? body.tables.get(element.start) : undefined
-    const aligned =
+    const xml = element?.name === 'w:tbl' ? body.tables.get(element.start) : undefined
+    // The engine skips a row without cells.
+    const xmlRows =
       owners.get(block.docxIndex) === 1 &&
-      xmlRows?.length === model.rows.length &&
-      xmlRows.every((row, r) => row.length === model.rows[r]!.length)
-    // convert.ts tableModelToPmNode: a merged-away cell has no node where a rowspan covers it.
+      xml &&
+      !xml.problem &&
+      xml.rows.length === model.rows.length &&
+      xml.rows.every((row) => row.length)
+        ? xml.rows
+        : undefined
+    // The engine adds a cell for w:gridBefore and w:gridAfter and folds a legacy w:hMerge
+    // continue cell into the one on its left: such a row's cells are not its w:tc elements.
+    const xmlRow = (r: number) => {
+      const cells = model.rows[r]!
+      const row = xmlRows?.[r]
+      return row?.length === cells.length && !cells.some((cell) => cell.gridGap || cell.hMerge)
+        ? row
+        : undefined
+    }
+    // convert.ts tableModelToPmNode: a restart cell spans the continue cells below it at its
+    // column (cellRowSpan), and those have no node.
     const columns = model.rows.map((row) => {
       let column = 0
       return row.map((cell) => (column += cell.colSpan ?? 1) - (cell.colSpan ?? 1))
     })
+    const rowspans = model.rows.map((row) => row.map(() => 1))
     const covered = model.rows.map(() => new Set<number>())
     model.rows.forEach((row, r) =>
       row.forEach((cell, c) => {
@@ -976,6 +1015,7 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
         for (let below = r + 1; below < model.rows.length; below++) {
           const index = columns[below]!.indexOf(at)
           if (index === -1 || model.rows[below]![index]!.vMerge !== 'continue') break
+          rowspans[r]![c]!++
           for (let column = at; column < at + (cell.colSpan ?? 1); column++)
             covered[below]!.add(column)
         }
@@ -989,18 +1029,16 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
           'docTableRow',
           null,
           row.flatMap((cell, c) => {
-            if (cell.vMerge === 'continue') {
-              if (covered[r]!.has(columns[r]![c]!)) return []
-              const gap = textBlock('docParagraph', [], undefined, 'a merged-away DOCX cell')
-              return [schema.node('docTableCell', null, [gap])]
+            const colspan = cell.colSpan ?? 1
+            if (cell.vMerge !== 'continue') {
+              const attrs = { colspan, rowspan: rowspans[r]![c]! }
+              return [schema.node('docTableCell', attrs, cellContent(cell, xmlRow(r)?.[c]))]
             }
-            return [
-              schema.node(
-                'docTableCell',
-                null,
-                cellContent(cell, aligned ? xmlRows[r]![c] : undefined),
-              ),
-            ]
+            if (covered[r]!.has(columns[r]![c]!)) return []
+            // An inert placeholder with the cell's nested tables and boxes, as convert.ts has it.
+            const gap = { ...cell, paras: [''], richParas: undefined }
+            const content = cellContent(gap, undefined, 'a merged-away DOCX cell')
+            return [schema.node('docTableCell', { colspan }, content)]
           }),
         ),
       ),
@@ -1009,19 +1047,21 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
   // convert.ts cellContentNodes: the cell's paragraphs, then nested tables and anchored boxes as
   // atoms at their anchors; splitCellBoxGroup makes one atom of a group's page-placed boxes and
   // one of the rest.
-  function cellContent(cell: TableCell, xmlCell: Cell | undefined) {
+  function cellContent(cell: TableCell, xmlCell: Cell | undefined, locked?: string) {
     const rich = !!cell.richParas?.length
     const paragraphs = rich
       ? cell.richParas!
       : (cell.paras.length ? cell.paras : ['']).map((text) => ({
           runs: text ? [{ text }] : [],
         }))
-    const why = !rich
-      ? 'a DOCX cell read without its runs'
-      : (xmlCell?.problem ??
-        (xmlCell?.paragraphs.length !== paragraphs.length
-          ? 'a DOCX cell whose paragraphs the editor reads differently'
-          : undefined))
+    const why =
+      locked ??
+      (!rich
+        ? 'a DOCX cell read without its runs'
+        : (xmlCell?.problem ??
+          (xmlCell?.paragraphs.length !== paragraphs.length
+            ? 'a DOCX cell whose paragraphs the editor reads differently'
+            : undefined)))
     const content = paragraphs.map((paragraph, i) =>
       textBlock(
         'list' in paragraph && paragraph.list ? 'docListItem' : 'docParagraph',
@@ -1059,7 +1099,12 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
     else content.push(schema.node('docAtom'))
   }
   if (!content.length) content.push(textBlock('docParagraph', [], undefined, 'an empty DOCX body'))
-  return { xml, sources, base: schema.node('doc', null, content), rawStyles }
+  // The editor's tableEditing plugin repairs uneven tables as the document loads, and again
+  // after its own repair (fixTables in appendTransaction).
+  let state = EditorState.create({ doc: schema.node('doc', null, content) })
+  for (let tr, old: EditorState | undefined; (tr = fixTables(state, old)); old = state)
+    state = state.apply(tr)
+  return { xml, sources, base: state.doc, rawStyles }
 }
 
 /** DOCX/schema 4. Shared ZIP admission must precede this reader. */
