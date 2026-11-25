@@ -257,7 +257,13 @@ describe.each<Kind>(['bytes', 'stream'])(
       try {
         await t.type(128)
         t.alice.receive({ t: 'submit', seq: t.next(), base: 128, ops: [{ t: 'y' }] })
-        expect(await t.alice.next('error')).toEqual({ t: 'error', code: 'schema_mismatch' })
+        const refusal = await t.alice.next('error')
+        expect(refusal).toMatchObject({ t: 'error', code: 'schema_mismatch' })
+        expect(refusal.reason).toMatch(
+          /^HWP .*: the (renderer did not reopen|store could not keep)/,
+        )
+        // The host's own error text stays in the host log.
+        expect(refusal.reason).not.toContain('disk full')
         expect(t.alice.closed).toMatch(/HWP/)
         expect((await t.store.load(p.documentId))!.head).toBe(128)
         expect(await t.store.readHwpCheckpoint!(p.documentId, t.epoch, 128)).toBeNull()
@@ -356,30 +362,43 @@ describe.each<Kind>(['bytes', 'stream'])(
   },
 )
 
-describe('HWP epochs a server without history started', () => {
-  /** The epoch a co-editing server without history made from `file`, with `edits` single keys. */
-  async function earlier(store: RetainedHistoryStore, file: string, edits: number) {
-    const plain = createCollabServer({ store })
-    const socket = new Socket()
-    plain.accept(socket, p)
+describe('HWP epochs this history server did not start', () => {
+  type Start = 'the host at upload' | 'a server without history' | 'its first editor'
+
+  /** The epoch of `file` as `by` starts it, with `edits` single keys already in it. */
+  async function begun(store: RetainedHistoryStore, file: string, edits: number, by: Start) {
     const bytes = encode(file)
     const fileHash = await sha256(bytes)
-    socket.receive({ t: 'hello', p: 1, format, fileHash })
-    await socket.next('need_base')
-    socket.receive(bytes)
-    const epoch = String((await socket.next('welcome')).epoch)
-    for (let seq = 1; seq <= edits; seq++) {
-      socket.receive({ t: 'submit', seq, base: seq - 1, ops: [{ t: 'x' }] })
-      await socket.next('ack', seq)
+    if (by === 'the host at upload') {
+      await store.create(p.documentId, { id: 'uploaded', format, baseHash: fileHash, base: bytes })
+      for (let seq = 1; seq <= edits; seq++) {
+        const change = { client: 'host', seq, author: p.userId, base: seq - 1, ops: [{ t: 'x' }] }
+        await store.append(p.documentId, 'uploaded', change)
+      }
+    } else if (by === 'a server without history') {
+      const plain = createCollabServer({ store })
+      const socket = new Socket()
+      plain.accept(socket, p)
+      socket.receive({ t: 'hello', p: 1, format, fileHash })
+      await socket.next('need_base')
+      socket.receive(bytes)
+      await socket.next('welcome')
+      for (let seq = 1; seq <= edits; seq++) {
+        socket.receive({ t: 'submit', seq, base: seq - 1, ops: [{ t: 'x' }] })
+        await socket.next('ack', seq)
+      }
+      await plain.close()
     }
-    await plain.close()
-    return { epoch, fileHash }
+    return bytes
   }
 
-  async function join(server: HistoryServer, fileHash: string, userId: string, canEdit = true) {
+  /** An editor or viewer saying hello with `file`, which it uploads when asked for the base. */
+  async function join(server: HistoryServer, file: Uint8Array, userId: string, canEdit = true) {
     const socket = new Socket()
     server.accept(socket, { ...p, userId, name: userId, canEdit })
-    socket.receive({ t: 'hello', p: 1, format, fileHash })
+    socket.receive({ t: 'hello', p: 1, format, fileHash: await sha256(file) })
+    await vi.waitFor(() => expect(answer(socket) ?? socket.frames[0]).toBeDefined())
+    if (socket.frames[0]?.t === 'need_base') socket.receive(file)
     await vi.waitFor(() => expect(answer(socket)).toBeDefined())
     return socket
   }
@@ -388,51 +407,59 @@ describe('HWP epochs a server without history started', () => {
     return socket.frames.find((f) => f.t === 'welcome' || f.t === 'error')
   }
 
-  it('keeps two editors typing on a byte store without exact history writes, and refuses only HWP undo', async () => {
-    const { exactHistoryChange, ...legacy } = memoryHistoryStore(() => true)
-    expect(exactHistoryChange).toBe(true)
-    const { epoch, fileHash } = await earlier(legacy, 'base:', 1)
-    const { render } = renderer(true)
-    const server = createHistoryServer({ store: legacy, render })
-    try {
-      const alice = await join(server, fileHash, 'alice')
-      const bob = await join(server, fileHash, 'bob')
-      expect([answer(alice), answer(bob)]).toMatchObject([
-        { t: 'welcome', head: 1 },
-        { t: 'welcome', head: 1 },
-      ])
-      alice.receive({ t: 'submit', seq: 1, base: 1, ops: [{ t: 'a' }] })
-      expect(await alice.next('ack')).toMatchObject({ v: 2 })
-      bob.receive({ t: 'submit', seq: 1, base: 2, ops: [{ t: 'b' }] })
-      expect(await bob.next('ack')).toMatchObject({ v: 3 })
-      const file = await server.exportHistory(p, { epoch, version: 3 })
-      expect(text(file.bytes)).toBe('base:xab')
-      await expect(
-        server.undoHistory(p, {
-          requestId: 'undo-a',
-          expected: { epoch, version: 3 },
-          target: { epoch, v: 2, index: 0 },
-        }),
-      ).rejects.toThrow(/exact history writes/)
-      expect((await legacy.load(p.documentId))!.head).toBe(3)
-      expect([alice.closed, bob.closed]).toEqual([undefined, undefined])
-    } finally {
-      await server.close()
-    }
-  })
+  it.each<Start>(['the host at upload', 'a server without history', 'its first editor'])(
+    'keeps two editors typing on a byte store without exact history writes when %s started the epoch, and refuses only HWP undo',
+    async (by) => {
+      const { exactHistoryChange, ...legacy } = memoryHistoryStore(() => true)
+      expect(exactHistoryChange).toBe(true)
+      const file = await begun(legacy, 'base:', 0, by)
+      const { render, calls } = renderer(true)
+      const server = createHistoryServer({ store: legacy, render })
+      try {
+        const alice = await join(server, file, 'alice')
+        const bob = await join(server, file, 'bob')
+        expect([answer(alice), answer(bob)]).toMatchObject([{ t: 'welcome' }, { t: 'welcome' }])
+        // The first editor's join replayed the epoch base once, whoever started it.
+        expect(calls.map((c) => c.request.version)).toEqual([0])
+        alice.receive({ t: 'submit', seq: 1, base: 0, ops: [{ t: 'a' }] })
+        expect(await alice.next('ack')).toMatchObject({ v: 1 })
+        bob.receive({ t: 'submit', seq: 1, base: 1, ops: [{ t: 'b' }] })
+        expect(await bob.next('ack')).toMatchObject({ v: 2 })
+        const epoch = (await legacy.load(p.documentId))!.id
+        const exported = await server.exportHistory(p, { epoch, version: 2 })
+        expect(text(exported.bytes)).toBe('base:ab')
+        await expect(
+          server.undoHistory(p, {
+            requestId: 'undo-a',
+            expected: { epoch, version: 2 },
+            target: { epoch, v: 1, index: 0 },
+          }),
+        ).rejects.toThrow(/exact history writes/)
+        expect((await legacy.load(p.documentId))!.head).toBe(2)
+        expect([alice.closed, bob.closed]).toEqual([undefined, undefined])
+      } finally {
+        await server.close()
+      }
+    },
+  )
 
   it('refuses an editor at join, with a reason, when the renderer cannot replay the epoch', async () => {
     const store = memoryHistoryStore(() => true)
-    const { fileHash } = await earlier(store, 'opaque:', 2)
+    const file = await begun(store, 'opaque:', 2, 'a server without history')
     const { render } = renderer(true)
     const server = createHistoryServer({ store, render })
     try {
-      const editor = await join(server, fileHash, 'alice')
-      expect(answer(editor)).toEqual({ t: 'error', code: 'schema_mismatch' })
+      const editor = await join(server, file, 'alice')
+      expect(answer(editor)).toEqual({
+        t: 'error',
+        code: 'schema_mismatch',
+        reason:
+          'HWP source or edit cannot be replayed within the retained history profile: the existing session cannot be replayed: the renderer refused it (unsupported)',
+      })
       expect(editor.frames.some((f) => f.t === 'welcome')).toBe(false)
       expect(editor.closed).toMatch(/HWP/)
       // A viewer sends no edits for the server to replay.
-      const viewer = await join(server, fileHash, 'bob', false)
+      const viewer = await join(server, file, 'bob', false)
       expect(answer(viewer)).toMatchObject({ t: 'welcome', head: 2, canEdit: false })
       expect((await store.load(p.documentId))!.head).toBe(2)
     } finally {

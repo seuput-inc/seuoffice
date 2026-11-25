@@ -6,7 +6,7 @@
  * from the package; hosts relay frames without reading them.
  */
 
-import { MAX_PRESENCE_BYTES } from './limits.js'
+import { MAX_ERROR_REASON, MAX_PRESENCE_BYTES } from './limits.js'
 import type { Change, Format, Json, Peer } from './model.js'
 
 export type ErrorCode =
@@ -77,7 +77,8 @@ export type ServerFrame =
   | { t: 'peers'; peers: Peer[] }
   | (PresenceFrame & { client: string })
   | { t: 'diverged'; v: number }
-  | { t: 'error'; code: ErrorCode }
+  /** `reason`: a sentence for people; clients before it ignore the key */
+  | { t: 'error'; code: ErrorCode; reason?: string }
 
 /** A binary frame: always a whole base file */
 export interface BytesFrame {
@@ -273,7 +274,11 @@ export function parseServerFrame(raw: string | Uint8Array): ServerFrame | BytesF
       return { t: 'diverged', v: count(f.v) }
     case 'error':
       if (typeof f.code !== 'string' || !Object.hasOwn(ERROR_CODES, f.code)) invalid()
-      return { t: 'error', code: f.code as ErrorCode }
+      return {
+        t: 'error',
+        code: f.code as ErrorCode,
+        ...(typeof f.reason === 'string' ? { reason: f.reason.slice(0, MAX_ERROR_REASON) } : {}),
+      }
     default:
       return invalid()
   }

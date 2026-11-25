@@ -108,7 +108,15 @@ export interface CollabServer {
 /** A new epoch's base, the next change on its head, or the head of an epoch an editor joins. */
 export type HwpHistoryCandidate = Pick<NewEpoch, 'id' | 'format' | 'baseHash'> &
   ({ base: Uint8Array } | { next: Change } | { head: number })
-export type HwpHistoryRefusal = 'schema_mismatch' | 'too_large' | 'forbidden'
+/**
+ * Why HWP history refused a base, an edit or a join: `detail` is a fixed phrase the editor shows,
+ * `cause` the host's own error text, which only the host log receives.
+ */
+export interface HwpHistoryRefusal {
+  refused: 'schema_mismatch' | 'too_large'
+  detail: string
+  cause?: string
+}
 
 /** What the history renderer accepts in one HWP request (history-renderer request.ts). */
 export const HWP_REPLAY = {
@@ -124,10 +132,9 @@ export const HWP_REPLAY = {
   requestBytes: 1024 * 1024,
 }
 
-const hwpRefusalReasons: Record<HwpHistoryRefusal, string> = {
+const hwpRefusalReasons: Record<HwpHistoryRefusal['refused'], string> = {
   too_large: 'HWP retained history exceeds its replay limits',
   schema_mismatch: 'HWP source or edit cannot be replayed within the retained history profile',
-  forbidden: 'HWP retained history could not read the authorized replay prefix',
 }
 
 export function isHwpHistory(format: Format): boolean {
@@ -382,8 +389,10 @@ export function createServerCore({
     conn: Conn,
     code: ErrorCode,
     reason: string = code,
+    /** a sentence for the person whose editor stops, sent in the error frame */
+    detail?: string,
   ): Promise<void> {
-    send(conn, { t: 'error', code })
+    send(conn, { t: 'error', code, ...(detail ? { reason: detail } : {}) })
     conn.socket.close(4000, reason)
     await remove(doc, conn)
   }
@@ -488,10 +497,14 @@ export function createServerCore({
     const state = epochState(doc, epoch)
     const admit = conn.principal.canEdit && !state.replayable ? hwpAdmission(conn) : undefined
     if (admit) {
-      // Another process or a server without history started this epoch: an editor learns at
-      // join that it cannot be replayed, never on its first edit.
-      const refused = await admit(conn.principal, epoch)
-      if (refused) return rejectHistory(doc, conn, refused)
+      // The host or a server without history started this epoch: an editor learns at join that
+      // it cannot be replayed, never on its first edit.
+      const refusal = await admit(conn.principal, epoch)
+      if (refusal)
+        return rejectHistory(doc, conn, {
+          ...refusal,
+          detail: `the existing session cannot be replayed: ${refusal.detail}`,
+        })
       state.replayable = true
     }
     // The fence in decideHello let only a newer attempt through, so any other socket of this
@@ -556,8 +569,11 @@ export function createServerCore({
       : undefined
   }
 
-  function rejectHistory(doc: Doc, conn: Conn, refusal: HwpHistoryRefusal) {
-    return reject(doc, conn, refusal, hwpRefusalReasons[refusal])
+  function rejectHistory(doc: Doc, conn: Conn, { refused, detail, cause }: HwpHistoryRefusal) {
+    const reason = `${hwpRefusalReasons[refused]}: ${detail}`
+    console.warn(`collab: document ${doc.id}: ${refused}: ${reason}${cause ? ` (${cause})` : ''}`)
+    // The close reason must fit a WebSocket close frame; the error frame carries the detail.
+    return reject(doc, conn, refused, hwpRefusalReasons[refused], reason)
   }
 
   async function onBase(doc: Doc, conn: Conn, bytes: Uint8Array): Promise<void> {
@@ -568,7 +584,11 @@ export function createServerCore({
     const base =
       admit && bytes.byteLength > HWP_REPLAY.fileBytes ? undefined : new Uint8Array(bytes)
     if (!admit || !(await store.load(doc.id))) {
-      if (!base) return rejectHistory(doc, conn, 'too_large')
+      if (!base)
+        return rejectHistory(doc, conn, {
+          refused: 'too_large',
+          detail: `the file exceeds ${HWP_REPLAY.fileBytes} bytes`,
+        })
       if ((await sha256(base)) !== hello.fileHash) return reject(doc, conn, 'bad_frame')
       const epoch = {
         id: crypto.randomUUID(),
@@ -635,7 +655,7 @@ export function createServerCore({
       // Appended or not, the client finds out when it resumes: a duplicate submit is acked
       return abort(doc, conn)
     }
-    if (typeof result === 'string') return rejectHistory(doc, conn, result)
+    if ('refused' in result) return rejectHistory(doc, conn, result)
     switch (result.kind) {
       case 'appended': {
         const { client, seq, author, ops } = decision.change
