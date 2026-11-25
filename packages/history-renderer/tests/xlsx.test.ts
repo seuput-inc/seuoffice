@@ -406,6 +406,29 @@ describe('XLSX ops in the Sheets editor wire form', () => {
     expect(await reopened(appended.bytes)).toEqual(await reopened(undone.bytes))
   })
 
+  it('writes numbers and booleans typed in the editor with the type the editor applied', async () => {
+    const base = await workbook()
+    const typed = await editorCellOp('alice', 'sheet-7', {
+      0: { 1: typedCell('22'), 2: typedCell('3.5'), 3: typedCell('TRUE') },
+    })
+    const peer = await editorCellOp('bob', 'sheet-7', { 0: { 4: typedCell('Peer') } })
+    const prefix = await render(base, request(base, [[typed]]))
+    const zip = await JSZip.loadAsync(prefix.bytes)
+    expect(await zip.file(paths[1]!)!.async('string')).toMatch(/<c r="D1" t="b"><v>1<\/v><\/c>/)
+    expect(await reopened(prefix.bytes)).toEqual([
+      { A1: 41 },
+      { A1: 'Old', B1: 22, C1: 3.5, D1: 1 },
+    ])
+    const undone = await render(base, request(base, [[typed], [peer]], 0))
+    expect(await reopened(undone.bytes)).toEqual([{ A1: 41 }, { A1: 'Old', E1: 'Peer' }])
+    // An op from a client that did not send the applied type stays ambiguous.
+    const untyped = cell('old', 'sheet-7', 1, typedCell('22'))
+    await expect(render(base, request(base, [[untyped]]))).rejects.toMatchObject({
+      code: 'unsupported',
+      message: 'ambiguous Sheets text type',
+    })
+  })
+
   it('clears a cell with the Delete key op and restores it on undo', async () => {
     const base = await workbook()
     const cleared = await editorClearOp('alice', 'sheet-7', { 0: { 0: null } })
