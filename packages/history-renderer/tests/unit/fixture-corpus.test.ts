@@ -12,7 +12,6 @@ import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { HistoryError, type HistoryRequest, type Json } from '@seuoffice/collab/client'
-import { parseDocx } from '@seuoffice/docx-engine'
 import { getSlideNotes, openPptx, slideDurableId } from '@seuoffice/pptx-engine'
 import { readBasicWorkbook } from '@seuoffice/xlsx-gateway/gateway/xlsx-gateway'
 import JSZip from 'jszip'
@@ -20,8 +19,8 @@ import { PDFDocument } from 'pdf-lib'
 import { describe, expect, it } from 'vitest'
 import { applyOp } from '../../../../apps/slides/src/web/collab-ops'
 import { editorCellOp, typedCell } from '../../../../apps/sheets/tests/collab/editor-wire'
-import { docxModel } from '../../src/docx'
 import { render } from '../../src/replay'
+import { editorBlocks, editorText, expectEditorPositions } from './docs-editor'
 
 const root = join(import.meta.dirname, '../../../..')
 const tracked = execFileSync('git', ['ls-files', '*.docx', '*.xlsx', '*.pptx', '*.pdf'], {
@@ -79,79 +78,6 @@ interface Edit {
   /** package parts Alice's edit may rewrite; every other base part stays byte for byte */
   rewrites: readonly string[]
 }
-
-type PmJson = { type: string; text?: string; content?: PmJson[]; marks?: Json[] }
-// The Docs file-to-editor conversion. A static import would type-check the Docs renderer here,
-// whose page globals clash with the Slides ones this package already type-checks.
-const convert: {
-  blocksToPmDoc(blocks: unknown, sections: undefined, options: unknown): unknown
-  pmDocOptions(parsed: unknown): unknown
-} = await import(
-  /* @vite-ignore */ new URL(
-    '../../../../apps/docs/src/renderer/editor/convert.ts',
-    import.meta.url,
-  ).href
-)
-
-// The Docs schema (renderer/editor/extensions.ts): which node types are leaves, which hold content.
-const editorLeaves = new Set([
-  'hardBreak',
-  'docInlineImage',
-  'docInlineMath',
-  'docRuby',
-  'docNoteRef',
-  'docXeMark',
-  'docProtected',
-  'docNestedTable',
-  'docCellBoxes',
-])
-const editorTextBlocks = new Set(['docParagraph', 'docHeading', 'docListItem'])
-const editorContainers = new Set([
-  'docTable',
-  'docTableRow',
-  'docTableCell',
-  'docTableHeader',
-  ...editorTextBlocks,
-])
-
-function editorSize(node: PmJson): number {
-  if (node.type === 'text') return node.text!.length
-  if (editorLeaves.has(node.type)) return 1
-  if (!editorContainers.has(node.type)) throw new Error(`unknown Docs node ${node.type}`)
-  return 2 + (node.content ?? []).reduce((n, child) => n + editorSize(child), 0)
-}
-
-interface EditorBlock {
-  pos: number
-  size: number
-  path: string
-  node: PmJson
-}
-
-/** Every text block of the Docs editor's document, with its position */
-async function editorBlocks(bytes: Uint8Array) {
-  const parsed = await parseDocx(bytes)
-  const doc = convert.blocksToPmDoc(
-    parsed.blocks,
-    undefined,
-    convert.pmDocOptions(parsed),
-  ) as PmJson
-  const blocks: EditorBlock[] = []
-  const walk = (nodes: PmJson[], start: number, path: string) => {
-    let pos = start
-    nodes.forEach((node, i) => {
-      const size = editorSize(node)
-      if (editorTextBlocks.has(node.type)) blocks.push({ pos, size, path: `${path}/${i}`, node })
-      else if (node.content) walk(node.content, pos + 1, `${path}/${i}`)
-      pos += size
-    })
-  }
-  walk(doc.content!, 0, '')
-  return { blocks, size: doc.content!.reduce((n, child) => n + editorSize(child), 0) }
-}
-
-const editorText = (node: PmJson) =>
-  (node.content ?? []).map((child) => (child.type === 'text' ? child.text : '\n')).join('')
 
 const plainMarks = new Set(['bold', 'italic', 'underline', 'strike', 'docTextStyle'])
 type MarkJson = { type: string; attrs?: Record<string, unknown> }
@@ -308,24 +234,7 @@ describe.each([...tracked, ...generated].map((path) => [relative(root, path), pa
 
     it.runIf(format === 'docx' && !encryptedPackage.test(path))(
       'puts every paragraph where the Docs editor has it',
-      async () => {
-        const editor = await editorBlocks(bytes)
-        const doc = await docxModel(bytes)
-        const blocks: { pos: number; size: number; text?: string }[] = []
-        doc.descendants((node, pos) => {
-          if (!node.isTextblock) return true
-          const text = node.attrs.source === null ? undefined : editorText(node.toJSON())
-          blocks.push({ pos, size: node.nodeSize, ...(text === undefined ? {} : { text }) })
-          return false
-        })
-        expect(doc.content.size).toBe(editor.size)
-        expect(blocks.map(({ pos, size }) => [pos, size])).toEqual(
-          editor.blocks.map(({ pos, size }) => [pos, size]),
-        )
-        blocks.forEach(({ text }, i) => {
-          if (text !== undefined) expect(text).toBe(editorText(editor.blocks[i]!.node))
-        })
-      },
+      () => expectEditorPositions(bytes),
     )
 
     it.skipIf(encryptedPackage.test(path))(
