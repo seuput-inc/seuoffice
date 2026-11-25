@@ -888,7 +888,8 @@ jobs:
           set -o pipefail
           # one target per patch case file; a missing file or a case that stops running fails here
           cases=(unknown_paragraph_records unknown_paragraph_xml authored_memo_time
-            authored_table_height collab_text_undo_context collab_fingerprint kept_on_save)
+            authored_table_height collab_text_undo_context collab_fingerprint kept_on_save
+            hwpx_section_head_empty_run)
           for case in "${cases[@]}"; do
             test -f "tests/cases/$case.rs"
             printf '\n[[test]]\nname = "%s"\npath = "tests/cases/%s.rs"\n' "$case" "$case" >> Cargo.toml
@@ -896,7 +897,7 @@ jobs:
           targets=("${cases[@]/#/--test=}")
           cargo test --locked --no-default-features "${targets[@]}" 2>&1 | tee patch-cases.log
           passed=$(grep -oE '^test result: ok\. [0-9]+ passed' patch-cases.log | awk '{s += $4} END {print s}')
-          test "$passed" -eq 31 || { echo "expected 31 patch cases to pass, saw $passed"; exit 1; }
+          test "$passed" -eq 33 || { echo "expected 33 patch cases to pass, saw $passed"; exit 1; }
       - name: What was built
         run: |
           sha256sum vendor/rhwp-core/rhwp_bg.wasm
