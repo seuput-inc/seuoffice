@@ -26,6 +26,11 @@ const TYPES = '[Content_Types].xml'
 const RELS = '_rels/.rels'
 const MAIN_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml'
 const PART_LIMIT = 1024 * 1024
+// fixTables allocates a slot per grid column of each table row and may fill each with a cell: a
+// document.xml of PART_LIMIT holds at most about 55000 real cells.
+const GRID_LIMIT = 1 << 17
+// Once a cell spans rows, fixTables' findWidth reads every earlier row's cells for each row.
+const ROW_SCAN_LIMIT = 1 << 26
 const toggles = ['bold', 'italic', 'strike', 'underline'] as const
 const fontName = /^[\p{L}\p{N}][\p{L}\p{M}\p{N} ._()-]{0,127}$/u
 const styleStrings: Readonly<Record<string, RegExp>> = {
@@ -1002,12 +1007,16 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
     }
     // convert.ts tableModelToPmNode: a restart cell spans the continue cells below it at its
     // column (cellRowSpan), and those have no node.
+    for (const row of model.rows)
+      for (const { colSpan = 1 } of row)
+        if (!Number.isSafeInteger(colSpan) || colSpan < 1 || colSpan > GRID_LIMIT)
+          unsupported('a DOCX table cell spanning an unusable number of grid columns')
     const columns = model.rows.map((row) => {
       let column = 0
       return row.map((cell) => (column += cell.colSpan ?? 1) - (cell.colSpan ?? 1))
     })
     const rowspans = model.rows.map((row) => row.map(() => 1))
-    const covered = model.rows.map(() => new Set<number>())
+    const covered = model.rows.map((): [number, number][] => [])
     model.rows.forEach((row, r) =>
       row.forEach((cell, c) => {
         if (cell.vMerge !== 'restart') return
@@ -1016,8 +1025,7 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
           const index = columns[below]!.indexOf(at)
           if (index === -1 || model.rows[below]![index]!.vMerge !== 'continue') break
           rowspans[r]![c]!++
-          for (let column = at; column < at + (cell.colSpan ?? 1); column++)
-            covered[below]!.add(column)
+          covered[below]!.push([at, at + (cell.colSpan ?? 1)])
         }
       }),
     )
@@ -1034,7 +1042,8 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
               const attrs = { colspan, rowspan: rowspans[r]![c]! }
               return [schema.node('docTableCell', attrs, cellContent(cell, xmlRow(r)?.[c]))]
             }
-            if (covered[r]!.has(columns[r]![c]!)) return []
+            const start = columns[r]![c]!
+            if (covered[r]!.some(([from, to]) => from <= start && start < to)) return []
             // An inert placeholder with the cell's nested tables and boxes, as convert.ts has it.
             const gap = { ...cell, paras: [''], richParas: undefined }
             const content = cellContent(gap, undefined, 'a merged-away DOCX cell')
@@ -1099,6 +1108,29 @@ async function readBody(zip: JSZip, bytes: Uint8Array) {
     else content.push(schema.node('docAtom'))
   }
   if (!content.length) content.push(textBlock('docParagraph', [], undefined, 'an empty DOCX body'))
+  let slots = 0
+  for (const node of content) {
+    if (node.type.name !== 'docTable') continue
+    // prosemirror-tables findWidth: each row's colspans plus those of cells reaching it from above
+    const carried: number[] = []
+    let width = 0
+    let cells = 0
+    let spansRows = false
+    node.forEach((row, _, r) => {
+      let rowWidth = carried[r] ?? 0
+      row.forEach(({ attrs: { colspan, rowspan } }) => {
+        rowWidth += colspan as number
+        cells++
+        if ((rowspan as number) > 1) spansRows = true
+        for (let below = r + 1; below < r + (rowspan as number); below++)
+          carried[below] = (carried[below] ?? 0) + (colspan as number)
+      })
+      width = Math.max(width, rowWidth)
+    })
+    slots += width * node.childCount
+    if (slots > GRID_LIMIT || (spansRows && cells * node.childCount > ROW_SCAN_LIMIT))
+      unsupported('DOCX tables too large to lay out as the Docs editor does')
+  }
   // The editor's tableEditing plugin repairs uneven tables as the document loads, and again
   // after its own repair (fixTables in appendTransaction).
   let state = EditorState.create({ doc: schema.node('doc', null, content) })
