@@ -6,6 +6,7 @@ import init, { HwpDocument } from '@rhwp/core'
 import JSZip from 'jszip'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { certifyHwpxSource } from '../src/shared/collab-hwpx-source'
+import { applyHwpOp, decodeHwpOp } from '../src/shared/collab-editor-ops'
 
 let source: Uint8Array
 const section = 'Contents/section0.xml'
@@ -58,12 +59,77 @@ describe('HWPX source preservation before collaboration', () => {
     [section, '</hs:sec>', '<hp:t>omitted by the model</hp:t></hs:sec>'],
     [header, '<hh:compatibleDocument ', '<hh:compatibleDocument hh:unmodelled="preserve" '],
     [header, '<hh:paraHead ', '<hh:paraHead unmodelled="preserve" '],
-    [manifest, '<opf:title/>', '<opf:title>metadata copied verbatim</opf:title>'],
+    [
+      header,
+      '<hh:layoutCompatibility/>',
+      '<hh:layoutCompatibility><hh:flag/></hh:layoutCompatibility>',
+    ],
+    [header, '<hh:numbering id="1" ', '<hh:numbering id="1" restart="1" '],
+    [header, '</hh:paraHead>', '<hh:img binaryItemIDRef="image1"/></hh:paraHead>'],
+    [header, '<hh:trackchageConfig ', 'loose text<hh:trackchageConfig '],
+    [header, '</hh:head>', '<hh:extension/></hh:head>'],
+    [
+      manifest,
+      '<opf:title/>',
+      '<opf:title/><opf:creator>not in the manifest vocabulary</opf:creator>',
+    ],
     [manifest, '<opf:item ', '<opf:item opf:unmodelled="preserve" '],
     ['settings.xml', '<ha:CaretPosition ', '<ha:CaretPosition ha:unmodelled="preserve" '],
+    ['settings.xml', '<ha:CaretPosition ', '<ha:CaretPosition caret="kept" '],
+    ['settings.xml', '</ha:HWPApplicationSetting>', '<ha:Unknown/></ha:HWPApplicationSetting>'],
+    ['settings.xml', '<ha:CaretPosition ', 'loose text<ha:CaretPosition '],
+    ['version.xml', ' appVersion=', ' hv:build="1" appVersion='],
+    ['version.xml', ' appVersion=', ' channel="beta" appVersion='],
   ])('refuses unmodelled content in %s (%s)', async (part, before, after) => {
     const bytes = await replace(part, before, after)
     await expect(certifyHwpxSource(bytes, HwpDocument)).rejects.toThrow(part)
+  })
+
+  // Hancom Office files whose every part rhwp reconstructs, with Hancom's version, print settings,
+  // compatibility options, metadata and numbering or bullet definitions.
+  it.each([
+    'generated-form-aligned-cells',
+    'generated-form-tables',
+    'generated-form-tables-hancom',
+    'header-footer-paper-shapes',
+    'header-footer-paper-tables',
+    'master-page-next-section',
+    'paper-square-table-tac-host',
+    'paper-topbottom-box-stale-ladder',
+    'para-float-tail-table',
+    'title-table-then-inline-table',
+    'title-table-zone-fill',
+  ])('admits %s, and a co-edited save keeps every part rhwp copies', async (name) => {
+    const hancom = new Uint8Array(readFileSync(new URL(`./fixtures/${name}.hwpx`, import.meta.url)))
+    const copied = async (bytes: Uint8Array) => {
+      const zip = await JSZip.loadAsync(bytes)
+      const part = (n: string) => zip.file(n)!.async('string')
+      const head = await part(header)
+      return [
+        await part('version.xml'),
+        await part('settings.xml'),
+        /<hh:numberings[\s\S]*?<\/hh:numberings>/.exec(head)?.[0],
+        /<hh:bullets[\s\S]*?<\/hh:bullets>/.exec(head)?.[0],
+        head.slice(head.indexOf('</hh:refList>')),
+        /<opf:metadata[\s\S]*?<\/opf:metadata>/.exec(await part(manifest))?.[0],
+      ]
+    }
+    const before = await copied(hancom)
+    expect(before[0]).toContain('application="Hancom Office Hangul"')
+    await expect(certifyHwpxSource(hancom, HwpDocument)).resolves.toBeUndefined()
+    const doc = new HwpDocument(hancom)
+    try {
+      doc.insertText(0, 0, 0, '공동')
+      // Co-editing may set a paragraph's heading type and level; the definitions stay as they are.
+      for (const headType of ['Number', 'Bullet', 'Outline'] as const) {
+        const at = { section: 0, paragraph: 0, path: [], offset: 0 }
+        const op = { kind: 'command', action: 'paragraph', at, props: { headType, paraLevel: 1 } }
+        applyHwpOp(doc, decodeHwpOp(op))
+      }
+      expect(await copied(doc.exportHwpx())).toEqual(before)
+    } finally {
+      doc.free()
+    }
   })
 
   it('refuses an image asset the document model will not write back', async () => {

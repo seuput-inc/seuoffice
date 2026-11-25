@@ -16,3 +16,6 @@ export const SUBMIT_FRAME_BYTES = 128
 /** Ephemeral selections have a small budget independent of the edit log. */
 export const MAX_PRESENCE_BYTES = 4096
 export const PRESENCE_INTERVAL_MS = 100
+
+/** Characters of an error frame's sentence a client keeps */
+export const MAX_ERROR_REASON = 1024

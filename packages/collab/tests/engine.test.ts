@@ -194,6 +194,29 @@ describe('a frame from a socket the engine gave up', () => {
   })
 })
 
+describe('an error the server explains', () => {
+  const reason = 'HWP source or edit cannot be replayed: the renderer refused it (unsupported)'
+
+  it('rejects the join with the sentence', async () => {
+    const { link, engine } = await started()
+    const outcome = engine.join.then(
+      () => null,
+      (error: unknown) => error,
+    )
+    link.accept()
+    link.deliver({ t: 'error', code: 'schema_mismatch', reason })
+    const error = (await outcome) as CollabError
+    expect(error.code).toBe('schema_mismatch')
+    expect(error.message).toContain(reason)
+  })
+
+  it('ends a live session with the sentence in its status', async () => {
+    const { link, session } = await joined()
+    link.deliver({ t: 'error', code: 'too_large', reason })
+    expect(session.status()).toMatchObject({ phase: 'failed', failure: 'adapter', detail: reason })
+  })
+})
+
 describe('live selections', () => {
   const peer = { client: '__proto__', name: 'Peer' }
   const capabilities = { presence: true as const, peers: [peer] }

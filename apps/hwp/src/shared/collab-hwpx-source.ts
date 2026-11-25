@@ -104,7 +104,11 @@ function tree(bytes: Uint8Array, part: string): Xml {
     stack.push(node)
   })
   parser.on('closetag', () => {
-    stack.pop()
+    const node = stack.pop()!
+    // An empty text element holds no characters: rhwp writes an empty run as `<hp:t></hp:t>`
+    // where Hancom Office writes none, and drops one Hancom Office leaves after an object.
+    if (node.uri === paragraph && node.local === 't' && !node.attrs.length && !node.children.length)
+      stack.at(-1)?.children.pop()
   })
   const text = (value: string) => {
     if (!value || !stack.length) return
@@ -201,9 +205,9 @@ function difference(a: Part, b: Part | undefined): string | undefined {
 }
 
 // These XML regions are spliced from the input by rhwp, not written from editable model fields.
-// The independent blank document provides evidence for its defaults only, never for custom data.
-function copiedRegions(part: string, root: Xml): string[] {
-  const regions: string[] = []
+// The independent blank document admits its own defaults; `copiedXml` admits the rest.
+function copiedRegions(part: string, root: Xml): (Xml | string)[] {
+  const regions: (Xml | string)[] = []
   const visit = (node: Xml) => {
     if (
       (part === header &&
@@ -211,7 +215,7 @@ function copiedRegions(part: string, root: Xml): string[] {
         ['numbering', 'bullet', 'memoProperties'].includes(node.local)) ||
       (part === manifest && node.uri === opf && node.local === 'metadata')
     ) {
-      regions.push(JSON.stringify(node))
+      regions.push(node)
       return
     }
     if (node.local === 'parameters') refuse(part, 'unverified field parameter XML')
@@ -228,10 +232,118 @@ function copiedRegions(part: string, root: Xml): string[] {
       (n) => typeof n !== 'string' && n.uri === head && n.local === 'refList',
     )
     if (ref === -1) refuse(part, 'missing resource list')
-    regions.push(JSON.stringify(root.children.slice(ref + 1)))
+    regions.push(...root.children.slice(ref + 1))
   }
   visit(root)
   return regions
+}
+
+type Rule = { in: string | null; attrs: string[]; text?: true }
+const config = 'urn:oasis:names:tc:opendocument:xmlns:config:1.0'
+const appSetting = hml + 'app HWPApplicationSetting'
+const compatible = `${head} compatibleDocument`
+const layout = `${head} layoutCompatibility`
+const paraHead: Rule = {
+  in: null,
+  attrs: [
+    'start',
+    'level',
+    'align',
+    'useInstWidth',
+    'autoIndent',
+    'widthAdjust',
+    'textOffsetType',
+    'textOffset',
+    'numFormat',
+    'charPrIDRef',
+    'checkable',
+  ],
+  text: true,
+}
+// rhwp copies these parts and regions from the source into every save, edited or not, and the
+// reconstruction check below proves it for the file at hand. They are document-wide: the writing
+// application, print options, the caret to restore, compatibility and link options, metadata, and
+// the numbering and bullet definitions paragraphs refer to by id. Co-editing commands set only a
+// paragraph's heading type and level, never a definition. Admitted element by element; `in` is the
+// parent, null for the root of a part or region.
+const copiedXml: Record<string, Record<string, Rule>> = {
+  'version.xml': {
+    [hml + 'version HCFVersion']: {
+      in: null,
+      attrs: [
+        'tagetApplication',
+        'major',
+        'minor',
+        'micro',
+        'buildNumber',
+        'os',
+        'xmlVersion',
+        'application',
+        'appVersion',
+      ],
+    },
+  },
+  'settings.xml': {
+    [appSetting]: { in: null, attrs: [] },
+    [hml + 'app CaretPosition']: { in: appSetting, attrs: ['listIDRef', 'paraIDRef', 'pos'] },
+    [config + ' config-item-set']: { in: appSetting, attrs: ['name'] },
+    [config + ' config-item']: {
+      in: config + ' config-item-set',
+      attrs: ['name', 'type'],
+      text: true,
+    },
+  },
+  [header]: {
+    [`${head} numbering`]: { in: null, attrs: ['id', 'start'] },
+    [`${head} bullet`]: { in: null, attrs: ['id', 'char', 'useImage'] },
+    [`${head} paraHead`]: paraHead,
+    [compatible]: { in: null, attrs: ['targetProgram'] },
+    [layout]: { in: compatible, attrs: [] },
+    ...Object.fromEntries(
+      ['char', 'paragraph', 'section', 'object', 'field'].map((n) => [
+        `${head} ${n}`,
+        { in: layout, attrs: [] },
+      ]),
+    ),
+    [`${head} docOption`]: { in: null, attrs: [] },
+    [`${head} linkinfo`]: {
+      in: `${head} docOption`,
+      attrs: ['path', 'pageInherit', 'footnoteInherit'],
+    },
+    [`${head} metaTag`]: { in: null, attrs: [], text: true },
+    [`${head} trackchageConfig`]: { in: null, attrs: ['flags'] },
+  },
+  [manifest]: {
+    [`${opf} metadata`]: { in: null, attrs: [] },
+    [`${opf} title`]: { in: `${opf} metadata`, attrs: [], text: true },
+    [`${opf} language`]: { in: `${opf} metadata`, attrs: [], text: true },
+    [`${opf} meta`]: { in: `${opf} metadata`, attrs: ['name', 'content'], text: true },
+  },
+}
+
+/** The path of the first element, attribute or text of `node` that `copiedXml` does not admit. */
+function unverifiedCopiedXml(
+  part: string,
+  node: Xml | string,
+  parent: string | null,
+): string | undefined {
+  if (typeof node === 'string') return '/text()'
+  const name = `${node.uri} ${node.local}`
+  const rule = copiedXml[part]?.[name]
+  // A paragraph head belongs to the numbering or bullet around it.
+  const within = name === `${head} paraHead` ? [`${head} numbering`, `${head} bullet`] : [rule?.in]
+  if (!rule || !within.includes(parent)) return `/${node.local}`
+  for (const [uri, local] of node.attrs)
+    if (uri || !rule.attrs.includes(local)) return `/${node.local}/@${local}`
+  for (const [i, child] of node.children.entries()) {
+    const change =
+      typeof child !== 'string'
+        ? unverifiedCopiedXml(part, child, name)
+        : rule.text
+          ? undefined
+          : `/node()[${i + 1}]`
+    if (change) return `/${node.local}${change}`
+  }
 }
 
 /** Additional to package/relationship and protection checks. The constructor must use initialized WASM. */
@@ -249,15 +361,25 @@ export async function certifyHwpxSource(bytes: Uint8Array, Document: Engine): Pr
   }
   for (const [name, original] of source) {
     const independent = baseline.get(name)
-    if (['settings.xml', 'version.xml', 'META-INF/rhwp-hwp5-origin'].includes(name)) {
+    if (name === 'version.xml' || name === 'settings.xml') {
+      const change =
+        original instanceof Uint8Array ? 'part type' : unverifiedCopiedXml(name, original, null)
+      if (change) refuse(name, `unverified source-only settings (${change})`)
+    } else if (name === 'META-INF/rhwp-hwp5-origin') {
+      // It tells rhwp how to read the paragraphs, so only the value rhwp writes itself is known.
       const change = difference(original, independent)
       if (change) refuse(name, `unverified source-only settings (${change})`)
     } else if (!(original instanceof Uint8Array)) {
       const defaults = new Set(
-        independent && !(independent instanceof Uint8Array) ? copiedRegions(name, independent) : [],
+        independent && !(independent instanceof Uint8Array)
+          ? copiedRegions(name, independent).map((r) => JSON.stringify(r))
+          : [],
       )
-      if (copiedRegions(name, original).some((r) => !defaults.has(r)))
-        refuse(name, 'unverified source-only XML')
+      for (const region of copiedRegions(name, original)) {
+        if (defaults.has(JSON.stringify(region))) continue
+        const change = unverifiedCopiedXml(name, region, null)
+        if (change) refuse(name, `unverified source-only XML (${change})`)
+      }
     }
   }
   const doc = new Document(snapshot)

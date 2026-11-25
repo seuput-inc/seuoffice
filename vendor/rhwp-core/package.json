@@ -65,9 +65,10 @@
       "0056-collab-control-relocation.patch",
       "0057-collab-trailing-slots.patch",
       "0058-lenient-reader-keeps-streams.patch",
-      "0059-save-keeps-widths-ids-strikeout.patch"
+      "0059-save-keeps-widths-ids-strikeout.patch",
+      "0060-hancom-empty-run-after-section-head.patch"
     ],
     "wasmPack": "0.15.0",
-    "wasmSha256": "b5219d3251e7ae5addb2aa80a44a135c8bcc675f78d6931e154a11702be66e38"
+    "wasmSha256": "087bb8bd377cc816e1e63e4214d12d636387fd9edddc1fd0e48eda8fb7dda51d"
   }
 }

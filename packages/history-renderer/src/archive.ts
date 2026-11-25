@@ -47,7 +47,8 @@ export async function openCheckedArchive(
     const local = buf.readUInt32LE(pos + 42)
     const descriptor = (flags & 8) !== 0
     if (
-      // Bits 1-2 only record the DEFLATE level (Microsoft Office sets them).
+      // Bits 1-2 of a deflated entry only name the writer's speed setting; Microsoft Office and
+      // Hancom Office set them.
       flags & ~(method === 8 ? 0x80e : 0x808) ||
       (method !== 0 && method !== 8) ||
       buf.readUInt16LE(pos + 30) ||

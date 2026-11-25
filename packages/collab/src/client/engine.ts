@@ -248,6 +248,7 @@ export function statusOf<Op>(s: EngineState<Op>): CollabStatus {
     self: s.client !== null && s.name !== null ? { client: s.client, name: s.name } : null,
   }
   if (s.failure) status.failure = s.failure
+  if (s.failure && s.detail) status.detail = s.detail
   return status
 }
 
@@ -477,7 +478,7 @@ function frame<Op>(c: Ctx<Op>, f: ServerFrame | BytesFrame): void {
     case 'diverged':
       return fail(c, 'diverged')
     case 'error':
-      return fail(c, failureOf(f.code))
+      return fail(c, failureOf(f.code), f.reason)
   }
 }
 
