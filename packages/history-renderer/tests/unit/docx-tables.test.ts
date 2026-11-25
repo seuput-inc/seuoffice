@@ -29,6 +29,11 @@ const cases: Record<string, string> = {
       2,
       `<w:tr><w:sdt><w:sdtPr/><w:sdtContent>${tc('S')}</w:sdtContent></w:sdt>${tc('T')}</w:tr><w:tr>${tc('a')}${tc('b')}</w:tr>`,
     ) + p('after'),
+  'a row inside a content control, after a row without cells':
+    table(
+      2,
+      `<w:tr></w:tr><w:sdt><w:sdtContent><w:tr>${tc()}${tc()}</w:tr></w:sdtContent></w:sdt><w:tr>${tc('a')}${tc('b')}</w:tr>`,
+    ) + p('after'),
   'a legacy horizontal merge beside a content control':
     table(
       3,
