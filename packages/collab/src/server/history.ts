@@ -6,6 +6,7 @@ import {
   type HistoryRequest,
   type HistoryResult,
 } from '../history.js'
+import { deferred } from '../deferred.js'
 import type { Change, Json } from '../model.js'
 import { sha256 } from '../sha256.js'
 import { createHwpHistory, type HwpArtifact, type HwpCheckpointStore } from './hwp-history.js'
@@ -30,6 +31,9 @@ import {
 } from './stream-history.js'
 
 export type { HwpCheckpoint, HwpCheckpointStore } from './hwp-history.js'
+
+/** HWP admissions this server renders at once; the others wait their turn */
+const HWP_ADMISSIONS = 4
 
 export interface HistoryPoint {
   epoch: string
@@ -153,12 +157,27 @@ export function createHistoryServer(
         : (base, request) => options.render(base, request),
   })
 
+  // Admissions of different documents run in their own queues; after a restart every reconnecting
+  // editor's join replays its epoch, so a few sandboxes at a time keep each within its time limit.
+  let admitting = 0
+  const admissionsWaiting: (() => void)[] = []
   async function admitHwpHistory(
     p: Principal,
     candidate: HwpHistoryCandidate,
   ): Promise<HwpHistoryRefusal | undefined> {
     shutdown.signal.throwIfAborted()
-    return hwp.admit(p, candidate)
+    while (admitting >= HWP_ADMISSIONS) {
+      const { promise, resolve } = deferred<void>()
+      admissionsWaiting.push(resolve)
+      await promise
+    }
+    admitting++
+    try {
+      return await hwp.admit(p, candidate)
+    } finally {
+      admitting--
+      admissionsWaiting.shift()?.()
+    }
   }
 
   function principalFor(p: Principal, action: HistoryAction): Principal {

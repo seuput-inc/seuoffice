@@ -110,10 +110,11 @@ export type HwpHistoryCandidate = Pick<NewEpoch, 'id' | 'format' | 'baseHash'> &
   ({ base: Uint8Array } | { next: Change } | { head: number })
 /**
  * Why HWP history refused a base, an edit or a join: `detail` is a fixed phrase the editor shows,
- * `cause` the host's own error text, which only the host log receives.
+ * `cause` the host's own error text, which only the host log receives. `unavailable`: the
+ * renderer could not run, so the editor reconnects and tries again.
  */
 export interface HwpHistoryRefusal {
-  refused: 'schema_mismatch' | 'too_large'
+  refused: 'schema_mismatch' | 'too_large' | 'unavailable'
   detail: string
   cause?: string
 }
@@ -132,10 +133,13 @@ export const HWP_REPLAY = {
   requestBytes: 1024 * 1024,
 }
 
-const hwpRefusalReasons: Record<HwpHistoryRefusal['refused'], string> = {
+const hwpRefusalReasons: Record<'schema_mismatch' | 'too_large', string> = {
   too_large: 'HWP retained history exceeds its replay limits',
   schema_mismatch: 'HWP source or edit cannot be replayed within the retained history profile',
 }
+
+/** Renderer failures in a row for one document before its editor is refused instead of retried */
+const HWP_RENDER_ATTEMPTS = 3
 
 export function isHwpHistory(format: Format): boolean {
   return format.name === 'hwp' || format.name === 'hwpx'
@@ -233,6 +237,8 @@ export function createServerCore({
 }: ServerCoreOptions): ServerCore {
   const limits: Limits = { ...DEFAULT_LIMITS, ...overrides }
   const docs = new Map<string, Doc>()
+  /** per document, the HWP renders in a row that could not run */
+  const renderFailures = new Map<string, number>()
   let closing = false
   let busy = 0
   let idleWaiters: (() => void)[] = []
@@ -495,10 +501,10 @@ export function createServerCore({
   ): Promise<void> {
     const client = resumed ?? crypto.randomUUID()
     const state = epochState(doc, epoch)
-    const admit = conn.principal.canEdit && !state.replayable ? hwpAdmission(conn) : undefined
+    const admit = conn.principal.canEdit && !state.replayable ? hwpAdmission(doc, conn) : undefined
     if (admit) {
-      // The host or a server without history started this epoch: an editor learns at join that
-      // it cannot be replayed, never on its first edit.
+      // The host, a server without history, or this server before a restart started this epoch:
+      // an editor learns at join that it cannot be replayed, never on its first edit.
       const refusal = await admit(conn.principal, epoch)
       if (refusal)
         return rejectHistory(doc, conn, {
@@ -563,15 +569,36 @@ export function createServerCore({
     }
   }
 
-  function hwpAdmission(conn: Conn) {
-    return admitHwpHistory && conn.hello && isHwpHistory(conn.hello.format)
-      ? admitHwpHistory
-      : undefined
+  function hwpAdmission(doc: Doc, conn: Conn) {
+    const admit = admitHwpHistory
+    if (!admit || !conn.hello || !isHwpHistory(conn.hello.format)) return undefined
+    return async (...args: Parameters<typeof admit>) => {
+      const refusal = await admit(...args)
+      if (!refusal) renderFailures.delete(doc.id)
+      return refusal
+    }
   }
 
-  function rejectHistory(doc: Doc, conn: Conn, { refused, detail, cause }: HwpHistoryRefusal) {
-    const reason = `${hwpRefusalReasons[refused]}: ${detail}`
-    console.warn(`collab: document ${doc.id}: ${refused}: ${reason}${cause ? ` (${cause})` : ''}`)
+  async function rejectHistory(doc: Doc, conn: Conn, refusal: HwpHistoryRefusal) {
+    const { detail, cause } = refusal
+    const log = (reason: string) =>
+      console.warn(`collab: document ${doc.id}: ${reason}${cause ? ` (${cause})` : ''}`)
+    let refused = refusal.refused
+    let shown = detail
+    if (refused === 'unavailable') {
+      const failures = (renderFailures.get(doc.id) ?? 0) + 1
+      if (failures < HWP_RENDER_ATTEMPTS) {
+        renderFailures.set(doc.id, failures)
+        log(`HWP history renderer could not run (${failures} in a row); the editor reconnects`)
+        // Closed without an error frame: the client reconnects as after a dropped connection.
+        return abort(doc, conn)
+      }
+      renderFailures.delete(doc.id)
+      refused = 'schema_mismatch'
+      shown = `${detail} ${failures} times in a row`
+    }
+    const reason = `${hwpRefusalReasons[refused]}: ${shown}`
+    log(`${refused}: ${reason}`)
     // The close reason must fit a WebSocket close frame; the error frame carries the detail.
     return reject(doc, conn, refused, hwpRefusalReasons[refused], reason)
   }
@@ -580,7 +607,7 @@ export function createServerCore({
     if (conn.stage !== 'seeding') return reject(doc, conn, 'bad_frame')
     const hello = conn.hello!
     // Hash and render the same snapshot; the socket library may reuse the buffer.
-    const admit = hwpAdmission(conn)
+    const admit = hwpAdmission(doc, conn)
     const base =
       admit && bytes.byteLength > HWP_REPLAY.fileBytes ? undefined : new Uint8Array(bytes)
     if (!admit || !(await store.load(doc.id))) {
@@ -615,7 +642,7 @@ export function createServerCore({
     change: AppendRequest,
   ): Promise<AppendResult | HwpHistoryRefusal> {
     const id = conn.epoch!
-    const admit = hwpAdmission(conn)
+    const admit = hwpAdmission(doc, conn)
     if (admit) {
       const epoch = await store.load(doc.id)
       if (epoch?.id !== id) return { kind: 'gone' }

@@ -216,6 +216,7 @@ export function createHwpHistory({
       signal.throwIfAborted()
       // A renderer from another copy of this package throws its own HistoryError class.
       const { code } = (error ?? {}) as { code?: unknown }
+      if (code === 'unavailable') return refuse('unavailable', 'the renderer could not run', error)
       const named = ['invalid_history', 'unsupported', 'conflict'].includes(String(code))
       const which = named ? String(code) : 'error'
       return refuse('schema_mismatch', `the renderer refused it (${which})`, error)

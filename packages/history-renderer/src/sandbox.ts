@@ -84,8 +84,9 @@ export async function launch(program: URL, input: Uint8Array): Promise<Buffer> {
   })
 }
 
+// A crash, timeout or resource limit says nothing about the history: the same request may succeed.
 function sandboxFailure() {
-  return new HistoryError('unsupported', 'sandbox failed or exceeded its limits')
+  return new HistoryError('unavailable', 'sandbox failed or exceeded its limits')
 }
 
 export async function launchStream(
