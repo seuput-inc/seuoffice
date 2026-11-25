@@ -14,7 +14,8 @@ export function unsupported(detail: string): never {
 }
 export type Literal = string | number | null
 // Keys are canonical A1 addresses or a named sheet-view property (neither is an address).
-export type Write = { sheet: string; key: string; value: Literal }
+// `whole`: Univer deletes the cell outright, its format included.
+export type Write = { sheet: string; key: string; value: Literal; whole?: true }
 export type SheetOp = { id: string; writes: Write[] }
 
 export function checkText(text: string) {
@@ -26,14 +27,29 @@ function record(value: Json | undefined): value is Record<string, Json> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-function literal(cell: Json): Literal {
-  if (
-    !record(cell) ||
-    Object.entries(cell).some(
-      ([k, v]) => k !== 'v' && k !== 't' && !(v === null && ['f', 'si', 'p'].includes(k)),
-    )
-  )
-    return unsupported('not a plain Sheets cell')
+function literal(cell: Json): Pick<Write, 'value' | 'whole'> {
+  if (cell === null) return { value: null, whole: true }
+  if (!record(cell)) return unsupported('not a Sheets cell')
+  for (const [key, value] of Object.entries(cell)) {
+    if (key === 'v' || key === 't') continue
+    if (key === 'f' || key === 'si' || key === 'p' || key === 'custom') {
+      if (value !== null)
+        unsupported(
+          key === 'p'
+            ? 'Sheets rich text is not supported'
+            : key === 'custom'
+              ? 'Sheets custom cell data is not supported'
+              : 'Sheets formula write',
+        )
+    } else if (key !== 's') unsupported(`unknown Sheets cell field ${key}`)
+    else if (!record(value)) {
+      // null removes the cell's format; a style id never travels (toWire sends the object).
+      unsupported('Sheets cell format removal or style id')
+    } else if (Object.keys(value).length) {
+      // Univer merges `s` into the cell's format. Writing a format into styles.xml is not modelled.
+      unsupported(`Sheets cell format change: ${Object.keys(value).sort().join(' ')}`)
+    }
+  }
   const { v, t } = cell
   if (typeof v === 'string') {
     // Without an explicit STRING, Univer may infer a different type.
@@ -44,10 +60,10 @@ function literal(cell: Json): Literal {
         /^(true|false)$/i.test(v))
     )
       return unsupported('ambiguous Sheets text type')
-    return checkText(v)
+    return { value: checkText(v) }
   }
-  if (typeof v === 'number' && (t === undefined || t === 2)) return v
-  if (v === null && t === undefined) return null
+  if (typeof v === 'number' && (t === undefined || t === 2)) return { value: v }
+  if (v === null && t === undefined) return { value: null }
   return unsupported('unsupported Sheets value')
 }
 
@@ -66,8 +82,13 @@ export function decode(json: Json): SheetOp {
     checkWireMutation(kind, params)
     const { subUnitId: sheet, trigger, cellValue } = params
     if (typeof sheet !== 'string') return invalid('missing Sheets subUnitId')
-    if (trigger !== undefined && trigger !== kind.replace('.mutation.', '.command.'))
-      return unsupported('not a direct Sheets mutation')
+    // A typed value or the Delete key (whose cells keep their format).
+    if (
+      trigger !== undefined &&
+      trigger !== kind.replace('.mutation.', '.command.') &&
+      !(kind === setValues && trigger === 'sheet.command.clear-selection-content')
+    )
+      return unsupported(`Sheets mutation from ${String(trigger).slice(0, 80)}`)
     if (kind !== setValues) {
       const key = kind === gridlines ? 'showGridlines' : 'rightToLeft'
       const value = params[key]
@@ -82,7 +103,7 @@ export function decode(json: Json): SheetOp {
       if (!record(columns)) return unsupported('not a Sheets row of literals')
       for (const [column, cell] of Object.entries(columns)) {
         if (+row >= 1000 || +column >= 26) return unsupported('outside the XLSX history grid')
-        writes.push({ sheet, key: formatAddress(+row, +column), value: literal(cell) })
+        writes.push({ sheet, key: formatAddress(+row, +column), ...literal(cell) })
       }
     }
     if (writes.length === start) return unsupported('empty Sheets write')
