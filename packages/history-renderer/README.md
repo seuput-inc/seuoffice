@@ -91,6 +91,8 @@ Debian 12 ARM64, Node 22.23.4, glibc 2.36, Deno 2.9.6, 네트워크를 끈 컨�
 
 manifest의 Node 요구는 `>=22.12`이고 glibc 최소 버전은 선언하지 않는다. Linux glibc(ARM64·x64)와 macOS ARM64용 `@deno/linux-arm64-glibc@2.9.6`·`@deno/linux-x64-glibc@2.9.6`·`@deno/darwin-arm64@2.9.6`을 설치 시점에 준비한다. `--omit=optional`은 사용할 수 없고 실행 중 다운로드는 없다. Debian 12 ARM64(Node 22.23.4·glibc 2.36)에서 이 후보의 포장본으로 네트워크 없이 DOCX 서식과 PDF 도장·주석을 재생하고 보상 파일을 다시 열었다. `4803a96a`의 네 형식 포장본은 Node 24.18.1·glibc 2.39에서 확인했다. Alpine 같은 musl Linux, Windows, Intel macOS용 런타임은 제공하지 않으며, 그런 호스트에서는 실행 파일을 시작하기 전에 `unsupported`로 거절한다.
 
+`seuoffice` CI의 `history-renderer` 작업이 GitHub의 Ubuntu x64·ARM64 러너에서 격리 실행기 시험과 DOCX·한글 재생 시험을 돌린다.
+
 워크스페이스의 개발용 `collab`은 `0.1.0`이지만 소비자가 받는 GitHub Releases의 번호와는 다르다. 예를 들어 실제 `v0.12.51` tarball 안의 `collab`은 `0.12.51`이고 `createHistoryServer`가 없어 사용할 수 없다. 아래 명령은 현재 체크아웃으로 **두 패키지를 같은 버전**에 포장하고 렌더러의 `dependencies["@seuoffice/collab"]`도 그 버전으로 고정한다. 소스 manifest·태그·릴리스를 바꾸지 않는다.
 
 ```sh
