@@ -1,5 +1,6 @@
 import { HistoryError, type Json } from '@seuoffice/collab/client'
 import { formatAddress, parseAddress } from '@seuoffice/xlsx-gateway/domain/cell-address'
+import { literalCell } from '../../../apps/sheets/src/web/collab-literal'
 import { checkWireMutation } from '../../../apps/sheets/src/web/collab-wire-check'
 
 const setValues = 'sheet.mutation.set-range-values'
@@ -28,57 +29,10 @@ function record(value: Json | undefined): value is Record<string, Json> {
 }
 
 function literal(cell: Json): Pick<Write, 'value' | 'whole'> {
-  if (cell === null) return { value: null, whole: true }
-  if (!record(cell)) return unsupported('not a Sheets cell')
-  for (const [key, value] of Object.entries(cell)) {
-    if (key === 'v' || key === 't') continue
-    if (key === 'f' || key === 'si' || key === 'p' || key === 'custom') {
-      if (value !== null)
-        unsupported(
-          key === 'p'
-            ? 'Sheets rich text is not supported'
-            : key === 'custom'
-              ? 'Sheets custom cell data is not supported'
-              : 'Sheets formula write',
-        )
-    } else if (key !== 's') unsupported(`unknown Sheets cell field ${key}`)
-    else if (!record(value)) {
-      // null removes the cell's format; a style id never travels (toWire sends the object).
-      unsupported('Sheets cell format removal or style id')
-    } else if (Object.keys(value).length) {
-      // Univer merges `s` into the cell's format. Writing a format into styles.xml is not modelled.
-      unsupported(`Sheets cell format change: ${Object.keys(value).sort().join(' ')}`)
-    }
-  }
-  const { v, t } = cell
-  if (v === null) {
-    if (t !== undefined) unsupported('typed empty Sheets value')
-    return { value: null }
-  }
-  // Univer's CellValueType: what the editor applied (toWire sends it) decides the value.
-  if (t === 1 || t === 4) {
-    if (typeof v === 'string') return { value: checkText(v) }
-    if (typeof v === 'number') return { value: String(v) }
-  } else if (t === 2) {
-    const value = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN
-    if (Number.isFinite(value)) return { value }
-  } else if (t === 3) {
-    if (v === true || v === 1 || (typeof v === 'string' && /^(?:true|1)$/i.test(v)))
-      return { value: true }
-    if (v === false || v === 0 || (typeof v === 'string' && /^(?:false|0)$/i.test(v)))
-      return { value: false }
-  } else if (t === undefined) {
-    if (typeof v === 'number') return { value: v }
-    // Older editors sent no type; Univer then infers one from state this log does not hold.
-    if (
-      typeof v === 'string' &&
-      (v.trim() === '' || Number.isNaN(Number(v))) &&
-      !/^(true|false)$/i.test(v)
-    )
-      return { value: checkText(v) }
-    if (typeof v === 'string') return unsupported('ambiguous Sheets text type')
-  }
-  return unsupported('unsupported Sheets value')
+  const { v, t, whole } = literalCell(cell)
+  if (whole) return { value: null, whole }
+  if (t === 3) return { value: v === 1 }
+  return { value: typeof v === 'string' ? checkText(v) : v }
 }
 
 export function decode(json: Json): SheetOp {

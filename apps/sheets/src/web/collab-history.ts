@@ -1,6 +1,7 @@
-import { HistoryError } from '@seuoffice/collab/client'
+import { HistoryError, type Json } from '@seuoffice/collab/client'
 import { CellValueType, type ICellData, type Workbook } from '@univerjs/core'
 import type { SheetOp } from './collab-adapter'
+import { literalCell } from './collab-literal'
 import { SET_RANGE_VALUES } from './collab-mutations'
 
 const unsupported = (): never => {
@@ -13,7 +14,7 @@ function literalType(value: unknown): CellValueType.STRING | CellValueType.NUMBE
   return null
 }
 
-/** Only direct writes of one text or numeric literal have a known read/write set. */
+/** Only direct writes of one literal have a known read/write set. */
 function literalWrite(op: SheetOp) {
   const [mutation] = op.mutations
   if (op.mutations.length !== 1 || mutation?.id !== SET_RANGE_VALUES) return unsupported()
@@ -34,18 +35,16 @@ function literalWrite(op: SheetOp) {
   const columns = Object.entries(cells ?? {})
   if (columns.length !== 1) return unsupported()
   const [column, cell] = columns[0]!
-  if (
-    !cell ||
-    Object.entries(cell).some(
-      ([k, value]) =>
-        k !== 'v' && k !== 't' && !(value === null && (k === 'f' || k === 'si' || k === 'p')),
-    )
-  ) {
-    return unsupported()
+  const { v, t, whole } = literalCell(cell as Json)
+  // A cleared value or a deleted cell is not undone here.
+  if (whole || v === null) return unsupported()
+  return {
+    subUnitId,
+    row: Number(row),
+    column: Number(column),
+    value: v,
+    type: t ?? literalType(v),
   }
-  const type = literalType(cell.v)
-  if (type === null || (cell.t !== undefined && cell.t !== type)) return unsupported()
-  return { subUnitId, row: Number(row), column: Number(column), value: cell.v, type }
 }
 
 export function captureCellUndo(
