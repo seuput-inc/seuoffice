@@ -30,6 +30,8 @@ const flags = [
 const require = createRequire(import.meta.url)
 const exec = promisify(execFile)
 const runtimes = ['darwin-arm64', 'linux-arm64-glibc', 'linux-x64-glibc']
+// The glibc probe builds a full diagnostic report, so the host's answer is kept.
+let hostPackage: string | undefined
 
 /** The Deno package for this host; a musl host would only fail to exec the glibc binary. */
 export function denoPackage(
@@ -63,7 +65,7 @@ async function sandbox<T>(
     options: { cwd: string; env: NodeJS.ProcessEnv },
   ) => Promise<T>,
 ): Promise<T> {
-  const name = denoPackage()
+  const name = (hostPackage ??= denoPackage())
   let bin
   try {
     bin = require.resolve(`${name}/deno`)
