@@ -12,7 +12,7 @@ export function invalid(detail: string): never {
 export function unsupported(detail: string): never {
   throw new HistoryError('unsupported', detail)
 }
-export type Literal = string | number | null
+export type Literal = string | number | boolean | null
 // Keys are canonical A1 addresses or a named sheet-view property (neither is an address).
 // `whole`: Univer deletes the cell outright, its format included.
 export type Write = { sheet: string; key: string; value: Literal; whole?: true }
@@ -51,19 +51,33 @@ function literal(cell: Json): Pick<Write, 'value' | 'whole'> {
     }
   }
   const { v, t } = cell
-  if (typeof v === 'string') {
-    // Without an explicit STRING, Univer may infer a different type.
-    if (
-      t !== 1 &&
-      (t !== undefined ||
-        (v.trim() !== '' && !Number.isNaN(Number(v))) ||
-        /^(true|false)$/i.test(v))
-    )
-      return unsupported('ambiguous Sheets text type')
-    return { value: checkText(v) }
+  if (v === null) {
+    if (t !== undefined) unsupported('typed empty Sheets value')
+    return { value: null }
   }
-  if (typeof v === 'number' && (t === undefined || t === 2)) return { value: v }
-  if (v === null && t === undefined) return { value: null }
+  // Univer's CellValueType: what the editor applied (toWire sends it) decides the value.
+  if (t === 1 || t === 4) {
+    if (typeof v === 'string') return { value: checkText(v) }
+    if (typeof v === 'number') return { value: String(v) }
+  } else if (t === 2) {
+    const value = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN
+    if (Number.isFinite(value)) return { value }
+  } else if (t === 3) {
+    if (v === true || v === 1 || (typeof v === 'string' && /^(?:true|1)$/i.test(v)))
+      return { value: true }
+    if (v === false || v === 0 || (typeof v === 'string' && /^(?:false|0)$/i.test(v)))
+      return { value: false }
+  } else if (t === undefined) {
+    if (typeof v === 'number') return { value: v }
+    // Older editors sent no type; Univer then infers one from state this log does not hold.
+    if (
+      typeof v === 'string' &&
+      (v.trim() === '' || Number.isNaN(Number(v))) &&
+      !/^(true|false)$/i.test(v)
+    )
+      return { value: checkText(v) }
+    if (typeof v === 'string') return unsupported('ambiguous Sheets text type')
+  }
   return unsupported('unsupported Sheets value')
 }
 
@@ -130,7 +144,11 @@ export function encode({ id, writes }: SheetOp): Json {
     const { row, column } = parseAddress(key)
     const cells = (matrix[row] ??= {})
     cells[column] =
-      value === null ? { v: null } : { v: value, t: typeof value === 'string' ? 1 : 2 }
+      value === null
+        ? { v: null }
+        : typeof value === 'boolean'
+          ? { v: value ? 1 : 0, t: 3 }
+          : { v: value, t: typeof value === 'string' ? 1 : 2 }
   }
   return { id, m }
 }

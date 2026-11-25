@@ -309,7 +309,11 @@ describe('XLSX sheet-id and typed cell history', () => {
 
   const rejected: [string, Json, string][] = [
     ['coerced untyped string', cell('op', 'sheet-7', 0, { v: '007' }), 'unsupported'],
-    ['boolean type is not a number', cell('op', 'sheet-7', 0, { v: 1, t: 3 }), 'unsupported'],
+    [
+      'boolean type with a non-boolean value',
+      cell('op', 'sheet-7', 0, { v: 2, t: 3 }),
+      'unsupported',
+    ],
     ['nonliteral formula', cell('op', 'sheet-7', 0, { f: '=1+1' }), 'unsupported'],
     [
       'unexpected field on a view setting',
