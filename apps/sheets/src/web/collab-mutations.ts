@@ -172,6 +172,8 @@ export function inverseOf(env: MutationEnv, mutation: Mutation): Mutation[] {
  * `trigger` (the command that ran the mutation) stays: Univer's listeners
  * react to a mutation by it, and sheets-formula drops the formula of every
  * cell a set-range-values without a style trigger touches.
+ * Runs after the mutation, so a written value also carries the cell type
+ * Univer settled on (see typeWrittenValues).
  */
 export function toWire(workbook: Workbook, mutation: Mutation): Mutation {
   const params = Tools.deepClone(mutation.params)
@@ -183,7 +185,29 @@ export function toWire(workbook: Workbook, mutation: Mutation): Mutation {
     if (style) holder.s = Tools.deepClone(style)
     else delete holder.s
   }
+  if (mutation.id === SET_RANGE_VALUES) typeWrittenValues(workbook, params)
   return { id: mutation.id, params }
+}
+
+/**
+ * Univer infers the type of a value without `t` from the value, the cell's
+ * number format and its old type ("22" is a number, or text in a text-formatted
+ * cell), and stores the value converted to it. Sending the type and value it
+ * stored makes every reader (a page, the history renderer, selective undo)
+ * apply them instead of inferring them again from its own state.
+ */
+function typeWrittenValues(workbook: Workbook, params: Params): void {
+  const sheet = workbook.getSheetBySheetId(String(params.subUnitId))
+  if (!sheet) return
+  for (const [row, columns] of Object.entries((params.cellValue ?? {}) as CellMatrix)) {
+    for (const [column, cell] of Object.entries(columns ?? {})) {
+      if (!cell || cell.v == null || cell.t != null || cell.f != null || cell.si != null) continue
+      const stored = sheet.getCellRaw(Number(row), Number(column))
+      if (stored?.t == null || stored.v == null) continue
+      cell.t = stored.t
+      cell.v = stored.v
+    }
+  }
 }
 
 /** The local form of a wire mutation, ready to execute in `workbook` */
