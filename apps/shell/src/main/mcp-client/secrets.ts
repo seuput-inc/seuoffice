@@ -14,6 +14,12 @@ import type { McpSecretView } from '../../shared/mcp-servers-api'
 export interface McpSecretCodec {
   /** whether a value sealed now is really protected (the Drive vault rule) */
   canSeal(): boolean
+  /**
+   * The same answer told without opening the keychain: the settings view shows
+   * it at every start, and an ad hoc signed Mac app reads the keychain only
+   * after the login password.
+   */
+  sealsHere(): boolean
   /** the `sealed:v1:` form; only called when `canSeal()` */
   seal(plain: string): string
   /** the plain value, or null when it cannot be opened here */
@@ -32,6 +38,7 @@ export function safeStorageMcpCodec(
 ): McpSecretCodec {
   return {
     canSeal: () => driveTokenSeals(storage, platform),
+    sealsHere: () => platform === 'darwin' || driveTokenSeals(storage, platform),
     seal: (plain) => SEALED_PREFIX + storage.encryptString(plain).toString('base64'),
     open: (sealed) => {
       if (!isSealedSecret(sealed) || !storage.isEncryptionAvailable()) return null

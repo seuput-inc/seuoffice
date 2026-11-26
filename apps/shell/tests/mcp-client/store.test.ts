@@ -20,6 +20,7 @@ import {
 /** reversible stand-in for the OS cipher; marks its output so plain text would show */
 const codec = (canSeal = true): McpSecretCodec => ({
   canSeal: () => canSeal,
+  sealsHere: () => canSeal,
   seal: (plain) => `sealed:v1:${Buffer.from([...plain].reverse().join('')).toString('base64')}`,
   open: (sealed) =>
     sealed.startsWith('sealed:v1:')
@@ -353,6 +354,30 @@ describe('safeStorageMcpCodec', () => {
     expect(safeStorageMcpCodec(storage(true, 'gnome_libsecret'), 'linux').canSeal()).toBe(true)
     expect(safeStorageMcpCodec(storage(true, 'basic_text'), 'linux').canSeal()).toBe(false)
     expect(safeStorageMcpCodec(storage(false), 'win32').canSeal()).toBe(false)
+  })
+
+  it('shows sealing on macOS at start without opening the keychain', async () => {
+    // an ad hoc signed app reads the keychain only after the login password
+    const calls: string[] = []
+    const keychain: SafeStorageLike = {
+      isEncryptionAvailable: () => {
+        calls.push('isEncryptionAvailable')
+        return true
+      },
+      encryptString: (plain) => {
+        calls.push('encryptString')
+        return Buffer.from(plain)
+      },
+      decryptString: (sealed) => {
+        calls.push('decryptString')
+        return sealed.toString()
+      },
+    }
+    const store = createMcpServersStore(tempFile(), safeStorageMcpCodec(keychain, 'darwin'))
+    await store.load()
+
+    expect(store.view().sealing).toBe(true)
+    expect(calls).toEqual([])
   })
 
   it('seals with the shared prefix and opens it back', () => {

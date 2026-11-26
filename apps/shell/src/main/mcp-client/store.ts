@@ -405,7 +405,7 @@ export function createMcpServersStore(filePath: string, codec: McpSecretCodec): 
       }),
     sealing: () => codec.canSeal(),
     view: () => ({
-      sealing: codec.canSeal(),
+      sealing: codec.sealsHere(),
       runtimes: copy(state.runtimes),
       servers: state.servers.map(serverView),
     }),
