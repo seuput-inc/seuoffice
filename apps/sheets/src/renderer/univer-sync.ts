@@ -1401,16 +1401,21 @@ export async function loadVisibleRange(
   // window moves (re-centred on the screen) only once the screen nears its edge. Before, every
   // step of a wheel reread the whole window and wrote it into the grid twice (evict, install),
   // each write a full repaint. A window still waiting for the end of indexing keeps its own
-  // retry (loadRange) going meanwhile.
+  // retry (loadRange) going meanwhile. A load in flight replaces the loaded window when it
+  // lands, so it too must hold the screen: one asked for elsewhere (a fast scroll the screen
+  // came back from) would leave the screen blank.
   const loaded = state.loadedRanges.get(sheetId)
+  const loading = state.loadingKeys.get(sheetId)
+  const around = {
+    startRow: Math.max(0, shown.startRow - WINDOW_MARGIN_ROWS),
+    endRow: Math.min(screenRowCount - 1, shown.endRow + WINDOW_MARGIN_ROWS),
+    startColumn: Math.max(0, shown.startColumn - WINDOW_MARGIN_COLUMNS),
+    endColumn: Math.min(screenColumnCount - 1, shown.endColumn + WINDOW_MARGIN_COLUMNS),
+  }
   if (
     loaded &&
-    containsRange(loaded, {
-      startRow: Math.max(0, shown.startRow - WINDOW_MARGIN_ROWS),
-      endRow: Math.min(screenRowCount - 1, shown.endRow + WINDOW_MARGIN_ROWS),
-      startColumn: Math.max(0, shown.startColumn - WINDOW_MARGIN_COLUMNS),
-      endColumn: Math.min(screenColumnCount - 1, shown.endColumn + WINDOW_MARGIN_COLUMNS),
-    })
+    containsRange(loaded, around) &&
+    (loading === undefined || containsRange(requestedRange(loading), around))
   ) {
     return
   }
@@ -3306,6 +3311,16 @@ export function nextIndexWaitStall(
   return next >= INDEX_WAIT_STALL_LIMIT ? null : next
 }
 
+/** What `loadingKeys` holds for a load of `range`; requestedRange reads it back */
+function requestKeyOf(range: IRange): string {
+  return `${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`
+}
+
+function requestedRange(key: string): IRange {
+  const [startRow = 0, endRow = -1, startColumn = 0, endColumn = -1] = key.split(':').map(Number)
+  return { startRow, endRow, startColumn, endColumn }
+}
+
 async function loadRange(
   runtime: UniverRuntime,
   lazyWorkbookRef: { current: LazyWorkbookState | null },
@@ -3335,7 +3350,7 @@ async function loadRange(
   ) {
     return
   }
-  const requestKey = `${range.startRow}:${range.endRow}:${range.startColumn}:${range.endColumn}`
+  const requestKey = requestKeyOf(range)
   if (!isRetry && state.loadingKeys.get(sheetId) === requestKey) return
   const previousTimer = state.retryTimers.get(sheetId)
   if (previousTimer) clearTimeout(previousTimer)

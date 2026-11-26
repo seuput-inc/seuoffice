@@ -61,4 +61,22 @@ describe('the loaded window', () => {
       expect.objectContaining({ range: at(290, 0, 490, 19) }),
     )
   })
+
+  it('moves to the screen when a load in flight elsewhere would replace it', async () => {
+    // a fast scroll asked for rows 305-505, and the screen came back before they landed: once
+    // they land they replace 220-420, so the screen needs its own window
+    const { readWorkbookRange, state, worksheet, runtime } = scrolledTo(at(310, 0, 350, 12))
+    state.loadingKeys.set('s1', '305:505:0:19')
+    await loadVisibleRange(runtime, { current: state }, worksheet, () => {}).catch(() => {})
+    expect(readWorkbookRange).toHaveBeenCalledWith(
+      expect.objectContaining({ range: at(230, 0, 430, 19) }),
+    )
+  })
+
+  it('stays put while the load in flight is the window around the screen', async () => {
+    const { readWorkbookRange, state, worksheet, runtime } = scrolledTo(at(310, 0, 350, 12))
+    state.loadingKeys.set('s1', '220:420:0:19')
+    await loadVisibleRange(runtime, { current: state }, worksheet, () => {})
+    expect(readWorkbookRange).not.toHaveBeenCalled()
+  })
 })
