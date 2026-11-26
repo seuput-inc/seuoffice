@@ -196,8 +196,7 @@ import { externalLinkOverlayCell } from './external-link-values'
 import type { ExternalLinkCell } from '../shared/desktop-api'
 import { isManualCalculation } from './calc-options'
 import {
-  hasItalicRun,
-  loadItalicCellFaces,
+  italicFacesFor,
   registerCellFontAliases,
   richRunFamilies,
   untilCellFontsLoaded,
@@ -1656,6 +1655,7 @@ export async function activateFormulaClosure(
       } catch {
         return giveUp()
       }
+      await italicFacesFor(result.cells)
       if (lazyWorkbookRef.current !== state) return
       // Same hazard as the pre-install guard: a structural edit landing while
       // the read was in flight shifts screen coordinates, so this file-space
@@ -2052,8 +2052,9 @@ export async function readSheetRangeMapped(
   screenRange: IRange,
   sheet: WorkbookFile['sheets'][number],
 ): Promise<MappedRangeRead | null> {
+  let mapped: MappedRangeRead | null
   try {
-    return await readSheetRangeMappedOnce(state, sheetId, screenRange, sheet)
+    mapped = await readSheetRangeMappedOnce(state, sheetId, screenRange, sheet)
   } catch (error: unknown) {
     // Every range read in the app funnels through here, so this is the one
     // place a crashed sidecar can be noticed. The gate is the main process's
@@ -2062,8 +2063,11 @@ export async function readSheetRangeMapped(
     // session." and is NOT a crash, so it must surface as an ordinary error
     // instead of re-opening the file and orphaning a session.
     if (!sidecarCrashNotified || !(await recoverSidecarSession(state))) throw error
-    return await readSheetRangeMappedOnce(state, sheetId, screenRange, sheet)
+    mapped = await readSheetRangeMappedOnce(state, sheetId, screenRange, sheet)
   }
+  // every range the grid installs from the file comes through here, its italic runs too
+  if (mapped) await italicFacesFor(mapped.screen.cells)
+  return mapped
 }
 
 async function readSheetRangeMappedOnce(
@@ -3365,14 +3369,8 @@ async function loadRange(
       return
     }
     const richFamilies = mapped ? richRunFamilies(mapped.screen.cells) : null
-    const italicRuns = mapped ? hasItalicRun(mapped.screen.cells) : false
-    if (richFamilies?.size || italicRuns) {
-      await untilCellFontsLoaded(
-        Promise.all([
-          registerCellFontAliases(richFamilies ?? []),
-          italicRuns ? loadItalicCellFaces() : null,
-        ]),
-      )
+    if (richFamilies?.size) {
+      await untilCellFontsLoaded(registerCellFontAliases(richFamilies))
       if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
         return
       }
@@ -6152,6 +6150,7 @@ async function preloadEntireWorkbookInner(
       } catch {
         return
       }
+      await italicFacesFor(result.cells)
       if (lazyWorkbookRef.current !== state) return
       // Structural edits made while the preload runs shift screen positions;
       // install each block through the current mapping.

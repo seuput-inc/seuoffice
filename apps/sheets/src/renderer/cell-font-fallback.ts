@@ -892,9 +892,14 @@ export function richRunFamilies(
   return families
 }
 
-export function hasItalicRun(
+/// What installing these cells must wait on: the italic faces, when one of their runs is
+/// italic (a page that only shows a workbook loads them on demand, and canvas text never
+/// fetches a face); nothing otherwise.
+export function italicFacesFor(
   cells: Iterable<{ rich?: readonly { italic?: boolean }[] | undefined }>,
-): boolean {
-  for (const cell of cells) if (cell.rich?.some((run) => run.italic)) return true
-  return false
+): Promise<unknown> | undefined {
+  for (const cell of cells) {
+    if (cell.rich?.some((run) => run.italic)) return untilCellFontsLoaded(loadItalicCellFaces())
+  }
+  return undefined
 }
