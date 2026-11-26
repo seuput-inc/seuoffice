@@ -29,15 +29,6 @@ pub(crate) fn argb_to_hex(value: &str) -> Option<String> {
         .then(|| format!("#{}", hex.to_ascii_uppercase()))
 }
 
-pub(crate) fn read_sheet_sparklines(
-    archive: &mut ZipArchive<File>,
-    worksheet_path: &str,
-) -> Result<Vec<SparklineGroupInfo>, SidecarError> {
-    let entry = zip_entry(archive, worksheet_path)?;
-    let mut reader = Reader::from_reader(BufReader::new(entry));
-    parse_sparkline_groups(&mut reader)
-}
-
 pub(crate) fn parse_sparkline_groups<R: std::io::BufRead>(
     reader: &mut Reader<R>,
 ) -> Result<Vec<SparklineGroupInfo>, SidecarError> {

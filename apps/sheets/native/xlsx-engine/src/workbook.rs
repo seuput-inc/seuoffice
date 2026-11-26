@@ -3,6 +3,8 @@
 //! defined names.
 
 use super::*;
+use quick_xml::Writer;
+use quick_xml::name::QName;
 
 pub(crate) fn read_sheet_declarations(
     archive: &mut ZipArchive<File>,
@@ -138,6 +140,8 @@ pub(crate) struct SheetDimensions {
     pub(crate) outline_level_col: u8,
     pub(crate) outline_summary_below: bool,
     pub(crate) outline_summary_right: bool,
+    /// The worksheet's XML without `<sheetData>`: what lies around the cells.
+    pub(crate) without_cells: String,
 }
 
 /// Excel keeps a zoom per view type; the app always opens the normal view,
@@ -197,8 +201,27 @@ pub(crate) fn read_sheet_dimensions(
     let mut outline_level_col = 0u8;
     let mut outline_summary_below = true;
     let mut outline_summary_right = true;
+    // The worksheet without its cells, for what open reads around them
+    // (sparklines, OLE objects): this one walk instead of one per reader.
+    let mut without_cells = Writer::new(Vec::new());
+    // The qualified name of <sheetData> while the walk is inside it.
+    let mut sheet_data: Option<Vec<u8>> = None;
+    let mut reached_end = false;
     let counted = loop {
-        match reader.read_event_into(&mut buffer)? {
+        let event = reader.read_event_into(&mut buffer)?;
+        match &event {
+            Event::Start(element) if element.local_name().as_ref() == b"sheetData" => {
+                sheet_data = Some(element.name().as_ref().to_vec());
+            }
+            Event::End(element) if element.local_name().as_ref() == b"sheetData" => {
+                sheet_data = None;
+            }
+            Event::Empty(element) if element.local_name().as_ref() == b"sheetData" => {}
+            Event::Eof => {}
+            _ if sheet_data.is_none() => without_cells.write_event(event.borrow())?,
+            _ => {}
+        }
+        match event {
             Event::Start(element) | Event::Empty(element)
                 if element.local_name().as_ref() == b"dimension" =>
             {
@@ -436,6 +459,7 @@ pub(crate) fn read_sheet_dimensions(
                 }
             }
             Event::Eof => {
+                reached_end = true;
                 let (dim_rows, dim_columns) = dimensions.unwrap_or((0, 0));
                 let (row_count, column_count) = (
                     declared_extent(dim_rows, SHEET_MAX_ROWS).max(maximum_row + 1),
@@ -447,6 +471,20 @@ pub(crate) fn read_sheet_dimensions(
         }
         buffer.clear();
     };
+    // A walk that stopped at or inside the cells goes on to the end for what
+    // follows them, passing the cells it has not read by their tags alone.
+    if let Some(name) = sheet_data.filter(|_| !reached_end) {
+        reader.read_to_end_into(QName(&name), &mut buffer)?;
+    }
+    while !reached_end {
+        buffer.clear();
+        match reader.read_event_into(&mut buffer)? {
+            Event::Eof => reached_end = true,
+            event => without_cells.write_event(event)?,
+        }
+    }
+    let without_cells = String::from_utf8(without_cells.into_inner())
+        .map_err(|_| SidecarError::Workbook(format!("{worksheet_path} is not valid UTF-8.")))?;
     let (row_count, column_count, counted) = counted;
     Ok(SheetDimensions {
         row_count,
@@ -470,6 +508,7 @@ pub(crate) fn read_sheet_dimensions(
         outline_level_col,
         outline_summary_below,
         outline_summary_right,
+        without_cells,
     })
 }
 

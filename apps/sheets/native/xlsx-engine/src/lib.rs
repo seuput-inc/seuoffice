@@ -386,7 +386,9 @@ impl WorkbookSessions {
                     })
                 })
                 .collect();
-            let sparklines = read_sheet_sparklines(&mut archive, &worksheet_path)?;
+            let sparklines = parse_sparkline_groups(&mut Reader::from_reader(
+                dimensions.without_cells.as_bytes(),
+            ))?;
             let cell_images = read_sheet_cell_images(
                 &mut archive,
                 &worksheet_path,
@@ -482,6 +484,7 @@ impl WorkbookSessions {
             visual_sources.push(SheetVisualSource {
                 sheet_id: id,
                 worksheet_path: worksheet_path.clone(),
+                without_cells: dimensions.without_cells,
             });
             runtimes.push(SheetRuntime::new(worksheet_path));
         }
