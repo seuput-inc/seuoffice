@@ -359,10 +359,13 @@ async function oneRound(
       }
       expect(errors, `${name}: page errors`).toEqual([])
       // italic cells draw with their bundled italic face from the first frame on, never a
-      // substitute. Only up to the scroll: during it WebKit now and then reports the bold italic
-      // face unloaded again for one draw, with every face loaded at start too (as on desktop).
+      // substitute. WebKit only up to the scroll: during it WebKit now and then reports the bold
+      // italic face unloaded again for one draw, with every face loaded at start too.
+      const webkit = browser.browserType().name() === 'webkit'
       expect(
-        recorded.italicUnloaded.filter((draw) => draw.at < scrollStart).map((draw) => draw.font),
+        recorded.italicUnloaded
+          .filter((draw) => !webkit || draw.at < scrollStart)
+          .map((draw) => draw.font),
         `${name}: italic drawn before its face loaded`,
       ).toEqual([])
       if (name.startsWith('italic')) expect(recorded.italicDraws, 'italic draws').toBeGreaterThan(0)
