@@ -1,6 +1,6 @@
 import ReactDOM from 'react-dom/client'
 import { htmlDir, htmlLang, type Lang } from '@seuoffice/i18n'
-import { applyAiPanelPrefs, installScreenTips, webViewMode } from '@seuoffice/ui'
+import { applyAiPanelPrefs, installScreenTips, webShowOnly } from '@seuoffice/ui'
 
 import '@seuoffice/ui/tokens.css'
 import '@seuoffice/ui/screentip.css'
@@ -62,7 +62,7 @@ function applyDocumentTheme(theme: DocTheme): void {
 // (openLazyWorkbook).
 async function loadCellFonts(): Promise<void> {
   await untilCellFontsLoaded(
-    Promise.all([registerTextDingbatsFace(), loadBootCellFaces(webViewMode())]),
+    Promise.all([registerTextDingbatsFace(), loadBootCellFaces(webShowOnly())]),
   )
 }
 
