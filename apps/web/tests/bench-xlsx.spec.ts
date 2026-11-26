@@ -4,8 +4,9 @@
 // host does (view mode, a fresh browser context each round, so every round is a
 // first visit). It reports what the host waits on: the time from the click to
 // drawn cells, frames while the wheel scrolls for 3 s, main-thread stalls after
-// the first paint, the growth of the browser's document processes' memory, and
-// the bytes the page fetched (brotli sizes of the files served).
+// the first paint, the growth of the browser's document processes' memory (also less what a
+// cross-origin iframe with no app in it grows them by, the control), and the bytes the page
+// fetched (brotli sizes of the files served).
 // Runs only under SEUOFFICE_BENCH_XLSX=<label>, against a built apps/web/dist:
 //   SEUOFFICE_BENCH_XLSX=main SEUOFFICE_BENCH_XLSX_SIZES=large,xl \
 //     npx playwright test --config apps/web/playwright.config.ts bench-xlsx
@@ -14,12 +15,13 @@
 // which tools/bench-xlsx-compare.mjs compares between two labels.
 // SEUOFFICE_BENCH_XLSX_SLOW_ITALIC_MS=<ms> holds back the italic Carlito faces
 // that long, as a slow network would, for the italic face check.
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { brotliCompressSync, constants } from 'node:zlib'
-import { expect, test, type Browser, type Frame, type Page } from '@playwright/test'
+import { chromium, expect, test, type Browser, type Frame, type Page } from '@playwright/test'
 import {
   BUNDLE_HOST,
   buildEmbedScript,
@@ -36,7 +38,7 @@ const label = process.env.SEUOFFICE_BENCH_XLSX
 const ROUNDS = Number(process.env.SEUOFFICE_BENCH_XLSX_ROUNDS ?? 3)
 const SIZES = (
   process.env.SEUOFFICE_BENCH_XLSX_SIZES ??
-  'small,medium,large,styled10,xl,italic,italicruns,italicfrozen'
+  'small,medium,large,styled10,xl,italic,italicruns,italicfrozen,rules'
 ).split(',') as FixtureName[]
 const SLOW_ITALIC_MS = Number(process.env.SEUOFFICE_BENCH_XLSX_SLOW_ITALIC_MS ?? 0)
 const SCROLL_MS = 3_000
@@ -63,6 +65,10 @@ interface Round {
   /** the long tasks the browser itself reports (Chromium only) over the same span */
   longTasksOver200ms: number[] | null
   memoryGrowthMb: number
+  /** the host's measure (peakProcessSampler), from 400 ms before the click to 1 s after the scroll */
+  processPeakMb: number
+  /** the same over macOS phys_footprint, compressed memory included */
+  processPeakFootprintMb: number
   transfer: { files: number; rawMb: number; brotliMb: number; repeated: string[] }
 }
 
@@ -200,8 +206,8 @@ const webkitContentBefore = (): Set<number> =>
       .map((row) => row.pid),
   )
 
-/** RSS in MB of the document processes of this test worker's browser: Chromium renderers, WebKit content */
-function documentProcessesMb(notMine: ReadonlySet<number>): number {
+/** RSS in MB of each document process of this test worker's browser: Chromium renderers, WebKit content */
+function documentProcesses(notMine: ReadonlySet<number>): Map<number, number> {
   const rows = processes()
   const mine = new Set([process.pid])
   for (let grew = true; grew;) {
@@ -213,12 +219,94 @@ function documentProcessesMb(notMine: ReadonlySet<number>): number {
       }
     }
   }
-  const documents = rows.filter(
-    (row) =>
-      (mine.has(row.pid) && /--type=renderer/.test(row.command)) ||
-      (WEBKIT_CONTENT.test(row.command) && !notMine.has(row.pid)),
+  return new Map(
+    rows
+      .filter(
+        (row) =>
+          (mine.has(row.pid) && /--type=renderer/.test(row.command)) ||
+          (WEBKIT_CONTENT.test(row.command) && !notMine.has(row.pid)),
+      )
+      .map((row) => [row.pid, row.rss / 1024]),
   )
-  return documents.reduce((sum, row) => sum + row.rss, 0) / 1024
+}
+
+function documentProcessesMb(notMine: ReadonlySet<number>): number {
+  return [...documentProcesses(notMine).values()].reduce((sum, rss) => sum + rss, 0)
+}
+
+/** The top call that reads macOS phys_footprint (MEM: resident and compressed memory together) */
+const footprintArgs = (pids: readonly number[]): string[] => [
+  '-l',
+  '1',
+  '-stats',
+  'pid,mem',
+  ...pids.flatMap((pid) => ['-pid', String(pid)]),
+]
+
+/** phys_footprint in MB by pid, from what that top call printed */
+function parseFootprints(text: string): Map<number, number> {
+  const unit: Record<string, number> = { B: 1 / 1024 / 1024, K: 1 / 1024, M: 1, G: 1024 }
+  const out = new Map<number, number>()
+  for (const match of text.matchAll(/^(\d+)\s+([\d.]+)([BKMG])[+-]?\s*$/gm)) {
+    out.set(Number(match[1]), Number(match[2]) * unit[match[3]!]!)
+  }
+  return out
+}
+
+/**
+ * The host's measure (YUYU, 2026-11-27): each document process's peak RSS, sampled every 150 ms,
+ * less its RSS before the click when it ran then; a process born after the click (the
+ * cross-origin SeuOffice renderer) counts whole. The largest of them. The same rule over macOS
+ * phys_footprint, sampled every 0.5 s: RSS leaves out memory the system compressed.
+ */
+function peakProcessSampler(
+  notMine: ReadonlySet<number>,
+): () => Promise<{ rssMb: number; footprintMb: number }> {
+  const before = documentProcesses(notMine)
+  const footprintBefore =
+    before.size === 0
+      ? new Map<number, number>()
+      : parseFootprints(
+          execFileSync('/usr/bin/top', footprintArgs([...before.keys()]), { encoding: 'utf8' }),
+        )
+  const peaks = new Map<number, number>()
+  const footprintPeaks = new Map<number, number>()
+  const sample = (): void => {
+    for (const [pid, rss] of documentProcesses(notMine)) {
+      peaks.set(pid, Math.max(peaks.get(pid) ?? 0, rss))
+    }
+  }
+  const timer = setInterval(sample, 150)
+  let stopped = false
+  const run = promisify(execFile)
+  const sampleFootprints = async (): Promise<void> => {
+    if (peaks.size === 0) return
+    const { stdout } = await run('/usr/bin/top', footprintArgs([...peaks.keys()]))
+    for (const [pid, mb] of parseFootprints(stdout)) {
+      footprintPeaks.set(pid, Math.max(footprintPeaks.get(pid) ?? 0, mb))
+    }
+  }
+  const footprintLoop = (async () => {
+    while (!stopped) {
+      await sampleFootprints().catch(() => {})
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  })()
+  const largest = (peakOf: Map<number, number>, baseOf: Map<number, number>): number =>
+    Math.max(0, ...[...peakOf].map(([pid, peak]) => peak - (baseOf.get(pid) ?? 0)))
+  return async () => {
+    if (!stopped) {
+      stopped = true
+      clearInterval(timer)
+      sample()
+      await footprintLoop
+      await sampleFootprints().catch(() => {})
+    }
+    return {
+      rssMb: largest(peaks, before),
+      footprintMb: largest(footprintPeaks, footprintBefore),
+    }
+  }
 }
 
 const brotliSizes = new Map<string, number>()
@@ -292,6 +380,8 @@ async function oneRound(
     page.on('pageerror', (error) => errors.push(error.message))
     const urls = trackFetches(page, sites.bundle)
     await page.goto(`${sites.host}/host.html`)
+    await page.waitForTimeout(400)
+    const processPeak = peakProcessSampler(notMine)
     const memoryBefore = documentProcessesMb(notMine)
     let memoryPeak = memoryBefore
     const sampler = setInterval(() => {
@@ -336,6 +426,8 @@ async function oneRound(
         await page.waitForTimeout(WHEEL_PAUSE_MS)
       }
       const scrollEnd = await now()
+      await page.waitForTimeout(1_000)
+      const processPeaks = await processPeak()
       const recorded = await frame.evaluate(() => window.benchXlsx!)
       const gaps = (from: number, to: number): number[] => {
         const frames = recorded.frames.filter((t) => t >= from && t <= to)
@@ -359,10 +451,13 @@ async function oneRound(
       }
       expect(errors, `${name}: page errors`).toEqual([])
       // italic cells draw with their bundled italic face from the first frame on, never a
-      // substitute. Only up to the scroll: during it WebKit now and then reports the bold italic
-      // face unloaded again for one draw, with every face loaded at start too (as on desktop).
+      // substitute. WebKit only up to the scroll: during it WebKit now and then reports the bold
+      // italic face unloaded again for one draw, with every face loaded at start too.
+      const webkit = browser.browserType().name() === 'webkit'
       expect(
-        recorded.italicUnloaded.filter((draw) => draw.at < scrollStart).map((draw) => draw.font),
+        recorded.italicUnloaded
+          .filter((draw) => !webkit || draw.at < scrollStart)
+          .map((draw) => draw.font),
         `${name}: italic drawn before its face loaded`,
       ).toEqual([])
       if (name.startsWith('italic')) expect(recorded.italicDraws, 'italic draws').toBeGreaterThan(0)
@@ -384,8 +479,48 @@ async function oneRound(
                 .map((task) => Math.round(task.duration))
             : null,
         memoryGrowthMb: Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore,
+        processPeakMb: processPeaks.rssMb,
+        processPeakFootprintMb: processPeaks.footprintMb,
         transfer: await transfer(urls),
       }
+    } finally {
+      clearInterval(sampler)
+      void processPeak()
+    }
+  } finally {
+    await context.close()
+  }
+}
+
+/**
+ * The control: the same host opens a cross-origin iframe of a page with no app in it (the
+ * bundle site's bare host page), held as long as a round's open and scroll, measured the same
+ * way. Its growth is what any cross-origin iframe costs, whatever it shows.
+ */
+async function controlRound(
+  browser: Browser,
+  sites: { host: string; bundle: string },
+): Promise<number> {
+  const notMine = webkitContentBefore()
+  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 })
+  try {
+    const page = await context.newPage()
+    await page.goto(`${sites.host}/host.html`)
+    const memoryBefore = documentProcessesMb(notMine)
+    let memoryPeak = memoryBefore
+    const sampler = setInterval(() => {
+      memoryPeak = Math.max(memoryPeak, documentProcessesMb(notMine))
+    }, 250)
+    try {
+      await page.evaluate((src) => {
+        const frame = document.createElement('iframe')
+        frame.src = src
+        frame.style.cssText = 'width:100%;height:100%;border:0'
+        document.getElementById('viewer')!.append(frame)
+        return new Promise((loaded) => frame.addEventListener('load', loaded, { once: true }))
+      }, `${sites.bundle}/host.html`)
+      await page.waitForTimeout(5_000 + 300 + SCROLL_MS)
+      return Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore
     } finally {
       clearInterval(sampler)
     }
@@ -421,49 +556,67 @@ test.describe('xlsx view benchmark', () => {
   })
 
   test(`opens and scrolls large workbooks in view mode (${label})`, async ({
-    browser,
+    browser: given,
   }, testInfo) => {
     const browserName = testInfo.project.name
-    mkdirSync(out, { recursive: true })
-    const results: Record<string, { rounds: Round[]; median: Record<string, number> }> = {}
-    const sites = { host: origin(host!, HOST_NAME), bundle: origin(bundle!, BUNDLE_HOST) }
-    for (const name of SIZES) {
-      const rounds: Round[] = []
-      for (let round = 0; round < ROUNDS; round++) {
-        const shots =
-          round === 0 ? resolve(out, `bench-xlsx-${label}-${browserName}-${name}`) : null
-        rounds.push(await oneRound(browser, sites, name, shots))
-      }
-      results[name] = {
-        rounds,
-        median: {
-          firstCellsMs: median(rounds.map((r) => r.firstCellsMs)),
-          scrollFps: median(rounds.map((r) => r.scrollFps)),
-          scrollMaxGapMs: median(rounds.map((r) => r.scrollMaxGapMs)),
-          wheelsReceived: median(rounds.map((r) => r.wheels.received)),
-          stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
-          memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
-          brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
-        },
-      }
-      console.log(
-        `[bench-xlsx] ${label} ${browserName} ${name}`,
-        JSON.stringify(results[name].median),
-      )
-      // after each workbook: a later one that fails keeps the earlier results
-      writeFileSync(
-        resolve(out, `bench-xlsx-${label}-${browserName}.json`),
-        JSON.stringify(
-          {
-            label,
-            browser: browserName,
-            wheel: { px: WHEEL_PX, pauseMs: WHEEL_PAUSE_MS },
-            results,
+    // Chrome puts a cross-site iframe in a process of its own, and so does this Chromium: the
+    // one Playwright launches keeps it in the host's process, which leaves that process's own
+    // memory out of the growth
+    const isolated =
+      browserName === 'chromium' ? await chromium.launch({ args: ['--site-per-process'] }) : null
+    const browser = isolated ?? given
+    try {
+      mkdirSync(out, { recursive: true })
+      const results: Record<string, { rounds: Round[]; median: Record<string, number> }> = {}
+      const sites = { host: origin(host!, HOST_NAME), bundle: origin(bundle!, BUNDLE_HOST) }
+      const control: number[] = []
+      for (let round = 0; round < ROUNDS; round++) control.push(await controlRound(browser, sites))
+      const controlMb = median(control)
+      console.log(`[bench-xlsx] ${label} ${browserName} control`, JSON.stringify({ controlMb }))
+      for (const name of SIZES) {
+        const rounds: Round[] = []
+        for (let round = 0; round < ROUNDS; round++) {
+          const shots =
+            round === 0 ? resolve(out, `bench-xlsx-${label}-${browserName}-${name}`) : null
+          rounds.push(await oneRound(browser, sites, name, shots))
+        }
+        results[name] = {
+          rounds,
+          median: {
+            firstCellsMs: median(rounds.map((r) => r.firstCellsMs)),
+            scrollFps: median(rounds.map((r) => r.scrollFps)),
+            scrollMaxGapMs: median(rounds.map((r) => r.scrollMaxGapMs)),
+            wheelsReceived: median(rounds.map((r) => r.wheels.received)),
+            stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
+            memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
+            memoryGrowthOverControlMb: median(rounds.map((r) => r.memoryGrowthMb)) - controlMb,
+            processPeakMb: median(rounds.map((r) => r.processPeakMb)),
+            processPeakFootprintMb: median(rounds.map((r) => r.processPeakFootprintMb)),
+            brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
           },
-          null,
-          1,
-        ) + '\n',
-      )
+        }
+        console.log(
+          `[bench-xlsx] ${label} ${browserName} ${name}`,
+          JSON.stringify(results[name].median),
+        )
+        // after each workbook: a later one that fails keeps the earlier results
+        writeFileSync(
+          resolve(out, `bench-xlsx-${label}-${browserName}.json`),
+          JSON.stringify(
+            {
+              label,
+              browser: browserName,
+              wheel: { px: WHEEL_PX, pauseMs: WHEEL_PAUSE_MS },
+              control: { rounds: control, medianMb: controlMb },
+              results,
+            },
+            null,
+            1,
+          ) + '\n',
+        )
+      }
+    } finally {
+      await isolated?.close()
     }
   })
 })

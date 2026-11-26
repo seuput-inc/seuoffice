@@ -2,15 +2,25 @@
 // the way openpyxl writes them (inline strings, numbers, formulas without a
 // cached value) so they match the shapes a host reported: five sizes from 200
 // cells to 8 million, one with styles, merged cells, formulas and a frozen
-// pane, and three small ones whose italic cells check the fonts they are drawn
-// with. Deterministic: the same name always gives the same bytes.
+// pane, three small ones whose italic cells check the fonts they are drawn
+// with, and one whose conditional formats, validations and merges the grid
+// draws through its render extensions. Deterministic: the same name always
+// gives the same bytes.
 import { once } from 'node:events'
 import { createWriteStream, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { crc32, createDeflateRaw } from 'node:zlib'
 
 export type FixtureName =
-  'small' | 'medium' | 'large' | 'styled10' | 'xl' | 'italic' | 'italicruns' | 'italicfrozen'
+  | 'small'
+  | 'medium'
+  | 'large'
+  | 'styled10'
+  | 'xl'
+  | 'italic'
+  | 'italicruns'
+  | 'italicfrozen'
+  | 'rules'
 
 interface SheetSpec {
   rows: number
@@ -22,7 +32,7 @@ interface SheetSpec {
    * run (both small enough to load whole at open); italicfrozen: only the frozen first row's
    * column D, in a sheet too large to load whole that opens at row 5000
    */
-  styled: 'none' | 'medium' | 'styled10' | 'italic' | 'italicruns' | 'italicfrozen'
+  styled: 'none' | 'medium' | 'styled10' | 'italic' | 'italicruns' | 'italicfrozen' | 'rules'
 }
 
 interface WorkbookSpec {
@@ -53,6 +63,9 @@ const SPECS: Record<FixtureName, WorkbookSpec> = {
     sheets: 1,
     sheet: { rows: 6_000, cols: 10, text: (c) => c % 3 === 0, styled: 'italicfrozen' },
   },
+  // data bars, a color scale, icons, a value rule and a formula rule, a list validation and
+  // merges under a frozen row, too large to load whole
+  rules: { sheets: 1, sheet: { rows: 6_000, cols: 10, text: (c) => c % 3 === 0, styled: 'rules' } },
 }
 
 /** the rows of each workbook's sheets: its last row's first cell reads "항목 <rows>-0" */
@@ -101,6 +114,27 @@ const STYLES =
     return `<xf numFmtId="${format}" fontId="0" fillId="${fill}" borderId="${border}" xfId="0" applyNumberFormat="${mix & 4 ? 1 : 0}" applyFill="${mix & 1}" applyBorder="${mix & 2 ? 1 : 0}"/>`
   }).join('') +
   '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
+
+/** STYLES plus the differential format the rules fixture's value and formula rules apply */
+const RULES_STYLES = STYLES.replace(
+  '</styleSheet>',
+  '<dxfs count="1"><dxf><font><b/><color rgb="FF9C0006"/></font><fill><patternFill><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf></dxfs></styleSheet>',
+)
+
+/** The rules fixture's conditional formats, validation and merges, after its sheetData */
+function rulesXml(rows: number): string {
+  const merges: string[] = []
+  for (let row = 2; row <= rows; row += 40) merges.push(`<mergeCell ref="I${row}:J${row + 1}"/>`)
+  return (
+    `<mergeCells count="${merges.length}">${merges.join('')}</mergeCells>` +
+    `<conditionalFormatting sqref="B2:B${rows}"><cfRule type="dataBar" priority="1"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar></cfRule></conditionalFormatting>` +
+    `<conditionalFormatting sqref="C2:C${rows}"><cfRule type="colorScale" priority="2"><colorScale><cfvo type="min"/><cfvo type="percentile" val="50"/><cfvo type="max"/><color rgb="FFF8696B"/><color rgb="FFFFEB84"/><color rgb="FF63BE7B"/></colorScale></cfRule></conditionalFormatting>` +
+    `<conditionalFormatting sqref="E2:E${rows}"><cfRule type="iconSet" priority="3"><iconSet iconSet="3Arrows"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="67"/></iconSet></cfRule></conditionalFormatting>` +
+    `<conditionalFormatting sqref="F2:F${rows}"><cfRule type="cellIs" dxfId="0" priority="4" operator="greaterThan"><formula>500</formula></cfRule></conditionalFormatting>` +
+    `<conditionalFormatting sqref="H2:H${rows}"><cfRule type="expression" dxfId="0" priority="5"><formula>MOD(ROW(),7)=0</formula></cfRule></conditionalFormatting>` +
+    `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showDropDown="0" sqref="G2:G${rows}"><formula1>"가,나,다"</formula1></dataValidation></dataValidations>`
+  )
+}
 
 /** STYLES plus font 2 (italic Calibri) and cellXfs 10 using it */
 const ITALIC_STYLES = STYLES.replace('<fonts count="2">', '<fonts count="3">')
@@ -169,7 +203,9 @@ function* sheetXml(spec: SheetSpec, next: () => number): Generator<string> {
       ? '<pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"/><selection pane="bottomRight" activeCell="B2" sqref="B2"/>'
       : spec.styled === 'italicfrozen'
         ? '<pane ySplit="1" topLeftCell="A5000" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A5000" sqref="A5000"/>'
-        : '<selection activeCell="A1" sqref="A1"/>'
+        : spec.styled === 'rules'
+          ? '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A2" sqref="A2"/>'
+          : '<selection activeCell="A1" sqref="A1"/>'
   yield '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
     `<dimension ref="A1:${column(spec.cols - 1)}${spec.rows}"/>` +
@@ -190,6 +226,7 @@ function* sheetXml(spec: SheetSpec, next: () => number): Generator<string> {
       merges.push(`<mergeCell ref="A${row}:B${row + 1}"/>`)
     chunk += `<mergeCells count="${merges.length}">${merges.join('')}</mergeCells>`
   }
+  if (spec.styled === 'rules') chunk += rulesXml(spec.rows)
   yield chunk +
     '<pageMargins left="0.75" right="0.75" top="1" bottom="1" header="0.5" footer="0.5"/></worksheet>'
 }
@@ -225,7 +262,8 @@ function packageParts({ sheets, sheet }: WorkbookSpec): Record<string, string> {
         )
         .join('') +
       `<Relationship Id="rId${sheets + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
-    'xl/styles.xml': sheet.styled === 'italic' ? ITALIC_STYLES : STYLES,
+    'xl/styles.xml':
+      sheet.styled === 'italic' ? ITALIC_STYLES : sheet.styled === 'rules' ? RULES_STYLES : STYLES,
   }
 }
 

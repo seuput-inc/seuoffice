@@ -195,12 +195,7 @@ import type { SheetOutlineState } from './outline-model'
 import { externalLinkOverlayCell } from './external-link-values'
 import type { ExternalLinkCell } from '../shared/desktop-api'
 import { isManualCalculation } from './calc-options'
-import {
-  italicFacesFor,
-  registerCellFontAliases,
-  richRunFamilies,
-  untilCellFontsLoaded,
-} from './cell-font-fallback'
+import { runFacesFor } from './cell-font-fallback'
 import { noteFormulaStreamChunk, requestFullRecalcAfterStream } from './formula-stream-hold'
 import { endLoadingNotice, showLoadingNotice } from './loading-notice'
 import { SharedFormulaLookup, indexedFormulas } from './shared-formula-index'
@@ -1418,6 +1413,13 @@ export async function loadVisibleRange(
   ) {
     return
   }
+  // A load something waits on (an AI read, a bulk edit) is not replaced: the screen follows once
+  // it is done (ensureLazyRangeLoaded)
+  const waits = viewportWaits.get(state)
+  if (waits?.held.has(sheetId)) {
+    waits.deferred.add(sheetId)
+    return
+  }
   const range = createBufferedRange(shown, screenRowCount, screenColumnCount)
   const generation = bumpViewportGeneration(state, sheetId)
   await loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage)
@@ -1433,6 +1435,13 @@ export async function loadVisibleRange(
     generation,
   )
 }
+
+/// The sheets whose loads something waits on, with how many, and the sheets whose screen asked
+/// for a window meanwhile
+const viewportWaits = new WeakMap<
+  LazyWorkbookState,
+  { held: Map<string, number>; deferred: Set<string> }
+>()
 
 /// Every viewport load supersedes the previous one for its sheet: a scroll
 /// burst must not leave several hidden-row extensions racing, each seeing the
@@ -1655,7 +1664,7 @@ export async function activateFormulaClosure(
       } catch {
         return giveUp()
       }
-      await italicFacesFor(result.cells)
+      await runFacesFor(result.cells)
       if (lazyWorkbookRef.current !== state) return
       // Same hazard as the pre-install guard: a structural edit landing while
       // the read was in flight shifts screen coordinates, so this file-space
@@ -2065,8 +2074,8 @@ export async function readSheetRangeMapped(
     if (!sidecarCrashNotified || !(await recoverSidecarSession(state))) throw error
     mapped = await readSheetRangeMappedOnce(state, sheetId, screenRange, sheet)
   }
-  // every range the grid installs from the file comes through here, its italic runs too
-  if (mapped) await italicFacesFor(mapped.screen.cells)
+  // every range the grid installs from the file comes through here, its rich-text runs too
+  if (mapped) await runFacesFor(mapped.screen.cells)
   return mapped
 }
 
@@ -3368,13 +3377,6 @@ async function loadRange(
     if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
       return
     }
-    const richFamilies = mapped ? richRunFamilies(mapped.screen.cells) : null
-    if (richFamilies?.size) {
-      await untilCellFontsLoaded(registerCellFontAliases(richFamilies))
-      if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
-        return
-      }
-    }
     if (!mapped) {
       // The whole range is journal-owned (inserted this session): nothing
       // streams into it, but cells written there may have been evicted by an
@@ -3704,18 +3706,41 @@ export async function ensureLazyRangeLoaded(
   ) {
     return false
   }
-  await loadRange(
-    runtime,
-    lazyWorkbookRef,
-    worksheet,
-    range,
-    setMessage,
-    false,
-    true,
-    0,
-    null,
-    bulk,
-  )
+  const sheetId = worksheet.getSheetId()
+  let waits = viewportWaits.get(initialState)
+  if (!waits) {
+    waits = { held: new Map(), deferred: new Set() }
+    viewportWaits.set(initialState, waits)
+  }
+  waits.held.set(sheetId, (waits.held.get(sheetId) ?? 0) + 1)
+  try {
+    await loadRange(
+      runtime,
+      lazyWorkbookRef,
+      worksheet,
+      range,
+      setMessage,
+      false,
+      true,
+      0,
+      null,
+      bulk,
+    )
+  } finally {
+    const left = (waits.held.get(sheetId) ?? 1) - 1
+    if (left > 0) waits.held.set(sheetId, left)
+    else {
+      waits.held.delete(sheetId)
+      // The screen moved while the load ran: its window follows on the next task, after the
+      // caller has read what it waited for (a read that waited reads at once)
+      if (waits.deferred.delete(sheetId)) {
+        setTimeout(() => {
+          if (lazyWorkbookRef.current !== initialState) return
+          void loadVisibleRange(runtime, lazyWorkbookRef, worksheet, setMessage).catch(() => {})
+        }, 0)
+      }
+    }
+  }
   const state = lazyWorkbookRef.current
   const loaded = state?.loadedRanges.get(worksheet.getSheetId())
   return state === initialState && loaded !== undefined && containsRange(loaded, range)
@@ -6150,7 +6175,7 @@ async function preloadEntireWorkbookInner(
       } catch {
         return
       }
-      await italicFacesFor(result.cells)
+      await runFacesFor(result.cells)
       if (lazyWorkbookRef.current !== state) return
       // Structural edits made while the preload runs shift screen positions;
       // install each block through the current mapping.
