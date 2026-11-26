@@ -38,7 +38,7 @@ const label = process.env.SEUOFFICE_BENCH_XLSX
 const ROUNDS = Number(process.env.SEUOFFICE_BENCH_XLSX_ROUNDS ?? 3)
 const SIZES = (
   process.env.SEUOFFICE_BENCH_XLSX_SIZES ??
-  'small,medium,large,styled10,xl,italic,italicruns,italicfrozen'
+  'small,medium,large,styled10,xl,italic,italicruns,italicfrozen,rules'
 ).split(',') as FixtureName[]
 const SLOW_ITALIC_MS = Number(process.env.SEUOFFICE_BENCH_XLSX_SLOW_ITALIC_MS ?? 0)
 const SCROLL_MS = 3_000
