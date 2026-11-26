@@ -5119,3 +5119,116 @@ fn encrypted_workbook_reports_password_protection() {
         "expected a password-protection explanation, got: {message}"
     );
 }
+
+/// A sheet indexed a chunk at a time between reads, as the build without
+/// threads does, reads the same as one indexed in one go: every cell, row,
+/// merge and conditional format, at every row.
+#[test]
+fn stepwise_indexing_reads_like_one_walk() {
+    const ROWS: usize = 6_000;
+    let mut sheet = String::from(
+        r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:E6000"/><sheetData>"#,
+    );
+    for row in 1..=ROWS {
+        let attributes = match row % 97 {
+            0 => r#" ht="30" customHeight="1""#,
+            1 => r#" hidden="1""#,
+            _ => "",
+        };
+        sheet.push_str(&format!(
+            r#"<row r="{row}"{attributes}><c r="A{row}" t="inlineStr"><is><t>item {row}</t></is></c><c r="B{row}"><v>{}</v></c><c r="C{row}"><v>{}.25</v></c>"#,
+            row * 3,
+            row % 1000,
+        ));
+        if row == 2 {
+            sheet
+                .push_str(r#"<c r="D2"><f t="shared" ref="D2:D6000" si="0">B2*2</f><v>12</v></c>"#);
+        } else if row > 2 {
+            sheet.push_str(&format!(
+                r#"<c r="D{row}"><f t="shared" si="0"/><v>{}</v></c>"#,
+                row * 6
+            ));
+        }
+        sheet.push_str("</row>");
+    }
+    sheet.push_str(r#"</sheetData><mergeCells count="2"><mergeCell ref="E10:E11"/><mergeCell ref="E5000:E5003"/></mergeCells>"#);
+    sheet.push_str(r#"<conditionalFormatting sqref="B1:B6000"><cfRule type="cellIs" priority="1" operator="greaterThan"><formula>100</formula></cfRule></conditionalFormatting></worksheet>"#);
+    let (_dir, path) = open_fixture(&[
+        (
+            "xl/workbook.xml",
+            r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+        ),
+        ("xl/worksheets/sheet1.xml", &sheet),
+    ]);
+    let rows = |start_row: usize, end_row: usize| CellRange {
+        start_row,
+        end_row,
+        start_column: 0,
+        end_column: 4,
+    };
+    let everything = rows(0, ROWS - 1);
+
+    let mut one_walk = WorkbookSessions::new();
+    let whole = one_walk.open(&path).unwrap();
+    let expected = loop {
+        let result = one_walk
+            .read_range(&whole.session_id, "sheet-1", &everything)
+            .unwrap();
+        if result.indexing_complete {
+            break result;
+        }
+    };
+
+    let mut stepwise = WorkbookSessions::new();
+    let opened = stepwise.open(&path).unwrap();
+    let id = opened.session_id.as_str();
+    stepwise
+        .sessions
+        .get_mut(id)
+        .unwrap()
+        .start_parser(0, false)
+        .unwrap();
+    // the first read indexes only as far as it reads
+    let top = stepwise.read_range(id, "sheet-1", &rows(0, 99)).unwrap();
+    assert!(!top.indexing_complete);
+    assert!(
+        top.indexed_through_row
+            .is_some_and(|row| (99..ROWS - 1).contains(&row))
+    );
+    // the first row has no formula cell
+    assert_eq!(top.cells.len(), 100 * 4 - 1);
+    // a read far past the walk answers with nothing rather than walking there
+    let far = stepwise
+        .read_range(id, "sheet-1", &rows(5_500, 5_599))
+        .unwrap();
+    assert!(far.cells.is_empty() && !far.indexing_complete);
+    // a read just past it walks on to it
+    let near = stepwise.read_range(id, "sheet-1", &rows(600, 699)).unwrap();
+    let expected_near: Vec<_> = expected
+        .cells
+        .iter()
+        .filter(|cell| (600..=699).contains(&cell.row))
+        .collect();
+    assert_eq!(near.cells.len(), 100 * 4);
+    assert_eq!(
+        serde_json::to_value(&near.cells).unwrap(),
+        serde_json::to_value(&expected_near).unwrap()
+    );
+    let mut steps = 0;
+    while stepwise.index_step(1) {
+        steps += 1;
+    }
+    assert!(steps > 10, "the rest of the walk took {steps} steps");
+    let actual = stepwise.read_range(id, "sheet-1", &everything).unwrap();
+    assert!(actual.indexing_complete);
+    assert_eq!(
+        serde_json::to_value(&actual).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+    assert_eq!(actual.merges.len(), 2);
+    assert_eq!(actual.conditional_rules.len(), 1);
+}

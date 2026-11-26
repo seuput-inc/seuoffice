@@ -3,6 +3,8 @@
 //! setup and header/footer text into the session's `SheetIndex`.
 
 use super::*;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
 /// The worksheet extension carrying x14 data validations. Excel parks
 /// cross-sheet rules in an extension of its own; the x14 conditional
@@ -10,8 +12,11 @@ use super::*;
 /// ignores validation rules placed there.
 pub(crate) const X14_DV_EXT_URI: &str = "{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}";
 
+/// Walks the worksheet once. The future pauses (returns pending once) after
+/// each flushed chunk: a thread drives it straight through (`run_to_end`), a
+/// build without threads polls it a few chunks at a time between requests.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn index_worksheet(
+pub(crate) async fn index_worksheet(
     workbook_path: &Path,
     worksheet_path: &str,
     sheet_index: usize,
@@ -99,8 +104,14 @@ pub(crate) fn index_worksheet(
     // header/footer), or None.
     let mut header_footer_section: Option<HeaderFooterSection> = None;
     let mut legacy_drawing_hf_id: Option<String> = None;
+    // A chunk was flushed: the readers may see it before the walk goes on.
+    let mut flushed = false;
 
     loop {
+        if flushed {
+            flushed = false;
+            ChunkPause::default().await;
+        }
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -128,6 +139,7 @@ pub(crate) fn index_worksheet(
                             row_chunk.saturating_mul(CHUNK_ROW_COUNT).saturating_sub(1),
                         )?;
                         chunk_index = row_chunk;
+                        flushed = true;
                     }
                     chunk.rows.push(property);
                 }
@@ -158,6 +170,7 @@ pub(crate) fn index_worksheet(
                             cell_chunk.saturating_mul(CHUNK_ROW_COUNT).saturating_sub(1),
                         )?;
                         chunk_index = cell_chunk;
+                        flushed = true;
                     }
                     if let Some(cell) =
                         builder.finish(shared_strings, styled_xfs, rich_image_cells)?
@@ -352,6 +365,7 @@ pub(crate) fn index_worksheet(
                             cell_chunk.saturating_mul(CHUNK_ROW_COUNT).saturating_sub(1),
                         )?;
                         chunk_index = cell_chunk;
+                        flushed = true;
                     }
                     let shared_follower = builder.shared_follower;
                     if let Some(cell) =
@@ -1286,6 +1300,36 @@ pub(crate) fn row_property<R: std::io::BufRead>(
         collapsed,
         style_index,
     }))
+}
+
+/// The pause `index_worksheet` takes after each flushed chunk: pending on the
+/// first poll, ready on the next.
+#[derive(Default)]
+pub(crate) struct ChunkPause {
+    paused: bool,
+}
+
+impl Future for ChunkPause {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<()> {
+        if self.paused {
+            return Poll::Ready(());
+        }
+        self.paused = true;
+        Poll::Pending
+    }
+}
+
+/// Polls an indexing walk until it ends; its pauses only mark chunk borders.
+pub(crate) fn run_to_end<F: Future>(walk: F) -> F::Output {
+    let mut walk = std::pin::pin!(walk);
+    let mut context = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(output) = walk.as_mut().poll(&mut context) {
+            return output;
+        }
+    }
 }
 
 pub(crate) fn flush_chunk(

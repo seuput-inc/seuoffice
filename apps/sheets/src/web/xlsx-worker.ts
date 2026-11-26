@@ -114,6 +114,31 @@ async function save(message: Extract<WorkerRequest, { kind: 'save' }>): Promise<
   return saveWorkbook({ command, work, scratch }, message.source, message.target, message.save)
 }
 
+// read_range indexes a sheet only as far as it reads; the rest is indexed here, one chunk of
+// rows (a few tens of ms) per task while the page is open, so a request never waits behind
+// more than one chunk and a later read deeper in the sheet finds its rows indexed
+let indexing = false
+const idle = new MessageChannel()
+idle.port1.onmessage = () => {
+  command('index_step', { chunks: 1 }).then(
+    (result) => {
+      const pending = typeof result === 'object' && result !== null && 'pending' in result
+      if (pending && result.pending === true) idle.port2.postMessage(null)
+      else indexing = false
+    },
+    (error: unknown) => {
+      indexing = false
+      console.warn('xlsx engine: indexing stopped', error)
+    },
+  )
+}
+
+function keepIndexing(): void {
+  if (indexing) return
+  indexing = true
+  idle.port2.postMessage(null)
+}
+
 function fail(id: number, error: unknown): void {
   scope.postMessage({
     id,
@@ -151,7 +176,10 @@ scope.addEventListener('message', (event) => {
     return
   }
   call(message.request).then(
-    (result) => scope.postMessage({ id, ok: true, result }),
+    (result) => {
+      scope.postMessage({ id, ok: true, result })
+      keepIndexing()
+    },
     (error: unknown) => fail(id, error),
   )
 })
