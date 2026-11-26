@@ -542,6 +542,7 @@ import { installCellClipAnchorFix } from './cell-clip-anchor-fix'
 import { installBorderOverflowExclusionFix } from './border-overflow-exclusion'
 import { installCfEmptySheetFastPath } from './cf-empty-fast-path'
 import { installOtherFormulaAnchor } from './other-formula-anchor'
+import { installRenderCellMemo } from './render-cell-memo'
 import { installStylesCacheReuse } from './styles-cache-reuse'
 import { installMergeBorderFix } from './merge-border-fix'
 import { installThickBorderFix } from './thick-border-fix'
@@ -2904,6 +2905,8 @@ export function App({
     // Blit-only frames (a selection move over a clean viewport) must not
     // re-run every visible cell through the interceptor chain.
     installStylesCacheReuse()
+    // ...and each cell runs that chain once per render, not once per render extension
+    installRenderCellMemo()
     installCellClipAnchorFix()
     // Borders stored on a merged range's main cell must render their edge
     // segments like Excel; stock Univer drops them entirely.
