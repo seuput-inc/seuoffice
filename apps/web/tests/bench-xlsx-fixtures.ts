@@ -2,21 +2,22 @@
 // the way openpyxl writes them (inline strings, numbers, formulas without a
 // cached value) so they match the shapes a host reported: five sizes from 200
 // cells to 8 million, one with styles, merged cells, formulas and a frozen
-// pane, and a small one whose italic cells check the fonts they are drawn
+// pane, and two small ones whose italic cells check the fonts they are drawn
 // with. Deterministic: the same name always gives the same bytes.
 import { once } from 'node:events'
 import { createWriteStream, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { crc32, createDeflateRaw } from 'node:zlib'
 
-export type FixtureName = 'small' | 'medium' | 'large' | 'styled10' | 'xl' | 'italic'
+export type FixtureName = 'small' | 'medium' | 'large' | 'styled10' | 'xl' | 'italic' | 'italicruns'
 
 interface SheetSpec {
   rows: number
   cols: number
   /** a column index (0-based) holds text when this says so; else a number */
   text(col: number): boolean
-  styled: 'none' | 'medium' | 'styled10' | 'italic'
+  /** italic: column A in an italic cell style; italic and italicruns: column D in a bold italic run */
+  styled: 'none' | 'medium' | 'styled10' | 'italic' | 'italicruns'
 }
 
 interface WorkbookSpec {
@@ -36,8 +37,12 @@ const SPECS: Record<FixtureName, WorkbookSpec> = {
     sheet: { rows: 10_000, cols: 30, text: (c) => c % 3 === 0, styled: 'styled10' },
   },
   xl: { sheets: 1, sheet: { rows: 200_000, cols: 40, text: (c) => c % 8 === 0, styled: 'none' } },
-  // column A in an italic cell style, column D in a bold italic rich-text run
+  // the italic faces wanted from the workbook's styles at open, and only by its cells' runs
   italic: { sheets: 1, sheet: { rows: 200, cols: 10, text: (c) => c % 3 === 0, styled: 'italic' } },
+  italicruns: {
+    sheets: 1,
+    sheet: { rows: 200, cols: 10, text: (c) => c % 3 === 0, styled: 'italicruns' },
+  },
 }
 
 /** the rows of each workbook's sheets: its last row's first cell reads "항목 <rows>-0" */
@@ -98,6 +103,7 @@ const ITALIC_STYLES = STYLES.replace('<fonts count="2">', '<fonts count="3">')
 
 function cellStyle(spec: SheetSpec, row: number, col: number): number {
   if (spec.styled === 'italic') return row > 1 && col === 0 ? 10 : 0
+  if (spec.styled === 'italicruns') return 0
   if (spec.styled === 'none') return 0
   if (row === 1) return 1
   let mix = 0
@@ -135,7 +141,7 @@ function rowXml(spec: SheetSpec, row: number, next: () => number): string {
     }
     const f = formula(spec, row, col)
     if (f !== null) xml += `<c r="${ref}"${s}><f>${f}</f><v></v></c>`
-    else if (spec.styled === 'italic' && col === 3)
+    else if ((spec.styled === 'italic' || spec.styled === 'italicruns') && col === 3)
       xml += `<c r="${ref}"${s} t="inlineStr"><is><r><rPr><b/><i/></rPr><t>항목 ${row}-${col}</t></r></is></c>`
     else if (spec.text(col))
       xml += `<c r="${ref}"${s} t="inlineStr"><is><t>항목 ${row}-${col}</t></is></c>`

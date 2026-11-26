@@ -33,7 +33,7 @@ import { benchFixture, FIXTURE_ROWS, type FixtureName } from './bench-xlsx-fixtu
 const label = process.env.SEUOFFICE_BENCH_XLSX
 const ROUNDS = Number(process.env.SEUOFFICE_BENCH_XLSX_ROUNDS ?? 3)
 const SIZES = (
-  process.env.SEUOFFICE_BENCH_XLSX_SIZES ?? 'small,medium,large,styled10,xl,italic'
+  process.env.SEUOFFICE_BENCH_XLSX_SIZES ?? 'small,medium,large,styled10,xl,italic,italicruns'
 ).split(',') as FixtureName[]
 const SCROLL_MS = 3_000
 // the host's own measure (YUYU, 2026-11-26): one 120 px wheel step, 16 ms pause, for 3 s, at
@@ -113,21 +113,23 @@ function record(): void {
       if (row) {
         recorder.firstCell ??= epoch(performance.now())
         recorder.lastRow = Math.max(recorder.lastRow, Number(row[1]))
-        const font = this.font
-        if (/\bitalic\b/.test(font)) {
-          const unquote = (name: string): string => name.trim().replace(/^["']|["']$/g, '')
-          const family = unquote(/\dpx(?:\/\S+)?\s+([^,]*)/.exec(font)?.[1] ?? '')
-          const weights = /\b(bold|[6-9]00)\b/.test(font) ? ['bold', '700'] : ['normal', '400']
-          const faces = [...document.fonts].filter(
-            (face) =>
-              unquote(face.family) === family &&
-              face.style === 'italic' &&
-              weights.includes(face.weight),
-          )
-          if (faces.length > 0) {
-            recorder.italicDraws++
-            if (!faces.some((face) => face.status === 'loaded')) recorder.italicUnloaded.push(font)
-          }
+      }
+      // any text, since a rich-text run is drawn in pieces; only text the bundled faces cover
+      // (Hangul in an italic run draws with a fallback face either way)
+      const font = this.font
+      if (/\bitalic\b/.test(font) && /[\p{Script=Latin}\d]/u.test(String(args[0]))) {
+        const unquote = (name: string): string => name.trim().replace(/^["']|["']$/g, '')
+        const family = unquote(/\dpx(?:\/\S+)?\s+([^,]*)/.exec(font)?.[1] ?? '')
+        const weights = /\b(bold|[6-9]00)\b/.test(font) ? ['bold', '700'] : ['normal', '400']
+        const faces = [...document.fonts].filter(
+          (face) =>
+            unquote(face.family) === family &&
+            face.style === 'italic' &&
+            weights.includes(face.weight),
+        )
+        if (faces.length > 0) {
+          recorder.italicDraws++
+          if (!faces.some((face) => face.status === 'loaded')) recorder.italicUnloaded.push(font)
         }
       }
       return fillText.apply(this, args)
@@ -346,7 +348,7 @@ async function oneRound(
       expect(errors, `${name}: page errors`).toEqual([])
       // italic cells draw with their bundled italic face from the first frame on, never a substitute
       expect(recorded.italicUnloaded, `${name}: italic drawn before its face loaded`).toEqual([])
-      if (name === 'italic') expect(recorded.italicDraws, 'italic draws').toBeGreaterThan(0)
+      if (name.startsWith('italic')) expect(recorded.italicDraws, 'italic draws').toBeGreaterThan(0)
       return {
         firstCellsMs: cellsAt - start,
         scrollFps: scrollGaps.length / ((scrollEnd - scrollStart) / 1_000),
