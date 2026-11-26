@@ -1418,6 +1418,13 @@ export async function loadVisibleRange(
   ) {
     return
   }
+  // A load something waits on (an AI read, a bulk edit) is not replaced: the screen follows once
+  // it is done (ensureLazyRangeLoaded)
+  const waits = viewportWaits.get(state)
+  if (waits?.held.has(sheetId)) {
+    waits.deferred.add(sheetId)
+    return
+  }
   const range = createBufferedRange(shown, screenRowCount, screenColumnCount)
   const generation = bumpViewportGeneration(state, sheetId)
   await loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage)
@@ -1433,6 +1440,13 @@ export async function loadVisibleRange(
     generation,
   )
 }
+
+/// The sheets whose loads something waits on, with how many, and the sheets whose screen asked
+/// for a window meanwhile
+const viewportWaits = new WeakMap<
+  LazyWorkbookState,
+  { held: Map<string, number>; deferred: Set<string> }
+>()
 
 /// Every viewport load supersedes the previous one for its sheet: a scroll
 /// burst must not leave several hidden-row extensions racing, each seeing the
@@ -3704,18 +3718,41 @@ export async function ensureLazyRangeLoaded(
   ) {
     return false
   }
-  await loadRange(
-    runtime,
-    lazyWorkbookRef,
-    worksheet,
-    range,
-    setMessage,
-    false,
-    true,
-    0,
-    null,
-    bulk,
-  )
+  const sheetId = worksheet.getSheetId()
+  let waits = viewportWaits.get(initialState)
+  if (!waits) {
+    waits = { held: new Map(), deferred: new Set() }
+    viewportWaits.set(initialState, waits)
+  }
+  waits.held.set(sheetId, (waits.held.get(sheetId) ?? 0) + 1)
+  try {
+    await loadRange(
+      runtime,
+      lazyWorkbookRef,
+      worksheet,
+      range,
+      setMessage,
+      false,
+      true,
+      0,
+      null,
+      bulk,
+    )
+  } finally {
+    const left = (waits.held.get(sheetId) ?? 1) - 1
+    if (left > 0) waits.held.set(sheetId, left)
+    else {
+      waits.held.delete(sheetId)
+      // The screen moved while the load ran: its window follows on the next task, after the
+      // caller has read what it waited for (a read that waited reads at once)
+      if (waits.deferred.delete(sheetId)) {
+        setTimeout(() => {
+          if (lazyWorkbookRef.current !== initialState) return
+          void loadVisibleRange(runtime, lazyWorkbookRef, worksheet, setMessage).catch(() => {})
+        }, 0)
+      }
+    }
+  }
   const state = lazyWorkbookRef.current
   const loaded = state?.loadedRanges.get(worksheet.getSheetId())
   return state === initialState && loaded !== undefined && containsRange(loaded, range)

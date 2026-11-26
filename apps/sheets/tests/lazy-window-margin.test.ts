@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createEditJournal } from '../src/renderer/edit-journal'
-import { loadVisibleRange } from '../src/renderer/univer-sync'
+import { ensureLazyRangeLoaded, loadVisibleRange } from '../src/renderer/univer-sync'
 import type {
   LazyWorkbookState,
   UniverRuntime,
@@ -98,5 +98,31 @@ describe('the loaded window', () => {
     screen.shown = at(330, 0, 370, 12)
     await loadVisibleRange(runtime, { current: state }, worksheet, () => {})
     expect(readWorkbookRange).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a load something waits on (an AI read, a bulk edit)', () => {
+  it('is not replaced by a scroll, and the screen loads once it is done', async () => {
+    const { readWorkbookRange, state, worksheet, runtime, screen } = scrolledTo(at(310, 0, 350, 12))
+    // the waited read answers only when the test says so; every later read fails at once
+    let answer: (error: Error) => void = () => {}
+    readWorkbookRange.mockImplementationOnce(() => new Promise((_, reject) => (answer = reject)))
+    const ref = { current: state }
+    const waited = ensureLazyRangeLoaded(runtime, ref, worksheet, at(3000, 0, 3010, 5), () => {})
+    await vi.waitFor(() => expect(readWorkbookRange).toHaveBeenCalledTimes(1))
+    // a small scroll inside the loaded window, which a different load in flight would replace
+    screen.shown = at(250, 0, 290, 12)
+    await loadVisibleRange(runtime, ref, worksheet, () => {}).catch(() => {})
+    expect(readWorkbookRange).toHaveBeenCalledTimes(1)
+    // it lands where it was asked for, which takes the window away from the screen
+    state.loadedRanges.set('s1', at(3000, 0, 3010, 5))
+    answer(new Error('this test has no file'))
+    await waited
+    // no further scroll: the screen gets its window by itself
+    await vi.waitFor(() =>
+      expect(readWorkbookRange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ range: at(170, 0, 370, 19) }),
+      ),
+    )
   })
 })
