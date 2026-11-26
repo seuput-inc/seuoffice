@@ -3,6 +3,8 @@
 //! setup and header/footer text into the session's `SheetIndex`.
 
 use super::*;
+#[cfg(target_os = "wasi")]
+use flate2::{Compression, read::DeflateDecoder, write::DeflateEncoder};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
@@ -1355,11 +1357,7 @@ pub(crate) fn flush_chunk(
         })
         .collect();
     if has_data {
-        // One write of the whole chunk: the browser build's file system
-        // (browser_wasi_shim) reallocates a file on every write past its end,
-        // so a buffered writer's many small writes copied the chunk again and
-        // again.
-        fs::write(&path, serde_json::to_vec(chunk)?)?;
+        write_chunk(&path, chunk)?;
         chunk.cells.clear();
         chunk.rows.clear();
     }
@@ -1383,6 +1381,37 @@ pub(crate) fn flush_chunk(
     index.indexed_through_row = Some(indexed_through_row);
     condition.notify_all();
     Ok(())
+}
+
+/// A chunk file: the chunk's JSON, written at once (the browser build's file
+/// system, browser_wasi_shim, reallocates a file on every write past its end,
+/// so many small writes copied the chunk again and again). That build keeps
+/// the files in the page's memory, where the JSON of every cell of a large
+/// sheet took several hundred megabytes, so there it is deflated.
+fn write_chunk(path: &Path, chunk: &ChunkData) -> Result<(), SidecarError> {
+    let json = serde_json::to_vec(chunk)?;
+    #[cfg(target_os = "wasi")]
+    let json = {
+        let mut deflated =
+            DeflateEncoder::new(Vec::with_capacity(json.len() / 4), Compression::fast());
+        deflated.write_all(&json)?;
+        deflated.finish()?
+    };
+    fs::write(path, json)?;
+    Ok(())
+}
+
+/// A chunk file back, read whole: serde_json parses a slice several times
+/// faster than a reader.
+pub(crate) fn read_chunk(path: &Path) -> Result<ChunkData, SidecarError> {
+    let json = fs::read(path)?;
+    #[cfg(target_os = "wasi")]
+    let json = {
+        let mut inflated = Vec::new();
+        DeflateDecoder::new(json.as_slice()).read_to_end(&mut inflated)?;
+        inflated
+    };
+    Ok(serde_json::from_slice(&json)?)
 }
 
 pub(crate) struct CellBuilder {

@@ -22,5 +22,10 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
+# The browser build deflates its index's chunk files, which live in the page's
+# memory there; already in the tree through zip's deflate
+[target.'cfg(target_os = "wasi")'.dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
 [dev-dependencies]
 tempfile = "3"

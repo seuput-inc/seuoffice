@@ -996,8 +996,7 @@ impl WorkbookSession {
         let mut cells = Vec::new();
         let mut rows = Vec::new();
         for path in paths {
-            // a whole slice parses several times faster than a reader
-            let chunk: ChunkData = serde_json::from_slice(&fs::read(path)?)?;
+            let chunk = read_chunk(&path)?;
             cells.extend(chunk.cells.into_iter().filter(|cell| {
                 cell.row >= range.start_row
                     && cell.row <= range.end_row
