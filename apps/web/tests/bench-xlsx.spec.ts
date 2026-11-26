@@ -64,6 +64,8 @@ interface Round {
   /** the long tasks the browser itself reports (Chromium only) over the same span */
   longTasksOver200ms: number[] | null
   memoryGrowthMb: number
+  /** the host's measure (peakProcessSampler), from 400 ms before the click to 1 s after the scroll */
+  processPeakMb: number
   transfer: { files: number; rawMb: number; brotliMb: number; repeated: string[] }
 }
 
@@ -201,8 +203,8 @@ const webkitContentBefore = (): Set<number> =>
       .map((row) => row.pid),
   )
 
-/** RSS in MB of the document processes of this test worker's browser: Chromium renderers, WebKit content */
-function documentProcessesMb(notMine: ReadonlySet<number>): number {
+/** RSS in MB of each document process of this test worker's browser: Chromium renderers, WebKit content */
+function documentProcesses(notMine: ReadonlySet<number>): Map<number, number> {
   const rows = processes()
   const mine = new Set([process.pid])
   for (let grew = true; grew;) {
@@ -214,12 +216,40 @@ function documentProcessesMb(notMine: ReadonlySet<number>): number {
       }
     }
   }
-  const documents = rows.filter(
-    (row) =>
-      (mine.has(row.pid) && /--type=renderer/.test(row.command)) ||
-      (WEBKIT_CONTENT.test(row.command) && !notMine.has(row.pid)),
+  return new Map(
+    rows
+      .filter(
+        (row) =>
+          (mine.has(row.pid) && /--type=renderer/.test(row.command)) ||
+          (WEBKIT_CONTENT.test(row.command) && !notMine.has(row.pid)),
+      )
+      .map((row) => [row.pid, row.rss / 1024]),
   )
-  return documents.reduce((sum, row) => sum + row.rss, 0) / 1024
+}
+
+function documentProcessesMb(notMine: ReadonlySet<number>): number {
+  return [...documentProcesses(notMine).values()].reduce((sum, rss) => sum + rss, 0)
+}
+
+/**
+ * The host's measure (YUYU, 2026-11-27): each document process's peak RSS, sampled every 150 ms,
+ * less its RSS before the click when it ran then; a process born after the click (the
+ * cross-origin SeuOffice renderer) counts whole. The largest of them.
+ */
+function peakProcessSampler(notMine: ReadonlySet<number>): () => number {
+  const before = documentProcesses(notMine)
+  const peaks = new Map<number, number>()
+  const sample = (): void => {
+    for (const [pid, rss] of documentProcesses(notMine)) {
+      peaks.set(pid, Math.max(peaks.get(pid) ?? 0, rss))
+    }
+  }
+  const timer = setInterval(sample, 150)
+  return () => {
+    clearInterval(timer)
+    sample()
+    return Math.max(0, ...[...peaks].map(([pid, peak]) => peak - (before.get(pid) ?? 0)))
+  }
 }
 
 const brotliSizes = new Map<string, number>()
@@ -293,6 +323,8 @@ async function oneRound(
     page.on('pageerror', (error) => errors.push(error.message))
     const urls = trackFetches(page, sites.bundle)
     await page.goto(`${sites.host}/host.html`)
+    await page.waitForTimeout(400)
+    const processPeak = peakProcessSampler(notMine)
     const memoryBefore = documentProcessesMb(notMine)
     let memoryPeak = memoryBefore
     const sampler = setInterval(() => {
@@ -337,6 +369,8 @@ async function oneRound(
         await page.waitForTimeout(WHEEL_PAUSE_MS)
       }
       const scrollEnd = await now()
+      await page.waitForTimeout(1_000)
+      const processPeakMb = processPeak()
       const recorded = await frame.evaluate(() => window.benchXlsx!)
       const gaps = (from: number, to: number): number[] => {
         const frames = recorded.frames.filter((t) => t >= from && t <= to)
@@ -388,10 +422,12 @@ async function oneRound(
                 .map((task) => Math.round(task.duration))
             : null,
         memoryGrowthMb: Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore,
+        processPeakMb,
         transfer: await transfer(urls),
       }
     } finally {
       clearInterval(sampler)
+      processPeak()
     }
   } finally {
     await context.close()
@@ -496,6 +532,7 @@ test.describe('xlsx view benchmark', () => {
             stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
             memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
             memoryGrowthOverControlMb: median(rounds.map((r) => r.memoryGrowthMb)) - controlMb,
+            processPeakMb: median(rounds.map((r) => r.processPeakMb)),
             brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
           },
         }
