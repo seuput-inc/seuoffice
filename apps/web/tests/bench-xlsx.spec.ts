@@ -12,6 +12,8 @@
 // The results land in apps/web/test-results/bench-xlsx-<label>-<browser>.json
 // with a screenshot of the first cells and of the last row of each workbook,
 // which tools/bench-xlsx-compare.mjs compares between two labels.
+// SEUOFFICE_BENCH_XLSX_SLOW_ITALIC_MS=<ms> holds back the italic Carlito faces
+// that long, as a slow network would, for the italic face check.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -33,8 +35,10 @@ import { benchFixture, FIXTURE_ROWS, type FixtureName } from './bench-xlsx-fixtu
 const label = process.env.SEUOFFICE_BENCH_XLSX
 const ROUNDS = Number(process.env.SEUOFFICE_BENCH_XLSX_ROUNDS ?? 3)
 const SIZES = (
-  process.env.SEUOFFICE_BENCH_XLSX_SIZES ?? 'small,medium,large,styled10,xl,italic,italicruns'
+  process.env.SEUOFFICE_BENCH_XLSX_SIZES ??
+  'small,medium,large,styled10,xl,italic,italicruns,italicfrozen'
 ).split(',') as FixtureName[]
+const SLOW_ITALIC_MS = Number(process.env.SEUOFFICE_BENCH_XLSX_SLOW_ITALIC_MS ?? 0)
 const SCROLL_MS = 3_000
 // the host's own measure (YUYU, 2026-11-26): one 120 px wheel step, 16 ms pause, for 3 s, at
 // 1440x900 and scale 1; the Playwright round trip makes it about one step per 50 ms
@@ -275,6 +279,12 @@ async function oneRound(
   const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 })
   try {
     await context.addInitScript(record)
+    if (SLOW_ITALIC_MS > 0) {
+      await context.route(/Carlito-(Bold)?Italic[^/]*\.ttf/, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, SLOW_ITALIC_MS))
+        await route.continue()
+      })
+    }
     const page = await context.newPage()
     const errors: string[] = []
     page.on('pageerror', (error) => errors.push(error.message))

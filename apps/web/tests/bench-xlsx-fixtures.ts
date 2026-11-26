@@ -2,22 +2,26 @@
 // the way openpyxl writes them (inline strings, numbers, formulas without a
 // cached value) so they match the shapes a host reported: five sizes from 200
 // cells to 8 million, one with styles, merged cells, formulas and a frozen
-// pane, and two small ones whose italic cells check the fonts they are drawn
+// pane, and three small ones whose italic cells check the fonts they are drawn
 // with. Deterministic: the same name always gives the same bytes.
 import { once } from 'node:events'
 import { createWriteStream, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { crc32, createDeflateRaw } from 'node:zlib'
 
-export type FixtureName = 'small' | 'medium' | 'large' | 'styled10' | 'xl' | 'italic' | 'italicruns'
+export type FixtureName =
+  'small' | 'medium' | 'large' | 'styled10' | 'xl' | 'italic' | 'italicruns' | 'italicfrozen'
 
 interface SheetSpec {
   rows: number
   cols: number
   /** a column index (0-based) holds text when this says so; else a number */
   text(col: number): boolean
-  /** italic: column A in an italic cell style; italic and italicruns: column D in a bold italic run */
-  styled: 'none' | 'medium' | 'styled10' | 'italic' | 'italicruns'
+  /**
+   * italic: column A in an italic cell style; italic and italicruns: column D in a bold italic
+   * run; italicfrozen: only the frozen first row's column D, with the sheet opening at row 150
+   */
+  styled: 'none' | 'medium' | 'styled10' | 'italic' | 'italicruns' | 'italicfrozen'
 }
 
 interface WorkbookSpec {
@@ -42,6 +46,10 @@ const SPECS: Record<FixtureName, WorkbookSpec> = {
   italicruns: {
     sheets: 1,
     sheet: { rows: 200, cols: 10, text: (c) => c % 3 === 0, styled: 'italicruns' },
+  },
+  italicfrozen: {
+    sheets: 1,
+    sheet: { rows: 200, cols: 10, text: (c) => c % 3 === 0, styled: 'italicfrozen' },
   },
 }
 
@@ -103,7 +111,7 @@ const ITALIC_STYLES = STYLES.replace('<fonts count="2">', '<fonts count="3">')
 
 function cellStyle(spec: SheetSpec, row: number, col: number): number {
   if (spec.styled === 'italic') return row > 1 && col === 0 ? 10 : 0
-  if (spec.styled === 'italicruns') return 0
+  if (spec.styled === 'italicruns' || spec.styled === 'italicfrozen') return 0
   if (spec.styled === 'none') return 0
   if (row === 1) return 1
   let mix = 0
@@ -136,7 +144,10 @@ function rowXml(spec: SheetSpec, row: number, next: () => number): string {
     const style = cellStyle(spec, row, col)
     const s = style === 0 ? '' : ` s="${style}"`
     if (row === 1) {
-      xml += `<c r="${ref}"${s} t="inlineStr"><is><t>열${col + 1}</t></is></c>`
+      xml +=
+        spec.styled === 'italicfrozen' && col === 3
+          ? `<c r="${ref}"${s} t="inlineStr"><is><r><rPr><b/><i/></rPr><t>Head ${col + 1}</t></r></is></c>`
+          : `<c r="${ref}"${s} t="inlineStr"><is><t>열${col + 1}</t></is></c>`
       continue
     }
     const f = formula(spec, row, col)
@@ -154,7 +165,9 @@ function* sheetXml(spec: SheetSpec, next: () => number): Generator<string> {
   const pane =
     spec.styled === 'styled10'
       ? '<pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"/><selection pane="bottomRight" activeCell="B2" sqref="B2"/>'
-      : '<selection activeCell="A1" sqref="A1"/>'
+      : spec.styled === 'italicfrozen'
+        ? '<pane ySplit="1" topLeftCell="A150" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A150" sqref="A150"/>'
+        : '<selection activeCell="A1" sqref="A1"/>'
   yield '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
     `<dimension ref="A1:${column(spec.cols - 1)}${spec.rows}"/>` +
