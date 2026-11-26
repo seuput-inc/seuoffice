@@ -196,17 +196,24 @@ function brotliSize(path: string): number {
   return size
 }
 
-/** the paths the page fetched from the bundle's site */
-function trackFetches(page: Page, bundle: string): string[] {
-  const urls: string[] = []
+/**
+ * The paths the page fetched from the bundle's site with a body: a revalidated file (304) moved
+ * no bytes. Each entry settles once its sizes are known.
+ */
+function trackFetches(page: Page, bundle: string): Promise<string | null>[] {
+  const fetched: Promise<string | null>[] = []
   page.context().on('requestfinished', (request) => {
     const url = new URL(request.url())
-    if (url.origin === bundle && request.method() === 'GET') urls.push(url.pathname)
+    if (url.origin !== bundle || request.method() !== 'GET') return
+    fetched.push(
+      request.sizes().then((sizes) => (sizes.responseBodySize > 0 ? url.pathname : null)),
+    )
   })
-  return urls
+  return fetched
 }
 
-function transfer(urls: string[]): Round['transfer'] {
+async function transfer(fetched: Promise<string | null>[]): Promise<Round['transfer']> {
+  const urls = (await Promise.all(fetched)).filter((path) => path !== null)
   let raw = 0
   let brotli = 0
   const counts = new Map<string, number>()
@@ -327,7 +334,7 @@ async function oneRound(
                 .map((task) => Math.round(task.duration))
             : null,
         memoryGrowthMb: Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore,
-        transfer: transfer(urls),
+        transfer: await transfer(urls),
       }
     } finally {
       clearInterval(sampler)
