@@ -5120,12 +5120,13 @@ fn encrypted_workbook_reports_password_protection() {
     );
 }
 
-/// A sheet indexed a chunk at a time between reads, as the build without
-/// threads does, reads the same as one indexed in one go: every cell, row,
-/// merge and conditional format, at every row.
-#[test]
-fn stepwise_indexing_reads_like_one_walk() {
-    const ROWS: usize = 6_000;
+const STEPWISE_ROWS: usize = 6_000;
+
+/// A workbook of `sheets` alike sheets of STEPWISE_ROWS rows: text, numbers,
+/// a shared formula, custom and hidden rows, two merges and a conditional
+/// format, each sheet at its own path.
+fn stepwise_fixture(sheets: usize) -> (tempfile::TempDir, PathBuf) {
+    const ROWS: usize = STEPWISE_ROWS;
     let mut sheet = String::from(
         r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:E6000"/><sheetData>"#,
     );
@@ -5153,23 +5154,45 @@ fn stepwise_indexing_reads_like_one_walk() {
     }
     sheet.push_str(r#"</sheetData><mergeCells count="2"><mergeCell ref="E10:E11"/><mergeCell ref="E5000:E5003"/></mergeCells>"#);
     sheet.push_str(r#"<conditionalFormatting sqref="B1:B6000"><cfRule type="cellIs" priority="1" operator="greaterThan"><formula>100</formula></cfRule></conditionalFormatting></worksheet>"#);
-    let (_dir, path) = open_fixture(&[
-        (
-            "xl/workbook.xml",
-            r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
-        ),
-        (
-            "xl/_rels/workbook.xml.rels",
-            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
-        ),
-        ("xl/worksheets/sheet1.xml", &sheet),
-    ]);
-    let rows = |start_row: usize, end_row: usize| CellRange {
+    let ids = 1..=sheets;
+    let workbook = format!(
+        r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{}</sheets></workbook>"#,
+        ids.clone()
+            .map(|i| format!(r#"<sheet name="S{i}" sheetId="{i}" r:id="rId{i}"/>"#))
+            .collect::<String>()
+    );
+    let rels = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}</Relationships>"#,
+        ids.clone()
+            .map(|i| format!(r#"<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>"#))
+            .collect::<String>()
+    );
+    let names: Vec<String> = ids.map(|i| format!("xl/worksheets/sheet{i}.xml")).collect();
+    let mut entries = vec![
+        ("xl/workbook.xml", workbook.as_str()),
+        ("xl/_rels/workbook.xml.rels", rels.as_str()),
+    ];
+    entries.extend(names.iter().map(|name| (name.as_str(), sheet.as_str())));
+    open_fixture(&entries)
+}
+
+fn stepwise_rows(start_row: usize, end_row: usize) -> CellRange {
+    CellRange {
         start_row,
         end_row,
         start_column: 0,
         end_column: 4,
-    };
+    }
+}
+
+/// A sheet indexed a chunk at a time between reads, as the build without
+/// threads does, reads the same as one indexed in one go: every cell, row,
+/// merge and conditional format, at every row.
+#[test]
+fn stepwise_indexing_reads_like_one_walk() {
+    const ROWS: usize = STEPWISE_ROWS;
+    let (_dir, path) = stepwise_fixture(1);
+    let rows = stepwise_rows;
     let everything = rows(0, ROWS - 1);
 
     let mut one_walk = WorkbookSessions::new();
@@ -5231,4 +5254,71 @@ fn stepwise_indexing_reads_like_one_walk() {
     );
     assert_eq!(actual.merges.len(), 2);
     assert_eq!(actual.conditional_rules.len(), 1);
+}
+
+/// Steps between reads go first to the sheet read last: a second sheet read
+/// far past its walk gets on while the first one's walk is still unfinished,
+/// and both sheets end up reading like one walk each.
+#[test]
+fn index_step_goes_first_to_the_sheet_read_last() {
+    const ROWS: usize = STEPWISE_ROWS;
+    let (_dir, path) = stepwise_fixture(2);
+    let everything = stepwise_rows(0, ROWS - 1);
+
+    let mut one_walk = WorkbookSessions::new();
+    let whole = one_walk.open(&path).unwrap();
+    let expected = loop {
+        let result = one_walk
+            .read_range(&whole.session_id, "sheet-1", &everything)
+            .unwrap();
+        if result.indexing_complete {
+            break result;
+        }
+    };
+
+    let mut stepwise = WorkbookSessions::new();
+    let opened = stepwise.open(&path).unwrap();
+    let id = opened.session_id.as_str();
+    let session = stepwise.sessions.get_mut(id).unwrap();
+    session.start_parser(0, false).unwrap();
+    session.start_parser(1, false).unwrap();
+    let indexed_through = |sessions: &WorkbookSessions, sheet: usize| {
+        sessions.sessions[id].runtimes[sheet]
+            .state
+            .0
+            .lock()
+            .unwrap()
+            .indexed_through_row
+    };
+    stepwise
+        .read_range(id, "sheet-1", &stepwise_rows(0, 99))
+        .unwrap();
+    let first_before = indexed_through(&stepwise, 0);
+    // the end of the second sheet, far past its walk: nothing yet
+    let end = stepwise_rows(ROWS - 40, ROWS - 1);
+    let far = stepwise.read_range(id, "sheet-2", &end).unwrap();
+    assert!(far.cells.is_empty());
+    let mut steps = 0;
+    loop {
+        assert!(stepwise.index_step(1));
+        steps += 1;
+        let result = stepwise.read_range(id, "sheet-2", &end).unwrap();
+        if !result.cells.is_empty() {
+            assert_eq!(result.cells.len(), 40 * 4);
+            break;
+        }
+        assert!(steps < 1_000, "the second sheet never reached its end");
+    }
+    // the first sheet waited
+    assert_eq!(indexed_through(&stepwise, 0), first_before);
+    while stepwise.index_step(1) {}
+    for sheet in ["sheet-1", "sheet-2"] {
+        let actual = stepwise.read_range(id, sheet, &everything).unwrap();
+        assert!(actual.indexing_complete);
+        assert_eq!(
+            serde_json::to_value(&actual).unwrap(),
+            serde_json::to_value(&expected).unwrap(),
+            "{sheet}"
+        );
+    }
 }

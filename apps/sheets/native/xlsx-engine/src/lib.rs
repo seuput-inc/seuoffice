@@ -228,6 +228,9 @@ fn create_cache_directory(
 
 pub struct WorkbookSessions {
     sessions: HashMap<String, WorkbookSession>,
+    /// The session and sheet `read_range` read last: `index_step` carries
+    /// its walk first, the sheet the person is looking at.
+    last_read: Option<(String, usize)>,
 }
 
 /// Excel wraps password-encrypted workbooks in an OLE2 compound container
@@ -259,6 +262,7 @@ impl WorkbookSessions {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            last_read: None,
         }
     }
 
@@ -586,25 +590,39 @@ impl WorkbookSessions {
         range.validate(&session.sheets[sheet_index])?;
         session.start_parser(sheet_index, THREADS)?;
         session.advance_index_for(sheet_index, range);
-        session.read_range(sheet_index, range)
+        let result = session.read_range(sheet_index, range);
+        self.last_read = Some((session_id.to_owned(), sheet_index));
+        result
     }
 
     /// Carries the walks `read_range` left partway on by up to `chunks`
-    /// chunks in all; whether any walk is still unfinished. A build with
-    /// threads keeps no such walks: it answers false at once.
+    /// chunks in all, the walk of the sheet read last first; whether any
+    /// walk is still unfinished. A build with threads keeps no such walks: it
+    /// answers false at once.
     pub fn index_step(&mut self, chunks: usize) -> bool {
         let mut context = Context::from_waker(Waker::noop());
         let mut budget = chunks;
+        let mut step = |runtime: &mut SheetRuntime| {
+            while budget > 0
+                && let Some(running) = runtime.walk.as_mut()
+            {
+                budget -= 1;
+                if running.as_mut().poll(&mut context).is_ready() {
+                    runtime.walk = None;
+                }
+            }
+        };
+        if let Some((session_id, sheet_index)) = &self.last_read
+            && let Some(runtime) = self
+                .sessions
+                .get_mut(session_id)
+                .and_then(|session| session.runtimes.get_mut(*sheet_index))
+        {
+            step(runtime);
+        }
         for session in self.sessions.values_mut() {
             for runtime in &mut session.runtimes {
-                while budget > 0
-                    && let Some(running) = runtime.walk.as_mut()
-                {
-                    budget -= 1;
-                    if running.as_mut().poll(&mut context).is_ready() {
-                        runtime.walk = None;
-                    }
-                }
+                step(runtime);
             }
         }
         self.sessions.values().any(|session| {
