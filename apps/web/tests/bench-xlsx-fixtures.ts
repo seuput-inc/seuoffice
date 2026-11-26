@@ -19,7 +19,8 @@ interface SheetSpec {
   text(col: number): boolean
   /**
    * italic: column A in an italic cell style; italic and italicruns: column D in a bold italic
-   * run; italicfrozen: only the frozen first row's column D, with the sheet opening at row 150
+   * run (both small enough to load whole at open); italicfrozen: only the frozen first row's
+   * column D, in a sheet too large to load whole that opens at row 5000
    */
   styled: 'none' | 'medium' | 'styled10' | 'italic' | 'italicruns' | 'italicfrozen'
 }
@@ -41,7 +42,8 @@ const SPECS: Record<FixtureName, WorkbookSpec> = {
     sheet: { rows: 10_000, cols: 30, text: (c) => c % 3 === 0, styled: 'styled10' },
   },
   xl: { sheets: 1, sheet: { rows: 200_000, cols: 40, text: (c) => c % 8 === 0, styled: 'none' } },
-  // the italic faces wanted from the workbook's styles at open, and only by its cells' runs
+  // the italic faces wanted from the workbook's styles at open, from its cells' runs as the
+  // whole workbook loads, and from a frozen row's strip under a window far below it
   italic: { sheets: 1, sheet: { rows: 200, cols: 10, text: (c) => c % 3 === 0, styled: 'italic' } },
   italicruns: {
     sheets: 1,
@@ -49,7 +51,7 @@ const SPECS: Record<FixtureName, WorkbookSpec> = {
   },
   italicfrozen: {
     sheets: 1,
-    sheet: { rows: 200, cols: 10, text: (c) => c % 3 === 0, styled: 'italicfrozen' },
+    sheet: { rows: 6_000, cols: 10, text: (c) => c % 3 === 0, styled: 'italicfrozen' },
   },
 }
 
@@ -166,7 +168,7 @@ function* sheetXml(spec: SheetSpec, next: () => number): Generator<string> {
     spec.styled === 'styled10'
       ? '<pane xSplit="1" ySplit="1" topLeftCell="B2" activePane="bottomRight" state="frozen"/><selection pane="bottomRight" activeCell="B2" sqref="B2"/>'
       : spec.styled === 'italicfrozen'
-        ? '<pane ySplit="1" topLeftCell="A150" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A150" sqref="A150"/>'
+        ? '<pane ySplit="1" topLeftCell="A5000" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A5000" sqref="A5000"/>'
         : '<selection activeCell="A1" sqref="A1"/>'
   yield '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
