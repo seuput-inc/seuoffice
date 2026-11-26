@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Seek, Write};
+use std::io::{BufReader, Read, Seek, Write};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::task::{Context, Waker};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -226,6 +228,11 @@ fn create_cache_directory(
 
 pub struct WorkbookSessions {
     sessions: HashMap<String, WorkbookSession>,
+    /// The session and sheet `read_range` read last: `index_step` carries
+    /// its walk first, the sheet the person is looking at.
+    last_read: Option<(String, usize)>,
+    /// Counts `index_step` calls: the sheet the others take turns from
+    index_turn: usize,
 }
 
 /// Excel wraps password-encrypted workbooks in an OLE2 compound container
@@ -257,6 +264,8 @@ impl WorkbookSessions {
     pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
+            last_read: None,
+            index_turn: 0,
         }
     }
 
@@ -384,7 +393,9 @@ impl WorkbookSessions {
                     })
                 })
                 .collect();
-            let sparklines = read_sheet_sparklines(&mut archive, &worksheet_path)?;
+            let sparklines = parse_sparkline_groups(&mut Reader::from_reader(
+                dimensions.without_cells.as_bytes(),
+            ))?;
             let cell_images = read_sheet_cell_images(
                 &mut archive,
                 &worksheet_path,
@@ -480,6 +491,7 @@ impl WorkbookSessions {
             visual_sources.push(SheetVisualSource {
                 sheet_id: id,
                 worksheet_path: worksheet_path.clone(),
+                without_cells: dimensions.without_cells,
             });
             runtimes.push(SheetRuntime::new(worksheet_path));
         }
@@ -579,8 +591,53 @@ impl WorkbookSessions {
             .position(|sheet| sheet.id == sheet_id)
             .ok_or_else(|| SidecarError::InvalidRequest("Unknown worksheet.".into()))?;
         range.validate(&session.sheets[sheet_index])?;
-        session.ensure_parser(sheet_index)?;
-        session.read_range(sheet_index, range)
+        session.start_parser(sheet_index, THREADS)?;
+        session.advance_index_for(sheet_index, range);
+        let result = session.read_range(sheet_index, range);
+        self.last_read = Some((session_id.to_owned(), sheet_index));
+        result
+    }
+
+    /// Carries the walks `read_range` left partway on by up to `chunks`
+    /// chunks in all, the walk of the sheet read last first, then the others
+    /// in turn (each call starts one sheet further on); whether any walk is
+    /// still unfinished. A build with threads keeps no such walks: it answers
+    /// false at once.
+    pub fn index_step(&mut self, chunks: usize) -> bool {
+        let mut context = Context::from_waker(Waker::noop());
+        let mut budget = chunks;
+        let mut step = |runtime: &mut SheetRuntime| {
+            while budget > 0
+                && let Some(running) = runtime.walk.as_mut()
+            {
+                budget -= 1;
+                if running.as_mut().poll(&mut context).is_ready() {
+                    runtime.walk = None;
+                }
+            }
+        };
+        if let Some((session_id, sheet_index)) = &self.last_read
+            && let Some(runtime) = self
+                .sessions
+                .get_mut(session_id)
+                .and_then(|session| session.runtimes.get_mut(*sheet_index))
+        {
+            step(runtime);
+        }
+        let turn = self.index_turn;
+        self.index_turn = self.index_turn.wrapping_add(1);
+        for session in self.sessions.values_mut() {
+            let count = session.runtimes.len();
+            for offset in 0..count {
+                step(&mut session.runtimes[(turn + offset) % count]);
+            }
+        }
+        self.sessions.values().any(|session| {
+            session
+                .runtimes
+                .iter()
+                .any(|runtime| runtime.walk.is_some())
+        })
     }
 
     pub fn read_formula_cells(
@@ -729,7 +786,17 @@ impl WorkbookSession {
         })
     }
 
+    /// Starts the sheet's walk if it has not started and, without threads,
+    /// runs it to the end: what every reader but `read_range` expects.
     fn ensure_parser(&mut self, sheet_index: usize) -> Result<(), SidecarError> {
+        self.start_parser(sheet_index, THREADS)?;
+        self.advance_index(sheet_index, None);
+        Ok(())
+    }
+
+    /// Starts the sheet's walk once: on a thread of its own when `threaded`,
+    /// else kept here for `advance_index` and `index_step` to carry on.
+    fn start_parser(&mut self, sheet_index: usize, threaded: bool) -> Result<(), SidecarError> {
         let runtime = &mut self.runtimes[sheet_index];
         if runtime.started {
             return Ok(());
@@ -751,7 +818,8 @@ impl WorkbookSession {
                 .collect(),
         );
         let cancelled = Arc::clone(&self.cancelled);
-        let index = move || {
+        // A closure, so a thread builds the walk where it runs it
+        let walk = move || async move {
             let result = index_worksheet(
                 &path,
                 &worksheet_path,
@@ -763,7 +831,8 @@ impl WorkbookSession {
                 &rich_image_cells,
                 &state,
                 &cancelled,
-            );
+            )
+            .await;
             let (lock, condition) = &*state;
             if let Ok(mut index) = lock.lock() {
                 match result {
@@ -773,17 +842,64 @@ impl WorkbookSession {
                 condition.notify_all();
             }
         };
-        if THREADS {
+        if threaded {
             runtime.handle = Some(
                 thread::Builder::new()
                     .name(format!("xlsx-index-{sheet_index}"))
-                    .spawn(index)?,
+                    .spawn(move || run_to_end(walk()))?,
             );
         } else {
-            index();
+            runtime.walk = Some(Box::pin(walk()));
         }
         runtime.started = true;
         Ok(())
+    }
+
+    /// Carries a walk kept by `start_parser` on until it has indexed
+    /// `through_row`, or to its end when None. A walk on a thread needs nothing.
+    fn advance_index(&mut self, sheet_index: usize, through_row: Option<usize>) {
+        let SheetRuntime { walk, state, .. } = &mut self.runtimes[sheet_index];
+        let Some(running) = walk.as_mut() else {
+            return;
+        };
+        let mut context = Context::from_waker(Waker::noop());
+        loop {
+            if let Some(row) = through_row {
+                let reached = state.0.lock().map_or(true, |index| {
+                    index.complete
+                        || index.error.is_some()
+                        || index
+                            .indexed_through_row
+                            .is_some_and(|indexed| indexed >= row)
+                });
+                if reached {
+                    return;
+                }
+            }
+            if running.as_mut().poll(&mut context).is_ready() {
+                *walk = None;
+                return;
+            }
+        }
+    }
+
+    /// Without threads, the walk runs here as far as the range needs and no
+    /// further; a range far past it answers with what is indexed, as the
+    /// threaded build does, while `index_step` carries the walk on.
+    fn advance_index_for(&mut self, sheet_index: usize, range: &CellRange) {
+        let far_ahead = self.runtimes[sheet_index]
+            .state
+            .0
+            .lock()
+            .is_ok_and(|index| {
+                index
+                    .indexed_through_row
+                    .map_or(range.start_row, |row| range.start_row.saturating_sub(row))
+                    >= RANGE_WAIT_MAX_LAG_ROWS
+            });
+        if !far_ahead {
+            self.advance_index(sheet_index, Some(range.end_row));
+        }
     }
 
     fn read_range(
@@ -905,8 +1021,7 @@ impl WorkbookSession {
         let mut cells = Vec::new();
         let mut rows = Vec::new();
         for path in paths {
-            let file = File::open(path)?;
-            let chunk: ChunkData = serde_json::from_reader(BufReader::new(file))?;
+            let chunk = read_chunk(&path)?;
             cells.extend(chunk.cells.into_iter().filter(|cell| {
                 cell.row >= range.start_row
                     && cell.row <= range.end_row
@@ -986,6 +1101,7 @@ impl WorkbookSession {
             condition.notify_all();
         }
         for runtime in &mut self.runtimes {
+            runtime.walk = None;
             if let Some(handle) = runtime.handle.take() {
                 let _ = handle.join();
             }
@@ -1000,12 +1116,18 @@ impl WorkbookSession {
     }
 }
 
+/// The walk of a sheet kept between polls when it runs without a thread
+type SheetWalk = Pin<Box<dyn Future<Output = ()>>>;
+
 struct SheetRuntime {
     worksheet_path: String,
     state: Arc<(Mutex<SheetIndex>, Condvar)>,
     /// Indexing has begun, on a thread or inline.
     started: bool,
     handle: Option<JoinHandle<()>>,
+    /// Without a thread: the walk until it ends, carried on by the readers
+    /// and `index_step`.
+    walk: Option<SheetWalk>,
 }
 
 impl SheetRuntime {
@@ -1015,6 +1137,7 @@ impl SheetRuntime {
             state: Arc::new((Mutex::new(SheetIndex::default()), Condvar::new())),
             started: false,
             handle: None,
+            walk: None,
         }
     }
 }

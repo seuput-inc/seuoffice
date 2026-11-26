@@ -47,6 +47,7 @@ import {
 import { fullColumnSpans, fullRowSpans } from './autofit-selection'
 import { applyFormatPainterClick } from './format-painter'
 import { nextSheetName } from './new-sheet-name'
+import { startDocxEngine } from './engine-init'
 import { handleInsertNotePicture } from './note-picture-actions'
 import {
   comboSeriesSetDefaults,
@@ -889,7 +890,11 @@ export function handleRibbonCommand(ctx: RibbonCommandContext, command: string):
       ctx.setIconsDialogOpen(true)
       return
     case 'insert-equation':
-      ctx.setEquationDialogOpen(true)
+      // the dialog renders its previews through the engine, which starts on first use
+      void startDocxEngine().then(
+        () => ctx.setEquationDialogOpen(true),
+        (error: unknown) => console.warn('equation engine unavailable', error),
+      )
       return
     case 'import-csv':
       handleImportCsv(ctx.dataToolsContext())

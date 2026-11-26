@@ -1,12 +1,10 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::path::Path;
 
 use base64::Engine;
-use quick_xml::events::Event;
-use quick_xml::{Reader, Writer};
 use roxmltree::{Document, Node};
 use serde::Serialize;
 use zip::ZipArchive;
@@ -611,6 +609,8 @@ pub struct MediaResult {
 pub struct SheetVisualSource {
     pub sheet_id: String,
     pub worksheet_path: String,
+    /// The worksheet's XML without its cells, as open read it
+    pub without_cells: String,
 }
 
 #[derive(Clone)]
@@ -850,7 +850,12 @@ pub fn read_visual_objects(
     let mut ole_serial = 0usize;
     for sheet in sheets {
         let sheet_relationships = read_relationships(archive, &sheet.worksheet_path)?;
-        let ole_objects = read_ole_objects(archive, &sheet.worksheet_path, &sheet_relationships)?;
+        let ole_objects = read_ole_objects(
+            archive,
+            &sheet.worksheet_path,
+            &sheet.without_cells,
+            &sheet_relationships,
+        )?;
         let ole_shape_ids: HashSet<u32> = ole_objects.iter().map(|ole| ole.shape_id).collect();
         let slicer_captions =
             read_slicer_captions(archive, &sheet.worksheet_path, &sheet_relationships);
@@ -1034,13 +1039,13 @@ const EMU_PER_PIXEL: i64 = 9525;
 pub(crate) fn read_ole_objects(
     archive: &mut ZipArchive<File>,
     worksheet_path: &str,
+    without_cells: &str,
     sheet_relationships: &HashMap<String, Relationship>,
 ) -> Result<Vec<OleObjectRecord>, SidecarError> {
-    let xml = read_worksheet_without_cells(archive, worksheet_path)?;
-    if !xml.contains("oleObject") {
+    if !without_cells.contains("oleObject") {
         return Ok(Vec::new());
     }
-    let document = parse_document(&xml, worksheet_path)?;
+    let document = parse_document(without_cells, worksheet_path)?;
     let mut records: Vec<OleObjectRecord> = Vec::new();
     for node in document
         .descendants()
@@ -1943,37 +1948,6 @@ pub(crate) fn resolve_part_target(source_path: &str, target: &str) -> Result<Str
     crate::archive::resolve_relationship_target(source_path, target)
 }
 
-/// The worksheet part with its `<sheetData>` subtree left out. Everything
-/// read_ole_objects looks at (`oleObjects`, `legacyDrawing`) sits outside the
-/// cell data, and the cell data is nearly the whole part: reading it into a
-/// String for every sheet on every open kept a copy of a 293 MB sheet resident
-/// in the sidecar (600 MB) for a check that usually finds nothing.
-fn read_worksheet_without_cells(
-    archive: &mut ZipArchive<File>,
-    path: &str,
-) -> Result<String, SidecarError> {
-    let entry = crate::zip_entry(archive, path)?;
-    let mut reader = Reader::from_reader(BufReader::new(entry));
-    let mut writer = Writer::new(Vec::new());
-    let mut buffer = Vec::new();
-    let mut skipped = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buffer)? {
-            Event::Eof => break,
-            Event::Start(start) if start.local_name().as_ref() == b"sheetData" => {
-                let end = start.to_end().into_owned();
-                reader.read_to_end_into(end.name(), &mut skipped)?;
-                skipped.clear();
-            }
-            Event::Empty(empty) if empty.local_name().as_ref() == b"sheetData" => {}
-            event => writer.write_event(event)?,
-        }
-        buffer.clear();
-    }
-    String::from_utf8(writer.into_inner())
-        .map_err(|_| SidecarError::Workbook(format!("{path} is not valid UTF-8.")))
-}
-
 fn read_xml(archive: &mut ZipArchive<File>, path: &str) -> Result<String, SidecarError> {
     read_optional_xml(archive, path)?
         .ok_or_else(|| SidecarError::Workbook(format!("Workbook is missing {path}.")))
@@ -2198,17 +2172,32 @@ fn locale_short_date_format(locale: &str) -> &'static str {
 
 #[cfg(test)]
 mod worksheet_without_cells_tests {
-    use super::read_worksheet_without_cells;
+    use super::ColorContext;
     use crate::tests::open_fixture;
+    use crate::workbook::read_sheet_dimensions;
     use std::fs::File;
     use zip::ZipArchive;
 
     const CELLS: &str = r#"<sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>2</v></c></row><row r="2"><c r="A2"><f>B1*2</f><v>4</v></c></row></sheetData>"#;
 
+    /// What the dimension walk keeps around the cells, the same whether it
+    /// counts every cell, stops counting after one, or counts none
     fn trimmed(xml: &str) -> String {
         let (_dir, path) = open_fixture(&[("xl/worksheets/sheet1.xml", xml)]);
         let mut archive = ZipArchive::new(File::open(&path).unwrap()).unwrap();
-        read_worksheet_without_cells(&mut archive, "xl/worksheets/sheet1.xml").unwrap()
+        let mut kept = [usize::MAX, 1, 0].map(|budget| {
+            let mut budget = budget;
+            read_sheet_dimensions(
+                &mut archive,
+                "xl/worksheets/sheet1.xml",
+                &ColorContext::default(),
+                &mut budget,
+            )
+            .unwrap()
+            .without_cells
+        });
+        assert!(kept.iter().all(|xml| *xml == kept[0]), "{kept:?}");
+        std::mem::take(&mut kept[0])
     }
 
     #[test]
@@ -2241,5 +2230,16 @@ mod worksheet_without_cells_tests {
         let out = trimmed(empty);
         assert!(out.contains("<drawing"), "{out}");
         assert!(!out.contains("sheetData"), "{out}");
+    }
+
+    #[test]
+    fn keeps_what_follows_cells_the_count_stopped_in() {
+        // a trusted dimension: the walk counts cells, and stops counting with its budget
+        let xml = format!(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1:Z1000"/>{CELLS}<legacyDrawing r:id="rId2"/></worksheet>"#
+        );
+        let out = trimmed(&xml);
+        assert!(out.contains(r#"<legacyDrawing r:id="rId2"/>"#), "{out}");
+        assert!(!out.contains("sheetData") && !out.contains("<row"), "{out}");
     }
 }

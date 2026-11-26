@@ -242,6 +242,7 @@ export {
   markWebHost,
   webAiOff,
   webEmbedded,
+  webShowOnly,
   webViewMode,
   whenLoaded,
   type WebThumbnailRequest,

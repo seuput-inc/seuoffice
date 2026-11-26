@@ -11,13 +11,27 @@ export function webViewMode(): boolean {
 const WEB_HOST_ATTRIBUTE = 'data-web-host'
 const WEB_AI_ATTRIBUTE = 'data-web-ai'
 const WEB_AUTOSAVE_ATTRIBUTE = 'data-web-autosave'
+const WEB_SHARED_ATTRIBUTE = 'data-web-shared'
 
-/** The web entry records what the embed host offers, before the renderer starts */
-export function markWebHost(offers: { ai: boolean; autoSave: boolean }): void {
+/**
+ * The web entry records what the embed host offers, before the renderer starts. `shared`: the
+ * page joins a co-editing session or replays a history, so others' edits reach its document.
+ */
+export function markWebHost(offers: { ai: boolean; autoSave: boolean; shared?: boolean }): void {
   const root = document.documentElement
   root.setAttribute(WEB_HOST_ATTRIBUTE, 'on')
   root.setAttribute(WEB_AI_ATTRIBUTE, offers.ai ? 'on' : 'off')
   root.setAttribute(WEB_AUTOSAVE_ATTRIBUTE, offers.autoSave ? 'on' : 'off')
+  if (offers.shared) root.setAttribute(WEB_SHARED_ATTRIBUTE, 'on')
+}
+
+/** A web page that only shows its document: view mode, and nobody else's edits arrive */
+export function webShowOnly(): boolean {
+  return (
+    webEmbedded() &&
+    webViewMode() &&
+    document.documentElement.getAttribute(WEB_SHARED_ATTRIBUTE) !== 'on'
+  )
 }
 
 /** The page was embedded by a host that offers no AI: the app shows no AI panel and no AI button */

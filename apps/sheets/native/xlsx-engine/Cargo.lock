@@ -975,6 +975,7 @@ dependencies = [
  "base64",
  "calamine",
  "cfb",
+ "flate2",
  "ironcalc",
  "quick-xml 0.38.4",
  "roxmltree",

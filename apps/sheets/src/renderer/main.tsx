@@ -1,8 +1,6 @@
-// the engine starts before any module that calls it evaluates
-import './engine-init'
 import ReactDOM from 'react-dom/client'
 import { htmlDir, htmlLang, type Lang } from '@seuoffice/i18n'
-import { applyAiPanelPrefs, installScreenTips } from '@seuoffice/ui'
+import { applyAiPanelPrefs, installScreenTips, webShowOnly } from '@seuoffice/ui'
 
 import '@seuoffice/ui/tokens.css'
 import '@seuoffice/ui/screentip.css'
@@ -21,6 +19,7 @@ import '@univerjs/preset-sheets-core/lib/index.css'
 import { App } from './App'
 import {
   installCanvasFontFallback,
+  loadBootCellFaces,
   registerTextDingbatsFace,
   untilCellFontsLoaded,
 } from './cell-font-fallback'
@@ -58,18 +57,13 @@ function applyDocumentTheme(theme: DocTheme): void {
   else document.documentElement.setAttribute('data-doc-theme', theme)
 }
 
-// Canvas fillText never triggers @font-face downloads, so the bundled Carlito
-// faces (Calibri/Aptos aliases in styles.css) must be loaded before Univer's
-// first skeleton — MDW, wrap points, and #### overflow all measure with them.
-// The Office-font aliases load with each workbook (openLazyWorkbook).
+// The bundled Carlito faces (Calibri/Aptos aliases in styles.css) load before Univer's first
+// skeleton (loadBootCellFaces); the Office-font aliases load with each workbook
+// (openLazyWorkbook).
 async function loadCellFonts(): Promise<void> {
-  const loads: Promise<unknown>[] = [registerTextDingbatsFace()]
-  for (const variant of ['', 'bold ', 'italic ', 'italic bold ']) {
-    for (const family of ['Calibri', 'Aptos', "'Aptos Narrow'", 'Carlito']) {
-      loads.push(document.fonts?.load?.(`${variant}16px ${family}`)?.catch(() => {}) ?? [])
-    }
-  }
-  await untilCellFontsLoaded(Promise.all(loads))
+  await untilCellFontsLoaded(
+    Promise.all([registerTextDingbatsFace(), loadBootCellFaces(webShowOnly())]),
+  )
 }
 
 async function bootstrap(): Promise<void> {

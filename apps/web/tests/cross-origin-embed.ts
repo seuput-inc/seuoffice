@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -115,9 +115,21 @@ export async function serveBundle(config: ConfigFile | null): Promise<Site> {
         return
       }
       try {
+        // validators as a static server sends them (no-cache, as `vite preview`): a second
+        // request for a file the page already holds revalidates and gets no body
+        const info = await stat(file)
+        const etag = `W/"${info.size}-${info.mtimeMs}"`
+        if (request.headers['if-none-match'] === etag) {
+          response.writeHead(304, { etag }).end()
+          return
+        }
         const body = await readFile(file)
         response
-          .writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' })
+          .writeHead(200, {
+            'content-type': MIME[extname(file)] ?? 'application/octet-stream',
+            'cache-control': 'no-cache',
+            etag,
+          })
           .end(body)
       } catch {
         response.writeHead(404).end('not found')
@@ -129,12 +141,20 @@ export async function serveBundle(config: ConfigFile | null): Promise<Site> {
   return site
 }
 
-/** A page that only hosts: the embed script and an empty viewer */
-export async function serveHost(): Promise<Site> {
+/**
+ * A page that only hosts: the embed script and an empty viewer, and `files` (URL path → local
+ * path) for a host that fetches the document it opens, as a real one does
+ */
+export async function serveHost(files: Record<string, string> = {}): Promise<Site> {
   const site: Site = { port: 0, configRequests: 0, close: async () => {} }
   const server = createServer((request, response) => {
+    const file = files[request.url ?? '']
     if (request.url === '/embed.js') {
       response.writeHead(200, { 'content-type': 'text/javascript' }).end(embedScript)
+    } else if (file !== undefined) {
+      void readFile(file).then((body) =>
+        response.writeHead(200, { 'content-type': 'application/octet-stream' }).end(body),
+      )
     } else {
       response.writeHead(200, { 'content-type': 'text/html' }).end(HOST_HTML)
     }

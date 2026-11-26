@@ -404,8 +404,7 @@ impl WorkbookSession {
         matcher: &FindMatcher,
         look_in: FindLookIn,
     ) -> Result<Vec<FindCellsMatch>, SidecarError> {
-        let file = File::open(path)?;
-        let chunk: ChunkData = serde_json::from_reader(BufReader::new(file))?;
+        let chunk = read_chunk(path)?;
         let sheet_id = &self.sheets[sheet_index].id;
         Ok(chunk
             .cells

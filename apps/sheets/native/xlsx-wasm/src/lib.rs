@@ -70,6 +70,9 @@ enum Command {
         removals: Vec<String>,
         additions: Vec<EntryContent>,
     },
+    /// Carries indexing that `read_range` left partway on by up to `chunks`
+    /// chunks; the worker sends it while no request waits
+    IndexStep { chunks: usize },
     #[serde(other)]
     Unsupported,
 }
@@ -220,6 +223,9 @@ fn handle(request: Request) -> Response {
                 &[],
             )
             .and_then(to_json_value),
+            Command::IndexStep { chunks } => {
+                to_json_value(serde_json::json!({ "pending": sessions.index_step(chunks) }))
+            }
             Command::Unsupported => unreachable!("rejected above"),
         }
     });

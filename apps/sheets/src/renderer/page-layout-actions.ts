@@ -5,7 +5,7 @@
  * per-sheet print settings; nothing renders in the grid (Univer has no
  * page-layout view), everything lands in the saved file.
  */
-import { isMetafileMime, metafileToDataUrl } from '@seuoffice/docx-engine/metafile'
+import { workbookMediaDataUrl } from './workbook-media'
 import type { PrinterInfo, WorkbookExportPdfRequest } from '../shared/desktop-api'
 import type { FWorksheet } from '@univerjs/sheets/facade'
 import type { RedactionIndex } from './ai/redact'
@@ -865,9 +865,7 @@ async function loadHeaderFooterPictures(
     slots.map(async (slot) => {
       try {
         const media = await window.desktopApi.readWorkbookMedia({ sessionId, visualId: slot.id })
-        const dataUrl = isMetafileMime(media.mediaType)
-          ? await metafileToDataUrl(base64ToBytes(media.base64), media.mediaType)
-          : `data:${media.mediaType};base64,${media.base64}`
+        const dataUrl = await workbookMediaDataUrl(media)
         if (dataUrl) {
           pictures.set(slot.position, { dataUrl, widthPt: slot.widthPt, heightPt: slot.heightPt })
         }
@@ -877,11 +875,4 @@ async function loadHeaderFooterPictures(
     }),
   )
   return pictures
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64)
-  const bytes = new Uint8Array(binary.length)
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
-  return bytes
 }
