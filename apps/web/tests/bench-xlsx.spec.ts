@@ -15,10 +15,11 @@
 // which tools/bench-xlsx-compare.mjs compares between two labels.
 // SEUOFFICE_BENCH_XLSX_SLOW_ITALIC_MS=<ms> holds back the italic Carlito faces
 // that long, as a slow network would, for the italic face check.
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { brotliCompressSync, constants } from 'node:zlib'
 import { chromium, expect, test, type Browser, type Frame, type Page } from '@playwright/test'
 import {
@@ -66,6 +67,8 @@ interface Round {
   memoryGrowthMb: number
   /** the host's measure (peakProcessSampler), from 400 ms before the click to 1 s after the scroll */
   processPeakMb: number
+  /** the same over macOS phys_footprint, compressed memory included */
+  processPeakFootprintMb: number
   transfer: { files: number; rawMb: number; brotliMb: number; repeated: string[] }
 }
 
@@ -231,24 +234,78 @@ function documentProcessesMb(notMine: ReadonlySet<number>): number {
   return [...documentProcesses(notMine).values()].reduce((sum, rss) => sum + rss, 0)
 }
 
+/** The top call that reads macOS phys_footprint (MEM: resident and compressed memory together) */
+const footprintArgs = (pids: readonly number[]): string[] => [
+  '-l',
+  '1',
+  '-stats',
+  'pid,mem',
+  ...pids.flatMap((pid) => ['-pid', String(pid)]),
+]
+
+/** phys_footprint in MB by pid, from what that top call printed */
+function parseFootprints(text: string): Map<number, number> {
+  const unit: Record<string, number> = { B: 1 / 1024 / 1024, K: 1 / 1024, M: 1, G: 1024 }
+  const out = new Map<number, number>()
+  for (const match of text.matchAll(/^(\d+)\s+([\d.]+)([BKMG])[+-]?\s*$/gm)) {
+    out.set(Number(match[1]), Number(match[2]) * unit[match[3]!]!)
+  }
+  return out
+}
+
 /**
  * The host's measure (YUYU, 2026-11-27): each document process's peak RSS, sampled every 150 ms,
  * less its RSS before the click when it ran then; a process born after the click (the
- * cross-origin SeuOffice renderer) counts whole. The largest of them.
+ * cross-origin SeuOffice renderer) counts whole. The largest of them. The same rule over macOS
+ * phys_footprint, sampled every 0.5 s: RSS leaves out memory the system compressed.
  */
-function peakProcessSampler(notMine: ReadonlySet<number>): () => number {
+function peakProcessSampler(
+  notMine: ReadonlySet<number>,
+): () => Promise<{ rssMb: number; footprintMb: number }> {
   const before = documentProcesses(notMine)
+  const footprintBefore =
+    before.size === 0
+      ? new Map<number, number>()
+      : parseFootprints(
+          execFileSync('/usr/bin/top', footprintArgs([...before.keys()]), { encoding: 'utf8' }),
+        )
   const peaks = new Map<number, number>()
+  const footprintPeaks = new Map<number, number>()
   const sample = (): void => {
     for (const [pid, rss] of documentProcesses(notMine)) {
       peaks.set(pid, Math.max(peaks.get(pid) ?? 0, rss))
     }
   }
   const timer = setInterval(sample, 150)
-  return () => {
-    clearInterval(timer)
-    sample()
-    return Math.max(0, ...[...peaks].map(([pid, peak]) => peak - (before.get(pid) ?? 0)))
+  let stopped = false
+  const run = promisify(execFile)
+  const sampleFootprints = async (): Promise<void> => {
+    if (peaks.size === 0) return
+    const { stdout } = await run('/usr/bin/top', footprintArgs([...peaks.keys()]))
+    for (const [pid, mb] of parseFootprints(stdout)) {
+      footprintPeaks.set(pid, Math.max(footprintPeaks.get(pid) ?? 0, mb))
+    }
+  }
+  const footprintLoop = (async () => {
+    while (!stopped) {
+      await sampleFootprints().catch(() => {})
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+  })()
+  const largest = (peakOf: Map<number, number>, baseOf: Map<number, number>): number =>
+    Math.max(0, ...[...peakOf].map(([pid, peak]) => peak - (baseOf.get(pid) ?? 0)))
+  return async () => {
+    if (!stopped) {
+      stopped = true
+      clearInterval(timer)
+      sample()
+      await footprintLoop
+      await sampleFootprints().catch(() => {})
+    }
+    return {
+      rssMb: largest(peaks, before),
+      footprintMb: largest(footprintPeaks, footprintBefore),
+    }
   }
 }
 
@@ -370,7 +427,7 @@ async function oneRound(
       }
       const scrollEnd = await now()
       await page.waitForTimeout(1_000)
-      const processPeakMb = processPeak()
+      const processPeaks = await processPeak()
       const recorded = await frame.evaluate(() => window.benchXlsx!)
       const gaps = (from: number, to: number): number[] => {
         const frames = recorded.frames.filter((t) => t >= from && t <= to)
@@ -422,12 +479,13 @@ async function oneRound(
                 .map((task) => Math.round(task.duration))
             : null,
         memoryGrowthMb: Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore,
-        processPeakMb,
+        processPeakMb: processPeaks.rssMb,
+        processPeakFootprintMb: processPeaks.footprintMb,
         transfer: await transfer(urls),
       }
     } finally {
       clearInterval(sampler)
-      processPeak()
+      void processPeak()
     }
   } finally {
     await context.close()
@@ -533,6 +591,7 @@ test.describe('xlsx view benchmark', () => {
             memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
             memoryGrowthOverControlMb: median(rounds.map((r) => r.memoryGrowthMb)) - controlMb,
             processPeakMb: median(rounds.map((r) => r.processPeakMb)),
+            processPeakFootprintMb: median(rounds.map((r) => r.processPeakFootprintMb)),
             brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
           },
         }
