@@ -663,6 +663,8 @@ const checkedFonts = new Set<string>()
 function registerFamiliesOf(font: string): void {
   if (checkedFonts.has(font)) return
   checkedFonts.add(font)
+  // italic text a workbook's styles and runs did not announce (a co-editor's edit, a chart)
+  if (/\bitalic\b/i.test(font)) void loadItalicCellFaces()
   void registerCellFontAliases(font.split(',').map(segmentFamily))
 }
 
@@ -810,6 +812,37 @@ export function untilCellFontsLoaded(loads: Promise<unknown>): Promise<unknown> 
   ])
 }
 
+/// The families styles.css backs with the bundled Carlito faces
+const CARLITO_FAMILIES = ['Calibri', 'Aptos', "'Aptos Narrow'", 'Carlito']
+
+function loadCarlitoFaces(variants: readonly string[]): Promise<unknown> {
+  return Promise.all(
+    variants.flatMap((variant) =>
+      CARLITO_FAMILIES.map((family) =>
+        document.fonts?.load?.(`${variant}16px ${family}`)?.catch(() => {}),
+      ),
+    ),
+  )
+}
+
+/// Canvas fillText never triggers @font-face downloads, so the bundled Carlito
+/// faces must be loaded before Univer's first skeleton: MDW, wrap points and
+/// #### overflow all measure with them. A web page that only shows a workbook
+/// starts with the upright faces; the italic ones (half a megabyte) follow
+/// with the first italic text it shows (loadItalicCellFaces).
+export function loadBootCellFaces(viewOnly: boolean): Promise<unknown> {
+  const upright = loadCarlitoFaces(['', 'bold '])
+  return viewOnly ? upright : Promise.all([upright, loadItalicCellFaces()])
+}
+
+let italicFaces: Promise<unknown> | undefined
+
+/// The italic Carlito faces, once: await them before installing italic text
+export function loadItalicCellFaces(): Promise<unknown> {
+  italicFaces ??= loadCarlitoFaces(['italic ', 'italic bold '])
+  return italicFaces
+}
+
 /// The monochrome dingbats face every cell font chain ends with (see
 /// EMOJI_FALLBACK); its sources are installed with the system.
 export function registerTextDingbatsFace(): Promise<unknown> {
@@ -857,4 +890,11 @@ export function richRunFamilies(
   const families = new Set<string>()
   for (const cell of cells) for (const run of cell.rich ?? []) addFamilies(families, run.family)
   return families
+}
+
+export function hasItalicRun(
+  cells: Iterable<{ rich?: readonly { italic?: boolean }[] | undefined }>,
+): boolean {
+  for (const cell of cells) if (cell.rich?.some((run) => run.italic)) return true
+  return false
 }

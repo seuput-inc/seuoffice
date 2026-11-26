@@ -196,6 +196,8 @@ import { externalLinkOverlayCell } from './external-link-values'
 import type { ExternalLinkCell } from '../shared/desktop-api'
 import { isManualCalculation } from './calc-options'
 import {
+  hasItalicRun,
+  loadItalicCellFaces,
   registerCellFontAliases,
   richRunFamilies,
   untilCellFontsLoaded,
@@ -3348,8 +3350,14 @@ async function loadRange(
       return
     }
     const richFamilies = mapped ? richRunFamilies(mapped.screen.cells) : null
-    if (richFamilies?.size) {
-      await untilCellFontsLoaded(registerCellFontAliases(richFamilies))
+    const italicRuns = mapped ? hasItalicRun(mapped.screen.cells) : false
+    if (richFamilies?.size || italicRuns) {
+      await untilCellFontsLoaded(
+        Promise.all([
+          registerCellFontAliases(richFamilies ?? []),
+          italicRuns ? loadItalicCellFaces() : null,
+        ]),
+      )
       if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
         return
       }

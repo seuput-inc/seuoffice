@@ -92,6 +92,7 @@ import {
   unlockAfterAiRun,
 } from './ai/run-lock'
 import {
+  loadItalicCellFaces,
   registerCellFontAliases,
   untilCellFontsLoaded,
   workbookFontFamilies,
@@ -5735,6 +5736,10 @@ export function App({
         new Promise((resolve) => setTimeout(resolve, 3000)),
       ]),
       untilCellFontsLoaded(registerCellFontAliases(workbookFontFamilies(opened))),
+      // a page that only shows a workbook loads the italic faces when its styles use them
+      [...opened.styles, ...opened.dxfStyles].some((style) => style.italic)
+        ? untilCellFontsLoaded(loadItalicCellFaces())
+        : null,
     ])
     // a run may have started while the faces loaded
     if (!opts?.afterSave && aiRunOpenRefusal() !== null) return false
