@@ -29,4 +29,26 @@ cp -r node_modules/@seuoffice/web/dist ./public/seuoffice
 - CDN이 큰 파일을 자동 압축하지 않으면(파일 크기 상한이 있는 곳이 있다) 올리기 전에 미리 압축해 `Content-Encoding`을 붙인다.
 - 확인: 브라우저 개발자 도구의 네트워크 탭에서 `rhwp_bg-*.wasm`의 응답 머리글에 `content-encoding: br`(또는 `gzip`)이 있는지 본다.
 
+## 배포판에서 XLSX 보기 속도 재기
+
+1. 비교할 릴리스에서 `seuoffice-web-<판>.tgz`와 `seuoffice-embed-<판>.tgz`를 받아 각각 풉니다.
+2. 저장소 루트에서 아래 환경 변수를 설정합니다. 통합 문서는 벤치가 만듭니다.
+
+   | 환경 변수                     | 값                                                      |
+   | ----------------------------- | ------------------------------------------------------- |
+   | `SEUOFFICE_BENCH_XLSX`        | 결과를 구분할 이름. 예: `v0.12.61`                      |
+   | `SEUOFFICE_BENCH_XLSX_DIST`   | 웹 묶음을 푼 곳의 `package/dist` 경로                   |
+   | `SEUOFFICE_BENCH_XLSX_EMBED`  | 임베드 묶음을 푼 곳의 `package/dist/index.js` 절대 경로 |
+   | `SEUOFFICE_BENCH_XLSX_SIZES`  | `large,xl`. 빠른 확인은 `small`                         |
+   | `SEUOFFICE_BENCH_XLSX_ROUNDS` | 성능 비교는 `5`. 빠른 확인은 `1`                        |
+
+   첫 숫자와 스크롤 속도만 재려면 `SEUOFFICE_BENCH_XLSX_TIMING_ONLY=1`을 설정합니다. 메모리 계측과 별도 시작·끝 행 캡처는 생략합니다.
+
+3. `npx playwright test --config apps/web/playwright.config.ts bench-xlsx --project=webkit`을 실행합니다. Windows의 설치된 Edge에서는 `SEUOFFICE_BENCH_XLSX_BROWSER=msedge`를 설정하고 `--project=edge`를 사용합니다. 각 회차는 새 브라우저 컨텍스트에서 엽니다.
+4. 다음 실행 전에 `apps/web/test-results`의 JSON과 스크린샷을 다른 곳에 보관합니다. Playwright가 다음 실행 때 결과 폴더를 비웁니다.
+
+`openedMs`는 파일 선택부터 호스트가 `opened`를 받기까지입니다. `firstNumericDrawMs`는 선택부터 그리드의 첫 소수 값에 대한 `fillText`가 끝나기까지이고, `openedToNumericDrawMs`는 이 두 시각의 차입니다. `-numeric-<회차>.png`에 `firstNumericText`가 보이면 `firstNumericCaptureMs`는 그 값이 보인 시각의 상한입니다. 캡처 완료 시각은 화면에 처음 나타난 프레임의 시각이 아닙니다. `scrollGapsOver100ms`는 스크롤 시작을 기준으로 한 100ms 초과 `requestAnimationFrame` 간격입니다.
+
+이 벤치는 배포된 파일을 별도 로컬 출처에서 서빙합니다. 운영 CDN, 호스트 앱, Safari 또는 WKWebView의 실제 표시 시각을 대신하지 않습니다.
+
 라이선스: FSL-1.1-ALv2(소스 공개, 판마다 2년 뒤 Apache-2.0), GenOffice·이음오피스에서 온 부분은 Apache-2.0. 저장소: https://github.com/seuput-inc/seuoffice

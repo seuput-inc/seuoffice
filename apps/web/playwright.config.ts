@@ -2,17 +2,28 @@ import { defineConfig, devices } from '@playwright/test'
 
 // SEUOFFICE_WEB_PORT lets several checkouts run this suite on one machine at once
 const port = Number(process.env.SEUOFFICE_WEB_PORT ?? 5300)
+const xlsxBench = Boolean(process.env.SEUOFFICE_BENCH_XLSX)
+const edge = xlsxBench && process.env.SEUOFFICE_BENCH_XLSX_BROWSER === 'msedge'
+if (edge && process.platform !== 'win32') throw new Error('Run the Edge benchmark on Windows')
 
 /** Opens every supported format through the built launcher (run `npm run build` first). */
 export default defineConfig({
   testDir: './tests',
   testMatch: '*.spec.ts',
   outputDir: './test-results',
-  globalSetup: './tests/global-setup.ts',
+  globalSetup: xlsxBench ? undefined : './tests/global-setup.ts',
   timeout: 60_000,
   workers: 1,
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: edge ? 'edge' : 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: edge ? 'msedge' : undefined,
+        // Keep the cross-site renderer separate for the benchmark's process measurements.
+        launchOptions: xlsxBench ? { args: ['--site-per-process'] } : undefined,
+      },
+    },
     // the view-mode page, an embed's narrow ribbon and in-page dialogs, the first-page image, the
     // tools a web page leaves out, a narrow PDF, a workbook's pictures, a Word page fitted to
     // a phone and large workbooks scrolling in view mode must also work in Safari's engine
@@ -33,12 +44,14 @@ export default defineConfig({
     },
   ],
   use: { baseURL: `http://localhost:${port}/`, viewport: { width: 1400, height: 900 } },
-  webServer: {
-    command: `npx vite preview --port ${port} --strictPort`,
-    // the co-editing specs' server rides on the preview (tests/collab-server.ts)
-    env: { SEUOFFICE_COLLAB_SERVER: '1' },
-    port,
-    reuseExistingServer: false,
-    timeout: 60_000,
-  },
+  webServer: xlsxBench
+    ? undefined
+    : {
+        command: `npx vite preview --port ${port} --strictPort`,
+        // the co-editing specs' server rides on the preview (tests/collab-server.ts)
+        env: { SEUOFFICE_COLLAB_SERVER: '1' },
+        port,
+        reuseExistingServer: false,
+        timeout: 60_000,
+      },
 })

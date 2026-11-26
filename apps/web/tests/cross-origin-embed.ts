@@ -46,7 +46,7 @@ const MIME: Record<string, string> = {
 
 let embedScript = ''
 
-/** The host's copy of @seuoffice/embed, from its source, as one classic script; call in beforeAll */
+/** The host's copy of @seuoffice/embed, as one classic script; call in beforeAll */
 export async function buildEmbedScript(): Promise<void> {
   const result = await build({
     configFile: false,
@@ -56,7 +56,7 @@ export async function buildEmbedScript(): Promise<void> {
       write: false,
       minify: false,
       lib: {
-        entry: `${repo}packages/embed/src/index.ts`,
+        entry: process.env.SEUOFFICE_BENCH_XLSX_EMBED ?? `${repo}packages/embed/src/index.ts`,
         formats: ['iife'],
         name: 'SeuofficeEmbed',
       },
@@ -88,8 +88,8 @@ function closing(server: Server): Promise<void> {
   return new Promise((done) => server.close(() => done()))
 }
 
-/** apps/web/dist over HTTP, with `config` as its embed-origins.json and a host page of its own */
-export async function serveBundle(config: ConfigFile | null): Promise<Site> {
+/** Serve the web bundle over HTTP with its embed-origins.json and a bare host page. */
+export async function serveBundle(config: ConfigFile | null, dist = DIST): Promise<Site> {
   const site: Site = { port: 0, configRequests: 0, close: async () => {} }
   const server = createServer((request, response) => {
     void (async () => {
@@ -109,8 +109,8 @@ export async function serveBundle(config: ConfigFile | null): Promise<Site> {
           response.writeHead(config.status, { 'content-type': 'application/json' }).end(config.body)
         return
       }
-      const file = normalize(join(DIST, path.endsWith('/') ? `${path}index.html` : path))
-      if (!file.startsWith(DIST)) {
+      const file = normalize(join(dist, path.endsWith('/') ? `${path}index.html` : path))
+      if (!file.startsWith(join(dist, '/'))) {
         response.writeHead(403).end()
         return
       }

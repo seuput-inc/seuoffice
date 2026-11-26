@@ -2,7 +2,7 @@
 // each synthetic workbook of bench-xlsx-fixtures.ts and opens it through
 // @seuoffice/embed from apps/web/dist served on another site, as a production
 // host does (view mode, a fresh browser context each round, so every round is a
-// first visit). It reports what the host waits on: the time from the click to
+// first visit). It reports what the host waits on: from selection to the first
 // drawn cells, frames while the wheel scrolls for 3 s, main-thread stalls after
 // the first paint, the growth of the browser's document processes' memory (also less what a
 // cross-origin iframe with no app in it grows them by, the control), and the bytes the page
@@ -21,7 +21,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { brotliCompressSync, constants } from 'node:zlib'
-import { chromium, expect, test, type Browser, type Frame, type Page } from '@playwright/test'
+import { expect, test, type Browser, type Frame, type Page } from '@playwright/test'
 import {
   BUNDLE_HOST,
   buildEmbedScript,
@@ -48,27 +48,38 @@ const WHEEL_PX = 120
 const WHEEL_PAUSE_MS = 16
 const VIEWPORT = { width: 1440, height: 900 }
 const repo = fileURLToPath(new URL('../../..', import.meta.url))
-const dist = resolve(repo, 'apps/web/dist')
+const dist = resolve(process.env.SEUOFFICE_BENCH_XLSX_DIST ?? resolve(repo, 'apps/web/dist'))
 const out = resolve(repo, 'apps/web/test-results')
 // outside test-results, which playwright empties on every run: the xl workbook takes seconds to write
-const fixtures = resolve(repo, 'node_modules/.cache/bench-xlsx')
+const fixtures = resolve(
+  process.env.SEUOFFICE_BENCH_XLSX_FIXTURES ?? resolve(repo, 'node_modules/.cache/bench-xlsx'),
+)
+const timingOnly = process.env.SEUOFFICE_BENCH_XLSX_TIMING_ONLY === '1'
+const measureMemory = !timingOnly && process.platform !== 'win32'
 
 interface Round {
-  /** handing over the file to the first drawn cell text */
+  /** selection to the first label fillText call; retained for older comparisons */
   firstCellsMs: number
+  downloadMs: number
+  openedMs: number
+  firstNumericDrawMs: number
+  openedToNumericDrawMs: number
+  firstNumericCaptureMs: number
+  firstNumericText: string
   scrollFps: number
   scrollMaxGapMs: number
+  scrollGapsOver100ms: { atMs: number; gapMs: number }[]
   /** wheel steps sent, and those the sheets frame received while the scroll lasted */
   wheels: { sent: number; received: number }
   /** frame gaps over 200 ms in the sheets frame from the first cells to the end of the scroll */
   stallsOver200ms: number[]
   /** the long tasks the browser itself reports (Chromium only) over the same span */
   longTasksOver200ms: number[] | null
-  memoryGrowthMb: number
+  memoryGrowthMb: number | null
   /** the host's measure (peakProcessSampler), from 400 ms before the click to 1 s after the scroll */
-  processPeakMb: number
+  processPeakMb: number | null
   /** the same over macOS phys_footprint, compressed memory included */
-  processPeakFootprintMb: number
+  processPeakFootprintMb: number | null
   transfer: { files: number; rawMb: number; brotliMb: number; repeated: string[] }
 }
 
@@ -76,6 +87,9 @@ interface Round {
 interface Recorder {
   /** the sheets frame: when the grid first drew cell text */
   firstCell: number | null
+  openedAt: number | null
+  openError: string | null
+  firstNumeric: { at: number; text: string } | null
   /** the sheets frame: the highest row number in the cell text it drew ("항목 <row>-<column>") */
   lastRow: number
   /** the sheets frame: cell text drawn italic in a family with a bundled italic face */
@@ -101,6 +115,9 @@ function record(): void {
   const epoch = (time: number): number => performance.timeOrigin + time
   const recorder: Recorder = {
     firstCell: null,
+    openedAt: null,
+    openError: null,
+    firstNumeric: null,
     lastRow: 0,
     italicDraws: 0,
     italicUnloaded: [],
@@ -115,19 +132,22 @@ function record(): void {
       passive: true,
     })
     const fillText = CanvasRenderingContext2D.prototype.fillText
+    const grids = new WeakSet<HTMLCanvasElement>()
     CanvasRenderingContext2D.prototype.fillText = function (
       this: CanvasRenderingContext2D,
       ...args: Parameters<CanvasRenderingContext2D['fillText']>
     ) {
-      const row = /^항목 (\d+)-/.exec(String(args[0]))
+      const text = String(args[0])
+      const row = /^항목 (\d+)-/.exec(text)
       if (row) {
         recorder.firstCell ??= epoch(performance.now())
         recorder.lastRow = Math.max(recorder.lastRow, Number(row[1]))
+        if (recorder.firstNumeric === null) grids.add(this.canvas)
       }
       // any text, since a rich-text run is drawn in pieces; only text the bundled faces cover
       // (Hangul in an italic run draws with a fallback face either way)
       const font = this.font
-      if (/\bitalic\b/.test(font) && /[\p{Script=Latin}\d]/u.test(String(args[0]))) {
+      if (/\bitalic\b/.test(font) && /[\p{Script=Latin}\d]/u.test(text)) {
         const unquote = (name: string): string => name.trim().replace(/^["']|["']$/g, '')
         const family = unquote(/\dpx(?:\/\S+)?\s+([^,]*)/.exec(font)?.[1] ?? '')
         const weights = /\b(bold|[6-9]00)\b/.test(font) ? ['bold', '700'] : ['normal', '400']
@@ -144,7 +164,10 @@ function record(): void {
           }
         }
       }
-      return fillText.apply(this, args)
+      fillText.apply(this, args)
+      if (recorder.firstNumeric === null && grids.has(this.canvas) && /^\d+\.\d+$/.test(text)) {
+        recorder.firstNumeric = { at: epoch(performance.now()), text }
+      }
     }
   }
   const tick = (time: number): void => {
@@ -363,9 +386,10 @@ async function oneRound(
   browser: Browser,
   sites: { host: string; bundle: string },
   name: FixtureName,
+  numericShot: string,
   shots: string | null,
 ): Promise<Round> {
-  const notMine = webkitContentBefore()
+  const notMine = measureMemory ? webkitContentBefore() : new Set<number>()
   const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 })
   try {
     await context.addInitScript(record)
@@ -381,35 +405,56 @@ async function oneRound(
     const urls = trackFetches(page, sites.bundle)
     await page.goto(`${sites.host}/host.html`)
     await page.waitForTimeout(400)
-    const processPeak = peakProcessSampler(notMine)
-    const memoryBefore = documentProcessesMb(notMine)
+    const processPeak = measureMemory ? peakProcessSampler(notMine) : null
+    const memoryBefore = measureMemory ? documentProcessesMb(notMine) : 0
     let memoryPeak = memoryBefore
-    const sampler = setInterval(() => {
-      memoryPeak = Math.max(memoryPeak, documentProcessesMb(notMine))
-    }, 250)
+    const sampler = measureMemory
+      ? setInterval(() => {
+          memoryPeak = Math.max(memoryPeak, documentProcessesMb(notMine))
+        }, 250)
+      : undefined
     try {
       // the host fetches the file and hands it over, as a document list's click does
-      const start = await page.evaluate(
+      const { start, downloaded } = await page.evaluate(
         async ({ baseUrl, fileName }) => {
-          const clicked = performance.timeOrigin + performance.now()
-          const bytes = new Uint8Array(await (await fetch(`/${fileName}`)).arrayBuffer())
+          const start = performance.timeOrigin + performance.now()
+          const response = await fetch(`/${fileName}`)
+          if (!response.ok) throw new Error(`${fileName}: HTTP ${response.status}`)
+          const bytes = new Uint8Array(await response.arrayBuffer())
+          const downloaded = performance.timeOrigin + performance.now()
           const host = window as unknown as HostWindow
           host.embedded = host.SeuofficeEmbed.openDocument(document.getElementById('viewer')!, {
             baseUrl,
             bytes,
             fileName,
           })
-          return clicked
+          void host.embedded.opened.then(
+            () => {
+              window.benchXlsx!.openedAt = performance.timeOrigin + performance.now()
+            },
+            (error: Error) => {
+              window.benchXlsx!.openError = error.message
+            },
+          )
+          return { start, downloaded }
         },
         { baseUrl: `${sites.bundle}/`, fileName: `${name}.xlsx` },
       )
       const frame = await sheetsFrame(page, sites.bundle)
-      const firstCell = await frame.waitForFunction(() => window.benchXlsx?.firstCell, undefined, {
+      await frame.waitForFunction(() => window.benchXlsx?.firstNumeric, undefined, {
         timeout: 180_000,
-        polling: 50,
       })
-      const cellsAt = (await firstCell.jsonValue()) as number
-      // what the page still does after its first cells (the host's thumbnail request and so on)
+      await page.screenshot({ path: numericShot })
+      const captured = await page.evaluate(() => performance.timeOrigin + performance.now())
+      const open = await (
+        await page.waitForFunction(() => {
+          const { openedAt, openError } = window.benchXlsx!
+          return openedAt !== null || openError !== null ? { openedAt, openError } : null
+        })
+      ).jsonValue()
+      if (!open || open.openedAt === null) throw new Error(`${name}: ${open?.openError}`)
+      const { openedAt } = open
+      // Keep the steady-state scroll separate from the first draw and capture.
       await page.waitForTimeout(5_000)
       if (shots) {
         await page.locator('#viewer iframe').screenshot({ path: `${shots}-top.png` })
@@ -427,13 +472,23 @@ async function oneRound(
       }
       const scrollEnd = await now()
       await page.waitForTimeout(1_000)
-      const processPeaks = await processPeak()
+      const processPeaks = await processPeak?.()
       const recorded = await frame.evaluate(() => window.benchXlsx!)
-      const gaps = (from: number, to: number): number[] => {
+      const { firstCell: cellsAt, firstNumeric } = recorded
+      if (cellsAt === null || firstNumeric === null)
+        throw new Error(`${name}: cell draw not recorded`)
+      expect(firstNumeric.at).toBeGreaterThanOrEqual(start)
+      expect(captured).toBeGreaterThanOrEqual(firstNumeric.at)
+      const gaps = (from: number, to: number): { atMs: number; gapMs: number }[] => {
         const frames = recorded.frames.filter((t) => t >= from && t <= to)
-        return frames.slice(1).map((t, i) => t - frames[i]!)
+        return frames.slice(1).map((t, i) => ({ atMs: t - from, gapMs: t - frames[i]! }))
       }
       const scrollGaps = gaps(scrollStart, scrollEnd)
+      const wheelsReceived = recorded.wheels.filter(
+        (t) => t >= scrollStart && t <= scrollEnd,
+      ).length
+      expect(scrollGaps.length, `${name}: scroll frame gaps`).toBeGreaterThan(0)
+      expect(wheelsReceived, `${name}: wheel events reached the frame`).toBeGreaterThan(0)
       if (shots) {
         // the last row, reached the same way in every browser (WebKit takes no Ctrl+End there):
         // one wheel step past the end, then wait until its text is drawn
@@ -463,29 +518,39 @@ async function oneRound(
       if (name.startsWith('italic')) expect(recorded.italicDraws, 'italic draws').toBeGreaterThan(0)
       return {
         firstCellsMs: cellsAt - start,
+        downloadMs: downloaded - start,
+        openedMs: openedAt - start,
+        firstNumericDrawMs: firstNumeric.at - start,
+        openedToNumericDrawMs: firstNumeric.at - openedAt,
+        firstNumericCaptureMs: captured - start,
+        firstNumericText: firstNumeric.text,
         scrollFps: scrollGaps.length / ((scrollEnd - scrollStart) / 1_000),
-        scrollMaxGapMs: Math.max(0, ...scrollGaps),
+        scrollMaxGapMs: Math.max(0, ...scrollGaps.map(({ gapMs }) => gapMs)),
+        scrollGapsOver100ms: scrollGaps.filter(({ gapMs }) => gapMs > 100),
         wheels: {
           sent,
-          received: recorded.wheels.filter((t) => t >= scrollStart && t <= scrollEnd).length,
+          received: wheelsReceived,
         },
         stallsOver200ms: gaps(cellsAt, scrollEnd)
-          .filter((gap) => gap > 200)
-          .map(Math.round),
+          .filter(({ gapMs }) => gapMs > 200)
+          .map(({ gapMs }) => Math.round(gapMs)),
         longTasksOver200ms:
           browser.browserType().name() === 'chromium'
             ? recorded.longTasks
                 .filter((task) => task.start >= cellsAt && task.duration > 200)
                 .map((task) => Math.round(task.duration))
             : null,
-        memoryGrowthMb: Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore,
-        processPeakMb: processPeaks.rssMb,
-        processPeakFootprintMb: processPeaks.footprintMb,
+        memoryGrowthMb: measureMemory
+          ? Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore
+          : null,
+        processPeakMb: processPeaks?.rssMb ?? null,
+        processPeakFootprintMb:
+          process.platform === 'darwin' ? (processPeaks?.footprintMb ?? null) : null,
         transfer: await transfer(urls),
       }
     } finally {
       clearInterval(sampler)
-      void processPeak()
+      void processPeak?.()
     }
   } finally {
     await context.close()
@@ -548,7 +613,7 @@ test.describe('xlsx view benchmark', () => {
     }
     host = await serveHost(files)
     const origins = JSON.stringify({ origins: [origin(host, HOST_NAME)] })
-    bundle = await serveBundle({ status: 200, body: origins })
+    bundle = await serveBundle({ status: 200, body: origins }, dist)
   })
   test.afterAll(async () => {
     await host?.close()
@@ -556,67 +621,84 @@ test.describe('xlsx view benchmark', () => {
   })
 
   test(`opens and scrolls large workbooks in view mode (${label})`, async ({
-    browser: given,
+    browser,
   }, testInfo) => {
     const browserName = testInfo.project.name
-    // Chrome puts a cross-site iframe in a process of its own, and so does this Chromium: the
-    // one Playwright launches keeps it in the host's process, which leaves that process's own
-    // memory out of the growth
-    const isolated =
-      browserName === 'chromium' ? await chromium.launch({ args: ['--site-per-process'] }) : null
-    const browser = isolated ?? given
-    try {
-      mkdirSync(out, { recursive: true })
-      const results: Record<string, { rounds: Round[]; median: Record<string, number> }> = {}
-      const sites = { host: origin(host!, HOST_NAME), bundle: origin(bundle!, BUNDLE_HOST) }
-      const control: number[] = []
+    mkdirSync(out, { recursive: true })
+    const results: Record<string, { rounds: Round[]; median: Record<string, number> }> = {}
+    const sites = { host: origin(host!, HOST_NAME), bundle: origin(bundle!, BUNDLE_HOST) }
+    const control: number[] = []
+    if (measureMemory) {
       for (let round = 0; round < ROUNDS; round++) control.push(await controlRound(browser, sites))
-      const controlMb = median(control)
-      console.log(`[bench-xlsx] ${label} ${browserName} control`, JSON.stringify({ controlMb }))
-      for (const name of SIZES) {
-        const rounds: Round[] = []
-        for (let round = 0; round < ROUNDS; round++) {
-          const shots =
-            round === 0 ? resolve(out, `bench-xlsx-${label}-${browserName}-${name}`) : null
-          rounds.push(await oneRound(browser, sites, name, shots))
-        }
-        results[name] = {
-          rounds,
-          median: {
-            firstCellsMs: median(rounds.map((r) => r.firstCellsMs)),
-            scrollFps: median(rounds.map((r) => r.scrollFps)),
-            scrollMaxGapMs: median(rounds.map((r) => r.scrollMaxGapMs)),
-            wheelsReceived: median(rounds.map((r) => r.wheels.received)),
-            stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
-            memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
-            memoryGrowthOverControlMb: median(rounds.map((r) => r.memoryGrowthMb)) - controlMb,
-            processPeakMb: median(rounds.map((r) => r.processPeakMb)),
-            processPeakFootprintMb: median(rounds.map((r) => r.processPeakFootprintMb)),
-            brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
-          },
-        }
-        console.log(
-          `[bench-xlsx] ${label} ${browserName} ${name}`,
-          JSON.stringify(results[name].median),
-        )
-        // after each workbook: a later one that fails keeps the earlier results
-        writeFileSync(
-          resolve(out, `bench-xlsx-${label}-${browserName}.json`),
-          JSON.stringify(
-            {
-              label,
-              browser: browserName,
-              wheel: { px: WHEEL_PX, pauseMs: WHEEL_PAUSE_MS },
-              control: { rounds: control, medianMb: controlMb },
-              results,
-            },
-            null,
-            1,
-          ) + '\n',
+    }
+    const controlMb = control.length ? median(control) : null
+    console.log(`[bench-xlsx] ${label} ${browserName} control`, JSON.stringify({ controlMb }))
+    for (const name of SIZES) {
+      const rounds: Round[] = []
+      const shotBase = resolve(out, `bench-xlsx-${label}-${browserName}-${name}`)
+      for (let round = 0; round < ROUNDS; round++) {
+        rounds.push(
+          await oneRound(
+            browser,
+            sites,
+            name,
+            `${shotBase}-numeric-${round + 1}.png`,
+            !timingOnly && round === 0 ? shotBase : null,
+          ),
         )
       }
-    } finally {
-      await isolated?.close()
+      const memoryGrowthMb =
+        controlMb === null ? null : median(rounds.map((r) => r.memoryGrowthMb!))
+      results[name] = {
+        rounds,
+        median: {
+          firstCellsMs: median(rounds.map((r) => r.firstCellsMs)),
+          downloadMs: median(rounds.map((r) => r.downloadMs)),
+          openedMs: median(rounds.map((r) => r.openedMs)),
+          firstNumericDrawMs: median(rounds.map((r) => r.firstNumericDrawMs)),
+          openedToNumericDrawMs: median(rounds.map((r) => r.openedToNumericDrawMs)),
+          firstNumericCaptureMs: median(rounds.map((r) => r.firstNumericCaptureMs)),
+          scrollFps: median(rounds.map((r) => r.scrollFps)),
+          scrollMaxGapMs: median(rounds.map((r) => r.scrollMaxGapMs)),
+          scrollGapsOver100ms: median(rounds.map((r) => r.scrollGapsOver100ms.length)),
+          wheelsReceived: median(rounds.map((r) => r.wheels.received)),
+          stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
+          ...(memoryGrowthMb !== null && controlMb !== null
+            ? {
+                memoryGrowthMb,
+                memoryGrowthOverControlMb: memoryGrowthMb - controlMb,
+                processPeakMb: median(rounds.map((r) => r.processPeakMb!)),
+              }
+            : {}),
+          ...(measureMemory && process.platform === 'darwin'
+            ? { processPeakFootprintMb: median(rounds.map((r) => r.processPeakFootprintMb!)) }
+            : {}),
+          brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
+        },
+      }
+      console.log(
+        `[bench-xlsx] ${label} ${browserName} ${name}`,
+        JSON.stringify(results[name].median),
+      )
+      // after each workbook: a later one that fails keeps the earlier results
+      writeFileSync(
+        resolve(out, `bench-xlsx-${label}-${browserName}.json`),
+        JSON.stringify(
+          {
+            label,
+            browser: browserName,
+            browserVersion: browser.version(),
+            platform: process.platform,
+            cache: 'fresh context per round',
+            timingOnly,
+            wheel: { px: WHEEL_PX, pauseMs: WHEEL_PAUSE_MS },
+            control: { rounds: control, medianMb: controlMb },
+            results,
+          },
+          null,
+          1,
+        ) + '\n',
+      )
     }
   })
 })
