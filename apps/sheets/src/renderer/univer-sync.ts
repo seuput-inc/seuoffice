@@ -1394,11 +1394,25 @@ export async function loadVisibleRange(
       endColumn: startColumn + columnSpan,
     }
   }
-  const range = createBufferedRange(
-    normalizeVisibleRange(visible, screenRowCount, screenColumnCount),
-    screenRowCount,
-    screenColumnCount,
-  )
+  const shown = normalizeVisibleRange(visible, screenRowCount, screenColumnCount)
+  // A scroll that keeps the screen inside the loaded window, with a margin, loads nothing: the
+  // window moves (re-centred on the screen) only once the screen nears its edge. Before, every
+  // step of a wheel reread the whole window and wrote it into the grid twice (evict, install),
+  // each write a full repaint. A window still waiting for the end of indexing keeps its own
+  // retry (loadRange) going meanwhile.
+  const loaded = state.loadedRanges.get(sheetId)
+  if (
+    loaded &&
+    containsRange(loaded, {
+      startRow: Math.max(0, shown.startRow - WINDOW_MARGIN_ROWS),
+      endRow: Math.min(screenRowCount - 1, shown.endRow + WINDOW_MARGIN_ROWS),
+      startColumn: Math.max(0, shown.startColumn - WINDOW_MARGIN_COLUMNS),
+      endColumn: Math.min(screenColumnCount - 1, shown.endColumn + WINDOW_MARGIN_COLUMNS),
+    })
+  ) {
+    return
+  }
+  const range = createBufferedRange(shown, screenRowCount, screenColumnCount)
   const generation = bumpViewportGeneration(state, sheetId)
   await loadRange(runtime, lazyWorkbookRef, worksheet, range, setMessage)
   await loadFrozenColumnStrip(lazyWorkbookRef, worksheet, sheet, range)
@@ -4229,6 +4243,10 @@ export function normalizeVisibleRange(
     endColumn: Math.min(columnCount - 1, Math.max(0, Math.trunc(visible.endColumn))),
   }
 }
+
+/// How near the loaded window's edge the screen may come before the window moves
+const WINDOW_MARGIN_ROWS = 20
+const WINDOW_MARGIN_COLUMNS = 2
 
 function createBufferedRange(visible: IRange, rowCount: number, columnCount: number): IRange {
   const rowBuffer = 80
