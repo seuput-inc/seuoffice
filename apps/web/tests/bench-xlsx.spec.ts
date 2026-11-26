@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliCompressSync, constants } from 'node:zlib'
-import { expect, test, type Browser, type Frame, type Page } from '@playwright/test'
+import { chromium, expect, test, type Browser, type Frame, type Page } from '@playwright/test'
 import {
   BUNDLE_HOST,
   buildEmbedScript,
@@ -462,55 +462,65 @@ test.describe('xlsx view benchmark', () => {
   })
 
   test(`opens and scrolls large workbooks in view mode (${label})`, async ({
-    browser,
+    browser: given,
   }, testInfo) => {
     const browserName = testInfo.project.name
-    mkdirSync(out, { recursive: true })
-    const results: Record<string, { rounds: Round[]; median: Record<string, number> }> = {}
-    const sites = { host: origin(host!, HOST_NAME), bundle: origin(bundle!, BUNDLE_HOST) }
-    const control: number[] = []
-    for (let round = 0; round < ROUNDS; round++) control.push(await controlRound(browser, sites))
-    const controlMb = median(control)
-    console.log(`[bench-xlsx] ${label} ${browserName} control`, JSON.stringify({ controlMb }))
-    for (const name of SIZES) {
-      const rounds: Round[] = []
-      for (let round = 0; round < ROUNDS; round++) {
-        const shots =
-          round === 0 ? resolve(out, `bench-xlsx-${label}-${browserName}-${name}`) : null
-        rounds.push(await oneRound(browser, sites, name, shots))
-      }
-      results[name] = {
-        rounds,
-        median: {
-          firstCellsMs: median(rounds.map((r) => r.firstCellsMs)),
-          scrollFps: median(rounds.map((r) => r.scrollFps)),
-          scrollMaxGapMs: median(rounds.map((r) => r.scrollMaxGapMs)),
-          wheelsReceived: median(rounds.map((r) => r.wheels.received)),
-          stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
-          memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
-          memoryGrowthOverControlMb: median(rounds.map((r) => r.memoryGrowthMb)) - controlMb,
-          brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
-        },
-      }
-      console.log(
-        `[bench-xlsx] ${label} ${browserName} ${name}`,
-        JSON.stringify(results[name].median),
-      )
-      // after each workbook: a later one that fails keeps the earlier results
-      writeFileSync(
-        resolve(out, `bench-xlsx-${label}-${browserName}.json`),
-        JSON.stringify(
-          {
-            label,
-            browser: browserName,
-            wheel: { px: WHEEL_PX, pauseMs: WHEEL_PAUSE_MS },
-            control: { rounds: control, medianMb: controlMb },
-            results,
+    // Chrome puts a cross-site iframe in a process of its own, and so does this Chromium: the
+    // one Playwright launches keeps it in the host's process, which leaves that process's own
+    // memory out of the growth
+    const isolated =
+      browserName === 'chromium' ? await chromium.launch({ args: ['--site-per-process'] }) : null
+    const browser = isolated ?? given
+    try {
+      mkdirSync(out, { recursive: true })
+      const results: Record<string, { rounds: Round[]; median: Record<string, number> }> = {}
+      const sites = { host: origin(host!, HOST_NAME), bundle: origin(bundle!, BUNDLE_HOST) }
+      const control: number[] = []
+      for (let round = 0; round < ROUNDS; round++) control.push(await controlRound(browser, sites))
+      const controlMb = median(control)
+      console.log(`[bench-xlsx] ${label} ${browserName} control`, JSON.stringify({ controlMb }))
+      for (const name of SIZES) {
+        const rounds: Round[] = []
+        for (let round = 0; round < ROUNDS; round++) {
+          const shots =
+            round === 0 ? resolve(out, `bench-xlsx-${label}-${browserName}-${name}`) : null
+          rounds.push(await oneRound(browser, sites, name, shots))
+        }
+        results[name] = {
+          rounds,
+          median: {
+            firstCellsMs: median(rounds.map((r) => r.firstCellsMs)),
+            scrollFps: median(rounds.map((r) => r.scrollFps)),
+            scrollMaxGapMs: median(rounds.map((r) => r.scrollMaxGapMs)),
+            wheelsReceived: median(rounds.map((r) => r.wheels.received)),
+            stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
+            memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
+            memoryGrowthOverControlMb: median(rounds.map((r) => r.memoryGrowthMb)) - controlMb,
+            brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
           },
-          null,
-          1,
-        ) + '\n',
-      )
+        }
+        console.log(
+          `[bench-xlsx] ${label} ${browserName} ${name}`,
+          JSON.stringify(results[name].median),
+        )
+        // after each workbook: a later one that fails keeps the earlier results
+        writeFileSync(
+          resolve(out, `bench-xlsx-${label}-${browserName}.json`),
+          JSON.stringify(
+            {
+              label,
+              browser: browserName,
+              wheel: { px: WHEEL_PX, pauseMs: WHEEL_PAUSE_MS },
+              control: { rounds: control, medianMb: controlMb },
+              results,
+            },
+            null,
+            1,
+          ) + '\n',
+        )
+      }
+    } finally {
+      await isolated?.close()
     }
   })
 })
