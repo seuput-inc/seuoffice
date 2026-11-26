@@ -5322,3 +5322,45 @@ fn index_step_goes_first_to_the_sheet_read_last() {
         );
     }
 }
+
+/// Once the sheet read last is walked, the others take turns: two steps of
+/// one chunk carry two unfinished sheets one chunk each, not the first twice.
+#[test]
+fn index_step_takes_the_other_sheets_in_turn() {
+    let (_dir, path) = stepwise_fixture(3);
+    let mut stepwise = WorkbookSessions::new();
+    let opened = stepwise.open(&path).unwrap();
+    let id = opened.session_id.as_str();
+    let session = stepwise.sessions.get_mut(id).unwrap();
+    for sheet in 0..3 {
+        session.start_parser(sheet, false).unwrap();
+    }
+    let indexed_through = |sessions: &WorkbookSessions, sheet: usize| {
+        sessions.sessions[id].runtimes[sheet]
+            .state
+            .0
+            .lock()
+            .unwrap()
+            .indexed_through_row
+    };
+    for sheet in ["sheet-1", "sheet-2"] {
+        stepwise
+            .read_range(id, sheet, &stepwise_rows(0, 99))
+            .unwrap();
+    }
+    // the sheet read last is walked to its end
+    stepwise
+        .read_range(id, "sheet-3", &stepwise_rows(0, 99))
+        .unwrap();
+    stepwise
+        .sessions
+        .get_mut(id)
+        .unwrap()
+        .advance_index(2, None);
+    let before = [indexed_through(&stepwise, 0), indexed_through(&stepwise, 1)];
+    assert!(stepwise.index_step(1));
+    assert!(stepwise.index_step(1));
+    let after = [indexed_through(&stepwise, 0), indexed_through(&stepwise, 1)];
+    assert!(after[0] > before[0], "{before:?} -> {after:?}");
+    assert!(after[1] > before[1], "{before:?} -> {after:?}");
+}

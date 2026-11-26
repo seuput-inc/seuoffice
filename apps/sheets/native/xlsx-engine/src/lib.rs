@@ -231,6 +231,8 @@ pub struct WorkbookSessions {
     /// The session and sheet `read_range` read last: `index_step` carries
     /// its walk first, the sheet the person is looking at.
     last_read: Option<(String, usize)>,
+    /// Counts `index_step` calls: the sheet the others take turns from
+    index_turn: usize,
 }
 
 /// Excel wraps password-encrypted workbooks in an OLE2 compound container
@@ -263,6 +265,7 @@ impl WorkbookSessions {
         Self {
             sessions: HashMap::new(),
             last_read: None,
+            index_turn: 0,
         }
     }
 
@@ -596,9 +599,10 @@ impl WorkbookSessions {
     }
 
     /// Carries the walks `read_range` left partway on by up to `chunks`
-    /// chunks in all, the walk of the sheet read last first; whether any
-    /// walk is still unfinished. A build with threads keeps no such walks: it
-    /// answers false at once.
+    /// chunks in all, the walk of the sheet read last first, then the others
+    /// in turn (each call starts one sheet further on); whether any walk is
+    /// still unfinished. A build with threads keeps no such walks: it answers
+    /// false at once.
     pub fn index_step(&mut self, chunks: usize) -> bool {
         let mut context = Context::from_waker(Waker::noop());
         let mut budget = chunks;
@@ -620,9 +624,12 @@ impl WorkbookSessions {
         {
             step(runtime);
         }
+        let turn = self.index_turn;
+        self.index_turn = self.index_turn.wrapping_add(1);
         for session in self.sessions.values_mut() {
-            for runtime in &mut session.runtimes {
-                step(runtime);
+            let count = session.runtimes.len();
+            for offset in 0..count {
+                step(&mut session.runtimes[(turn + offset) % count]);
             }
         }
         self.sessions.values().any(|session| {
