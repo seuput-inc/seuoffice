@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 
 import { isMetafileMime, metafileToDataUrl } from '@seuoffice/docx-engine/metafile'
+import { startDocxEngine } from './engine-init'
 
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64)
@@ -21,6 +22,7 @@ export async function workbookMediaDataUrl(media: {
   readonly base64: string
 }): Promise<string | null> {
   if (isMetafileMime(media.mediaType)) {
+    await startDocxEngine()
     return metafileToDataUrl(base64ToBytes(media.base64), media.mediaType)
   }
   return `data:${media.mediaType};base64,${media.base64}`
