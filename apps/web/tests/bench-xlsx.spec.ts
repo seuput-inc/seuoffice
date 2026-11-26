@@ -32,9 +32,9 @@ import { benchFixture, FIXTURE_ROWS, type FixtureName } from './bench-xlsx-fixtu
 
 const label = process.env.SEUOFFICE_BENCH_XLSX
 const ROUNDS = Number(process.env.SEUOFFICE_BENCH_XLSX_ROUNDS ?? 3)
-const SIZES = (process.env.SEUOFFICE_BENCH_XLSX_SIZES ?? 'small,medium,large,styled10,xl').split(
-  ',',
-) as FixtureName[]
+const SIZES = (
+  process.env.SEUOFFICE_BENCH_XLSX_SIZES ?? 'small,medium,large,styled10,xl,italic'
+).split(',') as FixtureName[]
 const SCROLL_MS = 3_000
 // the host's own measure (YUYU, 2026-11-26): one 120 px wheel step, 16 ms pause, for 3 s, at
 // 1440x900 and scale 1; the Playwright round trip makes it about one step per 50 ms
@@ -68,6 +68,10 @@ interface Recorder {
   firstCell: number | null
   /** the sheets frame: the highest row number in the cell text it drew ("항목 <row>-<column>") */
   lastRow: number
+  /** the sheets frame: cell text drawn italic in a family with a bundled italic face */
+  italicDraws: number
+  /** the fonts of those draws made before that face had loaded (a substitute was drawn) */
+  italicUnloaded: string[]
   frames: number[]
   wheels: number[]
   longTasks: { start: number; duration: number }[]
@@ -85,7 +89,15 @@ declare global {
 // instead: WebKit taints it).
 function record(): void {
   const epoch = (time: number): number => performance.timeOrigin + time
-  const recorder: Recorder = { firstCell: null, lastRow: 0, frames: [], wheels: [], longTasks: [] }
+  const recorder: Recorder = {
+    firstCell: null,
+    lastRow: 0,
+    italicDraws: 0,
+    italicUnloaded: [],
+    frames: [],
+    wheels: [],
+    longTasks: [],
+  }
   window.benchXlsx = recorder
   if (window !== window.top) {
     addEventListener('wheel', () => recorder.wheels.push(epoch(performance.now())), {
@@ -101,6 +113,22 @@ function record(): void {
       if (row) {
         recorder.firstCell ??= epoch(performance.now())
         recorder.lastRow = Math.max(recorder.lastRow, Number(row[1]))
+        const font = this.font
+        if (/\bitalic\b/.test(font)) {
+          const unquote = (name: string): string => name.trim().replace(/^["']|["']$/g, '')
+          const family = unquote(/\dpx(?:\/\S+)?\s+([^,]*)/.exec(font)?.[1] ?? '')
+          const weights = /\b(bold|[6-9]00)\b/.test(font) ? ['bold', '700'] : ['normal', '400']
+          const faces = [...document.fonts].filter(
+            (face) =>
+              unquote(face.family) === family &&
+              face.style === 'italic' &&
+              weights.includes(face.weight),
+          )
+          if (faces.length > 0) {
+            recorder.italicDraws++
+            if (!faces.some((face) => face.status === 'loaded')) recorder.italicUnloaded.push(font)
+          }
+        }
       }
       return fillText.apply(this, args)
     }
@@ -316,6 +344,9 @@ async function oneRound(
         await page.locator('#viewer iframe').screenshot({ path: `${shots}-end.png` })
       }
       expect(errors, `${name}: page errors`).toEqual([])
+      // italic cells draw with their bundled italic face from the first frame on, never a substitute
+      expect(recorded.italicUnloaded, `${name}: italic drawn before its face loaded`).toEqual([])
+      if (name === 'italic') expect(recorded.italicDraws, 'italic draws').toBeGreaterThan(0)
       return {
         firstCellsMs: cellsAt - start,
         scrollFps: scrollGaps.length / ((scrollEnd - scrollStart) / 1_000),

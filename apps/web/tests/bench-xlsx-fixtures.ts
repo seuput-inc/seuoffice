@@ -1,21 +1,22 @@
 // Synthetic workbooks for the xlsx view benchmark (bench-xlsx.spec.ts), written
 // the way openpyxl writes them (inline strings, numbers, formulas without a
 // cached value) so they match the shapes a host reported: five sizes from 200
-// cells to 8 million, plus one with styles, merged cells, formulas and a
-// frozen pane. Deterministic: the same name always gives the same bytes.
+// cells to 8 million, one with styles, merged cells, formulas and a frozen
+// pane, and a small one whose italic cells check the fonts they are drawn
+// with. Deterministic: the same name always gives the same bytes.
 import { once } from 'node:events'
 import { createWriteStream, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { crc32, createDeflateRaw } from 'node:zlib'
 
-export type FixtureName = 'small' | 'medium' | 'large' | 'styled10' | 'xl'
+export type FixtureName = 'small' | 'medium' | 'large' | 'styled10' | 'xl' | 'italic'
 
 interface SheetSpec {
   rows: number
   cols: number
   /** a column index (0-based) holds text when this says so; else a number */
   text(col: number): boolean
-  styled: 'none' | 'medium' | 'styled10'
+  styled: 'none' | 'medium' | 'styled10' | 'italic'
 }
 
 interface WorkbookSpec {
@@ -35,6 +36,8 @@ const SPECS: Record<FixtureName, WorkbookSpec> = {
     sheet: { rows: 10_000, cols: 30, text: (c) => c % 3 === 0, styled: 'styled10' },
   },
   xl: { sheets: 1, sheet: { rows: 200_000, cols: 40, text: (c) => c % 8 === 0, styled: 'none' } },
+  // column A in an italic cell style, column D in a bold italic rich-text run
+  italic: { sheets: 1, sheet: { rows: 200, cols: 10, text: (c) => c % 3 === 0, styled: 'italic' } },
 }
 
 /** the rows of each workbook's sheets: its last row's first cell reads "항목 <rows>-0" */
@@ -84,7 +87,17 @@ const STYLES =
   }).join('') +
   '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>'
 
+/** STYLES plus font 2 (italic Calibri) and cellXfs 10 using it */
+const ITALIC_STYLES = STYLES.replace('<fonts count="2">', '<fonts count="3">')
+  .replace('</fonts>', '<font><i val="1"/><name val="Calibri"/><sz val="11"/></font></fonts>')
+  .replace('<cellXfs count="10">', '<cellXfs count="11">')
+  .replace(
+    '</cellXfs>',
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>',
+  )
+
 function cellStyle(spec: SheetSpec, row: number, col: number): number {
+  if (spec.styled === 'italic') return row > 1 && col === 0 ? 10 : 0
   if (spec.styled === 'none') return 0
   if (row === 1) return 1
   let mix = 0
@@ -122,6 +135,8 @@ function rowXml(spec: SheetSpec, row: number, next: () => number): string {
     }
     const f = formula(spec, row, col)
     if (f !== null) xml += `<c r="${ref}"${s}><f>${f}</f><v></v></c>`
+    else if (spec.styled === 'italic' && col === 3)
+      xml += `<c r="${ref}"${s} t="inlineStr"><is><r><rPr><b/><i/></rPr><t>항목 ${row}-${col}</t></r></is></c>`
     else if (spec.text(col))
       xml += `<c r="${ref}"${s} t="inlineStr"><is><t>항목 ${row}-${col}</t></is></c>`
     else xml += `<c r="${ref}"${s} t="n"><v>${Math.round(next() * 100_000) / 100}</v></c>`
@@ -158,7 +173,7 @@ function* sheetXml(spec: SheetSpec, next: () => number): Generator<string> {
     '<pageMargins left="0.75" right="0.75" top="1" bottom="1" header="0.5" footer="0.5"/></worksheet>'
 }
 
-function packageParts(sheets: number): Record<string, string> {
+function packageParts({ sheets, sheet }: WorkbookSpec): Record<string, string> {
   const ids = Array.from({ length: sheets }, (_, i) => i + 1)
   return {
     '[Content_Types].xml':
@@ -189,7 +204,7 @@ function packageParts(sheets: number): Record<string, string> {
         )
         .join('') +
       `<Relationship Id="rId${sheets + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
-    'xl/styles.xml': STYLES,
+    'xl/styles.xml': sheet.styled === 'italic' ? ITALIC_STYLES : STYLES,
   }
 }
 
@@ -276,10 +291,7 @@ export async function benchFixture(name: FixtureName, path: string): Promise<str
   mkdirSync(dirname(path), { recursive: true })
   const spec = SPECS[name]
   const next = random(Object.keys(SPECS).indexOf(name) + 1)
-  const entries: Entry[] = Object.entries(packageParts(spec.sheets)).map(([part, text]) => [
-    part,
-    [text],
-  ])
+  const entries: Entry[] = Object.entries(packageParts(spec)).map(([part, text]) => [part, [text]])
   for (let sheet = 1; sheet <= spec.sheets; sheet++) {
     // generated as the zip writes it: the sheets share one sequence of numbers, in order
     entries.push([
