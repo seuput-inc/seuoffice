@@ -65,10 +65,15 @@ export class WasmSidecarClient {
     return response.result
   }
 
-  /** Makes the workbook readable by the engine as /work/<name>; the bytes are copied. */
-  async put(name: string, bytes: Uint8Array): Promise<string> {
-    const copy = bytes.slice().buffer
-    const reply = await this.post({ kind: 'put', name, bytes: copy }, [copy])
+  /**
+   * Makes the workbook readable by the engine as /work/<name>. The bytes are copied, unless
+   * `handOver`: then a view of a whole buffer moves to the engine and is empty here after.
+   */
+  async put(name: string, bytes: Uint8Array, handOver = false): Promise<string> {
+    const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+    const buffer =
+      handOver && whole && bytes.buffer instanceof ArrayBuffer ? bytes.buffer : bytes.slice().buffer
+    const reply = await this.post({ kind: 'put', name, bytes: buffer }, [buffer])
     if (!reply.ok) throw new Error(reply.error)
     return `/work/${name}`
   }

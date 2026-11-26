@@ -53,7 +53,16 @@ const engine = (): WasmSidecarClient => (client ??= new WasmSidecarClient())
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return hex(new Uint8Array(digest))
+}
+
+const hex = (bytes: Uint8Array): string =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+
+/** What the renderer knows the open file by: its digest, and its size */
+interface FileIdentity {
+  sha256: string
+  fileBytes: number
 }
 
 /** The workbook open in the engine: its /work file, its bytes and its sheet ids */
@@ -64,19 +73,26 @@ interface WebSession {
   readonly virtualPath: string
   /** the file under /work the engine session reads */
   readonly engineName: string
-  readonly bytes: Uint8Array
+  /** null on a page that only shows the workbook: its bytes went to the engine */
+  readonly bytes: Uint8Array | null
   /** Univer sheet id → file sheet name, as the desktop session keeps it */
   readonly sheetNames: ReadonlyMap<string, string>
+}
+
+function heldBytes(session: WebSession): Uint8Array {
+  if (!session.bytes) throw new Error('A page that only shows the workbook holds no copy of it.')
+  return session.bytes
 }
 
 // One document per page: the embed hands over a single workbook.
 let current: WebSession | undefined
 
-async function adopt(
+function adopt(
   opened: SidecarOpenResult,
-  bytes: Uint8Array,
+  bytes: Uint8Array | null,
+  identity: FileIdentity,
   names: Pick<WebSession, 'fileName' | 'virtualPath' | 'engineName'>,
-): Promise<WorkbookFile> {
+): WorkbookFile {
   current = {
     ...names,
     sessionId: opened.sessionId,
@@ -87,8 +103,7 @@ async function adopt(
     ...opened,
     // the renderer-facing path is the virtual one: the engine's /work path is an implementation detail
     path: names.virtualPath,
-    sha256: await sha256Hex(bytes),
-    fileBytes: bytes.length,
+    ...identity,
     readOnly: !editMode(),
     needsSaveAs: false,
     restoredFromRecovery: false,
@@ -121,9 +136,17 @@ async function openQueuedDocument(): Promise<WorkbookFile | null> {
     }
     const bytes = collab?.baseBytes ?? doc.bytes
     const engineName = engineFileName(/\.[^./]+$/.exec(doc.fileName)?.[0].toLowerCase() ?? '')
-    const enginePath = await engine().put(engineName, bytes)
+    // A page that only shows the workbook keeps no copy of it: the bytes move to the engine. Its
+    // digest only names this open to the renderer (nothing saves or compares it), so a random id
+    // stands in for hashing the whole file.
+    const showOnly = !editMode() && !collab
+    const identity = {
+      sha256: showOnly ? hex(crypto.getRandomValues(new Uint8Array(32))) : await sha256Hex(bytes),
+      fileBytes: bytes.length,
+    }
+    const enginePath = await engine().put(engineName, bytes, showOnly)
     const opened = await engine().open(enginePath, documentLocaleFor(navigator.language))
-    return await adopt(opened, bytes, {
+    return adopt(opened, showOnly ? null : bytes, identity, {
       fileName: doc.fileName,
       virtualPath: doc.virtualPath,
       engineName,
@@ -197,7 +220,8 @@ async function saveWorkbookEdits(input: WorkbookSaveRequest): Promise<WorkbookSa
     await engine().close(session.sessionId).catch(noop)
     await engine().drop(session.engineName).catch(noop)
     transfers.discardSession(session.sessionId)
-    const file = await adopt(opened, saved.bytes, { ...session, engineName: target })
+    const identity = { sha256: await sha256Hex(saved.bytes), fileBytes: saved.bytes.length }
+    const file = adopt(opened, saved.bytes, identity, { ...session, engineName: target })
     return { canceled: false, file, touchedEntries: [...saved.touchedEntries] }
   } catch (error) {
     lastSaveError = error instanceof Error ? error.message : String(error)
@@ -231,7 +255,7 @@ async function workbookTemplateBytes(
       throw new Error('Unknown workbook session.')
     }
     // nothing a save writes was edited yet: the workbook is the file the session started from
-    if (checked === null) return { ok: true, bytes: session.bytes }
+    if (checked === null) return { ok: true, bytes: heldBytes(session) }
     const request = withTransferredEdits(checked)
     const scratch = (): string => {
       const name = engineFileName(/\.[^.]+$/.exec(session.engineName)?.[0] ?? '.xlsx')
@@ -277,7 +301,7 @@ async function runHostSave(ownerId: string): Promise<void> {
   })
   closeSaveSettled = undefined
   if (!ok) throw new Error(lastSaveError ?? 'the workbook was not saved')
-  if (deliveredCount === delivered) await saveToHost(session.fileName, session.bytes, 'host')
+  if (deliveredCount === delivered) await saveToHost(session.fileName, heldBytes(session), 'host')
 }
 
 // Host requests run one after another: each waits on the single close-save answer.
