@@ -61,13 +61,18 @@ function applyDocumentTheme(theme: DocTheme): void {
 // first skeleton — MDW, wrap points, and #### overflow all measure with them.
 // The Office-font aliases load with each workbook (openLazyWorkbook).
 async function loadCellFonts(): Promise<void> {
-  const loads: Promise<unknown>[] = [registerTextDingbatsFace()]
-  for (const variant of ['', 'bold ', 'italic ', 'italic bold ']) {
-    for (const family of ['Calibri', 'Aptos', "'Aptos Narrow'", 'Carlito']) {
-      loads.push(document.fonts?.load?.(`${variant}16px ${family}`)?.catch(() => {}) ?? [])
-    }
-  }
-  await untilCellFontsLoaded(Promise.all(loads))
+  const load = (families: readonly string[]): Promise<unknown> =>
+    Promise.all(
+      ['', 'bold ', 'italic ', 'italic bold '].flatMap((variant) =>
+        families.map((family) =>
+          document.fonts?.load?.(`${variant}16px ${family}`)?.catch(() => {}),
+        ),
+      ),
+    )
+  // The aliases fall back to the same four Carlito files: started together, each family fetched
+  // each file again (Chromium), so they load once Carlito's own faces hold the files
+  const carlito = load(['Carlito']).then(() => load(['Calibri', 'Aptos', "'Aptos Narrow'"]))
+  await untilCellFontsLoaded(Promise.all([registerTextDingbatsFace(), carlito]))
 }
 
 async function bootstrap(): Promise<void> {
