@@ -195,12 +195,7 @@ import type { SheetOutlineState } from './outline-model'
 import { externalLinkOverlayCell } from './external-link-values'
 import type { ExternalLinkCell } from '../shared/desktop-api'
 import { isManualCalculation } from './calc-options'
-import {
-  italicFacesFor,
-  registerCellFontAliases,
-  richRunFamilies,
-  untilCellFontsLoaded,
-} from './cell-font-fallback'
+import { runFacesFor } from './cell-font-fallback'
 import { noteFormulaStreamChunk, requestFullRecalcAfterStream } from './formula-stream-hold'
 import { endLoadingNotice, showLoadingNotice } from './loading-notice'
 import { SharedFormulaLookup, indexedFormulas } from './shared-formula-index'
@@ -1669,7 +1664,7 @@ export async function activateFormulaClosure(
       } catch {
         return giveUp()
       }
-      await italicFacesFor(result.cells)
+      await runFacesFor(result.cells)
       if (lazyWorkbookRef.current !== state) return
       // Same hazard as the pre-install guard: a structural edit landing while
       // the read was in flight shifts screen coordinates, so this file-space
@@ -2079,8 +2074,8 @@ export async function readSheetRangeMapped(
     if (!sidecarCrashNotified || !(await recoverSidecarSession(state))) throw error
     mapped = await readSheetRangeMappedOnce(state, sheetId, screenRange, sheet)
   }
-  // every range the grid installs from the file comes through here, its italic runs too
-  if (mapped) await italicFacesFor(mapped.screen.cells)
+  // every range the grid installs from the file comes through here, its rich-text runs too
+  if (mapped) await runFacesFor(mapped.screen.cells)
   return mapped
 }
 
@@ -3381,13 +3376,6 @@ async function loadRange(
     const mapped = await readSheetRangeMapped(state, sheetId, range, sheetMeta)
     if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
       return
-    }
-    const richFamilies = mapped ? richRunFamilies(mapped.screen.cells) : null
-    if (richFamilies?.size) {
-      await untilCellFontsLoaded(registerCellFontAliases(richFamilies))
-      if (lazyWorkbookRef.current !== state || state.loadingKeys.get(sheetId) !== requestKey) {
-        return
-      }
     }
     if (!mapped) {
       // The whole range is journal-owned (inserted this session): nothing
@@ -6187,7 +6175,7 @@ async function preloadEntireWorkbookInner(
       } catch {
         return
       }
-      await italicFacesFor(result.cells)
+      await runFacesFor(result.cells)
       if (lazyWorkbookRef.current !== state) return
       // Structural edits made while the preload runs shift screen positions;
       // install each block through the current mapping.
