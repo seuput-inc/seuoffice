@@ -34,6 +34,7 @@ const CLIENT_INFO = { name: 'IeumOffice', version: '0.0.0-test' }
 
 const codec: McpSecretCodec = {
   canSeal: () => true,
+  sealsHere: () => true,
   seal: (plain) => `sealed:v1:${Buffer.from(plain).toString('base64')}`,
   open: (sealed) =>
     sealed.startsWith('sealed:v1:') ? Buffer.from(sealed.slice(10), 'base64').toString() : null,

@@ -120,6 +120,22 @@ describe('sealStoredAiSettings', () => {
     expect(sealStoredAiSettings(path)).toBe(false)
     expect(readFileSync(path, 'utf8')).toBe(before)
   })
+
+  // On macOS Chromium reads the "seuoffice Safe Storage" keychain item to answer
+  // isEncryptionAvailable, so an ad hoc signed app met the keychain prompt at every start
+  it('does not touch the keychain on macOS when it starts with plain keys', () => {
+    const calls: string[] = []
+    const keychain: SafeStorageLike = {
+      isEncryptionAvailable: () => (calls.push('isEncryptionAvailable'), true),
+      encryptString: (plain) => (calls.push('encryptString'), Buffer.from(plain)),
+      decryptString: (sealed) => (calls.push('decryptString'), sealed.toString()),
+    }
+    setAiSecretCodec(safeStorageCodec(keychain, 'darwin'))
+    expect(sealStoredAiSettings(file(stored))).toBe(false)
+    const search = { keys: { openrouter: 'or-plain' } }
+    expect(sealFileSearchKeys(search)).toEqual(search)
+    expect(calls).toEqual([])
+  })
 })
 
 describe('the reveal entry', () => {

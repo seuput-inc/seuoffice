@@ -34,6 +34,7 @@ const SECRETS = ['SECRET-KEY-1234', 'CLIENT-SECRET-5678', 'ACCESS-TOKEN-9999', '
 
 const codec: McpSecretCodec = {
   canSeal: () => true,
+  sealsHere: () => true,
   seal: (plain) => `sealed:v1:${Buffer.from([...plain].reverse().join('')).toString('base64')}`,
   open: (sealed) =>
     sealed.startsWith('sealed:v1:')
