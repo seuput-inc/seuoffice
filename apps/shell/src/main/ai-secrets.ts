@@ -49,11 +49,14 @@ export function linuxKeyringSeals(storage: SafeStorageLike): boolean {
   return LINUX_KEYRINGS.has(storage.getSelectedStorageBackend?.() ?? '')
 }
 
-/** Whether this platform seals at all, apart from the key being ready */
+/**
+ * Whether this platform seals at all, apart from the key being ready. The
+ * platform is checked first: on macOS isEncryptionAvailable reads the keychain
+ * item, which an ad hoc signed app may only read after a password prompt.
+ */
 export function platformSeals(storage: SafeStorageLike, platform: NodeJS.Platform): boolean {
-  if (!storage.isEncryptionAvailable()) return false
-  if (platform === 'win32') return true
-  if (platform === 'linux') return linuxKeyringSeals(storage)
+  if (platform === 'win32') return storage.isEncryptionAvailable()
+  if (platform === 'linux') return storage.isEncryptionAvailable() && linuxKeyringSeals(storage)
   return false
 }
 
