@@ -4,8 +4,9 @@
 // host does (view mode, a fresh browser context each round, so every round is a
 // first visit). It reports what the host waits on: the time from the click to
 // drawn cells, frames while the wheel scrolls for 3 s, main-thread stalls after
-// the first paint, the growth of the browser's document processes' memory, and
-// the bytes the page fetched (brotli sizes of the files served).
+// the first paint, the growth of the browser's document processes' memory (also less what a
+// cross-origin iframe with no app in it grows them by, the control), and the bytes the page
+// fetched (brotli sizes of the files served).
 // Runs only under SEUOFFICE_BENCH_XLSX=<label>, against a built apps/web/dist:
 //   SEUOFFICE_BENCH_XLSX=main SEUOFFICE_BENCH_XLSX_SIZES=large,xl \
 //     npx playwright test --config apps/web/playwright.config.ts bench-xlsx
@@ -397,6 +398,43 @@ async function oneRound(
   }
 }
 
+/**
+ * The control: the same host opens a cross-origin iframe of a page with no app in it (the
+ * bundle site's bare host page), held as long as a round's open and scroll, measured the same
+ * way. Its growth is what any cross-origin iframe costs, whatever it shows.
+ */
+async function controlRound(
+  browser: Browser,
+  sites: { host: string; bundle: string },
+): Promise<number> {
+  const notMine = webkitContentBefore()
+  const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 1 })
+  try {
+    const page = await context.newPage()
+    await page.goto(`${sites.host}/host.html`)
+    const memoryBefore = documentProcessesMb(notMine)
+    let memoryPeak = memoryBefore
+    const sampler = setInterval(() => {
+      memoryPeak = Math.max(memoryPeak, documentProcessesMb(notMine))
+    }, 250)
+    try {
+      await page.evaluate((src) => {
+        const frame = document.createElement('iframe')
+        frame.src = src
+        frame.style.cssText = 'width:100%;height:100%;border:0'
+        document.getElementById('viewer')!.append(frame)
+        return new Promise((loaded) => frame.addEventListener('load', loaded, { once: true }))
+      }, `${sites.bundle}/host.html`)
+      await page.waitForTimeout(5_000 + 300 + SCROLL_MS)
+      return Math.max(memoryPeak, documentProcessesMb(notMine)) - memoryBefore
+    } finally {
+      clearInterval(sampler)
+    }
+  } finally {
+    await context.close()
+  }
+}
+
 const median = (values: number[]): number => {
   const sorted = [...values].sort((a, b) => a - b)
   return sorted[Math.floor(sorted.length / 2)]!
@@ -430,6 +468,10 @@ test.describe('xlsx view benchmark', () => {
     mkdirSync(out, { recursive: true })
     const results: Record<string, { rounds: Round[]; median: Record<string, number> }> = {}
     const sites = { host: origin(host!, HOST_NAME), bundle: origin(bundle!, BUNDLE_HOST) }
+    const control: number[] = []
+    for (let round = 0; round < ROUNDS; round++) control.push(await controlRound(browser, sites))
+    const controlMb = median(control)
+    console.log(`[bench-xlsx] ${label} ${browserName} control`, JSON.stringify({ controlMb }))
     for (const name of SIZES) {
       const rounds: Round[] = []
       for (let round = 0; round < ROUNDS; round++) {
@@ -446,6 +488,7 @@ test.describe('xlsx view benchmark', () => {
           wheelsReceived: median(rounds.map((r) => r.wheels.received)),
           stallsOver200ms: median(rounds.map((r) => r.stallsOver200ms.length)),
           memoryGrowthMb: median(rounds.map((r) => r.memoryGrowthMb)),
+          memoryGrowthOverControlMb: median(rounds.map((r) => r.memoryGrowthMb)) - controlMb,
           brotliMb: median(rounds.map((r) => r.transfer.brotliMb)),
         },
       }
@@ -461,6 +504,7 @@ test.describe('xlsx view benchmark', () => {
             label,
             browser: browserName,
             wheel: { px: WHEEL_PX, pauseMs: WHEEL_PAUSE_MS },
+            control: { rounds: control, medianMb: controlMb },
             results,
           },
           null,
