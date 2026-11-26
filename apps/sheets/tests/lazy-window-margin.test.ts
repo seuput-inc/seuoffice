@@ -24,9 +24,14 @@ const at = (startRow: number, startColumn: number, endRow: number, endColumn: nu
   endColumn,
 })
 
-/** a 5,000-row sheet whose rows 220-420 are loaded, with the screen at `shown` */
-function scrolledTo(shown: Range) {
-  const readWorkbookRange = vi.fn().mockRejectedValue(new Error('this test has no file'))
+/**
+ * a 5,000-row sheet whose rows 220-420 are loaded, with the screen at `screen.shown`; reads
+ * reject unless `pending`, when they never answer (a load still in flight)
+ */
+function scrolledTo(shown: Range, pending = false) {
+  const readWorkbookRange = pending
+    ? vi.fn(() => new Promise(() => {}))
+    : vi.fn().mockRejectedValue(new Error('this test has no file'))
   vi.stubGlobal('window', { desktopApi: { readWorkbookRange } })
   const state = {
     file: { sessionId: 'session', sheets: [{ id: 's1', rowCount: 5_000, columnCount: 20 }] },
@@ -38,12 +43,13 @@ function scrolledTo(shown: Range) {
     flags: { preloadRunning: false, preloadComplete: false },
     formulaMode: false,
   } as unknown as LazyWorkbookState
+  const screen = { shown }
   const worksheet = {
     getSheetId: () => 's1',
-    getVisibleRange: () => shown,
+    getVisibleRange: () => screen.shown,
   } as unknown as UniverWorksheet
   const runtime = { univerAPI: { getActiveWorkbook: () => null } } as unknown as UniverRuntime
-  return { readWorkbookRange, state, worksheet, runtime }
+  return { readWorkbookRange, state, worksheet, runtime, screen }
 }
 
 describe('the loaded window', () => {
@@ -62,21 +68,35 @@ describe('the loaded window', () => {
     )
   })
 
-  it('moves to the screen when a load in flight elsewhere would replace it', async () => {
-    // a fast scroll asked for rows 305-505, and the screen came back before they landed: once
-    // they land they replace 220-420, so the screen needs its own window
-    const { readWorkbookRange, state, worksheet, runtime } = scrolledTo(at(310, 0, 350, 12))
-    state.loadingKeys.set('s1', '305:505:0:19')
-    await loadVisibleRange(runtime, { current: state }, worksheet, () => {}).catch(() => {})
-    expect(readWorkbookRange).toHaveBeenCalledWith(
-      expect.objectContaining({ range: at(230, 0, 430, 19) }),
+  it('moves to the screen when the screen comes back before a load elsewhere lands', async () => {
+    // the screen nears the edge: the window around it (290-490) is asked for and stays in flight
+    const { readWorkbookRange, state, worksheet, runtime, screen } = scrolledTo(
+      at(370, 0, 410, 12),
+      true,
+    )
+    void loadVisibleRange(runtime, { current: state }, worksheet, () => {})
+    await vi.waitFor(() => expect(readWorkbookRange).toHaveBeenCalledTimes(1))
+    // back inside 220-420 but not 290-490: once that lands it replaces 220-420, so the screen
+    // needs its own window
+    screen.shown = at(250, 0, 290, 12)
+    void loadVisibleRange(runtime, { current: state }, worksheet, () => {})
+    await vi.waitFor(() =>
+      expect(readWorkbookRange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ range: at(170, 0, 370, 19) }),
+      ),
     )
   })
 
-  it('stays put while the load in flight is the window around the screen', async () => {
-    const { readWorkbookRange, state, worksheet, runtime } = scrolledTo(at(310, 0, 350, 12))
-    state.loadingKeys.set('s1', '220:420:0:19')
+  it('stays put while the load in flight holds the screen too', async () => {
+    const { readWorkbookRange, state, worksheet, runtime, screen } = scrolledTo(
+      at(370, 0, 410, 12),
+      true,
+    )
+    void loadVisibleRange(runtime, { current: state }, worksheet, () => {})
+    await vi.waitFor(() => expect(readWorkbookRange).toHaveBeenCalledTimes(1))
+    // inside both 220-420 and 290-490, with the margin
+    screen.shown = at(330, 0, 370, 12)
     await loadVisibleRange(runtime, { current: state }, worksheet, () => {})
-    expect(readWorkbookRange).not.toHaveBeenCalled()
+    expect(readWorkbookRange).toHaveBeenCalledTimes(1)
   })
 })
