@@ -129,12 +129,20 @@ export async function serveBundle(config: ConfigFile | null): Promise<Site> {
   return site
 }
 
-/** A page that only hosts: the embed script and an empty viewer */
-export async function serveHost(): Promise<Site> {
+/**
+ * A page that only hosts: the embed script and an empty viewer, and `files` (URL path → local
+ * path) for a host that fetches the document it opens, as a real one does
+ */
+export async function serveHost(files: Record<string, string> = {}): Promise<Site> {
   const site: Site = { port: 0, configRequests: 0, close: async () => {} }
   const server = createServer((request, response) => {
+    const file = files[request.url ?? '']
     if (request.url === '/embed.js') {
       response.writeHead(200, { 'content-type': 'text/javascript' }).end(embedScript)
+    } else if (file !== undefined) {
+      void readFile(file).then((body) =>
+        response.writeHead(200, { 'content-type': 'application/octet-stream' }).end(body),
+      )
     } else {
       response.writeHead(200, { 'content-type': 'text/html' }).end(HOST_HTML)
     }

@@ -14,8 +14,8 @@ export default defineConfig({
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     // the view-mode page, an embed's narrow ribbon and in-page dialogs, the first-page image, the
-    // tools a web page leaves out, a narrow PDF, a workbook's pictures and a Word page fitted to
-    // a phone must also work in Safari's engine
+    // tools a web page leaves out, a narrow PDF, a workbook's pictures, a Word page fitted to
+    // a phone and large workbooks scrolling in view mode must also work in Safari's engine
     {
       name: 'webkit',
       use: { ...devices['Desktop Safari'] },
@@ -28,6 +28,7 @@ export default defineConfig({
         'embed-pdf-narrow.spec.ts',
         'xlsx-floating-picture.spec.ts',
         'docs-narrow-layout.spec.ts',
+        'bench-xlsx.spec.ts',
       ],
     },
   ],
