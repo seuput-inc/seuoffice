@@ -1355,10 +1355,11 @@ pub(crate) fn flush_chunk(
         })
         .collect();
     if has_data {
-        let file = File::create(&path)?;
-        let mut writer = BufWriter::new(file);
-        serde_json::to_writer(&mut writer, chunk)?;
-        writer.flush()?;
+        // One write of the whole chunk: the browser build's file system
+        // (browser_wasi_shim) reallocates a file on every write past its end,
+        // so a buffered writer's many small writes copied the chunk again and
+        // again.
+        fs::write(&path, serde_json::to_vec(chunk)?)?;
         chunk.cells.clear();
         chunk.rows.clear();
     }

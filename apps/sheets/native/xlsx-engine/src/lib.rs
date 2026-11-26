@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Seek, Write};
+use std::io::{BufReader, Read, Seek, Write};
 #[cfg(unix)]
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -993,8 +993,8 @@ impl WorkbookSession {
         let mut cells = Vec::new();
         let mut rows = Vec::new();
         for path in paths {
-            let file = File::open(path)?;
-            let chunk: ChunkData = serde_json::from_reader(BufReader::new(file))?;
+            // a whole slice parses several times faster than a reader
+            let chunk: ChunkData = serde_json::from_slice(&fs::read(path)?)?;
             cells.extend(chunk.cells.into_iter().filter(|cell| {
                 cell.row >= range.start_row
                     && cell.row <= range.end_row
