@@ -16,7 +16,7 @@
 // SEUOFFICE_BENCH_XLSX_SLOW_ITALIC_MS=<ms> holds back the italic Carlito faces
 // that long, as a slow network would, for the italic face check.
 import { execFile, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -34,6 +34,7 @@ import {
 } from './cross-origin-embed'
 import { benchFixture, FIXTURE_ROWS, type FixtureName } from './bench-xlsx-fixtures'
 import { frameGaps } from './bench-xlsx-frame-gaps'
+import { visibleCell, type CellPixels } from './bench-xlsx-visible-cell'
 
 const label = process.env.SEUOFFICE_BENCH_XLSX
 const ROUNDS = Number(process.env.SEUOFFICE_BENCH_XLSX_ROUNDS ?? 3)
@@ -67,6 +68,7 @@ interface Round {
   openedToNumericDrawMs: number
   firstNumericCaptureMs: number
   firstNumericText: string
+  visibleNumeric: CellPixels & { attempt: number }
   scrollFps: number
   scrollMaxGapMs: number
   scrollGapsOver100ms: { atMs: number; gapMs: number }[]
@@ -383,6 +385,42 @@ async function transfer(fetched: Promise<string | null>[]): Promise<Round['trans
   }
 }
 
+async function captureNumeric(
+  page: Page,
+  frame: Frame,
+  fixture: FixtureName,
+  text: string,
+  path: string,
+) {
+  const unverified = path.replace(/\.png$/, '-unverified.png')
+  const overlay = frame.locator('.workbook-opening-screen')
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await overlay.waitFor({ state: 'hidden', timeout: 30_000 })
+    } catch (error) {
+      await page.screenshot({ path: unverified })
+      throw error
+    }
+    await page.screenshot({ path: unverified })
+    const captured = await page.evaluate(() => performance.timeOrigin + performance.now())
+    const { stdout } = await promisify(execFile)('tesseract', [
+      unverified,
+      'stdout',
+      '-l',
+      'eng',
+      '--psm',
+      '11',
+      'tsv',
+    ])
+    const cell = visibleCell(stdout, fixture, text)
+    if (cell) {
+      renameSync(unverified, path)
+      return { captured, visibleNumeric: { ...cell, attempt } }
+    }
+  }
+  throw new Error(`${fixture}: could not verify ${text} in the sheet pixels: ${unverified}`)
+}
+
 async function oneRound(
   browser: Browser,
   sites: { host: string; bundle: string },
@@ -442,11 +480,12 @@ async function oneRound(
         { baseUrl: `${sites.bundle}/`, fileName: `${name}.xlsx` },
       )
       const frame = await sheetsFrame(page, sites.bundle)
-      await frame.waitForFunction(() => window.benchXlsx?.firstNumeric, undefined, {
-        timeout: 180_000,
-      })
-      await page.screenshot({ path: numericShot })
-      const captured = await page.evaluate(() => performance.timeOrigin + performance.now())
+      const numeric = await (
+        await frame.waitForFunction(() => window.benchXlsx?.firstNumeric, undefined, {
+          timeout: 180_000,
+        })
+      ).jsonValue()
+      if (!numeric) throw new Error(`${name}: numeric draw not recorded`)
       const open = await (
         await page.waitForFunction(() => {
           const { openedAt, openError } = window.benchXlsx!
@@ -455,6 +494,18 @@ async function oneRound(
       ).jsonValue()
       if (!open || open.openedAt === null) throw new Error(`${name}: ${open?.openError}`)
       const { openedAt } = open
+      console.log(`[bench-xlsx] ${numericShot}`, {
+        openedMs: openedAt - start,
+        firstNumericDrawMs: numeric.at - start,
+        firstNumericText: numeric.text,
+      })
+      const { captured, visibleNumeric } = await captureNumeric(
+        page,
+        frame,
+        name,
+        numeric.text,
+        numericShot,
+      )
       // Keep the steady-state scroll separate from the first draw and capture.
       await page.waitForTimeout(5_000)
       if (shots) {
@@ -522,6 +573,7 @@ async function oneRound(
         openedToNumericDrawMs: firstNumeric.at - openedAt,
         firstNumericCaptureMs: captured - start,
         firstNumericText: firstNumeric.text,
+        visibleNumeric,
         scrollFps:
           recorded.frames.filter((t) => t > scrollStart && t <= scrollEnd).length /
           ((scrollEnd - scrollStart) / 1_000),

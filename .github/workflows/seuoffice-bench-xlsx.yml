@@ -62,6 +62,18 @@ jobs:
       - run: npm ci --ignore-scripts --workspace @seuoffice/web
       - if: matrix.project == 'webkit'
         run: npx --no-install playwright install --with-deps webkit
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "$env:ProgramFiles\Tesseract-OCR"
+          if (-not (Test-Path "$dir\tesseract.exe")) {
+            choco install tesseract --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Test-Path "$dir\tesseract.exe")) { throw "Tesseract not found" }
+          $dir >> $env:GITHUB_PATH
       - name: Measure the released bundle
         env:
           SEUOFFICE_BENCH_XLSX_DIST: ${{ github.workspace }}/candidate/web/package/dist
@@ -77,6 +89,7 @@ jobs:
             (.results | keys_unsorted == ["small", "large", "xl"]) and
             all(.results[]; (.rounds | length == 5)) and
             all(.results[].rounds[]; (.firstNumericText | type == "string" and length > 0) and
+              (.visibleNumeric.text == .firstNumericText and .visibleNumeric.attempt >= 1) and
               ([.openedMs, .firstNumericDrawMs, .firstNumericCaptureMs, .scrollMaxGapMs] | all(type == "number")) and
               (.scrollGapsOver100ms | type == "array"))' "$base.json"
           for size in small large xl; do

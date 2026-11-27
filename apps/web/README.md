@@ -50,17 +50,30 @@ v0.12.62 후보는 GitHub Actions에서 잽니다. `node tools/prepush.mjs`가 �
 
    첫 숫자와 스크롤 속도만 재려면 `SEUOFFICE_BENCH_XLSX_TIMING_ONLY=1`을 설정합니다. 메모리 계측과 별도 시작·끝 행 캡처는 생략합니다.
 
-3. `npx playwright test --config apps/web/playwright.config.ts bench-xlsx --project=webkit`을 실행합니다. Windows의 설치된 Edge에서는 `SEUOFFICE_BENCH_XLSX_BROWSER=msedge`를 설정하고 `--project=edge`를 사용합니다. 각 회차는 새 브라우저 컨텍스트에서 엽니다.
+3. 수동 실행에는 영어 인식 자료가 있는 Tesseract CLI가 필요합니다. `npx playwright test --config apps/web/playwright.config.ts bench-xlsx --project=webkit`을 실행합니다. Windows의 설치된 Edge에서는 `SEUOFFICE_BENCH_XLSX_BROWSER=msedge`를 설정하고 `--project=edge`를 사용합니다. 각 회차는 새 브라우저 컨텍스트에서 엽니다.
 4. 다음 실행 전에 `apps/web/test-results`의 JSON과 스크린샷을 다른 곳에 보관합니다. Playwright가 다음 실행 때 결과 폴더를 비웁니다.
 
-`openedMs`는 파일 선택부터 호스트가 `opened`를 받기까지입니다. `firstNumericDrawMs`는 선택부터 그리드의 첫 소수 값에 대한 `fillText`가 끝나기까지이고, `openedToNumericDrawMs`는 이 두 시각의 차입니다. `-numeric-<회차>.png`에 `firstNumericText`가 보이면 `firstNumericCaptureMs`는 그 값이 보인 시각의 상한입니다. 캡처 완료 시각은 화면에 처음 나타난 프레임의 시각이 아닙니다. `scrollGapsOver100ms`는 스크롤 시작을 기준으로 한 100ms 초과 `requestAnimationFrame` 간격입니다.
+`openedMs`는 파일 선택부터 호스트가 `opened`를 받기까지입니다. `firstNumericDrawMs`는 선택부터 그리드의 첫 소수 값에 대한 `fillText`가 끝나기까지이고, `openedToNumericDrawMs`는 이 두 시각의 차입니다. 어느 값도 숫자가 보였다는 증거는 아닙니다. `scrollGapsOver100ms`는 스크롤 시작을 기준으로 한 100ms 초과 `requestAnimationFrame` 간격입니다.
 
 `SEUOFFICE_BENCH_XLSX`는 이름표일 뿐 수동으로 지정한 묶음을 검증하지 않습니다. `SEUOFFICE_BENCH_XLSX_FIXTURES`는 합성 통합 문서를 보관할 폴더입니다. `benchFixture`는 없는 파일을 고정 시드로 생성하고 있는 파일은 재사용하므로 미리 채울 필요가 없습니다. 새 브라우저 컨텍스트가 운영 체제 파일 캐시까지 비우지는 않습니다.
 
-회차별 PNG에서 `firstNumericText`를 확인한 뒤 같은 회차의 `firstNumericCaptureMs - openedMs`를 구하면 `opened`부터 그 숫자가 보일 때까지의 상한입니다. 상한이 5000ms를 넘었다는 이유만으로 실제 첫 표시가 늦었다고 판정하지 않습니다. 선택부터의 5000ms 기준에는 `openedMs`를 빼지 않습니다.
+호스트가 `opened`를 받고 시트의 열기 화면이 사라지면 전체 화면을 찍습니다. 저장할 PNG에서 Tesseract가 읽은 숫자와 좌표를 `visibleNumeric`에 남깁니다. 후보 시험은 1440×900, 배율 1의 B2 영역에서 `small=627.07`, `large=720.23`, `xl=689.77`을 각각 확인합니다. 다른 시험 문서는 시트 영역에서 첫 그림 호출의 숫자를 확인합니다. 세 번 찍어도 확인하지 못하면 마지막 `-unverified.png`를 남기고 실패합니다. 레이아웃이 바뀌거나 문자를 인식하지 못해도 통과로 간주하지 않습니다.
+
+`firstNumericCaptureMs`는 확인된 PNG를 찍은 직후의 시각에서 파일 선택 시각을 뺀 값입니다. 앞선 재시도와 문자 인식에 쓴 시간이 포함될 수 있으므로 첫 표시 시각의 **상한**일 뿐입니다. `opened` 기준 상한은 같은 회차의 `firstNumericCaptureMs - openedMs`입니다. 선택부터의 5000ms 기준에는 `openedMs`를 빼지 않습니다. 상한만 5000ms를 넘으면 첫 표시 지연을 단정할 수 없습니다.
 
 `scrollMaxGapMs`는 스크롤 구간에 걸친 rAF 간격 전체의 최댓값입니다. 시작·끝 경계를 걸친 정지도 포함하므로 끝 경계에 걸친 간격의 `atMs`는 스크롤 길이보다 클 수 있습니다. 100ms 기준은 회차별 값을 확인합니다. rAF는 브라우저 콜백이지 모니터에 새 내용이 표시됐다는 증거는 아닙니다.
 
 이 벤치는 배포된 파일을 별도 로컬 출처에서 서빙합니다. 운영 CDN, 호스트 앱, Safari 또는 WKWebView의 실제 표시 시각을 대신하지 않습니다.
+
+### v0.12.62에서 확인한 결과
+
+[실행 45948088289](https://github.com/seuput-inc/seuoffice/actions/runs/45948088289)는 위 픽셀 검증을 넣기 전입니다. Linux WebKit 26.5와 Windows Edge 157.0.4341.60에서 같은 공식 묶음을 `small`, `large`, `xl` 순서로 각각 5회 열었습니다. 회차별 새 컨텍스트, 1440×900, 배율 1, 메모리 계측 없는 실행입니다.
+
+| 관측                                | WebKit                       | Edge                                  |
+| ----------------------------------- | ---------------------------- | ------------------------------------- |
+| B2를 읽을 수 있는 PNG               | small 5/5. large·xl은 각 0/5 | small·xl 각 5/5. large는 0/5          |
+| 스크롤 rAF 간격이 100ms를 넘은 회차 | large·xl 각 5/5              | large·xl 각 5/5. xl은 매회 네 번 초과 |
+
+두 작업 모두 녹색이었지만 PNG 30장 중 15장은 열기 화면만 담았습니다. 이 15장의 캡처 시각은 숫자 표시의 상한으로 쓸 수 없습니다. WebKit의 `openedToNumericDrawMs` 중앙값은 large −60ms, xl −78ms였습니다. 이는 숫자 그리기 호출이 호스트 알림보다 앞섰다는 뜻이지 픽셀이 먼저 보였다는 뜻이 아닙니다. Edge xl은 다섯 PNG 모두 B2가 `689.77`이었고 첫 그림 호출은 선택 후 6039~6451ms였습니다. 이 실행만으로 다른 판과의 성능 차이를 판정하지 않습니다.
 
 라이선스: FSL-1.1-ALv2(소스 공개, 판마다 2년 뒤 Apache-2.0), GenOffice·이음오피스에서 온 부분은 Apache-2.0. 저장소: https://github.com/seuput-inc/seuoffice

@@ -32,12 +32,20 @@ for (const name of Object.keys(b)) {
   if (!a[name]) continue
   console.log(`\n${name} (${browser})`)
   const metrics = new Set([...Object.keys(a[name].median), ...Object.keys(b[name].median)])
-  const round = (value) => (value === undefined ? 'missing' : +value.toFixed(2))
+  const value = (result, metric) => {
+    if (
+      metric === 'firstNumericCaptureMs' &&
+      (!result.rounds?.length || !result.rounds.every((r) => r.visibleNumeric))
+    )
+      return 'unverified'
+    const measurement = result.median[metric]
+    return measurement === undefined ? 'missing' : +measurement.toFixed(2)
+  }
   const rows = [...metrics].map((metric) => {
     return {
       metric,
-      [before]: round(a[name].median[metric]),
-      [after]: round(b[name].median[metric]),
+      [before]: value(a[name], metric),
+      [after]: value(b[name], metric),
     }
   })
   rows.push({ metric: 'pixels differing (top)', [after]: differentPixels(name, 'top') })
