@@ -31,6 +31,12 @@ cp -r node_modules/@seuoffice/web/dist ./public/seuoffice
 
 ## 배포판에서 XLSX 보기 속도 재기
 
+v0.12.62 후보는 GitHub Actions에서 잽니다. `node tools/prepush.mjs`가 통과한 벤치 커밋을 `bench-xlsx/v0.12.62` 가지에 푸시하면 `seuoffice bench xlsx`가 시작됩니다. 첫 푸시에도 동작하며 `main`에 합치거나 릴리스를 만들 필요가 없습니다.
+
+러너는 공개 태그가 `19de229a45b1131837883382cacb84c62b716100`을 가리키는지 확인하고, 공식 웹·임베드 묶음의 SHA-256을 검사한 뒤 압축을 풉니다. Linux WebKit과 Windows에 설치된 Edge에서 `small`, `large`, `xl` 순서로 크기마다 다섯 번씩 첫 숫자와 스크롤을 잽니다. 브라우저마다 `xlsx-v0.12.62-webkit` 또는 `xlsx-v0.12.62-edge` 아티팩트에 JSON과 회차별 PNG가 남습니다. 실패한 실행도 그때까지 기록한 파일을 보관합니다. 작업 성공은 기록이 갖춰졌다는 뜻이지 성능 기준을 통과했다는 뜻이 아닙니다.
+
+벤치가 배포판을 여는 방법은 다음과 같습니다.
+
 1. 비교할 릴리스에서 `seuoffice-web-<판>.tgz`와 `seuoffice-embed-<판>.tgz`를 받아 각각 풉니다.
 2. 저장소 루트에서 아래 환경 변수를 설정합니다. 통합 문서는 벤치가 만듭니다.
 
@@ -49,7 +55,7 @@ cp -r node_modules/@seuoffice/web/dist ./public/seuoffice
 
 `openedMs`는 파일 선택부터 호스트가 `opened`를 받기까지입니다. `firstNumericDrawMs`는 선택부터 그리드의 첫 소수 값에 대한 `fillText`가 끝나기까지이고, `openedToNumericDrawMs`는 이 두 시각의 차입니다. `-numeric-<회차>.png`에 `firstNumericText`가 보이면 `firstNumericCaptureMs`는 그 값이 보인 시각의 상한입니다. 캡처 완료 시각은 화면에 처음 나타난 프레임의 시각이 아닙니다. `scrollGapsOver100ms`는 스크롤 시작을 기준으로 한 100ms 초과 `requestAnimationFrame` 간격입니다.
 
-`19de229a45b1131837883382cacb84c62b716100` 후보만 잴 때는 이 SHA에서 만든 웹·임베드 묶음을 모두 지정합니다. `SEUOFFICE_BENCH_XLSX`는 이름표일 뿐 묶음을 검증하지 않습니다. `SEUOFFICE_BENCH_XLSX_FIXTURES`에는 기존 `small.xlsx`, `large.xlsx`, `xl.xlsx`가 있는 폴더를 지정합니다. 파일이 하나라도 없으면 벤치를 시작하지 마세요. `SEUOFFICE_BENCH_XLSX_SIZES=small,large,xl`이면 작은 파일의 열기 비용부터 그 순서대로 잽니다. 한 크기의 모든 회차를 마친 뒤 다음 크기로 넘어갑니다. 새 컨텍스트가 운영 체제 파일 캐시까지 비우지는 않습니다.
+`SEUOFFICE_BENCH_XLSX`는 이름표일 뿐 수동으로 지정한 묶음을 검증하지 않습니다. `SEUOFFICE_BENCH_XLSX_FIXTURES`는 합성 통합 문서를 보관할 폴더입니다. `benchFixture`는 없는 파일을 고정 시드로 생성하고 있는 파일은 재사용하므로 미리 채울 필요가 없습니다. 새 브라우저 컨텍스트가 운영 체제 파일 캐시까지 비우지는 않습니다.
 
 회차별 PNG에서 `firstNumericText`를 확인한 뒤 같은 회차의 `firstNumericCaptureMs - openedMs`를 구하면 `opened`부터 그 숫자가 보일 때까지의 상한입니다. 상한이 5000ms를 넘었다는 이유만으로 실제 첫 표시가 늦었다고 판정하지 않습니다. 선택부터의 5000ms 기준에는 `openedMs`를 빼지 않습니다.
 

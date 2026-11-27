@@ -1,0 +1,94 @@
+name: seuoffice bench xlsx
+
+on:
+  push:
+    branches: ['bench-xlsx/v0.12.62']
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            project: webkit
+            browser: webkit
+          - os: windows-2022
+            project: edge
+            browser: msedge
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      SEUOFFICE_BENCH_XLSX: 19de229a45b1131837883382cacb84c62b716100
+      SEUOFFICE_BENCH_XLSX_BROWSER: ${{ matrix.browser }}
+      SEUOFFICE_BENCH_XLSX_SIZES: small,large,xl
+      SEUOFFICE_BENCH_XLSX_ROUNDS: '5'
+      SEUOFFICE_BENCH_XLSX_TIMING_ONLY: '1'
+      PROJECT: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify the release tag and both archives before extraction
+        run: |
+          repo=https://github.com/seuput-inc/seuoffice
+          tag=v0.12.62
+          test "$(git ls-remote --exit-code "$repo.git" "refs/tags/$tag" | cut -f1)" = "$SEUOFFICE_BENCH_XLSX"
+          mkdir candidate
+          cd candidate
+          for package in web embed; do
+            file="seuoffice-$package-${tag#v}.tgz"
+            curl --fail --location --silent --show-error "$repo/releases/download/$tag/$file" -o "$file"
+          done
+          sha256sum -c <<'SUMS'
+          8287ebb7aba37a03c201cc7c66e8165f721878025ff7dfe9814839fff2cff2d3  seuoffice-web-0.12.62.tgz
+          daba67d172a1fc9d779ed645f58f20eacfc32a9578b97b7aa790b72d44eb7cf2  seuoffice-embed-0.12.62.tgz
+          SUMS
+          for package in web embed; do
+            mkdir "$package"
+            tar -xzf "seuoffice-$package-${tag#v}.tgz" -C "$package"
+          done
+          test -s web/package/dist/index.html
+          test -s embed/package/dist/index.js
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts --workspace @seuoffice/web
+      - if: matrix.project == 'webkit'
+        run: npx --no-install playwright install --with-deps webkit
+      - name: Measure the released bundle
+        env:
+          SEUOFFICE_BENCH_XLSX_DIST: ${{ github.workspace }}/candidate/web/package/dist
+          SEUOFFICE_BENCH_XLSX_EMBED: ${{ github.workspace }}/candidate/embed/package/dist/index.js
+        run: npx --no-install playwright test --config apps/web/playwright.config.ts bench-xlsx.spec.ts --project="$PROJECT"
+      - name: Require five recorded rounds and five captures per workbook
+        working-directory: apps/web/test-results
+        run: |
+          base="bench-xlsx-$SEUOFFICE_BENCH_XLSX-$PROJECT"
+          test -s "$base.json"
+          jq -e --arg label "$SEUOFFICE_BENCH_XLSX" --arg browser "$PROJECT" '
+            .label == $label and .browser == $browser and
+            (.results | keys_unsorted == ["small", "large", "xl"]) and
+            all(.results[]; (.rounds | length == 5)) and
+            all(.results[].rounds[]; (.firstNumericText | type == "string" and length > 0) and
+              ([.openedMs, .firstNumericDrawMs, .firstNumericCaptureMs, .scrollMaxGapMs] | all(type == "number")) and
+              (.scrollGapsOver100ms | type == "array"))' "$base.json"
+          for size in small large xl; do
+            for round in 1 2 3 4 5; do
+              test -s "$base-$size-numeric-$round.png"
+            done
+          done
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xlsx-v0.12.62-${{ matrix.project }}
+          path: |
+            apps/web/test-results/bench-xlsx-*.json
+            apps/web/test-results/bench-xlsx-*.png
+          if-no-files-found: error
