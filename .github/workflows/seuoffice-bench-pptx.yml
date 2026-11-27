@@ -4,13 +4,10 @@ name: seuoffice bench pptx
 # C2, crates/pptx-engine/C2-PLAN.md): tools/pptx-diff/bench-render.ts opens and
 # lays out the five largest decks the gate has, once with the frozen TypeScript
 # engine, once with the binding, and once per render-path export taken from
-# the TypeScript. Started by pushing the commit to measure as bench-pptx/<name>,
-# or by hand once the file is on main:
-#   gh workflow run "seuoffice bench pptx" --ref <branch>
+# the TypeScript. Start it by hand on dev:
+#   gh workflow run "seuoffice bench pptx" --ref dev
 
 on:
-  push:
-    branches: ['bench-pptx/**']
   workflow_dispatch:
     inputs:
       rounds:

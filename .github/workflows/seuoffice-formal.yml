@@ -4,7 +4,7 @@ name: seuoffice formal
 # The quick tier runs when a model or the code it covers changes; the deep tier on request.
 on:
   push:
-    branches: [main]
+    branches: [dev, main]
     paths:
       - 'formal/**'
       - 'tools/formal/**'

@@ -4,13 +4,10 @@ name: seuoffice bench
 # B4, crates/docx-engine/B4-PLAN.md): the web Docs app opens and lays out the
 # five largest .docx of the repository in Chromium, built once with the wasm
 # binding and once with the frozen TypeScript engine, three runs of each in
-# turn. Started by hand once the file is on main:
-#   gh workflow run "seuoffice bench" --ref <branch>
-# and, before that, by pushing the commit to measure as bench/<name>.
+# turn. Start it by hand on dev:
+#   gh workflow run "seuoffice bench" --ref dev
 
 on:
-  push:
-    branches: ['bench/**']
   workflow_dispatch:
     inputs:
       rounds:

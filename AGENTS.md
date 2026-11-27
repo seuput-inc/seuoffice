@@ -32,17 +32,17 @@ seuoffice는 웹과 PC(Windows, Mac)에서 문서를 보고 고치고 AI로 편�
 - 영어 Conventional Commits: `type(scope): summary`. type은 feat, fix, test, docs, chore, refactor, perf, ci, build. scope는 앱·패키지 이름(`docs`, `sheets`, `slides`, `pdf`, `hwp`, `web`, `embed`, `web-platform`).
 - 한 커밋에 한 가지 변경. 커밋마다 빌드와 타입검사가 통과해야 한다.
 - 결함 수정은 재현 시험을 먼저 쓰고, 고치기 전에 그 시험이 실패하는 것을 확인한다.
-- 작은 변경은 `main`에 바로 올린다. 여러 커밋짜리 일은 `feat/*`·`fix/*` 가지에서 하고 `--no-ff`로 합친다. `git stash`는 쓰지 않는다(작업 트리 여럿이 하나를 공유한다).
+- 개발 커밋은 `dev` 하나에 모은다. 기능·수정·벤치별 원격 가지를 만들지 않는다. 다른 담당이 먼저 푸시했으면 최신 `origin/dev`를 받아 내 변경을 얹고 다시 검사한다. 강제 푸시와 `git stash`는 쓰지 않는다. 기존 작업 가지와 미커밋 파일은 검증된 변경을 골라 옮길 때까지 보존한다.
 - 푸시한 뒤 CI(`CI`, `seuoffice`)가 통과하는 것까지가 한 단위다.
-- 판은 모아서 낸다(결정 0027). main 푸시로는 판이 나오지 않는다. 판을 시작하는 것은 메인 세션이고, 다른 세션은 판을 내거나 안정 판으로 올리지 않는다. 절차는 `docs/seuoffice/판-내기.md`.
+- 배포할 때만 검증된 `dev`를 `main`에 반영한다. 보호 규칙이 PR을 요구하면 `dev`에서 `main`으로 PR을 보낸다. `dev`와 `main` 푸시로는 판이 나오지 않는다. 이후 판 시작과 안정 판 승격은 메인 세션이 [판 내기](docs/seuoffice/판-내기.md)에 따라 별도로 진행한다.
 
 ## 시험
 
 무거운 검사는 GitHub 러너에서 돌리고, 이 기계에서는 몇 초에서 몇 분짜리 확인만 돌린다. 공개 저장소라 러너 시간은 무료다. 기기를 막은 것은 로컬에서 돈 무거운 일이었다(부하, 스왑, 디스크 가득).
 
 - 로컬에서 돌리는 것: 바꾼 파일의 typecheck·lint·format, 바꾼 동작을 덮는 단위 시험 파일 몇 개(`npx vitest run <파일>`), 재현 시험 한 개.
-- 푸시하기 전에는 언제나 `node tools/prepush.mjs`를 돌리고 녹색일 때만 푸시한다. 이 가지가 origin/main에서 바꾼 것만 보고 format, 영어 주석, lint, 바뀐 작업 공간의 typecheck와 바뀐 파일이 닿는 vitest, 바뀐 crate의 `cargo fmt --check`·clippy·단위 시험을 돌린다. 러너에서 떨어진 실패 대부분이 이 검사로 잡히는 것이었다. git 훅으로 걸지 않는다(작업 트리 여럿이 `.git` 하나를 공유한다).
-- 러너에서 돌리는 것: 작업 공간 전체 시험, `npm run test:parallel`, 웹 시험(Playwright), e2e, xlsx `native:test`, Rust 빌드·비교·결함 심기, 정형 검증(TLC), 여러 OS 빌드. 가지에 푸시한 뒤 `gh workflow run <워크플로> --ref <가지>`로 돌린다(`CI`, `seuoffice`, `seuoffice rust`, `seuoffice formal` 모두 `workflow_dispatch`가 있다). 가지에서 못 도는 워크플로를 만나면 그 워크플로를 고친다.
+- `dev`에 푸시하기 전에는 `git fetch origin` 후 `node tools/prepush.mjs`를 돌리고 녹색일 때만 푸시한다. `origin/dev`와 달라진 파일의 format, 영어 주석, lint, 작업 공간의 typecheck와 관련 vitest, 바뀐 crate의 `cargo fmt --check`·clippy·단위 시험을 돌린다. `main` 반영 전에는 `node tools/prepush.mjs --base origin/main`으로 배포 묶음 전체를 검사한다. git 훅으로 걸지 않는다.
+- 작업 공간 전체 시험, `npm run test:parallel`, 웹 시험(Playwright), e2e, xlsx `native:test`, Rust 빌드·비교·결함 심기, 정형 검증(TLC), 여러 OS 빌드는 러너에서 돌린다. 추가 검사는 `gh workflow run <워크플로> --ref dev`로 시작한다. 검사 때문에 별도 원격 가지를 만들지 않는다.
 - 기다리기: 실행 하나를 `gh run watch <id> --interval 300` 한 번으로 본다. 여러 세션이 같은 실행을 따로 폴링하지 않는다(API 시간당 5,000회를 나눠 쓴다).
 - 로컬에만 남는 것: 실제 기기 확인(Windows 창 끌기·크기, 페어링 기기, 설치·자동 업데이트), 사람이 화면을 보고 판단하는 시각 확인.
 - 끝난 작업 폴더의 `target/`(Rust)과 `node_modules/`는 그 자리에서 지운다.

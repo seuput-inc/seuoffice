@@ -4,7 +4,7 @@ name: seuoffice rust
 # TypeScript engines (tools/docx-diff, tools/pptx-diff, tools/odt-diff), on a GitHub runner.
 # Decision 0025.
 #
-# It runs on its own for a push to main that touches the crates or the gates,
+# It runs on its own for a push to dev or main that touches the crates or the gates,
 # and by hand on a branch:
 #   gh workflow run "seuoffice rust" --ref <branch>
 # The workstation that develops the port is shared and slow, which is why the
@@ -17,7 +17,7 @@ name: seuoffice rust
 
 on:
   push:
-    branches: [main]
+    branches: [dev, main]
     paths:
       [
         'crates/**',

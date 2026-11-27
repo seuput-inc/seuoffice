@@ -31,7 +31,7 @@ cp -r node_modules/@seuoffice/web/dist ./public/seuoffice
 
 ## 배포판에서 XLSX 보기 속도 재기
 
-v0.12.62 후보는 GitHub Actions에서 잽니다. `node tools/prepush.mjs`가 통과한 벤치 커밋을 `bench-xlsx/v0.12.62` 가지에 푸시하면 `seuoffice bench xlsx`가 시작됩니다. 첫 푸시에도 동작하며 `main`에 합치거나 릴리스를 만들 필요가 없습니다.
+`dev`에 XLSX 벤치 코드나 워크플로를 푸시하면 `seuoffice bench xlsx`가 v0.12.62 후보를 잽니다. 별도 원격 가지를 만들지 않습니다. 벤치와 무관한 `dev` 푸시는 이 측정을 시작하지 않습니다.
 
 러너는 공개 태그가 `19de229a45b1131837883382cacb84c62b716100`을 가리키는지 확인하고, 공식 웹·임베드 묶음의 SHA-256을 검사한 뒤 압축을 풉니다. Linux WebKit과 Windows에 설치된 Edge에서 `small`, `large`, `xl` 순서로 크기마다 다섯 번씩 첫 숫자와 스크롤을 잽니다. 브라우저마다 `xlsx-v0.12.62-webkit` 또는 `xlsx-v0.12.62-edge` 아티팩트에 JSON과 회차별 PNG가 남습니다. 실패한 실행도 그때까지 기록한 파일을 보관합니다. 작업 성공은 기록이 갖춰졌다는 뜻이지 성능 기준을 통과했다는 뜻이 아닙니다.
 

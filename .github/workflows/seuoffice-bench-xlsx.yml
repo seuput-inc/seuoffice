@@ -2,7 +2,13 @@ name: seuoffice bench xlsx
 
 on:
   push:
-    branches: ['bench-xlsx/v0.12.62']
+    branches: [dev]
+    paths:
+      - '.github/workflows/seuoffice-bench-xlsx.yml'
+      - 'apps/web/playwright.config.ts'
+      - 'apps/web/tests/bench-xlsx*'
+      - 'apps/web/tests/cross-origin-embed.ts'
+  workflow_dispatch:
 
 permissions:
   contents: read

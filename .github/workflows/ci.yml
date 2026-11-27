@@ -9,7 +9,7 @@ name: CI
 on:
   # seuoffice: a Markdown-only change skips this ~100 minute gate; the seuoffice workflow still runs
   push:
-    branches: [main]
+    branches: [dev, main]
     paths-ignore: ['**/*.md']
   pull_request:
     branches: [main]

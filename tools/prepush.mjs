@@ -5,7 +5,7 @@
  *
  * Every check runs whether or not an earlier one failed, so one run lists
  * everything a runner would fail on; the exit status is 1 when any failed.
- * The base is the merge base with origin/main unless --base names another.
+ * The base is the merge base with origin/dev unless --base names another.
  *
  *   formatting      prettier on the changed files (tools/format-changed.mjs)
  *   comments        tools/check-english-comments.mjs, the whole tree (seconds)
@@ -26,7 +26,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 const args = process.argv.slice(2)
-let base = 'origin/main'
+let base = 'origin/dev'
 if (args[0] === '--base' && args[1]) base = args.splice(0, 2)[1]
 if (args.length > 0) {
   console.error('usage: node tools/prepush.mjs [--base <git-ref>]')
