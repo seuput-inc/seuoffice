@@ -36,7 +36,7 @@ cp -r node_modules/@seuoffice/web/dist ./public/seuoffice
 
    | 환경 변수                     | 값                                                      |
    | ----------------------------- | ------------------------------------------------------- |
-   | `SEUOFFICE_BENCH_XLSX`        | 결과를 구분할 이름. 예: `v0.12.61`                      |
+   | `SEUOFFICE_BENCH_XLSX`        | 결과를 구분할 이름. 측정 대상의 전체 커밋 SHA           |
    | `SEUOFFICE_BENCH_XLSX_DIST`   | 웹 묶음을 푼 곳의 `package/dist` 경로                   |
    | `SEUOFFICE_BENCH_XLSX_EMBED`  | 임베드 묶음을 푼 곳의 `package/dist/index.js` 절대 경로 |
    | `SEUOFFICE_BENCH_XLSX_SIZES`  | `large,xl`. 빠른 확인은 `small`                         |
@@ -48,6 +48,12 @@ cp -r node_modules/@seuoffice/web/dist ./public/seuoffice
 4. 다음 실행 전에 `apps/web/test-results`의 JSON과 스크린샷을 다른 곳에 보관합니다. Playwright가 다음 실행 때 결과 폴더를 비웁니다.
 
 `openedMs`는 파일 선택부터 호스트가 `opened`를 받기까지입니다. `firstNumericDrawMs`는 선택부터 그리드의 첫 소수 값에 대한 `fillText`가 끝나기까지이고, `openedToNumericDrawMs`는 이 두 시각의 차입니다. `-numeric-<회차>.png`에 `firstNumericText`가 보이면 `firstNumericCaptureMs`는 그 값이 보인 시각의 상한입니다. 캡처 완료 시각은 화면에 처음 나타난 프레임의 시각이 아닙니다. `scrollGapsOver100ms`는 스크롤 시작을 기준으로 한 100ms 초과 `requestAnimationFrame` 간격입니다.
+
+`19de229a45b1131837883382cacb84c62b716100` 후보만 잴 때는 이 SHA에서 만든 웹·임베드 묶음을 모두 지정합니다. `SEUOFFICE_BENCH_XLSX`는 이름표일 뿐 묶음을 검증하지 않습니다. `SEUOFFICE_BENCH_XLSX_FIXTURES`에는 기존 `small.xlsx`, `large.xlsx`, `xl.xlsx`가 있는 폴더를 지정합니다. 파일이 하나라도 없으면 벤치를 시작하지 마세요. `SEUOFFICE_BENCH_XLSX_SIZES=small,large,xl`이면 작은 파일의 열기 비용부터 그 순서대로 잽니다. 한 크기의 모든 회차를 마친 뒤 다음 크기로 넘어갑니다. 새 컨텍스트가 운영 체제 파일 캐시까지 비우지는 않습니다.
+
+회차별 PNG에서 `firstNumericText`를 확인한 뒤 같은 회차의 `firstNumericCaptureMs - openedMs`를 구하면 `opened`부터 그 숫자가 보일 때까지의 상한입니다. 상한이 5000ms를 넘었다는 이유만으로 실제 첫 표시가 늦었다고 판정하지 않습니다. 선택부터의 5000ms 기준에는 `openedMs`를 빼지 않습니다.
+
+`scrollMaxGapMs`는 스크롤 구간에 걸친 rAF 간격 전체의 최댓값입니다. 시작·끝 경계를 걸친 정지도 포함하므로 끝 경계에 걸친 간격의 `atMs`는 스크롤 길이보다 클 수 있습니다. 100ms 기준은 회차별 값을 확인합니다. rAF는 브라우저 콜백이지 모니터에 새 내용이 표시됐다는 증거는 아닙니다.
 
 이 벤치는 배포된 파일을 별도 로컬 출처에서 서빙합니다. 운영 CDN, 호스트 앱, Safari 또는 WKWebView의 실제 표시 시각을 대신하지 않습니다.
 

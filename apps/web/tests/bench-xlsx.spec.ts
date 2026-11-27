@@ -33,6 +33,7 @@ import {
   type Site,
 } from './cross-origin-embed'
 import { benchFixture, FIXTURE_ROWS, type FixtureName } from './bench-xlsx-fixtures'
+import { frameGaps } from './bench-xlsx-frame-gaps'
 
 const label = process.env.SEUOFFICE_BENCH_XLSX
 const ROUNDS = Number(process.env.SEUOFFICE_BENCH_XLSX_ROUNDS ?? 3)
@@ -479,11 +480,8 @@ async function oneRound(
         throw new Error(`${name}: cell draw not recorded`)
       expect(firstNumeric.at).toBeGreaterThanOrEqual(start)
       expect(captured).toBeGreaterThanOrEqual(firstNumeric.at)
-      const gaps = (from: number, to: number): { atMs: number; gapMs: number }[] => {
-        const frames = recorded.frames.filter((t) => t >= from && t <= to)
-        return frames.slice(1).map((t, i) => ({ atMs: t - from, gapMs: t - frames[i]! }))
-      }
-      const scrollGaps = gaps(scrollStart, scrollEnd)
+      const scrollGaps = frameGaps(recorded.frames, scrollStart, scrollEnd)
+      const postDrawFrames = recorded.frames.filter((t) => t >= cellsAt && t <= scrollEnd)
       const wheelsReceived = recorded.wheels.filter(
         (t) => t >= scrollStart && t <= scrollEnd,
       ).length
@@ -524,16 +522,20 @@ async function oneRound(
         openedToNumericDrawMs: firstNumeric.at - openedAt,
         firstNumericCaptureMs: captured - start,
         firstNumericText: firstNumeric.text,
-        scrollFps: scrollGaps.length / ((scrollEnd - scrollStart) / 1_000),
+        scrollFps:
+          recorded.frames.filter((t) => t > scrollStart && t <= scrollEnd).length /
+          ((scrollEnd - scrollStart) / 1_000),
         scrollMaxGapMs: Math.max(0, ...scrollGaps.map(({ gapMs }) => gapMs)),
         scrollGapsOver100ms: scrollGaps.filter(({ gapMs }) => gapMs > 100),
         wheels: {
           sent,
           received: wheelsReceived,
         },
-        stallsOver200ms: gaps(cellsAt, scrollEnd)
-          .filter(({ gapMs }) => gapMs > 200)
-          .map(({ gapMs }) => Math.round(gapMs)),
+        stallsOver200ms: postDrawFrames
+          .slice(1)
+          .map((t, i) => t - postDrawFrames[i]!)
+          .filter((gapMs) => gapMs > 200)
+          .map(Math.round),
         longTasksOver200ms:
           browser.browserType().name() === 'chromium'
             ? recorded.longTasks
