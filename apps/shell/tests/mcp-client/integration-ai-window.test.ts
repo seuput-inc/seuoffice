@@ -67,6 +67,7 @@ const WAIT = { timeout: 15_000, interval: 20 }
 /** Sealing stands in for the OS cipher: reversible, and marked so a plain value shows */
 const codec: McpSecretCodec = {
   canSeal: () => true,
+  sealsHere: () => true,
   seal: (plain) => `sealed:v1:${Buffer.from(plain).toString('base64')}`,
   open: (sealed) =>
     sealed.startsWith('sealed:v1:') ? Buffer.from(sealed.slice(10), 'base64').toString() : null,
